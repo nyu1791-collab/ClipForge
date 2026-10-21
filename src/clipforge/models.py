@@ -184,6 +184,8 @@ class Settings(Record):
     thumbnail: bool = False
     fade_seconds: float = Field(default=0.3, ge=0, le=2)
     progress_bar: bool = True
+    # report keeps a clip whose quality.json lists failures; strict refuses such a clip.
+    quality_gate: Literal["report", "strict"] = "report"
     analysis_fps: float = Field(default=2, ge=0.5, le=5)
     max_source_seconds: float = Field(default=3600, ge=5, le=7200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)

@@ -168,3 +168,45 @@ def test_subtitles_prefer_word_boundaries():
     tokens = [(0, 1, "日本語字幕の"), (1, 2, "表示と時刻を")]
     text = captions.group_text(tokens, FixedWidth(), 70, "plain")
     assert text.split(r"\N") == ["日本語字幕の", "表示と時刻を"]
+
+
+def test_fast_captions_hold_into_silence_and_stop_at_the_next_one():
+    spans = [[0, 1000], [2500, 3000], [3100, 3300]]
+    texts = ["あ" * 20, "い" * 5, "う" * 30]
+    captions.hold_for_reading(spans, texts, 5000)
+    # 20 characters take 2 s at the 10-per-second target; the next caption starts at 2.5 s.
+    # The last caption is held only up to the clip end.
+    assert spans == [[0, 2000], [2500, 3000], [3100, 5000]]
+
+
+def test_a_caption_within_the_target_keeps_its_timing():
+    spans = [[0, 5000]]
+    captions.hold_for_reading(spans, ["あ" * 10], 9000)
+    assert spans == [[0, 5000]]
+
+
+def test_fast_speech_stays_on_screen_until_the_next_caption_needs_the_room(
+    tmp_path, settings
+):
+    settings.aspect = "16:9"
+    words = [Word(start=0.1 * i, end=0.1 * i + 0.1, text="あい") for i in range(10)]
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=0, end=1.0, text="あい" * 10, words=words),
+            Segment(
+                start=2.5,
+                end=2.6,
+                text="うえ",
+                words=[Word(start=2.5, end=2.6, text="うえ")],
+            ),
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=5, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    captions.create(transcript, clip, tmp_path, settings)
+    first, second = pysubs2.load(str(tmp_path / "captions.ass"))
+    assert (first.start, first.end) == (0, 2000)
+    # Two characters at 10 per second need 0.2 s; the speech lasts 0.1 s, so it grows by that.
+    assert (second.start, second.end) == (2500, 2700)

@@ -43,6 +43,18 @@ def transcript():
 
 
 @pytest.fixture
+def on_target_loudness(monkeypatch):
+    """Stands in for the ffmpeg loudness measurement of a rendered file, at the target."""
+    from clipforge import quality
+
+    monkeypatch.setattr(
+        quality,
+        "measure_output",
+        lambda video: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
+    )
+
+
+@pytest.fixture
 def japanese_font():
     """Path of an installed Japanese font; the caption checks need one, so skip without it."""
     from clipforge import fonts

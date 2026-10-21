@@ -1,6 +1,7 @@
 import json
 import math
 
+import pysubs2
 import pytest
 from PIL import Image
 from pydantic import ValidationError
@@ -202,6 +203,7 @@ def test_receipt_accepts_only_its_own_untouched_files(tmp_path):
         "captions.ass": b"ass",
         "captions.srt": b"srt",
         "ledger.json": json.dumps([{"file": "visual-01.png"}]).encode(),
+        "quality.json": b"{}",
         "visuals/visual-01.png": b"png",
     }
     for name, data in names.items():
@@ -411,7 +413,7 @@ def test_diagrams_and_searched_images_are_recorded_in_the_ledger(
 
 
 def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
-    tmp_path, monkeypatch, japanese_font, transcript
+    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
 ):
     monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
     source = tmp_path / "in.mp4"
@@ -446,7 +448,7 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
 
     def fake_captions(transcript, clip, directory, settings, keep=None, credits=None):
         seen["credits"] = credits
-        (directory / "captions.ass").write_text("ass")
+        pysubs2.SSAFile().save(str(directory / "captions.ass"))
         (directory / "captions.srt").write_text("srt")
         return {"events": 0, "heading": False, "missing_glyphs": []}
 
@@ -460,10 +462,12 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
         source, root, 1, clip, transcript, settings, "job-key"
     )
     assert seen["credits"] == ["作者 / CC0"]
+    assert result["quality"]["passed"] is True
     assert set(result["sha256"]) == {
         "captions.ass",
         "captions.srt",
         "ledger.json",
+        "quality.json",
         "thumbnail.png",
         "video.mp4",
         "visuals/visual-01.png",

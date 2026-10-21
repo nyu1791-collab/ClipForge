@@ -30,6 +30,7 @@
   "bgm_gain_db": -24,
   "fade_seconds": 0.3,
   "progress_bar": true,
+  "quality_gate": "report",
   "thumbnail": false,
   "analysis_fps": 2,
   "max_source_seconds": 3600,

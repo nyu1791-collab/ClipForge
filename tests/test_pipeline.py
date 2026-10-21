@@ -8,7 +8,7 @@ from clipforge.storage import PipelineError, digest, write_json
 
 
 @pytest.fixture
-def job(tmp_path, monkeypatch, transcript):
+def job(tmp_path, monkeypatch, transcript, on_target_loudness):
     source = tmp_path / "input.mp4"
     source.write_bytes(b"synthetic-input" * 200)
     output = tmp_path / "out"
@@ -226,3 +226,37 @@ def test_manual_cut_does_not_transcribe_or_call_model(job, settings):
     assert result["status"] == "complete"
     assert counts["asr"] == counts["generate"] == counts["preview"] == 0
     assert counts["render"] == 1
+
+
+def missing_a_glyph(monkeypatch):
+    """Makes every clip's caption font report one missing character."""
+    original = pipeline.create_captions
+
+    def create(*args, **kwargs):
+        return {**original(*args, **kwargs), "missing_glyphs": ["ー"]}
+
+    monkeypatch.setattr(pipeline, "create_captions", create)
+
+
+def test_report_gate_keeps_the_clip_and_records_its_failure(job, settings, monkeypatch):
+    source, output, _ = job
+    missing_a_glyph(monkeypatch)
+    result = pipeline.run(source, output, settings)
+    recorded = json.loads((output / "clips/clip-001/quality.json").read_text())
+    assert recorded["passed"] is False
+    assert recorded["failures"] == result["rendered"][0]["quality"]["failures"]
+    assert "quality.json" in result["rendered"][0]["sha256"]
+    assert result["status"] == "complete"
+
+
+def test_strict_gate_refuses_a_failing_clip_before_it_is_committed(
+    job, settings, monkeypatch
+):
+    source, output, _ = job
+    missing_a_glyph(monkeypatch)
+    settings.quality_gate = "strict"
+    with pytest.raises(PipelineError, match="quality gate"):
+        pipeline.run(source, output, settings)
+    assert json.loads((output / "manifest.json").read_text())["status"] == "failed"
+    assert not (output / "clips" / "clip-001").exists()
+    assert not list((output / "clips").glob(".clip-*"))

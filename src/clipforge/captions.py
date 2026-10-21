@@ -1,5 +1,6 @@
 """ASS/SRT captions and top heading in clip-relative output time; no user override tags."""
 
+import math
 import re
 
 import pysubs2
@@ -10,6 +11,10 @@ from .storage import PipelineError
 
 MARGIN = 35
 MIN_EVENT_MS = 100
+# Reading speed in characters a second. A caption faster than the target stays on screen
+# into the silence after it; one still faster than the maximum is reported as a warning.
+TARGET_CAPTION_CPS = 10
+MAX_CAPTION_CPS = 15
 OUTLINE_ALLOWANCE = 8
 YELLOW = (255, 210, 40)
 _PARSER = None
@@ -198,6 +203,25 @@ def group_text(tokens, measure, line_px, mode):
     return "".join(out)
 
 
+def spoken_length(text):
+    """Characters a viewer reads; spaces and line breaks do not count."""
+    return len(re.sub(r"\s", "", text))
+
+
+def hold_for_reading(spans, texts, limit):
+    """Extend captions read faster than the target into the silence after them.
+
+    spans holds [start, end] in milliseconds, in order, and is changed in place. Only
+    ends move, and never past the next caption's start or the clip's end, so no caption
+    starts later than its speech or overlaps another.
+    """
+    for index, (span, text) in enumerate(zip(spans, texts)):
+        ceiling = spans[index + 1][0] if index + 1 < len(spans) else max(limit, span[1])
+        wanted = span[0] + math.ceil(spoken_length(text) * 1000 / TARGET_CAPTION_CPS)
+        span[1] = max(span[1], min(wanted, ceiling))
+    return spans
+
+
 def heading_size(title, frame_width, height, font_path):
     """Largest size that fits one line, shrinking to 60%; longer titles must be shortened."""
     base = round(height * 0.07)
@@ -216,6 +240,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     font_path = fonts.resolve(settings.font)
     measure = fonts.Measure(font_path, font_size)
     line_px = frame_width - 2 * MARGIN - OUTLINE_ALLOWANCE
+    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
 
     tokens, approximate = collect_tokens(transcript, clip, keep)
     tokens, split = split_long(tokens, measure, line_px)
@@ -254,7 +279,6 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     title = getattr(clip, "title", None)
     if settings.heading and title:
         heading_text = safe(title)
-        duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
         size = heading_size(heading_text, frame_width, height, font_path)
         subtitles.styles["Heading"] = pysubs2.SSAStyle(
             fontname=settings.font,
@@ -292,7 +316,6 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             marginr=MARGIN,
             marginv=round(height * 0.015),
         )
-        duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
         credit_text = safe(" / ".join(credits))
         breaks = wrap_breaks(
             credit_text, fonts.Measure(font_path, credit_size), frame_width - 2 * MARGIN
@@ -307,16 +330,18 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         )
 
     style = "Sequential" if settings.caption == "sequential" else "Default"
-    plain_lines = []
-    previous_end = 0
+    plain_lines = ["".join(item[2] for item in items) for items in groups]
+    spans, previous_end = [], 0
     for items in groups:
         start = max(previous_end, round(items[0][0] * 1000))
         # A group squeezed out by the previous one is kept for a moment, never dropped.
         end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
+        spans.append([start, end])
+        previous_end = end
+    hold_for_reading(spans, plain_lines, round(duration * 1000))
+    for items, (start, end) in zip(groups, spans):
         text = group_text(items, measure, line_px, settings.caption)
         subtitles.append(pysubs2.SSAEvent(start=start, end=end, style=style, text=text))
-        plain_lines.append("".join(item[2] for item in items))
-        previous_end = end
 
     corpus = "".join(plain_lines) + (heading_text or "") + "".join(credits or [])
     missing = fonts.missing_glyphs(font_path, corpus)

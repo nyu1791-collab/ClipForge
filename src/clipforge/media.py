@@ -277,8 +277,17 @@ def _video_graph(clip, settings, width, height, keep, duration, visuals, ass):
     top = round(height * 0.14) if settings.heading else margin
     for index, visual in enumerate(visuals):
         max_w = round(width * visual["max_fraction"])
+        # An overlay fades in and out over its own interval; a short one fades by half.
+        ramp = min(settings.fade_seconds, (visual["end"] - visual["start"]) / 2)
+        fades = ""
+        if ramp > 0:
+            fades = (
+                f",fade=t=in:st={visual['start']:.3f}:d={ramp:.3f}:alpha=1"
+                f",fade=t=out:st={visual['end'] - ramp:.3f}:d={ramp:.3f}:alpha=1"
+            )
         chain.append(
-            f"[{index + 1}:v]format=rgba,scale=w='min(iw,{max_w})':h=-2[vi{index}]"
+            f"[{index + 1}:v]format=rgba,scale=w='min(iw,{max_w})':h=-2{fades}"
+            f"[vi{index}]"
         )
         nxt = f"ov{index}"
         chain.append(

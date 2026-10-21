@@ -18,6 +18,7 @@ from . import (
     diagrams,
     fonts,
     media,
+    quality,
     signals,
     silence,
     tables,
@@ -129,7 +130,13 @@ def record_failure(output, error, current_stage):
     write_json(output / "manifest.json", {**failure, "rendered": []})
 
 
-REQUIRED_FILES = {"video.mp4", "captions.ass", "captions.srt", "ledger.json"}
+REQUIRED_FILES = {
+    "video.mp4",
+    "captions.ass",
+    "captions.srt",
+    "ledger.json",
+    "quality.json",
+}
 OPTIONAL_FILES = {"thumbnail.png"}
 VISUAL_DIR = "visuals"
 SUPPLIED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
@@ -345,6 +352,12 @@ def render_clip(source, root, index, clip, transcript, settings, key):
             keep=keep,
             visuals=visuals,
         )
+        # Checked before the thumbnail, so a strict refusal costs no extra work.
+        report = quality.record(
+            directory,
+            quality.check_clip(directory, info, caption["missing_glyphs"], ledger),
+        )
+        quality.enforce(report, settings.quality_gate)
         if settings.thumbnail:
             thumbnail.make(
                 directory / "video.mp4",
@@ -364,6 +377,7 @@ def render_clip(source, root, index, clip, transcript, settings, key):
             "status": "rendered",
             "media": info,
             "captions": caption,
+            "quality": report,
             "keep": keep,
             "ledger": ledger,
             "sha256": {n: digest(directory / n) for n in names},

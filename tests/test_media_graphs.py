@@ -101,9 +101,47 @@ def test_video_graph_chains_zoom_visuals_fade_progress_and_captions():
     assert "[1:v]format=rgba" in graph
     assert f"overlay=(main_w-overlay_w)/2:{top}" in graph
     assert "fade=t=in:st=0:d=0.500" in graph
+    # The overlay itself fades in at its start and out before its end (alpha only).
+    assert "fade=t=in:st=1.000:d=0.500:alpha=1" in graph
+    assert "fade=t=out:st=3.500:d=0.500:alpha=1" in graph
     assert "color=c=black@0:s=404x8:r=30:d=10.000000" in graph
     assert "overlay=0:712:shortest=1[pb]" in graph
     assert graph.endswith("ass=filename=captions.ass[vout]")
+
+
+def test_short_overlays_fade_by_at_most_half_their_length():
+    visuals = [
+        {
+            "file": "v.png",
+            "start": 2,
+            "end": 2.4,
+            "position": "center",
+            "max_fraction": 0.5,
+        }
+    ]
+    graph = media._video_graph(
+        CLIP,
+        make(fade_seconds=0.5, progress_bar=False),
+        404,
+        720,
+        None,
+        10.0,
+        visuals,
+        None,
+    )
+    assert "fade=t=in:st=2.000:d=0.200:alpha=1" in graph
+    assert "fade=t=out:st=2.200:d=0.200:alpha=1" in graph
+    still = media._video_graph(
+        CLIP,
+        make(fade_seconds=0, progress_bar=False),
+        404,
+        720,
+        None,
+        10.0,
+        visuals,
+        None,
+    )
+    assert "alpha=1" not in still
 
 
 def test_plain_video_graph_has_no_optional_stages():

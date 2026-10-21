@@ -56,6 +56,7 @@ SETTINGS_FIELDS = {
     "thumbnail",
     "fade_seconds",
     "progress_bar",
+    "quality_gate",
     "analysis_fps",
     "max_source_seconds",
     "max_input_bytes",

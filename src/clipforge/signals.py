@@ -120,10 +120,10 @@ def scene_boundaries(source, duration):
     scenes = manager.get_scene_list(start_in_scene=True)
     boundaries = sorted(
         {
-            round(t.get_seconds(), 6)
+            round(t.seconds, 6)
             for pair in scenes
             for t in pair
-            if 0 < t.get_seconds() < duration
+            if 0 < t.seconds < duration
         }
     )
     return {"boundaries": boundaries, "detector": "AdaptiveDetector", "frame_skip": 2}

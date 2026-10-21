@@ -93,6 +93,7 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 | `thumbnail` | 切り抜きの1フレームに題名を載せた1280×720のサムネイル |
 | `encode_preset` | 動画の符号化の速さ。既定は `veryfast`。`faster` は約1dB画質が上がり、時間は約15%増えます。`superfast` は速いが容量が約2倍 |
 | `table_query` | 日本語版Wikipediaの表を検索し、独自の表として描画。記事のURLとCC BY-SA 4.0の表記を画面に表示 |
+| `quality_gate` | `report`（既定）は結果を `quality.json` に残して出力します。`strict` は失敗（字幕の重なり、フォントにない文字、出典・ライセンス不足、音量の測定不能）があると、そのクリップを確定せず停止します |
 
 速度を優先する場合は `asr_batch_size`（1〜16）で文字起こしを一括処理できます。実測では約2倍速くなりましたが、無音の扱いが変わり、話題の区切りも変わります（実音声では15件→10件）。既定の `0`（逐次処理）が品質の基準です。
 
@@ -114,8 +115,11 @@ clips/clip-001/captions.srt
 clips/clip-001/ledger.json  使った画像・図解の出典とSHA-256
 clips/clip-001/visuals/      使った画像・図解のファイル
 clips/clip-001/thumbnail.png 任意：サムネイル
+clips/clip-001/quality.json  字幕の読み速度・音量・真ピーク、失敗と警告
 clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 ```
+
+字幕は1秒あたり10文字を目安にし、次の字幕までに無音があれば表示を延ばします。15文字を超えて残る字幕は `quality.json` の警告に出ます。画像・図解は `fade_seconds` の長さで出入りをフェードします。音量は EBU R128 で測り、−16 LUFS ±1 LU・真ピーク −1 dBTP 以下を目安に警告します（音量は `loudness_two_pass` の既定で合わせています）。
 
 `manifest.json` の `timings` には、各段階の実時間（秒）が入ります。
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
