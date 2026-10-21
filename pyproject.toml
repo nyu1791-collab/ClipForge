@@ -14,5 +14,8 @@ dependencies = []
 Repository = "https://github.com/nyu1791-collab/ClipForge"
 Issues = "https://github.com/nyu1791-collab/ClipForge/issues"
 
+[project.scripts]
+clipforge = "clipforge.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
