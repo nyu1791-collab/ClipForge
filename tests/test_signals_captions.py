@@ -155,3 +155,12 @@ def test_empty_captions_valid(tmp_path, settings):
     assert result["events"] == 0
     assert (tmp_path / "captions.ass").is_file()
     assert (tmp_path / "captions.srt").read_text() == ""
+
+
+def test_subtitles_prefer_word_boundaries(tmp_path, settings):
+    words = [
+        Word(start=0, end=1, text="日本語字幕の"),
+        Word(start=1, end=2, text="表示と時刻を"),
+    ]
+    text = captions.wrap_tokens(words, False, 0, 15)
+    assert text.split(r"\N") == ["日本語字幕の", "表示と時刻を"]

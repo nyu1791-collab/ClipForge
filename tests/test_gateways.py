@@ -371,3 +371,52 @@ def test_runner_cleanup_only_on_private_repository(runner):
     with pytest.raises(RuntimeError):
         invoke("cleanup")
     assert not control["deleted"]
+
+
+@pytest.mark.parametrize("upload_fails", [False, True])
+def test_api_diagnostic_never_generates(tmp_path, monkeypatch, upload_fails):
+    from types import SimpleNamespace
+    from google import genai
+    from google.genai import errors, types
+
+    module = load_tool("check_gemini_connection")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "nyu1791-collab/ai-model-workers")
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-only-not-a-secret")
+    counts = {"uploads": 0, "count_tokens": 0, "deleted": 0}
+
+    def upload(**kwargs):
+        counts["uploads"] += 1
+        if upload_fails:
+            raise errors.ClientError(
+                404, {"error": {"message": "synthetic upload not found"}}
+            )
+        return types.File(
+            name="files/synthetic",
+            uri="https://example.invalid/test",
+            state=types.FileState.ACTIVE,
+        )
+
+    def count(**kwargs):
+        counts["count_tokens"] += 1
+        return SimpleNamespace(total_tokens=42)
+
+    def delete(**kwargs):
+        counts["deleted"] += 1
+
+    models = SimpleNamespace(
+        get=lambda **kw: SimpleNamespace(name="models/test"), count_tokens=count
+    )
+    client = SimpleNamespace(
+        models=models,
+        files=SimpleNamespace(upload=upload, delete=delete),
+        close=lambda: None,
+    )
+    monkeypatch.setattr(genai, "Client", lambda **kw: client)
+    video = tmp_path / "synthetic.mp4"
+    video.write_bytes(b"synthetic")
+    report = module.diagnose(video, "test-video-model", tmp_path / "report.json")
+    assert report["generation_requests"] == 0
+    assert report["status"] == ("failed" if upload_fails else "complete")
+    assert counts["count_tokens"] == (0 if upload_fails else 1)
+    assert counts["deleted"] == (0 if upload_fails else 1)
+    assert "synthetic-only-not-a-secret" not in (tmp_path / "report.json").read_text()

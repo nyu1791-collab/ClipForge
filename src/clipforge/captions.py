@@ -27,6 +27,14 @@ def wrap_tokens(words, karaoke, start, line_cells):
     for index, word in enumerate(words):
         text = safe(word.text)
         pieces = []
+        if (
+            line_width
+            and width(text) <= line_cells
+            and line_width + width(text) > line_cells
+        ):
+            pieces.append(r"\N")
+            lines += 1
+            line_width = 0
         for char in text:
             size = width(char)
             if line_width + size > line_cells:
@@ -47,6 +55,17 @@ def wrap_tokens(words, karaoke, start, line_cells):
             result.append(r"{\kf" + str(centiseconds) + "}")
         result.append("".join(pieces))
     return "".join(result).strip()
+
+
+def required_lines(words, line_cells):
+    lines, used = 1, 0
+    for word in words:
+        size = width(safe(word.text))
+        if used and used + size > line_cells:
+            lines += 1
+            used = 0
+        used += size
+    return lines
 
 
 def create(transcript, clip, directory, settings):
@@ -74,7 +93,7 @@ def create(transcript, clip, directory, settings):
             if end > start and word.text.strip():
                 # Divide overlong ASR tokens for layout only, proportionally in time.
                 chunks, pending = [], ""
-                for char in word.text:
+                for char in safe(word.text):
                     if width(pending + char) > line_cells - 2 and pending:
                         chunks.append(pending)
                         pending = ""
@@ -93,6 +112,7 @@ def create(transcript, clip, directory, settings):
     for word in words:
         if current and (
             width("".join(w.text for w in current) + word.text) > line_cells * 2 - 2
+            or required_lines([*current, word], line_cells) > 2
             or word.end - current[0].start > 4
             or word.start - current[-1].end > 0.7
         ):

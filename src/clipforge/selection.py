@@ -77,6 +77,7 @@ def choose(source, previews, candidates, transcript, info, settings):
     )
     uploaded = []
     result = None
+    operation = "initialization"
     started = time.monotonic()
     try:
         parts = [
@@ -96,6 +97,7 @@ def choose(source, previews, candidates, transcript, info, settings):
         for candidate, path in zip(candidates, previews, strict=True):
             if time.monotonic() - started > 720:
                 raise PipelineError("analysis upload time budget exceeded")
+            operation = "file_upload"
             file = client.files.upload(
                 file=path,
                 config=types.UploadFileConfig(
@@ -104,6 +106,7 @@ def choose(source, previews, candidates, transcript, info, settings):
             )
             uploaded.append(file.name)
             deadline = time.monotonic() + 180
+            operation = "file_processing"
             while file.state and file.state.name == "PROCESSING":
                 if time.monotonic() > deadline or time.monotonic() - started > 720:
                     raise PipelineError("Gemini video processing timed out")
@@ -126,6 +129,7 @@ def choose(source, previews, candidates, transcript, info, settings):
                     video_metadata=types.VideoMetadata(fps=settings.analysis_fps),
                 ),
             ]
+        operation = "generation"
         response = client.models.generate_content(
             model=settings.gemini_model,
             contents=parts,
@@ -190,7 +194,7 @@ def choose(source, previews, candidates, transcript, info, settings):
             else "unknown"
         )
         raise PipelineError(
-            f"Gemini request failed (HTTP {status}); no automatic retry"
+            f"Gemini {operation} failed (HTTP {status}); no automatic retry"
         ) from None
     except Exception as error:
         raise PipelineError(
