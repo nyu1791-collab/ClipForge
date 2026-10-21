@@ -8,7 +8,7 @@ from pathlib import Path
 from .batch_models import BatchClip, ClipsManifest
 from .kick_media import KickVOD
 from .models import Segment, Transcript
-from .rich_render import asset, render
+from .rich_render import asset, font_directory, render
 from .storage import PipelineError, digest, fingerprint, process, stage, write_json
 
 
@@ -74,11 +74,29 @@ def grams(text):
 
 def speech_end(transcript, start, seconds, duration, minimum, maximum):
     target = min(duration, start + seconds)
-    ends = [s.end for s in transcript.segments
-            if start+minimum <= s.end <= min(duration, start+maximum)
-            and abs(s.end-target) <= max(8, seconds*0.25)]
+    ends = [
+        s.end
+        for s in transcript.segments
+        if start + minimum <= s.end <= min(duration, start + maximum)
+        and abs(s.end - target) <= max(8, seconds * 0.25)
+    ]
     # Only use actual utterance ends. Refuse a candidate rather than cutting speech.
-    return min(ends, key=lambda v: abs(v-target)) if ends else start
+    return min(ends, key=lambda v: abs(v - target)) if ends else start
+
+
+def extract_title(subtitles):
+    """An extractive label, shortened at a word boundary, never an invented hook."""
+    from .caption_layout import normalize, units
+
+    text = "".join(s.text for s in subtitles).strip()
+    parts, title = units(normalize(text[:200])), ""
+    for part in parts:
+        if len(title + part) > 28:
+            break
+        title += part
+        if title.rstrip().endswith(("。", "！", "？")) and len(title) >= 8:
+            break
+    return title.strip() or "話題候補"
 
 
 def plan(url, duration, transcript, audio, count=3, seconds=45, output_kind="shorts"):
@@ -108,7 +126,7 @@ def plan(url, duration, transcript, audio, count=3, seconds=45, output_kind="sho
             0.95,
             0.35 + min(0.25, len(right) / 500) + novelty * 0.2 + min(0.15, gap / 10),
         )
-        if stop-start < 30:
+        if stop - start < 30:
             continue
         pool.append(
             {
@@ -161,12 +179,12 @@ def plan(url, duration, transcript, audio, count=3, seconds=45, output_kind="sho
             s.start < start + seconds and s.end > start for s in transcript.segments
         ):
             continue
-        starts = [s.start for s in transcript.segments if abs(s.start-start) <= 5]
+        starts = [s.start for s in transcript.segments if abs(s.start - start) <= 5]
         if not starts:
             continue
-        start = min(starts, key=lambda v: abs(v-start))
+        start = min(starts, key=lambda v: abs(v - start))
         stop = speech_end(transcript, start, seconds, duration, 30, 180)
-        if stop-start < 30 or not start <= t <= stop:
+        if stop - start < 30 or not start <= t <= stop:
             continue
         pool.append(
             {
@@ -178,7 +196,9 @@ def plan(url, duration, transcript, audio, count=3, seconds=45, output_kind="sho
             }
         )
     chosen, seen = [], []
-    for desired in ["topic", "highlight"] + [None] * (count - 2):
+    for desired in ["topic", "highlight"] + [None] * count:
+        if len(chosen) == count:
+            break
         for candidate in sorted(pool, key=lambda c: c["score"], reverse=True):
             if desired and candidate["type"] != desired:
                 continue
@@ -198,7 +218,7 @@ def plan(url, duration, transcript, audio, count=3, seconds=45, output_kind="sho
             if any(len(tokens & g) / max(1, len(tokens | g)) > 0.65 for g in seen):
                 continue
             candidate["subtitles"] = subs
-            candidate["hook_title"] = text[:28].strip() or "音声の盛り上がり"
+            candidate["hook_title"] = extract_title(subs)
             chosen.append(candidate)
             seen.append(tokens)
             break
@@ -279,11 +299,21 @@ def run(
             {p.name: digest(p) for p in Path(__file__).parent.glob("*.py")}
         )
         from importlib.metadata import version
+
         from .fonts import Measure
 
         runtime = {
-            "packages": {name: version(name) for name in ("faster-whisper", "pysubs2", "Janome", "budoux", "pillow")},
-            "font_sha256": digest(Measure(manifest.style.font, 35).path),
+            "packages": {
+                name: version(name)
+                for name in ("faster-whisper", "pysubs2", "Janome", "budoux", "pillow")
+            },
+            "font_sha256": digest(
+                Measure(
+                    manifest.style.font,
+                    35,
+                    font_directory(assets, manifest.style.fonts_dir),
+                ).path
+            ),
             "ffmpeg": process(["ffmpeg", "-version"]).stdout.decode().splitlines()[0],
         }
         key = fingerprint(
@@ -352,12 +382,24 @@ def run(
             asr = not clip.subtitles
             if asr:
                 print(f"Transcribing {clip.clip_id} on CPU…", flush=True)
-                asr_key = fingerprint({"source": digest(source), "model": whisper_model,
-                                       "offset": clip.start_time, "asr_version": 1})
-                transcript = Transcript.model_validate(stage(
-                    cache / "asr", asr_key, asr_key,
-                    lambda: transcribe_audio(source, whisper_model, offset=clip.start_time).model_dump(),
-                ))
+                asr_key = fingerprint(
+                    {
+                        "source": digest(source),
+                        "model": whisper_model,
+                        "offset": clip.start_time,
+                        "asr_version": 1,
+                    }
+                )
+                transcript = Transcript.model_validate(
+                    stage(
+                        cache / "asr",
+                        asr_key,
+                        asr_key,
+                        lambda: transcribe_audio(
+                            source, whisper_model, offset=clip.start_time
+                        ).model_dump(),
+                    )
+                )
                 clip = clip.model_copy(
                     update={
                         "subtitles": clipped_subtitles(
@@ -370,7 +412,9 @@ def run(
                 prefix="." + clip.clip_id, dir=output
             ) as temp:
                 staging = Path(temp) / "render"
-                receipt = render(source, staging, clip, manifest.style, assets, manifest.output_kind)
+                receipt = render(
+                    source, staging, clip, manifest.style, assets, manifest.output_kind
+                )
                 receipt.update(
                     batch_key=key,
                     fetch=download,
@@ -378,7 +422,12 @@ def run(
                     whisper_model=whisper_model if asr else None,
                     files_sha256={
                         name: digest(staging / name)
-                        for name in ("video.mp4", "captions.ass", "captions.srt", "caption_review.json")
+                        for name in (
+                            "video.mp4",
+                            "captions.ass",
+                            "captions.srt",
+                            "caption_review.json",
+                        )
                     },
                 )
                 write_json(staging / "render.json", receipt)
@@ -406,7 +455,10 @@ def run(
             "media_budget_used": vod.used,
         }
         write_json(output / "batch_result.json", result)
-        write_json(output / "progress.json", {"status": "complete", "completed": len(results), "total": len(results)})
+        write_json(
+            output / "progress.json",
+            {"status": "complete", "completed": len(results), "total": len(results)},
+        )
         (output / "failure.json").unlink(missing_ok=True)
         return result
     except Exception as e:

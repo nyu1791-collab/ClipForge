@@ -6,8 +6,13 @@ from functools import lru_cache
 from .models import Word
 from .storage import PipelineError
 
-NO_START = set("、。，．・：；！？!?」』）〕］｝ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶー 　")
+NO_START = set(
+    "、。，．・：；！？!?」』）〕］｝ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶー 　"
+)
 NO_END = set("「『（〔［｛")
+NUMBER = re.compile(
+    r"[0-9０-９][0-9０-９,.，．]*(?:[%％年月日時分秒人円万億兆個件回本枚倍名歳点]+)?$"
+)
 
 
 @lru_cache(maxsize=1)
@@ -32,7 +37,16 @@ def units(text):
             result[-1] += gap
         elif gap:
             token = gap + token
-        if result and (token[0] in NO_START or token.isspace()):
+        if (
+            result
+            and NUMBER.fullmatch(result[-1])
+            and re.fullmatch(
+                r"[%％年月日時分秒人円万億兆個件回本枚倍名歳点]+|kg|km|cm|mm|GB|MB",
+                token,
+            )
+        ):
+            result[-1] += token
+        elif result and (token[0] in NO_START or token.isspace()):
             result[-1] += token
         elif result and result[-1][-1] in NO_END:
             result[-1] += token
@@ -92,8 +106,13 @@ def timed_units(words):
         chars = []
         for w in run:
             for i, char in enumerate(w.text):
-                chars.append((char, w.start + (w.end-w.start)*i/len(w.text),
-                              w.start + (w.end-w.start)*(i+1)/len(w.text)))
+                chars.append(
+                    (
+                        char,
+                        w.start + (w.end - w.start) * i / len(w.text),
+                        w.start + (w.end - w.start) * (i + 1) / len(w.text),
+                    )
+                )
         text = "".join(c[0] for c in chars)
         cursor = 0
         original_edges = set()
@@ -103,7 +122,9 @@ def timed_units(words):
         cursor = 0
         for part in units(text):
             stop = cursor + len(part)
-            result.append(Word(start=chars[cursor][1], end=chars[stop-1][2], text=part))
+            result.append(
+                Word(start=chars[cursor][1], end=chars[stop - 1][2], text=part)
+            )
             interpolated += int(stop < len(chars) and stop not in original_edges)
             cursor = stop
         run.clear()
@@ -120,31 +141,37 @@ def groups(words, measure, limit):
     result, current = [], []
 
     def fits(items):
-        return (items[-1].end - items[0].start <= 4.001 and
-                line_break([w.text for w in items], measure, limit) is not None)
+        return (
+            items[-1].end - items[0].start <= 4.001
+            and line_break([w.text for w in items], measure, limit) is not None
+        )
 
     for word in words:
-        if current and (word.start - current[-1].end > 0.7 or not fits(current + [word])):
+        if current and (
+            word.start - current[-1].end > 0.7 or not fits(current + [word])
+        ):
             result.append(current)
             current = []
         if not fits([word]) and not (
-            word.end-word.start <= 4.001 and measure(word.text)*0.6 <= limit
+            word.end - word.start <= 4.001 and measure(word.text) * 0.6 <= limit
         ):
-            raise PipelineError("caption word exceeds layout or 4s; review subtitle timing/text")
+            raise PipelineError(
+                "caption word exceeds layout or 4s; review subtitle timing/text"
+            )
         current.append(word)
     if current:
         result.append(current)
     index = 0
     while index < len(result):
         if result[index][-1].end - result[index][0].start < 1:
-            for other in (index-1, index+1):
+            for other in (index - 1, index + 1):
                 if not 0 <= other < len(result):
                     continue
                 a, b = sorted((index, other))
                 combined = result[a] + result[b]
                 if result[b][0].start - result[a][-1].end <= 0.7 and fits(combined):
-                    result[a:b+1] = [combined]
-                    index = max(-1, a-1)
+                    result[a : b + 1] = [combined]
+                    index = max(-1, a - 1)
                     break
         index += 1
     return result

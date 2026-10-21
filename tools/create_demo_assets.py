@@ -34,29 +34,32 @@ def generate(root):
                     envelope = math.exp(-15 * t)
                 frames += struct.pack("<h", round(32767 * 0.3 * tone * envelope))
             out.writeframes(frames)
-    width, height = 540, 960
-    rows = bytearray()
-    for y in range(height):
-        rows.append(0)
-        for x in range(width):
-            edge = x < 5 or x >= width - 5 or y < 5 or y >= height - 5
-            rows.extend((255, 205, 35, 200) if edge else (0, 0, 0, 0))
+    for width, height, name in [
+        (540, 960, "demo-frame.png"),
+        (1280, 720, "demo-frame-wide.png"),
+    ]:
+        rows = bytearray()
+        for y in range(height):
+            rows.append(0)
+            for x in range(width):
+                edge = x < 5 or x >= width - 5 or y < 5 or y >= height - 5
+                rows.extend((255, 205, 35, 200) if edge else (0, 0, 0, 0))
 
-    def chunk(kind, data):
-        return (
-            struct.pack(">I", len(data))
-            + kind
-            + data
-            + struct.pack(">I", zlib.crc32(kind + data))
+        def chunk(kind, data):
+            return (
+                struct.pack(">I", len(data))
+                + kind
+                + data
+                + struct.pack(">I", zlib.crc32(kind + data))
+            )
+
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">2I5B", width, height, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows))
+            + chunk(b"IEND", b"")
         )
-
-    png = (
-        b"\x89PNG\r\n\x1a\n"
-        + chunk(b"IHDR", struct.pack(">2I5B", width, height, 8, 6, 0, 0, 0))
-        + chunk(b"IDAT", zlib.compress(rows))
-        + chunk(b"IEND", b"")
-    )
-    (root / "overlays/demo-frame.png").write_bytes(png)
+        (root / "overlays" / name).write_bytes(png)
 
 
 if __name__ == "__main__":

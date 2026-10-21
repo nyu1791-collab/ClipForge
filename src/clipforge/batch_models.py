@@ -73,7 +73,9 @@ class ClipsManifest(Record):
         for c in self.clips:
             lower, upper = (30, 180) if self.output_kind == "shorts" else (60, 1200)
             if not lower <= c.end_time - c.start_time <= upper:
-                raise ValueError(f"{self.output_kind} duration must be {lower}-{upper} seconds")
+                raise ValueError(
+                    f"{self.output_kind} duration must be {lower}-{upper} seconds"
+                )
             if self.output_kind == "topics" and c.type != "topic":
                 raise ValueError("normal topic videos require topic intervals")
             if c.end_time > self.source_duration + 0.01:

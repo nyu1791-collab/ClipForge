@@ -6,7 +6,7 @@ from pathlib import Path
 from . import captions, media
 from .batch_models import RichStyle
 from .models import SelectedClip, Settings, Transcript
-from .storage import PipelineError, digest, process, write_json
+from .storage import PipelineError, digest, write_json
 
 
 def asset(root, relative, extensions):
@@ -32,6 +32,19 @@ def color(value):
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
         raise PipelineError("colors must use #RRGGBB")
     return pysubs2.Color(*(int(value[i : i + 2], 16) for i in (1, 3, 5)))
+
+
+def font_directory(assets, relative):
+    if not relative:
+        return None
+    path = (Path(assets).resolve() / relative).resolve(strict=True)
+    if (
+        not path.is_relative_to(Path(assets).resolve())
+        or not path.is_dir()
+        or any(c in str(path) for c in "':,[];\\")
+    ):
+        raise PipelineError("invalid font directory")
+    return path
 
 
 def render(source, directory, clip, style: RichStyle, assets, output_kind="shorts"):
@@ -74,7 +87,8 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
             w["end"] -= clip.start_time
         segments.append(value)
     transcript = Transcript.model_validate({"language": "ja", "segments": segments})
-    caption_report = captions.create(transcript, local, directory, settings)
+    font_path = font_directory(assets, style.fonts_dir)
+    caption_report = captions.create(transcript, local, directory, settings, font_path)
     ass = pysubs2.SSAFile.load(str(directory / "captions.ass"))
     ass.styles["Default"].primarycolor = color(style.caption_color)
     ass.styles["Default"].outlinecolor = color(style.outline_color)
@@ -149,7 +163,11 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
         )
     else:
         graph += f"anullsrc=r=48000:cl=stereo,atrim=duration={duration}[speech];"
-    inputs = ["[speech]"]
+    if bgm and info["audio"]:
+        graph += "[speech]asplit=2[speech_mix][duckkey];"
+        inputs = ["[speech_mix]"]
+    else:
+        inputs = ["[speech]"]
     for i, gain, loop in audio:
         graph += f"[{i}:a]asetpts=PTS-STARTPTS,aresample=48000,volume={gain},apad,atrim=duration={duration}"
         if loop:
@@ -157,10 +175,15 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
                 ",afade=t=in:d=0.5,afade=t=out:st=" + str(max(0, duration - 1)) + ":d=1"
             )
         graph += f"[asset{i}];"
-        inputs.append(f"[asset{i}]")
+        if loop and info["audio"]:
+            graph += f"[asset{i}][duckkey]sidechaincompress=threshold=0.02:ratio=6:attack=20:release=300[ducked{i}];"
+            inputs.append(f"[ducked{i}]")
+        else:
+            inputs.append(f"[asset{i}]")
     graph += (
         "".join(inputs)
-        + f"amix=inputs={len(inputs)}:duration=first:normalize=0,loudnorm=I=-16:TP=-1.5:LRA=11[a]"
+        + f"amix=inputs={len(inputs)}:duration=first:normalize=0,loudnorm=I=-16:TP=-2:LRA=11,"
+        "alimiter=limit=0.794328:level=false:latency=true[a]"
     )
     destination = directory / "video.mp4"
     command += [
