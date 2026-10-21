@@ -12,6 +12,11 @@
   "caption": "karaoke",
   "font": "Noto Sans CJK JP",
   "analysis_fps": 2,
+  "max_analysis_seconds": 600,
+  "max_analysis_coverage": 0.5,
+  "max_preview_bytes": 26214400,
+  "max_analysis_bytes": 104857600,
+  "max_prompt_text_bytes": 65536,
   "max_source_seconds": 3600,
   "max_input_bytes": 1073741824,
   "chat_offset_seconds": 0

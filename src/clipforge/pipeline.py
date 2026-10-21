@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 
 from . import __version__, media, signals
+from .analysis_budget import check_previews, prepare_text
 from .captions import create as create_captions
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import PipelineError, digest, fingerprint, stage, within, write_json
@@ -229,6 +230,12 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
             flush=True,
         )
 
+        current_stage = "selection"
+        if not selection_file:
+            # Also run for a cached selection: candidate caches are untrusted
+            # inputs to the budget check. Manual selection never sends to Gemini.
+            prepare_text(candidates, transcript, info["duration"], settings)
+
         def selection():
             if selection_file:
                 value = json.loads(Path(selection_file).read_text())
@@ -252,6 +259,7 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                     path = within(preview_root, preview_root / (candidate.id + ".mp4"))
                     paths.append(path)
                     result = media.preview(source, path, candidate, settings)
+                    check_previews(paths, settings)
                     if (
                         abs(result["duration"] - (candidate.end - candidate.start))
                         > 0.3
