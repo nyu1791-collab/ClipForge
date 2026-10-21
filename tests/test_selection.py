@@ -115,7 +115,13 @@ def test_video_parts_exact_model_and_global_timestamps(settings, selection_fixtu
     assert result["clips"][0]["end"] == 27
     assert result["receipt"]["generation_requests"] == 1
     assert result["receipt"]["remote_file_cleanup"] == "complete"
+    budget = result["receipt"]["analysis_budget"]
     request = events["requests"][0]
+    assert budget["analysis_seconds"] == 10
+    assert budget["analysis_bytes"] == len(b"synthetic-preview")
+    assert budget["prompt_text_bytes"] == sum(
+        len(p.text.encode("utf-8")) for p in request["contents"] if p.text
+    )
     assert request["model"] == settings.gemini_model
     assert any(
         p.file_data
@@ -191,3 +197,19 @@ def test_missing_key_stops_before_upload(settings, selection_fixture, monkeypatc
     with pytest.raises(PipelineError):
         call(settings, selection_fixture)
     assert not selection_fixture[3]["uploads"]
+
+
+def test_changed_preview_fails_before_upload(settings, selection_fixture, monkeypatch):
+    original = selection.digest
+    calls = []
+
+    def changed(path):
+        calls.append(1)
+        return original(path) if len(calls) == 1 else "changed"
+
+    monkeypatch.setattr(selection, "digest", changed)
+    with pytest.raises(PipelineError, match="preview changed"):
+        call(settings, selection_fixture)
+    assert not selection_fixture[3]["uploads"]
+    assert not selection_fixture[3]["requests"]
+    assert selection_fixture[3]["closed"]

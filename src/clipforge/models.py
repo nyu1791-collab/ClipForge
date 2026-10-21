@@ -80,6 +80,11 @@ class Settings(Record):
     caption: Literal["plain", "karaoke"] = "karaoke"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
     analysis_fps: float = Field(default=2, ge=0.5, le=5)
+    max_analysis_seconds: float = Field(default=600, gt=0, le=1800)
+    max_analysis_coverage: float = Field(default=0.5, gt=0, lt=1)
+    max_preview_bytes: int = Field(default=25 * 1024**2, ge=1, le=1024**3)
+    max_analysis_bytes: int = Field(default=100 * 1024**2, ge=1, le=2 * 1024**3)
+    max_prompt_text_bytes: int = Field(default=64 * 1024, ge=1, le=1024**2)
     max_source_seconds: float = Field(default=3600, ge=5, le=7200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
     chat_url: str | None = None

@@ -24,7 +24,16 @@
 - 実ASR：CPU/int8の `tiny.en` で音声認識と単語時刻を確認し、手動選定を含む通し処理を確認します。
 - CI：Python 3.11 / 3.12、単体カバレッジ90%以上を合格条件にします。通常CIは外部LLMを呼びません。
 
-ローカルのPython 3.12で114件の単体テストが通過しました。実動画のCI、VM経由の依頼・回収、実Gemini呼び出しの結果は確認後に追記します。
+品質修正 `bae5a49` の[CI run 39566584719](https://github.com/nyu1791-collab/ClipForge/actions/runs/39566584719)では、Python 3.11/3.12それぞれ140 unit、video/ASR 11 passed、単体coverage 90.56%を確認しました。これはP1送信量制限を追加する前の結果です。
+
+2026-10-21、自作36秒動画で `gemini-3.8-flash` の実生成を1回実行し、選定・MP4/ASS/SRT生成・VMへの回収が完了しました。[非公開run 39568179013](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39568179013)、request ID `8a05716e9a194ed29a5f04bc276a6557`、候補3件から元動画0.0〜8.5秒を選定、合計5,950 tokens。fallbackなし、Google Files削除完了を記録しています。料金・無料枠・実配信素材の品質は未確認です。
+
+`gemini-2.5-flash` の[失敗run 39564824062](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39564824062)はHTTP 404の失敗記録として残します。[診断run 39566907433](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39566907433)もgeneration requests=0であり、成功した推論とは扱いません。
+
+P1では[送信量の上限](ANALYSIS_BUDGET.md)を追加しました。過去の36秒素材での成功を、新しい上限の実API検証とは扱いません。この修正の検証で追加のGemini生成はしていません。
+P1のローカル検査はPython 3.12で182 unit passed、coverage 91.48%。ruff lint/format、`uv lock --check`、0.2.1のwheel buildも成功しました。重いvideo/ASR検査は制御VMでは実行せず、PRのGitHub CIで確認します。
+
+OpenCodeの作業方式を取り入れた[モデル非依存の開発ハーネス](DEVELOPMENT_HARNESS.md)を追加しました。隔離worktree、同じソースでの検査再開、古いCI・skippedジョブの拒否、受領済み提案と採否の記録をオフラインで検査します。モデルの選択・呼び出し機能はありません。DeepSeekの依頼は送信前に検査で止まり、外部workerへの依頼は0件でした。
 
 ## 品質確認の意味と限界
 

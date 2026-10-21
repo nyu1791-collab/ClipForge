@@ -57,7 +57,7 @@ def job(tmp_path, monkeypatch, transcript):
     monkeypatch.setattr(
         media,
         "probe",
-        lambda *a: {"duration": 40, "width": 320, "height": 180, "audio": True},
+        lambda *a: {"duration": 400, "width": 320, "height": 180, "audio": True},
     )
     monkeypatch.setattr(media, "preview", preview)
     monkeypatch.setattr(media, "render", render)
@@ -196,6 +196,7 @@ def test_preview_failure_cleans_earlier_previews(job, settings, monkeypatch):
 
 def test_manual_selection_bypasses_gemini(job, settings, tmp_path):
     source, output, counts = job
+    settings.max_analysis_seconds = settings.max_prompt_text_bytes = 1
     manual = tmp_path / "manual.json"
     write_json(
         manual,
@@ -219,7 +220,70 @@ def test_manual_selection_bypasses_gemini(job, settings, tmp_path):
 
 def test_manual_cut_does_not_transcribe_or_call_model(job, settings):
     source, output, counts = job
+    settings.max_analysis_seconds = settings.max_prompt_text_bytes = 1
     result = pipeline.cut(source, output, 2, 5, settings)
     assert result["status"] == "complete"
     assert counts["asr"] == counts["generate"] == counts["preview"] == 0
     assert counts["render"] == 1
+
+
+@pytest.mark.parametrize(
+    "limit,expected_previews",
+    [
+        ("max_analysis_coverage", 0),
+        ("max_prompt_text_bytes", 0),
+        ("max_preview_bytes", 1),
+        ("max_analysis_bytes", 2),
+    ],
+)
+def test_budget_failure_stops_before_generation_and_cleans_previews(
+    job, settings, limit, expected_previews
+):
+    source, output, counts = job
+    setattr(
+        settings,
+        limit,
+        0.001
+        if limit == "max_analysis_coverage"
+        else 10
+        if limit == "max_analysis_bytes"
+        else 1,
+    )
+    with pytest.raises(PipelineError, match=limit):
+        pipeline.run(source, output, settings)
+    assert counts["preview"] == expected_previews
+    assert counts["generate"] == counts["render"] == 0
+    assert json.loads((output / "failure.json").read_text())["stage"] == "selection"
+    assert not list((output / ".analysis").glob("*.mp4"))
+
+
+@pytest.mark.parametrize("tamper", ["interval", "seconds"])
+def test_cached_selection_does_not_skip_candidate_budget_check(job, settings, tamper):
+    source, output, counts = job
+    settings.max_analysis_seconds = 39
+    pipeline.run(source, output, settings)
+    before = dict(counts)
+    path = output / "candidates.json"
+    cached = json.loads(path.read_text())
+    if tamper == "interval":
+        cached[0]["end"] = 401
+    else:
+        for value in cached:
+            value.update(start=0, end=10)
+    write_json(path, cached)
+    receipt = output / ".state/candidates.json"
+    value = json.loads(receipt.read_text())
+    write_json(receipt, {**value, "sha256": digest(path)})
+    with pytest.raises(PipelineError, match="candidate interval|max_analysis_seconds"):
+        pipeline.run(source, output, settings, resume=True)
+    assert counts == before
+    assert json.loads((output / "manifest.json").read_text())["status"] == "failed"
+
+
+def test_changed_budget_requires_new_output(job, settings):
+    source, output, _ = job
+    pipeline.run(source, output, settings)
+    settings.max_analysis_bytes -= 1
+    with pytest.raises(PipelineError, match="differ"):
+        pipeline.run(source, output, settings, resume=True)
+    assert json.loads((output / "manifest.json").read_text())["status"] == "complete"
