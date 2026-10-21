@@ -123,3 +123,21 @@ OBS録画と、必要なら同意を得たチャット時刻データを受け�
 
 仕様の確認先：[Twitch EventSub](https://dev.twitch.tv/docs/eventsub/handling-webhook-events/)、
 [Kick公式ドキュメント](https://docs.kick.com/)、[ツイキャスAPI](https://apiv2-doc.twitcasting.tv/)。
+
+## 2026-10-21の登録・確認結果
+
+保存先は `nyu1791-collab/ClipForge` のGitHub Actions Secretsです。
+オンラインの `dc-control-node` から所有者アカウントで確認しました。
+
+| 名前 | 結果 |
+| --- | --- |
+| `YOUTUBE_API_KEY` | 既存登録を保持。リポジトリのSecretを注入したActionsでData APIの認証成功を確認 |
+| `TWITCH_EVENTSUB_SECRET` | メモリ内で新規生成し、リポジトリのSecretへ直接登録。VMへのキーファイル作成なし |
+| `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | 未発行・未登録。VMのブラウザ起動がタイムアウトし、ログイン済みプロファイルも確認できず |
+| `KICK_CLIENT_ID`, `KICK_CLIENT_SECRET` | 未発行・未登録。VMからDeveloper PortalへHTTP403 |
+| `TWITCASTING_CLIENT_ID`, `TWITCASTING_CLIENT_SECRET` | 未発行・未登録。VMから開発者ページへHTTP503 |
+
+確認用の[Actions実行](https://github.com/nyu1791-collab/ClipForge/actions/runs/39634142932)は成功。
+YouTubeの実リクエストは1回・1動画IDで、キーの値をログへ出していません。
+署名用Secretの登録はTwitchアプリの発行やEventSubの本番受信成功を意味しません。
+残り3社はログイン・開発者ページへのアクセスを確立してから発行・登録を再開します。
