@@ -196,3 +196,25 @@ def test_agent_validation_subprocess_does_not_inherit_credentials(
     monkeypatch.setenv("GITHUB_TOKEN", "sentinel-gh")
     code = "import os; assert 'OPENCODE_API_KEY' not in os.environ; assert 'GITHUB_TOKEN' not in os.environ"
     command([sys.executable, "-c", code], tmp_path)
+
+
+@pytest.mark.parametrize(
+    "message,reason",
+    [
+        (
+            b"ERROR: Sign in to confirm you are not a bot. private signed query omitted",
+            "bot_confirmation_required",
+        ),
+        (b"HTTP Error 403: Forbidden", "http_403"),
+        (b"no such option: --js-runtimes", "cli_option_error"),
+        (b"No module named yt_dlp", "download_dependency_missing"),
+        (
+            b"unknown response with credential-containing URL",
+            "unclassified_extractor_failure",
+        ),
+    ],
+)
+def test_metadata_diagnosis_exposes_only_fixed_reason_codes(message, reason):
+    from inspect_youtube import classify
+
+    assert classify(message) == reason
