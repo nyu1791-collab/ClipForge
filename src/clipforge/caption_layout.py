@@ -25,7 +25,7 @@ def engines():
 
 def units(text):
     """Keep lexical words, following punctuation, and small kana together."""
-    tokenizer, _ = engines()
+    tokenizer, parser = engines()
     result, cursor = [], 0
     for token in tokenizer.tokenize(text, wakati=True):
         start = text.find(token, cursor)
@@ -59,7 +59,23 @@ def units(text):
             result = [text]
     if "".join(result) != text:
         raise PipelineError("caption text reconstruction failed")
-    return result
+    # Noisy ASR can make Janome treat a whole kana sentence as one unknown noun.
+    # Recover its phrase edges rather than splitting arbitrary kana or failing 4s.
+    refined = []
+    for part in result:
+        pieces = (
+            parser.parse(part)
+            if len(part.strip()) > 12 and not NUMBER.fullmatch(part.strip())
+            else [part]
+        )
+        for piece in pieces:
+            if refined and (piece[0] in NO_START or refined[-1][-1] in NO_END):
+                refined[-1] += piece
+            else:
+                refined.append(piece)
+    if "".join(refined) != text:
+        raise PipelineError("caption phrase reconstruction failed")
+    return refined
 
 
 def phrase_edges(text):

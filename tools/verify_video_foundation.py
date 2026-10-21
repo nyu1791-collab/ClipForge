@@ -87,6 +87,7 @@ def main():
         )
         receipt = render(source, root / kind, clip, style, "assets", kind)
         assert receipt["media"]["fps"] == "25"
+        assert receipt["media"]["audio_sample_rate"] == 48000
         assert receipt["quality"]["status"] == "passed"
         ass = pysubs2.load(str(root / kind / "captions.ass"))
         srt = pysubs2.load(str(root / kind / "captions.srt"))

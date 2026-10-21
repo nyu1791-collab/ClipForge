@@ -49,6 +49,8 @@ def check(root):
         assert all(a.end <= b.start for a, b in zip(captions, captions[1:]))
         if "caption_review" in receipt:
             assert receipt["quality"]["status"] == "passed"
+            if receipt["quality"].get("gate_version", 1) >= 2:
+                assert info["audio_sample_rate"] == 48000
             assert len(captions) == receipt["caption_events"]
             srt = pysubs2.SSAFile.load(str(directory / "captions.srt"))
             assert [(e.start, e.end, e.plaintext) for e in captions] == [
@@ -75,6 +77,8 @@ def check(root):
                 "seconds": info["duration"],
                 "source": [clip.start_time, clip.end_time],
                 "subtitle_events": len(clip.subtitles),
+                "asr_segments": len(clip.subtitles),
+                "caption_events": len(captions),
                 "assets": list(receipt["assets_sha256"]),
                 "sha256": receipt["output_sha256"],
             }

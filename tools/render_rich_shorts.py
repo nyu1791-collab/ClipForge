@@ -99,7 +99,15 @@ def main():
         return 0
     except Exception as e:
         # Paths, provider bodies, playback URLs and transcripts stay out of logs.
-        print(json.dumps({"status": "batch_failed", "error_type": type(e).__name__}))
+        print(
+            json.dumps(
+                {
+                    "status": "batch_failed",
+                    "error_type": type(e).__name__,
+                    "error_code": getattr(e, "code", None),
+                }
+            )
+        )
         return 1
 
 

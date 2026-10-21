@@ -55,11 +55,15 @@ def probe(path):
     duration = float(data.get("format", {}).get("duration", video.get("duration", 0)))
     if not math.isfinite(duration) or duration <= 0:
         raise PipelineError("video duration is unavailable")
+    audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
     return {
         "duration": duration,
         "width": int(video["width"]),
         "height": int(video["height"]),
-        "audio": any(s.get("codec_type") == "audio" for s in streams),
+        "audio": audio_stream is not None,
+        "audio_sample_rate": int(audio_stream.get("sample_rate", 0))
+        if audio_stream
+        else None,
         "fps": frame_rate(video.get("avg_frame_rate", "0/0")),
     }
 

@@ -269,7 +269,7 @@ def run(
     except BlockingIOError:
         lock.close()
         raise PipelineError("batch output is in use") from None
-    vod = None
+    vod, active_clip, phase = None, None, "preflight"
     try:
         hashes = {}
         for field, suffixes in [
@@ -338,6 +338,7 @@ def run(
         )
         results, filled = [], []
         for clip in manifest.clips:
+            active_clip, phase = clip.clip_id, "resume"
             target = output / clip.clip_id
             if target.exists():
                 receipt = json.loads((target / "render.json").read_text())
@@ -352,6 +353,7 @@ def run(
                 results.append(receipt)
                 continue
             print(f"Fetching {clip.clip_id} at {quality}…", flush=True)
+            phase = "fetch"
             media_key = fingerprint(
                 {
                     "url": manifest.source_url,
@@ -382,6 +384,7 @@ def run(
                 raise PipelineError("manifest duration differs from archive")
             asr = not clip.subtitles
             if asr:
+                phase = "asr"
                 print(f"Transcribing {clip.clip_id} on CPU…", flush=True)
                 asr_key = fingerprint(
                     {
@@ -413,6 +416,7 @@ def run(
                 prefix="." + clip.clip_id, dir=output
             ) as temp:
                 staging = Path(temp) / "render"
+                phase = "render_and_quality"
                 receipt = render(
                     source, staging, clip, manifest.style, assets, manifest.output_kind
                 )
@@ -465,7 +469,13 @@ def run(
     except Exception as e:
         write_json(
             output / "failure.json",
-            {"status": "failed", "error_type": type(e).__name__},
+            {
+                "status": "failed",
+                "error_type": type(e).__name__,
+                "error_code": getattr(e, "code", None),
+                "phase": phase,
+                "clip_id": active_clip,
+            },
         )
         raise
     finally:

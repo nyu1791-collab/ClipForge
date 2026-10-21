@@ -181,6 +181,24 @@ class VideoFoundationTests(unittest.TestCase):
         )
         self.assertEqual(speech_end(t, 0, 45, 300, 30, 180), 0)
 
+    def test_unknown_long_sentence_uses_phrase_edges_without_losing_text(self):
+        from unittest.mock import Mock
+
+        import budoux
+
+        text = "料理の材料について詳しく説明します。"
+        tokenizer = Mock()
+        tokenizer.tokenize.return_value = [text]
+        with patch(
+            "clipforge.caption_layout.engines",
+            return_value=(tokenizer, budoux.load_default_japanese_parser()),
+        ):
+            parts = units(text)
+            self.assertGreater(len(parts), 1)
+            self.assertEqual("".join(parts), text)
+            words, _ = timed_units([Word(start=0, end=6, text=text)])
+            self.assertTrue(all(w.end - w.start <= 4 for w in words))
+
     def test_both_outputs_share_one_analysis_and_budget(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -343,7 +361,13 @@ class VideoFoundationTests(unittest.TestCase):
 
         from clipforge.quality import inspect_video
 
-        probe = {"width": 404, "height": 720, "duration": 30, "audio": True}
+        probe = {
+            "width": 404,
+            "height": 720,
+            "duration": 30,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
         report = SimpleNamespace(
             stderr=json.dumps({"input_i": "-16.0", "input_tp": "-0.34"}).encode()
         )
@@ -353,6 +377,25 @@ class VideoFoundationTests(unittest.TestCase):
         ):
             with self.assertRaises(PipelineError):
                 inspect_video("synthetic.mp4", 30, 404, 720)
+
+    def test_audio_gate_rejects_implicit_96khz_encoder_output(self):
+        from clipforge.quality import inspect_video
+
+        info = {
+            "width": 404,
+            "height": 720,
+            "duration": 30,
+            "audio": True,
+            "audio_sample_rate": 96000,
+        }
+        with (
+            patch("clipforge.quality.media.probe", return_value=info),
+            patch("clipforge.quality.process") as decode,
+        ):
+            with self.assertRaises(PipelineError) as caught:
+                inspect_video("synthetic.mp4", 30, 404, 720)
+            self.assertEqual(caught.exception.code, "audio_sample_rate")
+            decode.assert_not_called()
 
 
 if __name__ == "__main__":

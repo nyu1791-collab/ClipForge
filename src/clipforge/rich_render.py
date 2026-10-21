@@ -211,6 +211,8 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
         "2",
         "-c:a",
         "aac",
+        "-ar",
+        "48000",
         "-b:a",
         "160k",
         "-movflags",
@@ -224,7 +226,7 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
         command, cwd=directory, capture_output=True, timeout=max(300, duration * 25)
     )
     if result.returncode:
-        raise PipelineError("rich rendering failed")
+        raise PipelineError("rich rendering failed", code="render_ffmpeg")
     output_info = media.probe(destination)
     if abs(output_info["duration"] - duration) > 0.3 or (
         output_info["width"],

@@ -12,9 +12,15 @@ def inspect_video(path, duration, width, height):
     if (info["width"], info["height"]) != (width, height) or abs(
         info["duration"] - duration
     ) > 0.3:
-        raise PipelineError("quality gate: duration or dimensions mismatch")
+        raise PipelineError(
+            "quality gate: duration or dimensions mismatch", code="media_geometry"
+        )
     if not info["audio"]:
-        raise PipelineError("quality gate: missing audio")
+        raise PipelineError("quality gate: missing audio", code="missing_audio")
+    if info.get("audio_sample_rate") != 48000:
+        raise PipelineError(
+            "quality gate: audio sample rate must be 48000 Hz", code="audio_sample_rate"
+        )
     result = process(
         [
             "ffmpeg",
@@ -43,7 +49,9 @@ def inspect_video(path, duration, width, height):
 
         loudness, peak = finite("input_i"), finite("input_tp")
     except (ValueError, KeyError):
-        raise PipelineError("quality gate: audio measurement unavailable") from None
+        raise PipelineError(
+            "quality gate: audio measurement unavailable", code="audio_measurement"
+        ) from None
     # Decode warnings can indicate truncated/corrupt streams even with exit code zero.
     if any(
         term in text.lower()
@@ -53,9 +61,11 @@ def inspect_video(path, duration, width, height):
             "corrupt decoded frame",
         )
     ):
-        raise PipelineError("quality gate: decode errors")
+        raise PipelineError("quality gate: decode errors", code="decode_error")
     if peak is not None and peak > -0.5:
-        raise PipelineError("quality gate: true peak exceeds -0.5 dBTP")
+        raise PipelineError(
+            "quality gate: true peak exceeds -0.5 dBTP", code="true_peak_exceeded"
+        )
     warnings = []
     if loudness is None:
         warnings.append("silent_audio")
@@ -63,7 +73,9 @@ def inspect_video(path, duration, width, height):
         warnings.append("loudness_outside_-16_plusminus_2_LUFS")
     return {
         "status": "passed",
+        "gate_version": 2,
         "decoded": True,
+        "audio_sample_rate": 48000,
         "loudness_lufs": loudness,
         "true_peak_dbtp": peak,
         "warnings": warnings,
