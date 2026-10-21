@@ -1,0 +1,80 @@
+name: ClipForge rich batch
+run-name: Rich shorts ${{ inputs.source_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact ClipForge implementation commit SHA
+        required: true
+        type: string
+      manifest_path:
+        description: Repository test manifest (contains no media or secrets)
+        default: jobs/examples/kick-test-3.json
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipforge-video
+  cancel-in-progress: false
+
+jobs:
+  rich:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      SOURCE_REF: ${{ inputs.source_ref }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
+      PYTHONUNBUFFERED: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+    steps:
+      - name: Validate source commit and example path
+        run: |
+          python - <<'PY'
+          import os, re
+          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['SOURCE_REF'])
+          assert re.fullmatch(r'jobs/examples/[A-Za-z0-9_-]+\.json', os.environ['MANIFEST_PATH'])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU media tools and Japanese font
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+      - name: Install locked dependencies
+        working-directory: source
+        run: uv sync --locked --extra media-fetch --no-dev
+      - name: Fetch, transcribe and render batch
+        working-directory: source
+        run: |
+          uv run python tools/render_rich_shorts.py --manifest "$MANIFEST_PATH" \
+            --output workspace/output/test --cache workspace/cache --assets assets \
+            --quality 720p --whisper-model small
+      - name: Decode every completed output and check receipts
+        working-directory: source
+        run: |
+          uv run python tools/check_rich_batch.py workspace/output/test
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rich-shorts-${{ github.run_id }}
+          path: source/workspace/output/test/
+          include-hidden-files: false
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn
