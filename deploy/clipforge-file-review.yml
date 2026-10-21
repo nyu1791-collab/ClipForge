@@ -1,0 +1,119 @@
+name: ClipForge file result review
+run-name: ClipForge file review ${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact source SHA used by the video job
+        type: string
+        required: true
+      request_id:
+        description: Existing private video request ID
+        type: string
+        required: true
+      video_run_id:
+        description: Completed private ClipForge video run ID
+        type: string
+        required: true
+      input_sha256:
+        description: Expected original video SHA256
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: clipforge-file-helper
+  cancel-in-progress: false
+jobs:
+  review:
+    if: github.repository == 'nyu1791-collab/ai-model-workers'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      REQUEST_ID: ${{ inputs.request_id }}
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      VIDEO_RUN_ID: ${{ inputs.video_run_id }}
+      INPUT_SHA256: ${{ inputs.input_sha256 }}
+    steps:
+      - name: Validate immutable input identity
+        run: |
+          python3 - <<'PY'
+          import os,re
+          for name,length in [('REQUEST_ID',32),('CLIPFORGE_SOURCE_REF',40),('INPUT_SHA256',64)]:
+              assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[name])
+          assert re.fullmatch('[0-9]{1,20}',os.environ['VIDEO_RUN_ID'])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install helper without credentials
+        run: |
+          npm install --global opencode-ai@1.19.0
+          uv sync --locked --extra chat
+      - uses: actions/download-artifact@v4
+        with:
+          name: clipforge-result-${{ inputs.request_id }}
+          run-id: ${{ inputs.video_run_id }}
+          github-token: ${{ github.token }}
+          path: review-input
+      - name: Verify result identity and produce sanitized numeric context
+        run: |
+          python3 - <<'PY'
+          import os,json,pathlib,hashlib,re
+          root=pathlib.Path('review-input')
+          receipt=json.loads((root/'request-receipt.json').read_text())
+          assert receipt['request_id']==os.environ['REQUEST_ID']
+          assert receipt['source_ref']==os.environ['CLIPFORGE_SOURCE_REF']
+          assert receipt['workflow_run']==os.environ['VIDEO_RUN_ID']
+          assert receipt['status']=='complete'
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['status']=='complete'
+          assert manifest['source_sha256']==os.environ['INPUT_SHA256']
+          rendered=manifest['rendered']
+          assert len(rendered)==receipt['rendered_clips'] and 1<=len(rendered)<=10
+          outputs=[]
+          for clip in rendered:
+              directory=clip['directory']
+              assert re.fullmatch('clips/clip-[0-9]{3}',directory)
+              assert set(clip['sha256'])=={'video.mp4','captions.ass','captions.srt'}
+              for name,expected in clip['sha256'].items():
+                  path=root/directory/name
+                  assert path.is_file() and not path.is_symlink()
+                  with path.open('rb') as f:
+                      assert hashlib.file_digest(f,'sha256').hexdigest()==expected
+              info=clip['media']
+              assert 0<float(info['duration'])<=180
+              outputs.append({'duration':float(info['duration']),'width':int(info['width']),
+                              'height':int(info['height']),'audio':bool(info['audio'])})
+          context={'request_id':os.environ['REQUEST_ID'],'source_ref':os.environ['CLIPFORGE_SOURCE_REF'],
+                   'status':'awaiting_human_review','source_sha256':manifest['source_sha256'],
+                   'rendered_clips':len(rendered),'outputs':outputs,'artifact_hashes_verified':True,
+                   'human_review_performed':False}
+          pathlib.Path('diagnostic.json').write_text(json.dumps(context,indent=2))
+          PY
+      - name: One native DeepSeek monitoring session
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: uv run --no-sync python tools/agent_runner.py --source "$GITHUB_WORKSPACE" --output artifacts/helper --diagnostic diagnostic.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: file-helper-${{ inputs.request_id }}
+          path: |
+            artifacts/helper
+            diagnostic.json
+          retention-days: 7
+          if-no-files-found: warn
