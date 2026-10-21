@@ -1,7 +1,7 @@
 import pysubs2
 import pytest
 
-from clipforge import captions, signals
+from clipforge import captions, fonts, signals
 from clipforge.models import Segment, SelectedClip, Transcript, Word
 from clipforge.storage import PipelineError
 
@@ -135,14 +135,14 @@ def test_subtitle_time_layout_escaping_and_formats(
     assert all("\\pos(" not in e.text for e in ass)
     assert all("\\kf" not in e.text for e in srt)
     assert ("\\kf" in (tmp_path / "captions.ass").read_text()) == (kind == "karaoke")
-    line_cells = max(
-        12,
-        min(52, int((int(ass.info["PlayResX"]) - 70) / (round(height * 0.048) * 0.6))),
+    measure = fonts.Measure(fonts.resolve(settings.font), round(height * 0.048))
+    line_px = (
+        int(ass.info["PlayResX"]) - 2 * captions.MARGIN - captions.OUTLINE_ALLOWANCE
     )
     for event in ass:
         lines = event.plaintext.splitlines()
         assert len(lines) <= 2
-        assert all(captions.width(line) <= line_cells for line in lines)
+        assert all(measure.width(line) <= line_px for line in lines)
 
 
 def test_empty_captions_valid(tmp_path, settings):
@@ -157,10 +157,14 @@ def test_empty_captions_valid(tmp_path, settings):
     assert (tmp_path / "captions.srt").read_text() == ""
 
 
-def test_subtitles_prefer_word_boundaries(tmp_path, settings):
-    words = [
-        Word(start=0, end=1, text="日本語字幕の"),
-        Word(start=1, end=2, text="表示と時刻を"),
-    ]
-    text = captions.wrap_tokens(words, False, 0, 15)
+class FixedWidth:
+    """Every character is ten pixels wide, so the line break does not depend on a font."""
+
+    def width(self, text):
+        return 10 * len(text)
+
+
+def test_subtitles_prefer_word_boundaries():
+    tokens = [(0, 1, "日本語字幕の"), (1, 2, "表示と時刻を")]
+    text = captions.group_text(tokens, FixedWidth(), 70, "plain")
     assert text.split(r"\N") == ["日本語字幕の", "表示と時刻を"]

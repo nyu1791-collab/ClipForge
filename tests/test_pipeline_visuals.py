@@ -1,0 +1,537 @@
+import json
+import math
+
+import pytest
+from PIL import Image
+from pydantic import ValidationError
+
+from clipforge import captions, pipeline, signals, silence
+from clipforge.models import (
+    Diagram,
+    Segment,
+    SelectedClip,
+    Settings,
+    Transcript,
+    Visual,
+    Word,
+    Zoom,
+)
+from clipforge.storage import PipelineError, digest, fingerprint
+
+
+class FixedWidth:
+    """Ten pixels per character, so breaks are predictable without a font."""
+
+    def width(self, text):
+        return 10 * len(text)
+
+
+def make(**overrides):
+    return Settings(
+        **{
+            "gemini_model": "manual-no-api",
+            "min_seconds": 3,
+            "max_seconds": 30,
+            **overrides,
+        }
+    )
+
+
+def png(path, size=(40, 30)):
+    Image.new("RGB", size, (200, 40, 40)).save(path, format="PNG")
+    return path
+
+
+# --- captions -------------------------------------------------------------
+
+
+def test_line_breaks_are_inserted_before_the_given_characters():
+    assert captions.with_breaks("abcdef", {2, 4}) == "ab\\Ncd\\Nef"
+    assert captions.safe("{x}\\y\r\n") == "｛x｝＼y  "
+
+
+def test_karaoke_and_sequential_modes_tag_each_token():
+    tokens = [(0.0, 0.5, "今日は"), (0.5, 1.0, "晴れ")]
+    karaoke = captions.group_text(tokens, FixedWidth(), 500, "karaoke")
+    assert karaoke == "{\\kf50}今日は{\\kf50}晴れ"
+    sequential = captions.group_text(tokens, FixedWidth(), 500, "sequential")
+    assert sequential.startswith("{\\k50}今日は{\\k50}晴れ")
+    assert captions.group_text(tokens, FixedWidth(), 500, "plain") == "今日は晴れ"
+
+
+def test_long_tokens_are_split_and_groups_break_on_pauses_and_length():
+    split, count = captions.split_long([(0.0, 4.0, "abcdefgh")], FixedWidth(), 25)
+    assert count == 1
+    assert [text for _, _, text in split] == ["ab", "cd", "ef", "gh"]
+    assert split[0][0] == 0.0 and split[-1][1] == pytest.approx(4.0)
+    tokens = [(0.0, 1.0, "一"), (1.0, 2.0, "二"), (3.5, 4.0, "三"), (9.0, 9.5, "四")]
+    groups = captions.group(tokens, FixedWidth(), 500)
+    assert [[t[2] for t in g] for g in groups] == [["一", "二"], ["三"], ["四"]]
+
+
+def test_wrapping_prefers_phrase_edges_and_respects_the_line_limit():
+    assert captions.wrap_breaks("短い", FixedWidth(), 100) == []
+    breaks = captions.wrap_breaks("日本語字幕の表示と時刻を", FixedWidth(), 70)
+    assert breaks and all(0 < b < len("日本語字幕の表示と時刻を") for b in breaks)
+
+
+def test_collect_tokens_divides_a_word_cut_by_silence_removal():
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(
+                start=9,
+                end=13,
+                text="abcdefgh",
+                words=[Word(start=9, end=13, text="abcdefgh")],
+            )
+        ],
+    )
+    clip = SelectedClip(
+        start=10, end=14, candidate_id="m", title="t", reason="r", confidence=1
+    )
+    tokens, approximate = captions.collect_tokens(
+        transcript, clip, [(10.0, 11.0), (12.0, 14.0)]
+    )
+    # Both kept halves last one second, so the eight characters divide evenly between them.
+    assert approximate == 1
+    assert [(start, end, text) for start, end, text in tokens] == [
+        (0.0, 1.0, "abcd"),
+        (1.0, 2.0, "efgh"),
+    ]
+
+
+def test_heading_shrinks_then_refuses_titles_that_cannot_fit(japanese_font):
+    assert captions.heading_size("短い題名", 404, 720, japanese_font) <= round(
+        720 * 0.07
+    )
+    with pytest.raises(PipelineError, match="does not fit"):
+        captions.heading_size("とても長い題名" * 30, 404, 720, japanese_font)
+
+
+def test_heading_and_credits_stay_out_of_the_srt_and_wrap_inside_the_frame(
+    tmp_path, monkeypatch, japanese_font, transcript
+):
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
+    clip = SelectedClip(
+        start=0, end=30, candidate_id="m", title="テスト題名", reason="r", confidence=1
+    )
+    credits = [
+        "とても長い作者の名前 / CC BY-SA 4.0 / Wikimedia Commons",
+        "Another author / CC0 / Openverse",
+    ]
+    result = captions.create(
+        transcript, clip, tmp_path, make(heading=True), credits=credits
+    )
+    ass = (tmp_path / "captions.ass").read_text()
+    assert "Heading" in ass and "テスト題名" in ass
+    credit_line = next(line for line in ass.splitlines() if ",Credit," in line)
+    assert "\\N" in credit_line
+    srt = (tmp_path / "captions.srt").read_text()
+    assert "テスト題名" not in srt and "Wikimedia" not in srt
+    assert result["heading"] is True and result["caption_mode"] == "karaoke"
+
+
+def test_sequential_captions_use_the_sequential_style(
+    tmp_path, monkeypatch, japanese_font, transcript
+):
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
+    clip = SelectedClip(
+        start=0, end=30, candidate_id="m", title="t", reason="r", confidence=1
+    )
+    captions.create(transcript, clip, tmp_path, make(caption="sequential"))
+    assert ",Sequential," in (tmp_path / "captions.ass").read_text()
+
+
+def test_caption_parser_is_loaded_once():
+    assert captions.parser() is captions.parser()
+
+
+# --- signals --------------------------------------------------------------
+
+
+def dense_transcript(duration):
+    return Transcript(
+        language="ja",
+        segments=[
+            Segment(start=s, end=s + 10, text="同じ話題の発話です")
+            for s in range(0, int(duration) - 10, 12)
+        ],
+    )
+
+
+def test_candidates_reach_late_topics_when_topics_are_given(settings):
+    settings.candidates = 4
+    settings.clips = 2
+    spans = [(0, 100), (100, 200), (200, 300)]
+    raw = signals.candidates(
+        {"duration": 300},
+        dense_transcript(300),
+        {"boundaries": []},
+        {"events": [], "status": "not_requested"},
+        settings,
+        topics=spans,
+    )
+    middles = [(c["start"] + c["end"]) / 2 for c in raw]
+    assert len(raw) == 4
+    assert min(middles) < 100 and max(middles) >= 200
+
+
+def test_candidates_without_topics_spread_over_the_video(settings):
+    settings.candidates = 4
+    raw = signals.candidates(
+        {"duration": 300},
+        dense_transcript(300),
+        {"boundaries": []},
+        {"events": [], "status": "not_requested"},
+        settings,
+    )
+    middles = [(c["start"] + c["end"]) / 2 for c in raw]
+    assert min(middles) < 100 and max(middles) >= 200
+
+
+# --- pipeline helpers -----------------------------------------------------
+
+
+def test_receipt_accepts_only_its_own_untouched_files(tmp_path):
+    target = tmp_path / "clip-001"
+    target.mkdir()
+    (target / "visuals").mkdir()
+    names = {
+        "video.mp4": b"video",
+        "captions.ass": b"ass",
+        "captions.srt": b"srt",
+        "ledger.json": b"[]",
+        "visuals/visual-01.png": b"png",
+    }
+    for name, data in names.items():
+        (target / name).write_bytes(data)
+    ledger = [{"file": "visual-01.png"}]
+    saved = {
+        "key": "k",
+        "ledger": ledger,
+        "sha256": {name: digest(target / name) for name in names},
+    }
+    assert pipeline.valid_receipt(target, saved, "k")
+    assert not pipeline.valid_receipt(target, saved, "other-job")
+    (target / "visuals/visual-01.png").write_bytes(b"changed")
+    assert not pipeline.valid_receipt(target, saved, "k")
+    assert not pipeline.valid_receipt(
+        target, {**saved, "ledger": [{"file": "../x.png"}]}, "k"
+    )
+    extra = {
+        **saved,
+        "sha256": {**saved["sha256"], "notes.txt": digest(target / "ledger.json")},
+    }
+    assert not pipeline.valid_receipt(target, extra, "k")
+    assert not pipeline.valid_receipt(target, {"key": "k"}, "k")
+    assert pipeline.visual_names(ledger) == {"visuals/visual-01.png"}
+
+
+def test_parallel_results_keep_order_and_failure_stops_new_work():
+    assert pipeline.run_parallel(lambda n: n * n, [1, 2, 3, 4], 3) == [1, 4, 9, 16]
+    started = []
+
+    def fails_second(item):
+        started.append(item)
+        if item == 2:
+            raise PipelineError("second failed")
+        return item
+
+    with pytest.raises(PipelineError, match="second failed"):
+        pipeline.run_parallel(fails_second, [1, 2, 3, 4], 1)
+    assert started == [1, 2]
+
+
+def test_cut_regions_follow_the_silence_setting(transcript, monkeypatch):
+    clip = SelectedClip(
+        start=0, end=30, candidate_id="m", title="t", reason="r", confidence=1
+    )
+    assert pipeline.cut_regions("/in.mp4", transcript, clip, make()) is None
+    keep = pipeline.cut_regions("/in.mp4", transcript, clip, make(silence_cut=True))
+    assert keep and all(0 <= a < b <= 30 for a, b in keep)
+    empty = Transcript(language="ja", segments=[])
+    assert pipeline.cut_regions("/in.mp4", empty, clip, make(silence_cut=True)) is None
+    monkeypatch.setattr(
+        silence, "silero_spans", lambda source, start, end: [(1.0, 2.0)]
+    )
+    assert pipeline.cut_regions(
+        "/in.mp4", transcript, clip, make(silence_cut=True, vad="silero")
+    ) == [(0.85, 2.15)]
+
+
+def test_prepare_visuals_copies_supplied_images_and_converts_svg(tmp_path):
+    card = png(tmp_path / "card.png")
+    vector = tmp_path / "shape.svg"
+    vector.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
+        '<rect width="40" height="20" fill="#333"/></svg>'
+    )
+    settings = make(
+        visuals=[
+            Visual(
+                file=str(card),
+                start=1,
+                end=3,
+                source_credit="作者 / CC0",
+                source_url="https://e/c",
+                license="CC0",
+            ),
+            Visual(
+                file=str(vector),
+                start=4,
+                end=6,
+                source_credit="SVG",
+                source_url="https://e/s",
+                license="CC0",
+            ),
+        ]
+    )
+    folder = tmp_path / "clip"
+    folder.mkdir()
+    visuals, ledger = pipeline.prepare_visuals(
+        SelectedClip(
+            start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
+        ),
+        settings,
+        folder,
+        10.0,
+    )
+    assert [e["file"] for e in ledger] == ["visual-01.png", "visual-02.png"]
+    assert all(e["kind"] == "supplied" for e in ledger)
+    assert all((folder / "visuals" / e["file"]).is_file() for e in ledger)
+    assert visuals[0]["position"] == "right" and visuals[1]["file"].endswith(
+        "visual-02.png"
+    )
+
+
+@pytest.mark.parametrize(
+    ("visual", "message"),
+    [
+        (Visual(file="/x.png", start=0, end=1), "needs source_credit"),
+        (
+            Visual(
+                file="/does/not/exist.png",
+                start=0,
+                end=1,
+                source_credit="a",
+                source_url="u",
+                license="CC0",
+            ),
+            "visual file is missing",
+        ),
+    ],
+)
+def test_supplied_visuals_need_a_complete_source(tmp_path, visual, message):
+    with pytest.raises(PipelineError, match=message):
+        pipeline.prepare_visuals(
+            SelectedClip(
+                start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
+            ),
+            make(visuals=[visual]),
+            tmp_path,
+            10.0,
+        )
+
+
+def test_unsupported_visual_formats_are_refused(tmp_path):
+    gif = tmp_path / "anim.gif"
+    gif.write_bytes(b"GIF89a")
+    settings = make(
+        visuals=[
+            Visual(
+                file=str(gif),
+                start=0,
+                end=1,
+                source_credit="a",
+                source_url="u",
+                license="CC0",
+            )
+        ]
+    )
+    with pytest.raises(PipelineError, match="SVG, PNG, JPEG or WebP"):
+        pipeline.prepare_visuals(
+            SelectedClip(
+                start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
+            ),
+            settings,
+            tmp_path,
+            10.0,
+        )
+
+
+def test_diagrams_and_searched_images_are_recorded_in_the_ledger(
+    tmp_path, monkeypatch, japanese_font
+):
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    entry = {
+        "id": "image-01",
+        "file": "image-01.png",
+        "kind": "photo",
+        "sha256": "0" * 64,
+        "provider": "wikimedia-commons",
+        "source_url": "https://e/i",
+        "source_credit": "A / CC0",
+        "license": "CC0",
+        "license_url": "",
+        "query": "q",
+        "retrieved_at": "2026-10-21T00:00:00+00:00",
+    }
+    monkeypatch.setattr(
+        pipeline.assets, "search", lambda query, sources, limit: [{"image_url": "u"}]
+    )
+    monkeypatch.setattr(
+        pipeline.assets, "download_all", lambda items, directory: [entry]
+    )
+    settings = make(
+        diagrams=[
+            Diagram(kind="steps", title="手順", start=1, end=2, steps=["一", "二"])
+        ],
+        image_search=True,
+    )
+    visuals, ledger = pipeline.prepare_visuals(
+        SelectedClip(
+            start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+        ),
+        settings,
+        tmp_path,
+        10.0,
+    )
+    kinds = {e["id"]: e["kind"] for e in ledger}
+    assert kinds == {"diagram-01": "diagram", "image-01": "photo"}
+    searched = next(v for v in visuals if v["file"].endswith("image-01.png"))
+    assert searched["start"] == 0 and searched["end"] == 10
+    assert (tmp_path / "visuals" / "diagram-01.png").is_file()
+
+
+def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
+    tmp_path, monkeypatch, japanese_font, transcript
+):
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"source")
+    root = tmp_path / "out" / "clips"
+    root.mkdir(parents=True)
+    card = png(tmp_path / "card.png")
+    settings = make(
+        visuals=[
+            Visual(
+                file=str(card),
+                start=1,
+                end=3,
+                source_credit="作者 / CC0",
+                source_url="https://e/c",
+                license="CC0",
+            )
+        ],
+        diagrams=[Diagram(kind="steps", title="手順", start=4, end=6, steps=["一"])],
+        thumbnail=True,
+    )
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    seen = {}
+
+    def fake_render(
+        source, destination, clip, settings, ass=None, keep=None, visuals=()
+    ):
+        destination.write_bytes(b"video")
+        return {"duration": 10, "width": 404, "height": 720, "audio": True}
+
+    def fake_captions(transcript, clip, directory, settings, keep=None, credits=None):
+        seen["credits"] = credits
+        (directory / "captions.ass").write_text("ass")
+        (directory / "captions.srt").write_text("srt")
+        return {"events": 0, "heading": False, "missing_glyphs": []}
+
+    def fake_thumbnail(video, destination, title, font_path, at_seconds):
+        destination.write_bytes(b"thumb")
+
+    monkeypatch.setattr(pipeline.media, "render", fake_render)
+    monkeypatch.setattr(pipeline, "create_captions", fake_captions)
+    monkeypatch.setattr(pipeline.thumbnail, "make", fake_thumbnail)
+    result = pipeline.render_clip(
+        source, root, 1, clip, transcript, settings, "job-key"
+    )
+    assert seen["credits"] == ["作者 / CC0"]
+    assert set(result["sha256"]) == {
+        "captions.ass",
+        "captions.srt",
+        "ledger.json",
+        "thumbnail.png",
+        "video.mp4",
+        "visuals/visual-01.png",
+        "visuals/diagram-01.png",
+    }
+    target = root / "clip-001"
+    saved = json.loads((target / "render.json").read_text())
+    assert pipeline.valid_receipt(target, saved, saved["key"])
+
+    def must_not_render(*args, **kwargs):
+        raise AssertionError("a verified clip must be reused, not rendered again")
+
+    monkeypatch.setattr(pipeline.media, "render", must_not_render)
+    again = pipeline.render_clip(source, root, 1, clip, transcript, settings, "job-key")
+    assert again["sha256"] == result["sha256"]
+    (target / "visuals" / "visual-01.png").write_bytes(b"tampered")
+    with pytest.raises(PipelineError, match="differs from the saved render receipt"):
+        pipeline.render_clip(source, root, 1, clip, transcript, settings, "job-key")
+
+
+def test_existing_clip_without_receipt_is_not_trusted(tmp_path, transcript):
+    root = tmp_path / "clips"
+    (root / "clip-001").mkdir(parents=True)
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
+    )
+    with pytest.raises(PipelineError, match="no verified render receipt"):
+        pipeline.render_clip(
+            tmp_path / "in.mp4", root, 1, clip, transcript, make(), "k"
+        )
+    key = fingerprint(
+        {"job": "k", "clip": clip.model_dump(), "transcript": transcript.model_dump()}
+    )
+    assert key
+
+
+# --- models ---------------------------------------------------------------
+
+
+def test_zoom_visual_and_diagram_validate_their_intervals():
+    with pytest.raises(ValidationError):
+        Zoom(start=3, end=2)
+    with pytest.raises(ValidationError):
+        Visual(file="x.png", start=3, end=3)
+    with pytest.raises(ValidationError):
+        Diagram(kind="table", title="t", start=0, end=1, rows=[["a"], ["b", "c"]])
+    with pytest.raises(ValidationError):
+        Diagram(kind="bars", title="t", start=0, end=1, labels=["a"], values=[])
+    with pytest.raises(ValidationError):
+        Diagram(kind="steps", title="t", start=0, end=1)
+    with pytest.raises(ValidationError):
+        Diagram(kind="table", title="t", start=2, end=1, rows=[["a"]])
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"layout": "panels"},
+        {"zoom": [Zoom(start=0, end=1)]},
+        {"candidates": 1, "clips": 2},
+        {"gemini_model": "bad model name"},
+        {"font": "Noto, Sans"},
+        {"face_box": (0.9, 0.9, 0.5, 0.5)},
+        {"min_seconds": 40, "max_seconds": 30},
+        {"analysis_fps": 5, "max_seconds": 180, "candidates": 10},
+    ],
+)
+def test_settings_reject_inconsistent_options(update):
+    with pytest.raises(ValidationError):
+        make(**update)
+
+
+def test_settings_accept_a_consistent_panel_layout():
+    settings = make(
+        layout="panels", face_box=(0.1, 0.1, 0.4, 0.4), game_box=(0, 0, 1, 1)
+    )
+    assert settings.layout == "panels" and math.isclose(settings.face_box[2], 0.4)

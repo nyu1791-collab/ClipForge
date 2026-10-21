@@ -78,6 +78,61 @@ class Zoom(Record):
         return self
 
 
+class Visual(Record):
+    """Image or SVG overlay in clip output seconds; file is a local path."""
+
+    file: str = Field(min_length=1, max_length=1000)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    position: Literal["top", "center", "bottom", "right"] = "right"
+    max_fraction: float = Field(default=0.4, ge=0.1, le=0.9)
+    # Required for every file not created by ClipForge itself (source ledger).
+    source_credit: str | None = Field(default=None, max_length=400)
+    source_url: str | None = Field(default=None, max_length=1000)
+    license: str | None = Field(default=None, max_length=120)
+
+    @model_validator(mode="after")
+    def ordered(self):
+        if self.end <= self.start:
+            raise ValueError("visual start must be before end")
+        return self
+
+
+class Diagram(Record):
+    """Original table, bar chart or step diagram drawn by ClipForge."""
+
+    kind: Literal["table", "bars", "steps"]
+    title: str = Field(min_length=1, max_length=60)
+    start: float = Field(ge=0)
+    end: float = Field(gt=0)
+    rows: list[list[str]] = Field(default_factory=list, max_length=12)
+    labels: list[str] = Field(default_factory=list, max_length=8)
+    values: list[float] = Field(default_factory=list, max_length=8)
+    steps: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def valid(self):
+        if self.end <= self.start:
+            raise ValueError("diagram start must be before end")
+        if self.kind == "table" and (
+            not self.rows or len({len(r) for r in self.rows}) != 1
+        ):
+            raise ValueError("table needs rows of equal length")
+        if self.kind == "bars" and (
+            not self.labels or len(self.labels) != len(self.values)
+        ):
+            raise ValueError("bars need matching labels and values")
+        if self.kind == "steps" and not self.steps:
+            raise ValueError("steps diagram needs at least one step")
+        return self
+
+
+class SoundEffect(Record):
+    file: str = Field(min_length=1, max_length=1000)
+    time: float = Field(ge=0)
+    gain_db: float = Field(default=-18, ge=-60, le=-6)
+
+
 class Settings(Record):
     gemini_model: str = Field(min_length=1, max_length=160)
     clips: int = Field(default=3, ge=1, le=10)
@@ -104,6 +159,22 @@ class Settings(Record):
     silence_pad: float = Field(default=0.15, ge=0, le=1)
     silence_min_gap: float = Field(default=0.4, ge=0, le=3)
     vad: Literal["transcript", "silero"] = "transcript"
+    topics: bool = True
+    topic_min_seconds: float = Field(default=25, ge=5, le=120)
+    topic_max_seconds: float = Field(default=180, ge=30, le=600)
+    visuals: list[Visual] = Field(default_factory=list, max_length=12)
+    diagrams: list[Diagram] = Field(default_factory=list, max_length=8)
+    image_search: bool = False
+    image_sources: list[Literal["commons", "openverse"]] = Field(
+        default_factory=lambda: ["commons"], max_length=2
+    )
+    bgm: str | None = Field(default=None, max_length=1000)
+    bgm_gain_db: float = Field(default=-24, ge=-60, le=-12)
+    ducking: bool = True
+    sound_effects: list[SoundEffect] = Field(default_factory=list, max_length=20)
+    thumbnail: bool = False
+    fade_seconds: float = Field(default=0.3, ge=0, le=2)
+    progress_bar: bool = True
     analysis_fps: float = Field(default=2, ge=0.5, le=5)
     max_source_seconds: float = Field(default=3600, ge=5, le=7200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
@@ -124,7 +195,9 @@ class Settings(Record):
             return value
         x, y, w, h = value
         if min(value) < 0 or w <= 0 or h <= 0 or x + w > 1 or y + h > 1:
-            raise ValueError("boxes are x, y, width, height in 0..1 of the source frame")
+            raise ValueError(
+                "boxes are x, y, width, height in 0..1 of the source frame"
+            )
         return value
 
     @model_validator(mode="after")

@@ -190,7 +190,20 @@ def test_failed_download_does_not_leave_partial_destination(submitter, tmp_path)
 
 
 def test_gateway_settings_field_list_tracks_model(submitter):
-    assert submitter[0].SETTINGS_FIELDS == set(Settings.model_fields)
+    module = submitter[0]
+    assert module.SETTINGS_FIELDS | module.LOCAL_FILE_FIELDS == set(
+        Settings.model_fields
+    )
+    assert not module.SETTINGS_FIELDS & module.LOCAL_FILE_FIELDS
+
+
+def test_configuration_cannot_name_local_files(submitter, tmp_path):
+    _, _, control, invoke = submitter
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"bgm": "/home/someone/music.mp3"}))
+    with pytest.raises(RuntimeError, match="local files"):
+        invoke("--config", str(config))
+    assert not control["releases"] and not control["posts"]
 
 
 def test_configuration_cannot_upload_credentials(submitter, tmp_path):

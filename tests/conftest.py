@@ -40,3 +40,17 @@ def transcript():
             Segment(start=22, end=27, text="最後まで確認します。", words=[]),
         ],
     )
+
+
+@pytest.fixture
+def japanese_font():
+    """Path of an installed Japanese font; the caption checks need one, so skip without it."""
+    from clipforge import fonts
+    from clipforge.storage import PipelineError
+
+    for family in ("Noto Sans CJK JP", "IPAGothic"):
+        try:
+            return fonts.resolve(family)
+        except PipelineError:
+            continue
+    pytest.skip("no Japanese caption font is installed")

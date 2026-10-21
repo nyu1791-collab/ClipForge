@@ -49,7 +49,9 @@ def collect_tokens(transcript, clip, keep):
             if b <= a:
                 continue
             spans = (
-                silence.pieces(a, b, keep) if keep else [(a - clip.start, b - clip.start, 0)]
+                silence.pieces(a, b, keep)
+                if keep
+                else [(a - clip.start, b - clip.start, 0)]
             )
             if not spans:
                 continue
@@ -114,7 +116,11 @@ def wrap_breaks(text, measure, line_px):
         if index > begin and index in phrase_starts:
             last_phrase = index
         if used + size > line_px and index > begin:
-            cut = last_phrase if last_phrase is not None and last_phrase > begin else index
+            cut = (
+                last_phrase
+                if last_phrase is not None and last_phrase > begin
+                else index
+            )
             breaks.append(cut)
             begin = cut
             used = measure.width(text[cut:index])
@@ -139,6 +145,13 @@ def group(tokens, measure, line_px, max_lines=2):
     if current:
         groups.append(current)
     return groups
+
+
+def with_breaks(text, breaks):
+    """Text with a hard ASS line break before each character index in breaks."""
+    return "".join(
+        r"\N" + char if index in breaks else char for index, char in enumerate(text)
+    )
 
 
 def group_text(tokens, measure, line_px, mode):
@@ -171,7 +184,7 @@ def heading_size(title, frame_width, height, font_path):
     raise PipelineError("heading does not fit the frame; shorten the clip title")
 
 
-def create(transcript, clip, directory, settings, keep=None):
+def create(transcript, clip, directory, settings, keep=None, credits=None):
     height = settings.height
     numerator, denominator = map(int, settings.aspect.split(":"))
     frame_width = round(height * numerator / denominator / 2) * 2
@@ -241,6 +254,34 @@ def create(transcript, clip, directory, settings, keep=None):
             )
         )
 
+    if credits:
+        # Source credits for every image used in the clip; small, bottom-right, never in SRT.
+        credit_size = max(14, round(height * 0.026))
+        subtitles.styles["Credit"] = pysubs2.SSAStyle(
+            fontname=settings.font,
+            fontsize=credit_size,
+            primarycolor=pysubs2.Color(235, 235, 235),
+            outlinecolor=pysubs2.Color(0, 0, 0),
+            outline=1.5,
+            alignment=pysubs2.Alignment.BOTTOM_RIGHT,
+            marginl=MARGIN,
+            marginr=MARGIN,
+            marginv=round(height * 0.015),
+        )
+        duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
+        credit_text = safe(" / ".join(credits))
+        breaks = wrap_breaks(
+            credit_text, fonts.Measure(font_path, credit_size), frame_width - 2 * MARGIN
+        )
+        subtitles.append(
+            pysubs2.SSAEvent(
+                start=0,
+                end=round(duration * 1000),
+                style="Credit",
+                text=with_breaks(credit_text, breaks),
+            )
+        )
+
     style = "Sequential" if settings.caption == "sequential" else "Default"
     plain_lines = []
     previous_end = 0
@@ -250,9 +291,7 @@ def create(transcript, clip, directory, settings, keep=None):
         if end <= start:
             continue
         text = group_text(items, measure, line_px, settings.caption)
-        subtitles.append(
-            pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
-        )
+        subtitles.append(pysubs2.SSAEvent(start=start, end=end, style=style, text=text))
         plain_lines.append("".join(item[2] for item in items))
         previous_end = end
 
@@ -264,7 +303,7 @@ def create(transcript, clip, directory, settings, keep=None):
     # SRT keeps only spoken subtitles; the heading is not dialogue and has no ASS tags.
     plain = pysubs2.SSAFile()
     for event in subtitles:
-        if event.style == "Heading":
+        if event.style in {"Heading", "Credit"}:
             continue
         plain.append(
             pysubs2.SSAEvent(start=event.start, end=event.end, text=event.plaintext)

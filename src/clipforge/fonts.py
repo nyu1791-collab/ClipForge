@@ -35,8 +35,11 @@ def resolve(family):
 
 
 def missing_glyphs(path, text):
-    """Characters the font cannot draw; these would appear as empty boxes."""
-    font = TTFont(str(path), lazy=True)
+    """Characters the font cannot draw; these would appear as empty boxes.
+
+    Font collections (.ttc, e.g. Noto Sans CJK) use face 0, the same face Pillow measures.
+    """
+    font = TTFont(str(path), fontNumber=0, lazy=True)
     try:
         cmap = font.getBestCmap() or {}
     finally:

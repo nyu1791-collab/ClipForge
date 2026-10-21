@@ -43,7 +43,7 @@ def job(tmp_path, monkeypatch, transcript):
             "receipt": {"provider": "mock", "generation_requests": 1},
         }
 
-    def render(source, path, clip, settings, ass):
+    def render(source, path, clip, settings, ass=None, keep=None, visuals=()):
         counts["render"] += 1
         path.write_bytes(b"complete-render")
         return {
@@ -177,6 +177,8 @@ def test_modified_input_during_processing_cannot_complete(job, settings, monkeyp
 
 def test_preview_failure_cleans_earlier_previews(job, settings, monkeypatch):
     source, output, _ = job
+    # With one worker the second preview is the first failure, so nothing after it may start.
+    settings.workers = 1
     original = media.preview
     calls = []
 

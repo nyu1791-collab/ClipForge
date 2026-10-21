@@ -1,0 +1,74 @@
+import wave
+from types import SimpleNamespace
+
+import faster_whisper
+import numpy as np
+import pytest
+
+from clipforge import media, signals
+from clipforge.models import Transcript
+from clipforge.storage import PipelineError
+
+
+def write_wav(path, samples, rate=16000, channels=1):
+    data = (np.clip(samples, -1, 1) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(channels)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(data.tobytes())
+
+
+def test_samples_are_scaled_from_16_bit_mono_to_unit_range(tmp_path):
+    path = tmp_path / "speech.wav"
+    write_wav(path, np.array([0.5, -0.5, 0.0]))
+    values = signals.read_samples(path)
+    assert values.dtype == np.float32
+    assert np.allclose(values, [0.5, -0.5, 0.0], atol=1e-4)
+
+
+def test_samples_refuse_any_format_but_mono_16k_pcm(tmp_path):
+    path = tmp_path / "stereo.wav"
+    write_wav(path, np.zeros(8), rate=16000, channels=2)
+    with pytest.raises(PipelineError, match="16 kHz"):
+        signals.read_samples(path)
+
+
+def test_transcription_passes_samples_and_keeps_only_spoken_words(
+    monkeypatch, settings
+):
+    monkeypatch.setattr(
+        media,
+        "audio",
+        lambda source, destination, duration: write_wav(destination, np.zeros(16000)),
+    )
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, name, **kwargs):
+            seen["name"] = name
+
+        def transcribe(self, audio, **kwargs):
+            seen["type"], seen["length"] = type(audio), len(audio)
+            words = [
+                SimpleNamespace(start=0.2, end=0.6, word=" こんにちは"),
+                SimpleNamespace(start=0.6, end=0.9, word="  "),
+            ]
+            segment = SimpleNamespace(
+                start=0.0, end=1.2, text="こんにちは", words=words
+            )
+            return iter([segment]), SimpleNamespace(language="ja")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+    result = signals.transcribe("/in.mp4", {"audio": True, "duration": 1.0}, settings)
+    assert seen["type"] is np.ndarray and seen["length"] == 16000
+    transcript = Transcript.model_validate(result)
+    assert transcript.language == "ja"
+    segment = transcript.segments[0]
+    assert segment.end == 1.0  # clipped to the video duration
+    assert [word.text for word in segment.words] == [" こんにちは"]
+
+
+def test_videos_without_audio_have_an_empty_transcript():
+    result = signals.transcribe("/in.mp4", {"audio": False, "duration": 5}, None)
+    assert result == {"language": "und", "segments": []}

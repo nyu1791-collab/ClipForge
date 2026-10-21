@@ -80,6 +80,23 @@ def test_probe_whitelists_protocols_and_ignores_cover_art(monkeypatch, tmp_path)
     }
 
 
+LOUDNESS = (
+    '{"input_i": "-20.00", "input_tp": "-3.00", "input_lra": "5.00", '
+    '"input_thresh": "-30.00", "target_offset": "0.50"}'
+)
+
+
+def fake_ffmpeg(render_check):
+    """Stand-in for subprocess.run: the loudness pass gets its measurement, the render is checked."""
+
+    def execute(command, **kwargs):
+        if command[-3:] == ["-f", "null", "-"]:
+            return subprocess.CompletedProcess(command, 0, "", LOUDNESS)
+        return render_check(command, kwargs)
+
+    return execute
+
+
 @pytest.mark.parametrize("audio", [False, True])
 @pytest.mark.parametrize("framing", ["fit", "center-crop"])
 def test_render_commands_are_local_relative_and_cpu(
@@ -93,22 +110,22 @@ def test_render_commands_are_local_relative_and_cpu(
     info = {"duration": 6, "width": 404, "height": 720, "audio": audio}
     monkeypatch.setattr(media, "probe", lambda path: info)
 
-    def execute(command, **kwargs):
+    def check(command, kwargs):
         assert "-n" in command
         assert command[command.index("-ss") + 1] == "21.000000"
         assert command[command.index("-t") + 1] == "6.000000"
-        assert command[command.index("-map") + 1] == "0:V:0"
+        assert command[command.index("-map") + 1] == "[vout]"
+        assert ("[aout]" in command) == audio
         assert command[command.index("-c:v") + 1] == "libx264"
-        assert ("-af" in command) == audio
-        video_filter = command[command.index("-vf") + 1]
-        assert "setpts=PTS-STARTPTS" in video_filter
-        assert "ass=filename=captions.ass" in video_filter
-        assert ("pad=" in video_filter) == (framing == "fit")
-        assert ("crop=" in video_filter) == (framing == "center-crop")
+        graph = command[command.index("-filter_complex") + 1]
+        assert "setpts=PTS-STARTPTS" in graph
+        assert "ass=filename=captions.ass" in graph
+        assert ("pad=" in graph) == (framing == "fit")
+        assert ("crop=" in graph) == (framing == "center-crop")
         assert kwargs["cwd"] == tmp_path
-        return subprocess.CompletedProcess(command, 0, b"", b"")
+        return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr(subprocess, "run", execute)
+    monkeypatch.setattr(subprocess, "run", fake_ffmpeg(check))
     assert (
         media.render(
             tmp_path / "source with spaces.mp4",
@@ -131,7 +148,11 @@ def test_render_commands_are_local_relative_and_cpu(
 def test_render_rejects_incomplete_output(monkeypatch, tmp_path, settings, bad):
     monkeypatch.setattr(media, "probe", lambda path: bad)
     monkeypatch.setattr(
-        subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 0, b"", b"")
+        subprocess,
+        "run",
+        fake_ffmpeg(
+            lambda command, kwargs: subprocess.CompletedProcess(command, 0, "", "")
+        ),
     )
     clip = SelectedClip(
         start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1

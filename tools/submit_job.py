@@ -31,12 +31,36 @@ SETTINGS_FIELDS = {
     "height",
     "caption",
     "font",
+    "layout",
+    "heading",
+    "face_box",
+    "game_box",
+    "zoom",
+    "workers",
+    "loudness_two_pass",
+    "silence_cut",
+    "silence_pad",
+    "silence_min_gap",
+    "vad",
+    "topics",
+    "topic_min_seconds",
+    "topic_max_seconds",
+    "diagrams",
+    "image_search",
+    "image_sources",
+    "bgm_gain_db",
+    "ducking",
+    "thumbnail",
+    "fade_seconds",
+    "progress_bar",
     "analysis_fps",
     "max_source_seconds",
     "max_input_bytes",
     "chat_url",
     "chat_offset_seconds",
 }
+# These name files on the submitting machine; the remote worker cannot read them.
+LOCAL_FILE_FIELDS = {"visuals", "bgm", "sound_effects"}
 
 
 def gh(*args, body=None, timeout=120):
@@ -297,9 +321,16 @@ def dispatch(args, state_root):
         raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True)
     settings = json.loads(args.config.read_text()) if args.config else {}
-    if not isinstance(settings, dict) or set(settings) - SETTINGS_FIELDS:
+    if (
+        not isinstance(settings, dict)
+        or set(settings) - SETTINGS_FIELDS - LOCAL_FILE_FIELDS
+    ):
         raise RuntimeError(
             "configuration has unknown fields; put API credentials in Secrets, not this file"
+        )
+    if set(settings) & LOCAL_FILE_FIELDS:
+        raise RuntimeError(
+            "visuals, bgm and sound_effects name local files; render those clips locally"
         )
     settings["gemini_model"] = args.gemini_model
     if args.clips is not None:

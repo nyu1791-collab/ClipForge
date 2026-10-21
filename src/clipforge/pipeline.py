@@ -4,11 +4,14 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
+import threading
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import __version__, media, signals, silence
+from . import __version__, assets, diagrams, fonts, media, signals, silence, thumbnail
+from . import topics as topic_tools
 from .captions import create as create_captions
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import PipelineError, digest, fingerprint, stage, within, write_json
@@ -114,6 +117,134 @@ def record_failure(output, error, current_stage):
     write_json(output / "manifest.json", {**failure, "rendered": []})
 
 
+REQUIRED_FILES = {"video.mp4", "captions.ass", "captions.srt", "ledger.json"}
+OPTIONAL_FILES = {"thumbnail.png"}
+VISUAL_DIR = "visuals"
+SUPPLIED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+REPOSITORY_URL = "https://github.com/nyu1791-collab/ClipForge"
+
+
+def visual_names(ledger):
+    """Overlay files a clip receipt lists, relative to the clip directory."""
+    return {f"{VISUAL_DIR}/{entry['file']}" for entry in ledger}
+
+
+def valid_receipt(target, saved, render_key):
+    """True when the receipt belongs to this job and every file it lists is unchanged."""
+    if not isinstance(saved, dict) or saved.get("key") != render_key:
+        return False
+    hashes, ledger = saved.get("sha256"), saved.get("ledger")
+    if not isinstance(hashes, dict) or not isinstance(ledger, list):
+        return False
+    for entry in ledger:
+        name = entry.get("file") if isinstance(entry, dict) else None
+        if not isinstance(name, str) or Path(name).name != name:
+            return False
+    if (
+        not REQUIRED_FILES
+        <= set(hashes)
+        <= REQUIRED_FILES | OPTIONAL_FILES | visual_names(ledger)
+    ):
+        return False
+    return all(
+        (target / name).is_file() and digest(target / name) == expected
+        for name, expected in hashes.items()
+    )
+
+
+def prepare_visuals(clip, settings, directory, duration):
+    """Overlays from supplied files, original diagrams and licensed downloads.
+
+    Each overlay is copied into the clip's visuals/ folder and gets a ledger entry
+    (file, hash, source, credit, licence), so the clip keeps what it used. A supplied
+    file without a complete source is refused.
+    """
+    folder = directory / VISUAL_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    visuals, ledger = [], []
+    for index, visual in enumerate(settings.visuals, 1):
+        if not (visual.source_credit and visual.source_url and visual.license):
+            raise PipelineError("visual needs source_credit, source_url and license")
+        source = Path(visual.file)
+        if not source.is_file():
+            raise PipelineError("visual file is missing")
+        suffix = source.suffix.lower()
+        if suffix == ".svg":
+            target = folder / f"visual-{index:02}.png"
+            diagrams.svg_to_png(source, target)
+        elif suffix in SUPPLIED_SUFFIXES:
+            target = folder / f"visual-{index:02}{suffix}"
+            shutil.copy2(source, target)
+            assets.check_image(target)
+        else:
+            raise PipelineError("visual must be an SVG, PNG, JPEG or WebP file")
+        ledger.append(
+            assets.validate_entry(
+                {
+                    "id": f"visual-{index:02}",
+                    "file": target.name,
+                    "kind": "supplied",
+                    "sha256": digest(target),
+                    "source_url": visual.source_url,
+                    "source_credit": visual.source_credit,
+                    "license": visual.license,
+                }
+            )
+        )
+        visuals.append(
+            {
+                "file": str(target),
+                "start": visual.start,
+                "end": visual.end,
+                "position": visual.position,
+                "max_fraction": visual.max_fraction,
+            }
+        )
+    if settings.diagrams:
+        font_path = fonts.resolve(settings.font)
+        for index, diagram in enumerate(settings.diagrams, 1):
+            png = folder / f"diagram-{index:02}.png"
+            diagrams.render(diagram, font_path, png)
+            ledger.append(
+                assets.validate_entry(
+                    {
+                        "id": f"diagram-{index:02}",
+                        "file": png.name,
+                        "kind": "diagram",
+                        "sha256": digest(png),
+                        "source_url": REPOSITORY_URL,
+                        "source_credit": "作成: ClipForge（独自図解）",
+                        "license": "ClipForge original",
+                    }
+                )
+            )
+            visuals.append(
+                {
+                    "file": str(png),
+                    "start": diagram.start,
+                    "end": diagram.end,
+                    "position": "center",
+                    "max_fraction": 0.85,
+                }
+            )
+    if settings.image_search and clip.title:
+        items = assets.search(clip.title, settings.image_sources, 2)
+        downloaded = assets.download_all(items, folder)
+        slot = duration / max(1, len(downloaded))
+        for number, entry in enumerate(downloaded):
+            ledger.append(assets.validate_entry(entry))
+            visuals.append(
+                {
+                    "file": str(folder / entry["file"]),
+                    "start": number * slot,
+                    "end": (number + 1) * slot,
+                    "position": "right",
+                    "max_fraction": 0.38,
+                }
+            )
+    return visuals, ledger
+
+
 def cut_regions(source, transcript, clip, settings):
     """Original-time intervals to keep when silence cutting is enabled, else None."""
     if not settings.silence_cut:
@@ -142,24 +273,23 @@ def render_clip(source, root, index, clip, transcript, settings, key):
     if target.exists():
         if not receipt.is_file():
             raise PipelineError("existing clip has no verified render receipt")
-        old = json.loads(receipt.read_text())
-        if (
-            not isinstance(old, dict)
-            or old.get("key") != render_key
-            or not isinstance(old.get("sha256"), dict)
-            or set(old.get("sha256", {}))
-            != {"video.mp4", "captions.ass", "captions.srt"}
-            or any(
-                not (target / n).is_file() or digest(target / n) != sha
-                for n, sha in old.get("sha256", {}).items()
-            )
-        ):
+        saved = json.loads(receipt.read_text())
+        if not valid_receipt(target, saved, render_key):
             raise PipelineError("existing clip differs from the saved render receipt")
-        return {"directory": "clips/" + name, **old}
+        return {"directory": "clips/" + name, **saved}
     keep = cut_regions(source, transcript, clip, settings)
     with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
         directory = Path(temporary)
-        caption = create_captions(transcript, clip, directory, settings, keep)
+        duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
+        visuals, ledger = prepare_visuals(clip, settings, directory, duration)
+        write_json(directory / "ledger.json", ledger)
+        # Original diagrams carry no on-screen credit; every other visual does.
+        credits = sorted(
+            {entry["source_credit"] for entry in ledger if entry["kind"] != "diagram"}
+        )
+        caption = create_captions(
+            transcript, clip, directory, settings, keep, credits=credits
+        )
         info = media.render(
             source,
             directory / "video.mp4",
@@ -167,38 +297,56 @@ def render_clip(source, root, index, clip, transcript, settings, key):
             settings,
             ass=directory / "captions.ass",
             keep=keep,
+            visuals=visuals,
         )
-        old = {
+        if settings.thumbnail:
+            thumbnail.make(
+                directory / "video.mp4",
+                directory / "thumbnail.png",
+                clip.title,
+                fonts.resolve(settings.font),
+                duration / 2,
+            )
+        names = sorted(
+            REQUIRED_FILES
+            | {n for n in OPTIONAL_FILES if (directory / n).is_file()}
+            | visual_names(ledger)
+        )
+        saved = {
             "key": render_key,
             "selection": clip.model_dump(),
             "status": "rendered",
             "media": info,
             "captions": caption,
             "keep": keep,
-            "sha256": {
-                n: digest(directory / n)
-                for n in ["video.mp4", "captions.ass", "captions.srt"]
-            },
+            "ledger": ledger,
+            "sha256": {n: digest(directory / n) for n in names},
         }
-        write_json(directory / "render.json", old)
+        write_json(directory / "render.json", saved)
         # Commit the whole clip directory only when MP4 and captions are complete.
         if target.exists():
             raise PipelineError("clip output already exists")
         directory.rename(target)
-    return {"directory": "clips/" + name, **old}
+    return {"directory": "clips/" + name, **saved}
 
 
-def render_clips(source, output, clips, transcript, settings, key):
-    """Render clips in parallel; results keep the selection order."""
-    root = within(output, output / "clips")
-    root.mkdir(exist_ok=True)
-    results = [None] * len(clips)
-    with ThreadPoolExecutor(max_workers=settings.workers) as pool:
+def run_parallel(function, items, workers):
+    """Results in item order. After the first failure, no item that has not started runs."""
+    failed = threading.Event()
+
+    def attempt(item):
+        if failed.is_set():
+            return None
+        try:
+            return function(item)
+        except BaseException:
+            failed.set()
+            raise
+
+    results = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(
-                render_clip, source, root, index, clip, transcript, settings, key
-            ): index - 1
-            for index, clip in enumerate(clips, 1)
+            pool.submit(attempt, item): index for index, item in enumerate(items)
         }
         try:
             for future in as_completed(futures):
@@ -208,6 +356,19 @@ def render_clips(source, output, clips, transcript, settings, key):
                 future.cancel()
             raise
     return results
+
+
+def render_clips(source, output, clips, transcript, settings, key):
+    """Render clips in parallel; results keep the selection order."""
+    root = within(output, output / "clips")
+    root.mkdir(exist_ok=True)
+    return run_parallel(
+        lambda item: render_clip(
+            source, root, item[0], item[1], transcript, settings, key
+        ),
+        list(enumerate(clips, 1)),
+        settings.workers,
+    )
 
 
 def run(source, output, settings, resume=False, chat_file=None, selection_file=None):
@@ -245,6 +406,16 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
             lambda: signals.chat_signals(info["duration"], settings, supplied),
         )
         current_stage = "candidate_extraction"
+        topic_spans = (
+            topic_tools.split(
+                transcript,
+                info["duration"],
+                settings.topic_min_seconds,
+                settings.topic_max_seconds,
+            )
+            if settings.topics
+            else None
+        )
         candidate_key = fingerprint(
             {"job": key, "transcript": raw, "scenes": scenes, "chat": chat}
         )
@@ -252,7 +423,9 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
             output,
             "candidates",
             candidate_key,
-            lambda: signals.candidates(info, transcript, scenes, chat, settings),
+            lambda: signals.candidates(
+                info, transcript, scenes, chat, settings, topics=topic_spans
+            ),
         )
         candidates = [Candidate.model_validate(c) for c in raw_candidates]
         print(
@@ -291,8 +464,9 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                     )
 
             try:
-                with ThreadPoolExecutor(max_workers=settings.workers) as pool:
-                    list(pool.map(make_preview, zip(candidates, paths)))
+                run_parallel(
+                    make_preview, list(zip(candidates, paths)), settings.workers
+                )
                 verify_source(source, output)
                 print("Requesting one Gemini visual selection…", flush=True)
                 return choose(source, paths, candidates, transcript, info, settings)
@@ -334,6 +508,7 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
             "rendered": results,
             "selection_receipt": selected["receipt"],
             "chat_status": chat["status"],
+            "topics": topic_spans,
             "human_review_performed": False,
         }
         write_json(output / "manifest.json", manifest)

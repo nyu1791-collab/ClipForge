@@ -14,6 +14,8 @@ FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf"]
 AUDIO_RATE = 48000
 LOUDNESS = "I=-16:TP=-1.5:LRA=11"
 MAX_KEEP_REGIONS = 60
+MAX_SOUND_EFFECTS = 20
+PROGRESS_RGB = (255, 196, 0)
 
 
 def require_tools(captions=True):
@@ -231,7 +233,17 @@ def _layout(settings, width, height, src, out):
     )
 
 
-def _video_graph(clip, settings, width, height, keep, ass):
+def _position(position, margin, top):
+    return {
+        "right": f"main_w-overlay_w-{margin}:(main_h-overlay_h)/2",
+        "top": f"(main_w-overlay_w)/2:{top}",
+        "center": "(main_w-overlay_w)/2:(main_h-overlay_h)/2",
+        "bottom": f"(main_w-overlay_w)/2:main_h-overlay_h-{margin}",
+    }[position]
+
+
+def _video_graph(clip, settings, width, height, keep, duration, visuals, ass):
+    """Video chain from [0:V:0] to [vout]; visuals are inputs 1..len(visuals)."""
     zooms = settings.zoom
     labels = [f"b{i}" for i in range(1 + len(zooms))]
     chain = [_video_timeline(clip, keep)]
@@ -257,12 +269,115 @@ def _video_graph(clip, settings, width, height, keep, ass):
             f"enable='between(t,{zoom.start:.3f},{zoom.end:.3f})'[{nxt}]"
         )
         previous = nxt
+    margin = round(height * 0.04)
+    # A top overlay sits below the heading when one is shown, so the title stays readable.
+    top = round(height * 0.14) if settings.heading else margin
+    for index, visual in enumerate(visuals):
+        max_w = round(width * visual["max_fraction"])
+        chain.append(
+            f"[{index + 1}:v]format=rgba,scale=w='min(iw,{max_w})':h=-2[vi{index}]"
+        )
+        nxt = f"ov{index}"
+        chain.append(
+            f"[{previous}][vi{index}]overlay={_position(visual['position'], margin, top)}:"
+            f"enable='between(t,{visual['start']:.3f},{visual['end']:.3f})'[{nxt}]"
+        )
+        previous = nxt
+    fade = settings.fade_seconds
+    if fade > 0 and duration > 2 * fade:
+        chain.append(
+            f"[{previous}]fade=t=in:st=0:d={fade:.3f},"
+            f"fade=t=out:st={duration - fade:.3f}:d={fade:.3f}[fd]"
+        )
+        previous = "fd"
+    if settings.progress_bar:
+        # drawbox ignores the timestamp in its width, so the bar is a strip whose
+        # alpha grows with T (seconds) across the frame width; only 8 rows are evaluated.
+        chain.append(
+            f"color=c=black@0:s={width}x8:r=30:d={duration:.6f},format=rgba,"
+            f"geq=r={PROGRESS_RGB[0]}:g={PROGRESS_RGB[1]}:b={PROGRESS_RGB[2]}:"
+            f"a='if(lte(X\\,{width}*T/{duration:.6f})\\,230\\,0)'[pbar]"
+        )
+        chain.append(f"[{previous}][pbar]overlay=0:{height - 8}:shortest=1[pb]")
+        previous = "pb"
     if ass:
         # Captions are copied to a fixed basename beside the generated MP4.
         chain.append(f"[{previous}]ass=filename=captions.ass[vout]")
     else:
         chain.append(f"[{previous}]null[vout]")
     return ";".join(chain)
+
+
+def _extra_inputs(settings, duration, visuals):
+    """Argument list for visuals, background music and sound effects, in index order."""
+    args = []
+    for visual in visuals:
+        args += [
+            "-loop",
+            "1",
+            "-t",
+            f"{duration:.6f}",
+            *PROTOCOLS,
+            "-i",
+            visual["file"],
+        ]
+    if settings.bgm:
+        args += [
+            "-stream_loop",
+            "-1",
+            "-t",
+            f"{duration:.6f}",
+            *PROTOCOLS,
+            "-i",
+            settings.bgm,
+        ]
+    for effect in settings.sound_effects:
+        args += [*PROTOCOLS, "-i", effect.file]
+    return args
+
+
+def _audio_graph(clip, settings, keep, duration, has_audio, first_extra):
+    """Narration, optional ducked background music and sound effects, loudness-normalized."""
+    if has_audio:
+        base = _audio_timeline(clip, keep)
+    else:
+        base = f"anullsrc=r={AUDIO_RATE}:cl=mono,atrim=0:{duration:.6f},asetpts=PTS-STARTPTS[ain]"
+    parts = [base]
+    mix_inputs = []
+    if settings.bgm:
+        bgm_index = first_extra
+        parts.append(
+            f"[{bgm_index}:a]atrim=0:{duration:.6f},asetpts=PTS-STARTPTS,"
+            f"volume={settings.bgm_gain_db:.2f}dB[bg0]"
+        )
+        if settings.ducking and has_audio:
+            parts.append("[ain]asplit=2[nk][nm]")
+            parts.append(
+                "[bg0][nk]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=300[bgd]"
+            )
+        else:
+            parts.append("[ain]anull[nm]")
+            parts.append("[bg0]anull[bgd]")
+        mix_inputs += ["[nm]", "[bgd]"]
+        offset = first_extra + 1
+    else:
+        parts.append("[ain]anull[nm]")
+        mix_inputs.append("[nm]")
+        offset = first_extra
+    for index, effect in enumerate(settings.sound_effects):
+        parts.append(
+            f"[{offset + index}:a]aresample={AUDIO_RATE},"
+            f"volume={effect.gain_db:.2f}dB,adelay={round(effect.time * 1000)}:all=1[se{index}]"
+        )
+        mix_inputs.append(f"[se{index}]")
+    if len(mix_inputs) > 1:
+        parts.append(
+            "".join(mix_inputs)
+            + f"amix=inputs={len(mix_inputs)}:duration=first:normalize=0[mix]"
+        )
+    else:
+        parts.append("[nm]anull[mix]")
+    return ";".join(parts)
 
 
 def _loudness_args(measured):
@@ -278,34 +393,50 @@ def _loudness_args(measured):
     return text
 
 
-def measure_loudness(source, clip, keep):
-    """First pass: measure the same audio chain that the render will use."""
+def _audio_tail(settings, duration, measured):
+    fade = settings.fade_seconds
+    tail = f"[mix]{_loudness_args(measured)},aresample={AUDIO_RATE}"
+    if fade > 0 and duration > 2 * fade:
+        tail += f",afade=t=in:st=0:d={fade:.3f},afade=t=out:st={duration - fade:.3f}:d={fade:.3f}"
+    return tail + "[aout]"
+
+
+def measure_loudness(source, clip, settings, keep, duration):
+    """First pass: measure the same audio chain (including music and effects) the render uses.
+
+    Returns None when the audio is silent, so the render falls back to a single pass.
+    """
+    extra = _extra_inputs(settings, duration, [])
     graph = (
-        _audio_timeline(clip, keep)
-        + f";[ain]loudnorm={LOUDNESS}:print_format=json,aresample={AUDIO_RATE}[aout]"
+        _audio_graph(clip, settings, keep, duration, True, first_extra=1)
+        + f";[mix]loudnorm={LOUDNESS}:print_format=json,aresample={AUDIO_RATE}[aout]"
     )
-    duration = clip.end - clip.start
+    command = [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-v",
+        "info",
+        "-n",
+        "-ss",
+        f"{clip.start:.6f}",
+        *PROTOCOLS,
+        *FORMATS,
+        "-i",
+        str(Path(source).resolve()),
+        *extra,
+        "-t",
+        f"{duration:.6f}",
+        "-filter_complex",
+        graph,
+        "-map",
+        "[aout]",
+        "-f",
+        "null",
+        "-",
+    ]
     result = subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-hide_banner",
-            "-v",
-            "info",
-            "-ss",
-            f"{clip.start:.6f}",
-            "-i",
-            str(Path(source).resolve()),
-            "-t",
-            f"{duration:.6f}",
-            "-filter_complex",
-            graph,
-            "-map",
-            "[aout]",
-            "-f",
-            "null",
-            "-",
-        ],
+        command,
         capture_output=True,
         text=True,
         timeout=max(300, duration * 4),
@@ -319,31 +450,48 @@ def measure_loudness(source, clip, keep):
     for key in ["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"]:
         number = float(data[key])
         if not math.isfinite(number):
-            raise PipelineError("loudness measurement is not finite")
+            # Silence measures -inf and has no linear correction; one pass normalizes it.
+            return None
         values[key] = number
     return values
 
 
-def render(source, destination, clip, settings, ass=None, keep=None):
+def render(source, destination, clip, settings, ass=None, keep=None, visuals=()):
+    """Render one clip; visuals are dicts with file, start, end, position, max_fraction."""
     width, height = frame_size(settings)
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
     for zoom in settings.zoom:
         if zoom.end > duration + 0.01:
             raise PipelineError("zoom interval is outside the rendered clip")
+    for visual in visuals:
+        if visual["end"] > duration + 0.01:
+            raise PipelineError("visual interval is outside the rendered clip")
+        if not Path(visual["file"]).is_file():
+            raise PipelineError("visual file is missing")
+    if settings.bgm and not Path(settings.bgm).is_file():
+        raise PipelineError("background music file is missing")
+    if len(settings.sound_effects) > MAX_SOUND_EFFECTS:
+        raise PipelineError("too many sound effects")
+    for effect in settings.sound_effects:
+        if not Path(effect.file).is_file():
+            raise PipelineError("sound effect file is missing")
+        if effect.time >= duration:
+            raise PipelineError("sound effect time is outside the rendered clip")
     if keep and len(keep) > MAX_KEEP_REGIONS:
         raise PipelineError("silence cut produced too many regions")
     has_audio = probe(source)["audio"]
-    graph = [_video_graph(clip, settings, width, height, keep, ass)]
-    if has_audio:
+    first_extra = 1 + len(visuals)
+    graph = [_video_graph(clip, settings, width, height, keep, duration, visuals, ass)]
+    if has_audio or settings.bgm or settings.sound_effects:
         measured = (
-            measure_loudness(source, clip, keep)
-            if settings.loudness_two_pass
+            measure_loudness(source, clip, settings, keep, duration)
+            if settings.loudness_two_pass and has_audio
             else None
         )
         graph.append(
-            _audio_timeline(clip, keep)
-            + f";[ain]{_loudness_args(measured)},aresample={AUDIO_RATE}[aout]"
+            _audio_graph(clip, settings, keep, duration, has_audio, first_extra)
         )
+        graph.append(_audio_tail(settings, duration, measured))
     command = [
         "ffmpeg",
         "-nostdin",
@@ -357,6 +505,7 @@ def render(source, destination, clip, settings, ass=None, keep=None):
         *FORMATS,
         "-i",
         str(Path(source).resolve()),
+        *_extra_inputs(settings, duration, visuals),
         "-t",
         f"{clip.end - clip.start:.6f}",
         "-filter_complex",
@@ -364,8 +513,17 @@ def render(source, destination, clip, settings, ass=None, keep=None):
         "-map",
         "[vout]",
     ]
-    if has_audio:
-        command += ["-map", "[aout]", "-c:a", "aac", "-b:a", "160k", "-ar", str(AUDIO_RATE)]
+    if has_audio or settings.bgm or settings.sound_effects:
+        command += [
+            "-map",
+            "[aout]",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "160k",
+            "-ar",
+            str(AUDIO_RATE),
+        ]
     command += [
         "-r",
         "30",

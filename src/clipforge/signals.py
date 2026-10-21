@@ -5,10 +5,26 @@ import math
 from pathlib import Path
 import re
 import tempfile
+import wave
 
 from . import media
 from .models import Candidate, Segment, Transcript, Word
 from .storage import PipelineError
+
+
+def read_samples(path):
+    """Mono 16 kHz 16-bit WAV as float32 samples in [-1, 1)."""
+    import numpy as np
+
+    with wave.open(str(path), "rb") as wav:
+        if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (
+            1,
+            2,
+            16000,
+        ):
+            raise PipelineError("speech audio must be mono 16-bit PCM at 16 kHz")
+        frames = wav.readframes(wav.getnframes())
+    return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
 
 
 def transcribe(source, info, settings):
@@ -27,8 +43,10 @@ def transcribe(source, info, settings):
             num_workers=1,
             revision=settings.whisper_revision,
         )
+        # Samples, not a path: faster-whisper would otherwise decode with PyAV, whose
+        # open() arguments changed in PyAV 19 (the locked build for Python 3.12+).
         segments, metadata = model.transcribe(
-            str(path),
+            read_samples(path),
             language=settings.language,
             word_timestamps=True,
             vad_filter=True,
@@ -132,12 +150,13 @@ def chat_signals(duration, settings, supplied=None):
     }
 
 
-def candidates(info, transcript, scenes, chat, settings):
+def candidates(info, transcript, scenes, chat, settings, topics=None):
     duration = info["duration"]
     if duration < settings.min_seconds:
         raise PipelineError("video is shorter than the requested minimum clip length")
     window = min(duration, settings.max_seconds)
     step = max(5, window / 2)
+    topic_spans = topics or [(0.0, duration)]
     speech_starts = [s.start for s in transcript.segments]
     speech_ends = [s.end for s in transcript.segments]
     event_times = [e["time"] for e in chat["events"]]
@@ -157,6 +176,11 @@ def candidates(info, transcript, scenes, chat, settings):
     peaks = sorted(counts, key=counts.get, reverse=True)[: settings.candidates * 4]
     for bucket in peaks:
         starts.add(round(max(0, min(duration - window, bucket * 5 - window * 0.65)), 4))
+    # Each topic contributes its own window starts, so short topics are not lost.
+    for a, b in topic_spans:
+        span_start = max(0.0, min(a, duration - window))
+        for k in range(int(max(0.0, b - a - window) / step) + 1):
+            starts.add(round(min(span_start + k * step, max(0, duration - window)), 4))
     pool = []
     for initial in sorted(starts):
         start = initial
@@ -231,6 +255,24 @@ def candidates(info, transcript, scenes, chat, settings):
             return True
         return False
 
+    def middle(item):
+        return (item.start + item.end) / 2
+
+    def spread(items, slots):
+        """Best item of each equal time slot, taken in slot order when the overlap rule allows."""
+        for slot in range(slots):
+            center = duration * (slot + 0.5) / slots
+            in_slot = [
+                item
+                for item in items
+                if min(slots - 1, int(middle(item) / duration * slots)) == slot
+            ]
+            for item in sorted(
+                in_slot, key=lambda c: (-c.heuristic_score, abs(middle(c) - center))
+            ):
+                if add(item):
+                    break
+
     # Keep strong signals, plus temporal diversity so tied scores do not spend
     # the entire visual-analysis budget on the opening minutes.
     strong = max(1, settings.candidates // 2)
@@ -238,21 +280,17 @@ def candidates(info, transcript, scenes, chat, settings):
         add(item)
         if len(chosen) >= strong:
             break
-    bins = max(1, settings.candidates - strong)
-    for bucket in range(bins):
-        center = duration * (bucket + 0.5) / bins
-        bucket_items = [
-            item
-            for item in ranked
-            if min(bins - 1, int((item.start + item.end) / 2 / duration * bins))
-            == bucket
-        ]
-        for item in sorted(
-            bucket_items,
-            key=lambda c: (-c.heuristic_score, abs((c.start + c.end) / 2 - center)),
-        ):
-            if add(item):
-                break
+    remaining = settings.candidates - strong
+    if topics:
+        # Each topic's best window, then spread over the video so later topics are not dropped.
+        heads = []
+        for a, b in topic_spans:
+            inside = [item for item in ranked if a <= middle(item) < b]
+            if inside:
+                heads.append(inside[0])
+        spread(heads, remaining)
+    else:
+        spread(ranked, remaining)
     for item in ranked:
         if len(chosen) >= settings.candidates:
             break
