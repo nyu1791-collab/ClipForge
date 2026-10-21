@@ -1,0 +1,71 @@
+name: Platform API metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Presence check or official public metadata request
+        type: choice
+        options: [credentials, discover, youtube-videos]
+        default: credentials
+      platform:
+        description: Platform for discovery
+        type: choice
+        options: [twitch, kick, youtube, twitcasting]
+        default: twitch
+      identifier:
+        description: Channel identifier, or one YouTube video ID
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipforge-platform-metadata
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Read repository Secrets in memory and request selected metadata
+        env:
+          OPERATION: ${{ inputs.operation }}
+          PLATFORM: ${{ inputs.platform }}
+          PLATFORM_IDENTIFIER: ${{ inputs.identifier }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          TWITCH_EVENTSUB_SECRET: ${{ secrets.TWITCH_EVENTSUB_SECRET }}
+          KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
+          KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          TWITCASTING_CLIENT_ID: ${{ secrets.TWITCASTING_CLIENT_ID }}
+          TWITCASTING_CLIENT_SECRET: ${{ secrets.TWITCASTING_CLIENT_SECRET }}
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from clipforge.integrations.cli import main
+          operation = os.environ['OPERATION']
+          if operation == 'credentials':
+              sys.argv = ['clipforge-platforms', 'credentials']
+          elif operation == 'discover':
+              sys.argv = ['clipforge-platforms', 'discover', os.environ['PLATFORM'], os.environ['PLATFORM_IDENTIFIER']]
+          elif operation == 'youtube-videos':
+              sys.argv = ['clipforge-platforms', 'youtube-videos', os.environ['PLATFORM_IDENTIFIER'], '--daily-budget', '10']
+          else:
+              raise SystemExit('Unsupported operation')
+          raise SystemExit(main())
+          PY
+      # The per-run budget is a cap for this one-shot check, not a project-wide
+      # monitor. For continuous monitoring use one persistent State database.
+      # No credential files, caches, videos or raw API responses are uploaded.

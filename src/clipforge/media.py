@@ -2,8 +2,8 @@
 
 import json
 import math
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 from .storage import PipelineError, process
 
@@ -149,22 +149,57 @@ def preview(source, destination, candidate, settings):
     return probe(destination)
 
 
-def render(source, destination, clip, settings, ass=None):
+def layout(settings, info):
+    """Return a labelled FFmpeg graph; rectangles are measured in source space."""
     numerator, denominator = map(int, settings.aspect.split(":"))
     height = settings.height
     width = round(height * numerator / denominator / 2) * 2
-    mode = "decrease" if settings.framing == "fit" else "increase"
-    filters = [
-        f"scale={width}:{height}:force_original_aspect_ratio={mode}:force_divisible_by=2"
-    ]
-    if settings.framing == "fit":
-        filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
+    scale = f"scale={width}:{height}:force_original_aspect_ratio="
+    if settings.framing == "blur-fit":
+        graph = (
+            "[0:V:0]split[background][foreground];"
+            f"[background]{scale}increase:force_divisible_by=2,"
+            f"crop={width}:{height},gblur=sigma=24,eq=brightness=-0.12[background_blur];"
+            f"[foreground]{scale}decrease:force_divisible_by=2[foreground_fit];"
+            "[background_blur][foreground_fit]overlay=(W-w)/2:(H-h)/2"
+        )
+    elif settings.framing == "two-panel":
+        face_height = round(height * settings.facecam_panel_ratio / 2) * 2
+        game_height = height - face_height
+        face = settings.facecam
+        crop_width = int(info["width"] * face.width / 2) * 2
+        crop_height = int(info["height"] * face.height / 2) * 2
+        if crop_width < 2 or crop_height < 2:
+            raise PipelineError("facecam rectangle is too small for this source")
+        crop_x = int(info["width"] * face.x / 2) * 2
+        crop_y = int(info["height"] * face.y / 2) * 2
+        graph = (
+            "[0:V:0]split[game][face];"
+            f"[game]scale={width}:{game_height}:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+            f"pad={width}:{game_height}:(ow-iw)/2:(oh-ih)/2,setsar=1[game_fit];"
+            f"[face]crop={crop_width}:{crop_height}:{crop_x}:{crop_y},"
+            f"scale={width}:{face_height}:force_original_aspect_ratio=increase:force_divisible_by=2,"
+            f"crop={width}:{face_height},setsar=1[face_fit];"
+            "[game_fit][face_fit]vstack=inputs=2"
+        )
     else:
-        filters.append(f"crop={width}:{height}")
-    filters += ["setsar=1", "setpts=PTS-STARTPTS"]
+        mode = "decrease" if settings.framing == "fit" else "increase"
+        operation = (
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2"
+            if settings.framing == "fit"
+            else f"crop={width}:{height}"
+        )
+        graph = f"[0:V:0]{scale}{mode}:force_divisible_by=2,{operation}"
+    return graph + ",setsar=1,setpts=PTS-STARTPTS", width, height
+
+
+def render(source, destination, clip, settings, ass=None):
+    info = probe(source)
+    graph, width, height = layout(settings, info)
     if ass:
         # Captions are copied to a fixed basename beside the generated MP4.
-        filters.append("ass=filename=captions.ass")
+        graph += ",ass=filename=captions.ass"
+    graph += "[rendered]"
     command = [
         "ffmpeg",
         "-nostdin",
@@ -181,11 +216,13 @@ def render(source, destination, clip, settings, ass=None):
         "-t",
         f"{clip.end - clip.start:.6f}",
         "-map",
-        "0:V:0",
+        "[rendered]",
         "-map",
         "0:a:0?",
-        "-vf",
-        ",".join(filters),
+        "-filter_complex_threads",
+        str(settings.threads),
+        "-filter_complex",
+        graph,
         "-r",
         "30",
         "-c:v",
@@ -199,7 +236,7 @@ def render(source, destination, clip, settings, ass=None):
         "-threads",
         str(settings.threads),
     ]
-    if probe(source)["audio"]:
+    if info["audio"]:
         command += [
             "-af",
             "asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11",

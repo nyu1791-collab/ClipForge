@@ -2,6 +2,23 @@ name: Build package
 
 on:
   workflow_dispatch:
+    inputs:
+      check_platform_secrets:
+        description: Also check repository Secrets and Twitch/Kick/YouTube API authentication
+        type: boolean
+        default: false
+      youtube_video_id:
+        description: Optional public video ID for API and channel RSS verification
+        type: string
+        default: ''
+      twitch_login:
+        description: Optional Twitch login for public channel and archive discovery
+        type: string
+        default: ''
+      kick_slug:
+        description: Optional Kick channel slug for public metadata discovery
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -36,6 +53,97 @@ jobs:
           PY
           python -m pip install build
           python -m build --wheel
+      - name: Check registered platform Secrets
+        if: inputs.check_platform_secrets
+        env:
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          TWITCH_EVENTSUB_SECRET: ${{ secrets.TWITCH_EVENTSUB_SECRET }}
+          KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
+          KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          TWITCASTING_CLIENT_ID: ${{ secrets.TWITCASTING_CLIENT_ID }}
+          TWITCASTING_CLIENT_SECRET: ${{ secrets.TWITCASTING_CLIENT_SECRET }}
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from clipforge.integrations import credential_status
+          from clipforge.integrations.clients import Kick, Twitch, YouTube
+          from clipforge.integrations.state import State
+          print(json.dumps(credential_status(), indent=2))
+          if os.environ.get('TWITCH_CLIENT_ID') and os.environ.get('TWITCH_CLIENT_SECRET'):
+              users = Twitch(State()).request('/users', params={'login': 'yu179191'})['data']
+              print(json.dumps({'twitch_api_authentication': 'accepted', 'account_lookup_found': bool(users)}))
+          if os.environ.get('KICK_CLIENT_ID') and os.environ.get('KICK_CLIENT_SECRET'):
+              channels = Kick(State()).discover('yu1791')
+              print(json.dumps({'kick_api_authentication': 'accepted', 'account_lookup_found': bool(channels)}))
+          if os.environ.get('YOUTUBE_API_KEY'):
+              items = YouTube(State()).videos(['jNQXAC9IVRw'])
+              print(json.dumps({'youtube_api_authentication': 'accepted', 'metadata_items': len(items)}))
+          PY
+      - name: Verify requested YouTube video and discover channel URLs
+        if: inputs.youtube_video_id != ''
+        env:
+          REQUESTED_VIDEO_ID: ${{ inputs.youtube_video_id }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from clipforge.integrations.clients import YouTube
+          from clipforge.integrations.state import State
+          client = YouTube(State(), daily_budget=10)
+          items = client.videos([os.environ['REQUESTED_VIDEO_ID']])
+          print(json.dumps({'requested_video': items}, ensure_ascii=False))
+          for item in items:
+              if item.get('channel_id'):
+                  videos = client.discover(item['channel_id'])
+                  print(json.dumps({'channel_id': item['channel_id'], 'rss_videos': videos,
+                                    'requested_video_in_recent_rss': any(v['video_id'] == item['video_id'] for v in videos)}, ensure_ascii=False))
+          PY
+      - name: Discover requested Twitch channel and archives
+        if: inputs.twitch_login != ''
+        env:
+          REQUESTED_LOGIN: ${{ inputs.twitch_login }}
+          TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+          TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from clipforge.integrations import identifier
+          from clipforge.integrations.clients import Twitch
+          from clipforge.integrations.state import State
+          login = identifier(os.environ['REQUESTED_LOGIN'], r'[A-Za-z0-9_]{1,25}').lower()
+          client = Twitch(State())
+          users = client.request('/users', params={'login': login})['data']
+          if not users:
+              raise SystemExit('Twitch channel not found')
+          channel_id = identifier(users[0]['id'], r'[0-9]+')
+          live = client.request('/streams', params={'user_id': channel_id})['data']
+          print(json.dumps({'twitch_channel': {'channel_id': channel_id,
+              'url': 'https://www.twitch.tv/' + login, 'is_live': bool(live)},
+              'archives': client.discover(login)}, ensure_ascii=False))
+          PY
+      - name: Discover requested Kick channel
+        if: inputs.kick_slug != ''
+        env:
+          REQUESTED_SLUG: ${{ inputs.kick_slug }}
+          KICK_CLIENT_ID: ${{ secrets.KICK_CLIENT_ID }}
+          KICK_CLIENT_SECRET: ${{ secrets.KICK_CLIENT_SECRET }}
+          PYTHONPATH: src
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from clipforge.integrations.clients import Kick
+          from clipforge.integrations.state import State
+          print(json.dumps({'kick_channels': Kick(State()).discover(os.environ['REQUESTED_SLUG'])}, ensure_ascii=False))
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: clipforge-development-wheel

@@ -110,7 +110,11 @@ def chat_signals(duration, settings, supplied=None):
                 continue
             text = str(message.get("message", ""))
             reaction = bool(
-                re.search(r"草|[wｗ]{2,}|\blol\b|\blmao\b|😂|🤣", text, re.I)
+                re.search(
+                    r"草|[wｗ]{2,}|\b(?:lol|lmao|wtf|kekw|lul|omegalul)\b|😂|🤣",
+                    text,
+                    re.I,
+                )
             )
             events.append({"time": seconds, "weight": 2.0 if reaction else 1.0})
     except Exception as error:

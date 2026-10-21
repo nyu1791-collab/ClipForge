@@ -41,6 +41,10 @@ GitHub Secretsから値を読み戻すことはできない。新しいキーを
 Secretsは必要なステップにだけ明示的に渡す。公開側のビルドworkflowはAPIキーを使用しない。
 Claude・AntigravityのOAuth情報は `ai-model-workers` の非公開Secretsに置く。
 
+Twitch/Kick/ツイキャスのOAuth認証情報は、この既存同期の対象として登録済みとは扱いません。
+新しい発行・保存先・登録コマンドは [配信API設定](PLATFORM_SETUP.md) を参照。
+YouTubeは [クォータと取得経路](YOUTUBE_OPERATIONS.md) を参照。
+
 ## 手動ビルド
 
 Actions → `Build package` → Run workflow。
@@ -135,7 +139,7 @@ clipforge-submit --cleanup-tag clipforge-input-REQUEST_ID
 各clipには `start`、`end`、`candidate_id`、`title`、`reason`、0～1の `confidence` が必要です。
 この指定ではGeminiを呼びません。既存の生成物とは別の出力先を使います。
 
-## 今回の確認範囲
+## 初期実装の確認範囲
 
 依存解決、ソースの構文・静的検査、wheel作成とGitHub/VMへの配置を確認します。
 ユーザーからテスト実行の依頼がないため、テストの追加・実行はしません。
