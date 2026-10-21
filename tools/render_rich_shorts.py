@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from clipforge.batch import plan, run, transcribe_audio
-from clipforge.batch_models import ClipsManifest
+from clipforge.batch_models import ClipsManifest, RichStyle
 from clipforge.kick_media import KickVOD
 from clipforge.models import Transcript
 from clipforge.storage import digest, fingerprint, write_json
@@ -24,6 +24,9 @@ def main():
     p.add_argument("--assets", type=Path, default=Path("assets"))
     p.add_argument("--quality", choices=["720p", "1080p", "best"], default="720p")
     p.add_argument("--whisper-model", default="small")
+    p.add_argument(
+        "--style", type=Path, help="Optional RichStyle JSON for brand assets/colors"
+    )
     p.add_argument("--max-bytes", type=int, default=2 * 1024**3)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--plan-only", action="store_true")
@@ -63,6 +66,10 @@ def main():
                 audio,
                 a.count,
                 a.clip_seconds,
+            )
+        if a.style:
+            manifest = manifest.model_copy(
+                update={"style": RichStyle.model_validate_json(a.style.read_text())}
             )
         if a.plan_only:
             if a.output.exists():

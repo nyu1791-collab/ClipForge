@@ -73,17 +73,22 @@ def sync(manifest, assets, cache, allow_hosts, mount=None, s3_endpoint=None):
             ):
                 raise ValueError("HTTPS host must be explicitly allowed")
             try:
-                if not ipaddress.ip_address(parsed.hostname).is_global:
-                    raise ValueError("private destination is unsupported")
+                address = ipaddress.ip_address(parsed.hostname)
             except ValueError:
-                if parsed.hostname in {
-                    "localhost",
-                    "metadata.google.internal",
-                } or re.fullmatch(r"[0-9.]+", parsed.hostname):
-                    raise ValueError("private/invalid destination")
+                address = None
+            if (address is not None and not address.is_global) or parsed.hostname in {
+                "localhost",
+                "metadata.google.internal",
+            }:
+                raise ValueError("private destination is unsupported")
             handle = build_opener(NoRedirect()).open(source, timeout=30)
         elif parsed.scheme == "s3":
             import boto3
+
+            if parsed.username or parsed.password or parsed.query or parsed.fragment:
+                raise ValueError(
+                    "s3 URLs must not contain credentials or query parameters"
+                )
 
             # Standard provider credentials remain in the environment/profile.
             if s3_endpoint:

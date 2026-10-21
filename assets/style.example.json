@@ -1,0 +1,12 @@
+{
+  "height": 720,
+  "font": "Noto Sans CJK JP",
+  "bgm": "bgm/demo-soft.wav",
+  "se": "se/demo-hook.wav",
+  "overlay": "overlays/demo-frame.png",
+  "bgm_gain": 0.07,
+  "se_gain": 0.15,
+  "caption_color": "#FFFFFF",
+  "outline_color": "#000000",
+  "highlight_color": "#FFD228"
+}
