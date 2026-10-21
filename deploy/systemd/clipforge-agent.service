@@ -1,0 +1,26 @@
+[Unit]
+Description=ClipForge public URL intake (private CPU workers)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=n_yu1791
+Group=dcremote
+UMask=0077
+WorkingDirectory=/var/lib/clipforge-agent
+ExecStart=/usr/bin/python3 /usr/local/lib/clipforge-agent/url_bridge.py serve
+Restart=on-failure
+RestartSec=10
+RuntimeDirectory=clipforge-agent
+RuntimeDirectoryMode=0750
+StateDirectory=clipforge-agent
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/clipforge-agent /run/clipforge-agent
+
+[Install]
+WantedBy=multi-user.target
