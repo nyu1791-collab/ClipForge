@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pysubs2
 
 from clipforge import captions
-from clipforge.batch import speech_end
+from clipforge.batch import run, speech_end
 from clipforge.batch_models import ClipsManifest
 from clipforge.batch_workflow import automatic, cache_lock, transcribe_full
 from clipforge.caption_layout import NO_START, timed_units, units
@@ -279,6 +279,80 @@ class VideoFoundationTests(unittest.TestCase):
                 transcribe_full(audio, 700, root, "small")
                 self.assertEqual(engine.call_count, 1)
                 self.assertEqual(asr.call_count, 1)
+
+    def test_cached_render_and_completed_resume_need_no_kick_connection(self):
+        value = json.loads(Path("jobs/examples/kick-test-3.json").read_text())
+        value["style"] = {}
+        for c in value["clips"]:
+            c["subtitles"] = [
+                {
+                    "start": c["start_time"] + 1,
+                    "end": c["start_time"] + 2,
+                    "text": "合成の確認用",
+                }
+            ]
+        manifest = ClipsManifest.model_validate(value)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            cache = root / "cache"
+            for c in manifest.clips:
+                key = fingerprint(
+                    {
+                        "url": manifest.source_url,
+                        "start": c.start_time,
+                        "end": c.end_time,
+                        "quality": "720p",
+                    }
+                )
+                source = cache / "ranges" / (key + ".mp4")
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(b"synthetic-source-fixture")
+                write_json(
+                    source.with_suffix(".json"),
+                    {
+                        "sha256": digest(source),
+                        "source_duration": manifest.source_duration,
+                    },
+                )
+
+            def render_fixture(source, staging, clip, *args):
+                staging.mkdir()
+                for name in (
+                    "video.mp4",
+                    "captions.ass",
+                    "captions.srt",
+                    "caption_review.json",
+                ):
+                    (staging / name).write_bytes(b"synthetic-render-fixture")
+                return {"clip": clip.model_dump()}
+
+            with (
+                patch("clipforge.batch.KickVOD") as vod,
+                patch("clipforge.batch.render", side_effect=render_fixture) as render,
+            ):
+                run(manifest, root / "output", cache, "assets")
+                run(manifest, root / "output", cache, "assets", resume=True)
+                vod.assert_not_called()
+                self.assertEqual(render.call_count, 3)
+                (root / "output" / "clip_01" / "video.mp4").write_bytes(b"tampered")
+                with self.assertRaises(PipelineError):
+                    run(manifest, root / "output", cache, "assets", resume=True)
+
+    def test_true_peak_gate_rejects_output_even_if_decoder_exits_successfully(self):
+        from types import SimpleNamespace
+
+        from clipforge.quality import inspect_video
+
+        probe = {"width": 404, "height": 720, "duration": 30, "audio": True}
+        report = SimpleNamespace(
+            stderr=json.dumps({"input_i": "-16.0", "input_tp": "-0.34"}).encode()
+        )
+        with (
+            patch("clipforge.quality.media.probe", return_value=probe),
+            patch("clipforge.quality.process", return_value=report),
+        ):
+            with self.assertRaises(PipelineError):
+                inspect_video("synthetic.mp4", 30, 404, 720)
 
 
 if __name__ == "__main__":

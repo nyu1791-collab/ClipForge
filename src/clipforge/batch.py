@@ -336,12 +336,6 @@ def run(
             old,
             {"key": key, "manifest": manifest.model_dump(), "assets_sha256": hashes},
         )
-        vod = KickVOD(
-            manifest.source_url,
-            cache / "segments",
-            max_bytes,
-            max(14400, manifest.source_duration + 60),
-        )
         results, filled = [], []
         for clip in manifest.clips:
             target = output / clip.clip_id
@@ -375,6 +369,13 @@ def run(
                     raise PipelineError("range cache has no matching receipt")
                 download = json.loads(fetched.read_text())
             else:
+                if vod is None:
+                    vod = KickVOD(
+                        manifest.source_url,
+                        cache / "segments",
+                        max_bytes,
+                        max(14400, manifest.source_duration + 60),
+                    )
                 download = vod.retrieve(source, clip.start_time, clip.end_time, quality)
                 write_json(fetched, download)
             if abs(download["source_duration"] - manifest.source_duration) > 2:
@@ -452,7 +453,7 @@ def run(
             "clips": results,
             "human_review_performed": False,
             "remote_model_requests": 0,
-            "media_budget_used": vod.used,
+            "media_budget_used": vod.used if vod else 0,
         }
         write_json(output / "batch_result.json", result)
         write_json(
