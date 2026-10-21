@@ -47,6 +47,19 @@ def test_timelines_join_kept_regions_only_when_cut():
     assert media._audio_timeline(CLIP, KEEP).endswith("concat=n=2:v=0:a=1[ain]")
 
 
+def test_each_kept_audio_piece_fades_at_both_ends_to_hide_splices():
+    audio = media._audio_timeline(CLIP, KEEP)
+    # First piece is 2 s long, second is 7 s; both use the full splice fade.
+    assert "atrim=start=0.000000:end=2.000000,asetpts=PTS-STARTPTS," in audio
+    assert "afade=t=in:st=0:d=0.015,afade=t=out:st=1.985:d=0.015[ak0]" in audio
+    assert "afade=t=in:st=0:d=0.015,afade=t=out:st=6.985:d=0.015[ak1]" in audio
+
+
+def test_a_very_short_kept_piece_fades_by_at_most_half_its_length():
+    audio = media._audio_timeline(CLIP, [(10.0, 10.02)])
+    assert "afade=t=in:st=0:d=0.010,afade=t=out:st=0.010:d=0.010[ak0]" in audio
+
+
 def test_layouts_end_with_the_requested_label():
     box = (0.0, 0.0, 1.0, 1.0)
     fit = media._layout(make(framing="fit"), 404, 720, "vin", "out")

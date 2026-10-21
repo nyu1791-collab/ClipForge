@@ -78,7 +78,48 @@ def test_probe_whitelists_protocols_and_ignores_cover_art(monkeypatch, tmp_path)
         "height": 180,
         "audio": True,
         "audio_start": 0.0,
+        "frame_rate": None,
     }
+
+
+def test_probe_reports_the_exact_frame_rate(monkeypatch, tmp_path):
+    stream = {
+        "codec_type": "video",
+        "width": 640,
+        "height": 360,
+        "avg_frame_rate": "30000/1001",
+        "r_frame_rate": "30000/1001",
+    }
+    output = {"format": {"duration": "5"}, "streams": [stream]}
+    monkeypatch.setattr(
+        media,
+        "process",
+        lambda command: subprocess.CompletedProcess(
+            command, 0, json.dumps(output).encode(), b""
+        ),
+    )
+    assert media.probe(tmp_path / "input")["frame_rate"] == "30000/1001"
+    # When the average is missing, the nominal rate is used; a zero rate is unusable.
+    stream.update(avg_frame_rate="0/0", r_frame_rate="25/1")
+    assert media.probe(tmp_path / "input")["frame_rate"] == "25"
+    stream.update(avg_frame_rate="0/0", r_frame_rate="0/0")
+    assert media.probe(tmp_path / "input")["frame_rate"] is None
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("25", "25"),
+        ("30000/1001", "30000/1001"),
+        ("30", "30"),
+        ("60", "30"),
+        ("120", "30"),
+        (None, "30"),
+    ],
+)
+def test_output_keeps_slow_sources_and_lowers_fast_ones_to_30(source, expected):
+    # A 25 fps source must not be repeated up to 30 fps; faster sources drop frames.
+    assert str(media.output_rate(source)) == expected
 
 
 LOUDNESS = (

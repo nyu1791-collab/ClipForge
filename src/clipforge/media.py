@@ -2,6 +2,7 @@
 
 import json
 import math
+from fractions import Fraction
 from pathlib import Path
 import re
 import shutil
@@ -15,6 +16,8 @@ AUDIO_RATE = 48000
 LOUDNESS = "I=-16:TP=-1.5:LRA=11"
 MAX_KEEP_REGIONS = 60
 MAX_SOUND_EFFECTS = 20
+SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio
+VIDEO_CRF = 20  # x264 quality: lower is sharper and larger
 PROGRESS_RGB = (255, 196, 0)
 
 
@@ -69,7 +72,28 @@ def probe(path):
         "audio": audio is not None,
         # Speech extraction starts at the audio stream's own start, not at 0 s.
         "audio_start": float(audio.get("start_time") or 0) if audio else 0.0,
+        "frame_rate": _frame_rate(video.get("avg_frame_rate"))
+        or _frame_rate(video.get("r_frame_rate")),
     }
+
+
+def _frame_rate(value):
+    """Exact frame rate as text such as 30000/1001; None when the probe value is unusable."""
+    try:
+        rate = Fraction(value)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+    return str(rate) if rate > 0 else None
+
+
+def output_rate(source_rate):
+    """Keep the source frame rate up to 30 fps; faster sources are reduced to 30.
+
+    Changing a 25 fps source to 30 fps repeats a frame every fifth frame, which shows as
+    judder, so the rate is only ever lowered.
+    """
+    rate = Fraction(source_rate) if source_rate else Fraction(30)
+    return min(rate, Fraction(30))
 
 
 def audio(source, destination, duration):
@@ -187,11 +211,17 @@ def _video_timeline(clip, keep):
 def _audio_timeline(clip, keep):
     if not keep:
         return "[0:a:0]asetpts=PTS-STARTPTS[ain]"
-    parts = [
-        f"[0:a:0]atrim=start={a - clip.start:.6f}:end={b - clip.start:.6f},"
-        f"asetpts=PTS-STARTPTS[ak{i}]"
-        for i, (a, b) in enumerate(keep)
-    ]
+    parts = []
+    for i, (a, b) in enumerate(keep):
+        # Each kept piece fades briefly at both ends, so a splice where silence was removed
+        # does not click when the background noise is not zero at that point.
+        length = b - a
+        fade = min(SPLICE_FADE, length / 2)
+        parts.append(
+            f"[0:a:0]atrim=start={a - clip.start:.6f}:end={b - clip.start:.6f},"
+            f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={fade:.3f},"
+            f"afade=t=out:st={length - fade:.3f}:d={fade:.3f}[ak{i}]"
+        )
     labels = "".join(f"[ak{i}]" for i in range(len(keep)))
     return ";".join(parts) + f";{labels}concat=n={len(keep)}:v=0:a=1[ain]"
 
@@ -491,7 +521,8 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
             raise PipelineError("sound effect time is outside the rendered clip")
     if keep and len(keep) > MAX_KEEP_REGIONS:
         raise PipelineError("silence cut produced too many regions")
-    has_audio = probe(source)["audio"]
+    source_info = probe(source)
+    has_audio = source_info["audio"]
     first_extra = 1 + len(visuals)
     graph = [_video_graph(clip, settings, width, height, keep, duration, visuals, ass)]
     if has_audio or settings.bgm or settings.sound_effects:
@@ -538,13 +569,13 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
         ]
     command += [
         "-r",
-        "30",
+        str(output_rate(source_info.get("frame_rate"))),
         "-c:v",
         "libx264",
         "-preset",
         settings.encode_preset,
         "-crf",
-        "20",
+        str(VIDEO_CRF),
         "-pix_fmt",
         "yuv420p",
         "-threads",
