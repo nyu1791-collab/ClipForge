@@ -117,7 +117,7 @@ def create(transcript, clip, directory, settings):
         outline=2.5,
         shadow=0.7,
         bold=True,
-        alignment=2,
+        alignment=pysubs2.Alignment.BOTTOM_CENTER,
         marginl=35,
         marginr=35,
         marginv=round(height * 0.12),

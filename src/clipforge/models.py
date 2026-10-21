@@ -37,7 +37,7 @@ class Transcript(Record):
 
 
 class Candidate(Span):
-    id: str
+    id: str = Field(pattern=r"^candidate-[0-9]{3}$")
     heuristic_score: float
     speech_seconds: float
     chat_reactions: float

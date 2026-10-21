@@ -54,9 +54,17 @@ def stage(root, name, key, producer):
     path = root / (name + ".json")
     receipt = root / ".state" / (name + ".json")
     if path.is_file() and receipt.is_file():
-        old = json.loads(receipt.read_text())
-        if old.get("key") == key and old.get("sha256") == digest(path):
-            return json.loads(path.read_text())
+        try:
+            old = json.loads(receipt.read_text())
+            if (
+                isinstance(old, dict)
+                and old.get("key") == key
+                and old.get("sha256") == digest(path)
+            ):
+                return json.loads(path.read_text())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # A damaged cache is not a completed stage. Recompute this stage only.
+            pass
     value = producer()
     write_json(path, value)
     write_json(receipt, {"key": key, "sha256": digest(path)})

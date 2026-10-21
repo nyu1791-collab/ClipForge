@@ -7,10 +7,65 @@ from .models import PickEnvelope, SelectedClip, validate_picks
 from .storage import PipelineError, digest
 
 
+def response_schema(candidates, settings):
+    # Google's Schema dialect does not accept JSON Schema's exclusiveMinimum.
+    # Keep the wire contract portable; Pydantic enforces strict ordering and
+    # duration bounds again after the response arrives.
+    return {
+        "type": "OBJECT",
+        "required": ["clips"],
+        "properties": {
+            "clips": {
+                "type": "ARRAY",
+                "minItems": 1,
+                "maxItems": settings.clips,
+                "items": {
+                    "type": "OBJECT",
+                    "required": [
+                        "candidate_id",
+                        "start",
+                        "end",
+                        "title",
+                        "reason",
+                        "confidence",
+                    ],
+                    "properties": {
+                        "candidate_id": {
+                            "type": "STRING",
+                            "enum": [c.id for c in candidates],
+                        },
+                        "start": {
+                            "type": "NUMBER",
+                            "minimum": 0,
+                            "maximum": settings.max_seconds,
+                        },
+                        "end": {
+                            "type": "NUMBER",
+                            "minimum": 0,
+                            "maximum": settings.max_seconds,
+                        },
+                        "title": {"type": "STRING"},
+                        "reason": {"type": "STRING"},
+                        "confidence": {"type": "NUMBER", "minimum": 0, "maximum": 1},
+                    },
+                },
+            }
+        },
+    }
+
+
 def choose(source, previews, candidates, transcript, info, settings):
     from google import genai
-    from google.genai import types
+    from google.genai import errors, types
 
+    if (
+        not candidates
+        or len(candidates) != len(previews)
+        or len({c.id for c in candidates}) != len(candidates)
+    ):
+        raise PipelineError(
+            "analysis candidates and previews must have matching unique identifiers"
+        )
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         raise PipelineError("GEMINI_API_KEY is required for visual selection")
@@ -78,7 +133,7 @@ def choose(source, previews, candidates, transcript, info, settings):
                 temperature=0.2,
                 max_output_tokens=6000,
                 response_mime_type="application/json",
-                response_schema=PickEnvelope,
+                response_schema=response_schema(candidates, settings),
                 tools=[],
             ),
         )
@@ -128,6 +183,15 @@ def choose(source, previews, candidates, transcript, info, settings):
         return result
     except PipelineError:
         raise
+    except errors.APIError as error:
+        status = (
+            error.code
+            if isinstance(error.code, int) and 100 <= error.code <= 599
+            else "unknown"
+        )
+        raise PipelineError(
+            f"Gemini request failed (HTTP {status}); no automatic retry"
+        ) from None
     except Exception as error:
         raise PipelineError(
             "Gemini selection failed (" + type(error).__name__ + ")"

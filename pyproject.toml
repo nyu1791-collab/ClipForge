@@ -28,3 +28,18 @@ Issues = "https://github.com/nyu1791-collab/ClipForge/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+  "integration: real FFmpeg, font and video checks (GitHub runner)",
+  "asr: real CPU speech recognition with downloaded model weights (GitHub runner)",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.4.2",
+    "pytest-cov>=6,<8",
+    "ruff==0.14.14",
+]

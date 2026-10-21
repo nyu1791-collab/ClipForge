@@ -1,0 +1,153 @@
+import json
+import subprocess
+
+import pytest
+
+from clipforge import media
+from clipforge.models import SelectedClip
+from clipforge.storage import PipelineError
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"streams": [], "format": {"duration": "10"}},
+        {"streams": [{"codec_type": "audio"}], "format": {"duration": "10"}},
+        {
+            "streams": [{"codec_type": "video", "width": 320, "height": 180}],
+            "format": {"duration": "nan"},
+        },
+        {
+            "streams": [{"codec_type": "video", "width": 320, "height": 180}],
+            "format": {"duration": "0"},
+        },
+        {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "width": 320,
+                    "height": 180,
+                    "disposition": {"attached_pic": 1},
+                }
+            ],
+            "format": {"duration": "10"},
+        },
+    ],
+)
+def test_probe_rejects_invalid_video(monkeypatch, data, tmp_path):
+    monkeypatch.setattr(
+        media,
+        "process",
+        lambda command: subprocess.CompletedProcess(
+            command, 0, json.dumps(data).encode(), b""
+        ),
+    )
+    with pytest.raises(PipelineError):
+        media.probe(tmp_path / "input")
+
+
+def test_probe_whitelists_protocols_and_ignores_cover_art(monkeypatch, tmp_path):
+    def execute(command):
+        assert command[command.index("-protocol_whitelist") + 1] == "file,pipe"
+        assert "hls" not in command[command.index("-format_whitelist") + 1]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "format": {"duration": "10.25"},
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "width": 20,
+                            "height": 20,
+                            "disposition": {"attached_pic": 1},
+                        },
+                        {"codec_type": "video", "width": 320, "height": 180},
+                        {"codec_type": "audio"},
+                    ],
+                }
+            ).encode(),
+            b"",
+        )
+
+    monkeypatch.setattr(media, "process", execute)
+    assert media.probe(tmp_path / "input") == {
+        "duration": 10.25,
+        "width": 320,
+        "height": 180,
+        "audio": True,
+    }
+
+
+@pytest.mark.parametrize("audio", [False, True])
+@pytest.mark.parametrize("framing", ["fit", "center-crop"])
+def test_render_commands_are_local_relative_and_cpu(
+    monkeypatch, tmp_path, settings, audio, framing
+):
+    settings.framing = framing
+    clip = SelectedClip(
+        start=21, end=27, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    destination = tmp_path / "video.mp4"
+    info = {"duration": 6, "width": 404, "height": 720, "audio": audio}
+    monkeypatch.setattr(media, "probe", lambda path: info)
+
+    def execute(command, **kwargs):
+        assert "-n" in command
+        assert command[command.index("-ss") + 1] == "21.000000"
+        assert command[command.index("-t") + 1] == "6.000000"
+        assert command[command.index("-map") + 1] == "0:V:0"
+        assert command[command.index("-c:v") + 1] == "libx264"
+        assert ("-af" in command) == audio
+        video_filter = command[command.index("-vf") + 1]
+        assert "setpts=PTS-STARTPTS" in video_filter
+        assert "ass=filename=captions.ass" in video_filter
+        assert ("pad=" in video_filter) == (framing == "fit")
+        assert ("crop=" in video_filter) == (framing == "center-crop")
+        assert kwargs["cwd"] == tmp_path
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(subprocess, "run", execute)
+    assert (
+        media.render(
+            tmp_path / "source with spaces.mp4",
+            destination,
+            clip,
+            settings,
+            ass=tmp_path / "captions.ass",
+        )
+        == info
+    )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"duration": 1, "width": 404, "height": 720, "audio": True},
+        {"duration": 6, "width": 500, "height": 720, "audio": True},
+    ],
+)
+def test_render_rejects_incomplete_output(monkeypatch, tmp_path, settings, bad):
+    monkeypatch.setattr(media, "probe", lambda path: bad)
+    monkeypatch.setattr(
+        subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a, 0, b"", b"")
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    with pytest.raises(PipelineError):
+        media.render(tmp_path / "input", tmp_path / "video.mp4", clip, settings)
+
+
+def test_decoding_errors_rejected_without_echo(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        media,
+        "process",
+        lambda *a, **kw: subprocess.CompletedProcess(
+            a, 0, b"", b"private decoder detail"
+        ),
+    )
+    with pytest.raises(PipelineError) as caught:
+        media.audio(tmp_path / "input", tmp_path / "audio.wav", 30)
+    assert "private decoder detail" not in str(caught.value)

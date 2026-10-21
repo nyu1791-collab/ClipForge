@@ -173,7 +173,10 @@ def candidates(info, transcript, scenes, chat, settings):
         if near:
             end = max(near)
         if end - start < settings.min_seconds:
-            continue
+            # Boundary snapping must not discard a legal short/tail video.
+            start, end = initial, min(duration, initial + window)
+            if end - start < settings.min_seconds:
+                continue
         speech = sum(
             max(0, min(s.end, end) - max(s.start, start)) for s in transcript.segments
         )
@@ -205,7 +208,7 @@ def candidates(info, transcript, scenes, chat, settings):
         )
         pool.append(
             Candidate(
-                id="pending",
+                id="candidate-000",
                 start=start,
                 end=end,
                 heuristic_score=round(score, 4),
@@ -237,9 +240,18 @@ def candidates(info, transcript, scenes, chat, settings):
             break
     bins = max(1, settings.candidates - strong)
     for bucket in range(bins):
-        for item in ranked:
-            location = min(bins - 1, int((item.start + item.end) / 2 / duration * bins))
-            if location == bucket and add(item):
+        center = duration * (bucket + 0.5) / bins
+        bucket_items = [
+            item
+            for item in ranked
+            if min(bins - 1, int((item.start + item.end) / 2 / duration * bins))
+            == bucket
+        ]
+        for item in sorted(
+            bucket_items,
+            key=lambda c: (-c.heuristic_score, abs((c.start + c.end) / 2 - center)),
+        ):
+            if add(item):
                 break
     for item in ranked:
         if len(chosen) >= settings.candidates:
