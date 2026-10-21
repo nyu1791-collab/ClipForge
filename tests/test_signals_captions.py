@@ -257,3 +257,29 @@ def test_latin_terms_that_recognition_writes_in_lower_case_are_capitalized():
         captions.normalize_terms("ai には agi と asi、Aiko")
         == "AI には AGI と ASI、Aiko"
     )
+
+
+def test_a_short_caption_joins_a_neighbour_when_the_result_still_fits():
+    long_part = [(0.0, 2.0, "あいうえ")]
+    short_part = [(2.0, 2.5, "かき")]
+    joined = captions._join_short([long_part, short_part], FixedWidth(), 300, 2)
+    assert joined == [long_part + short_part]
+
+
+def test_a_short_caption_stays_short_when_joining_would_break_a_limit():
+    # Joined, the two would last 4.4 s, which is longer than a caption may be.
+    groups = [[(0.0, 3.8, "あ")], [(3.8, 4.4, "かき")]]
+    assert len(captions._join_short(groups, FixedWidth(), 300, 2)) == 2
+    # A pause of one second separates them, so they never join.
+    groups = [[(0.0, 2.0, "あいうえ")], [(3.0, 3.5, "かき")]]
+    assert len(captions._join_short(groups, FixedWidth(), 300, 2)) == 2
+
+
+def test_word_cut_avoids_a_fragment_even_at_a_word_start():
+    members = [
+        (0.0, 0.3, "か"),
+        (0.3, 0.6, "父"),  # a word start after か, but the head would be 0.3 s
+        (0.6, 2.5, "さんき"),
+        (2.5, 3.0, "くけ"),  # a boundary between kana with a head of 2.5 s
+    ]
+    assert captions._word_cut(members) == 3

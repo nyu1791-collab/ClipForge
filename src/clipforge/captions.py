@@ -26,6 +26,10 @@ NO_LINE_END = set("「『（〔［｛")
 BREAK_AFTER = set("、。，．！？!? 　")
 # A preferred break must leave a first line at least this share of the width.
 MIN_FILL = 0.3
+# A pause this long ends a caption. Shorter captions are joined to a neighbour across
+# shorter pauses; no caption is shown for less than MIN_CAPTION_SECONDS when avoidable.
+PAUSE_SECONDS = 0.7
+MIN_CAPTION_SECONDS = 1.0
 # Latin terms that speech recognition often writes in lower case.
 TERMS = {"ai": "AI", "agi": "AGI", "asi": "ASI"}
 YELLOW = (255, 210, 40)
@@ -231,13 +235,22 @@ def wrap_breaks(text, measure, line_px):
 
 
 def _word_cut(members):
-    """Where a caption may end inside members without splitting a word, or None."""
-    for rank in (2, 1):
-        for k in range(len(members) - 1, 0, -1):
-            prev, nxt = members[k - 1][2][-1:], members[k][2][:1]
-            if _boundary_rank(prev, nxt) >= rank:
-                return k
-    return None
+    """Where a caption may end inside members without splitting a word, or None.
+
+    A head that lasts MIN_CAPTION_SECONDS is preferred, so no caption is a fragment; then a
+    word start over a boundary between kana; then the latest boundary.
+    """
+    best = None
+    for k in range(1, len(members)):
+        prev, nxt = members[k - 1][2][-1:], members[k][2][:1]
+        rank = _boundary_rank(prev, nxt)
+        if rank < 1:
+            continue
+        long_enough = members[k - 1][1] - members[0][0] >= MIN_CAPTION_SECONDS
+        key = (long_enough, rank, k)
+        if best is None or key > best[0]:
+            best = (key, k)
+    return best[1] if best else None
 
 
 def group(tokens, measure, line_px, max_lines=2):
@@ -254,7 +267,7 @@ def group(tokens, measure, line_px, max_lines=2):
 
     groups, current = [], []
     for token in tokens:
-        if current and token[0] - current[-1][1] > 0.7:
+        if current and token[0] - current[-1][1] > PAUSE_SECONDS:
             groups.append(current)
             current = []
         while current and overflows(current, token):
@@ -264,7 +277,51 @@ def group(tokens, measure, line_px, max_lines=2):
         current.append(token)
     if current:
         groups.append(current)
-    return groups
+    return _join_short(groups, measure, line_px, max_lines)
+
+
+def _fits_caption(members, measure, line_px, max_lines):
+    text = "".join(item[2] for item in members)
+    within_lines = len(wrap_breaks(text, measure, line_px)) + 1 <= max_lines
+    return within_lines and members[-1][1] - members[0][0] <= 4
+
+
+def _join_short(groups, measure, line_px, max_lines):
+    """Join a caption shorter than MIN_CAPTION_SECONDS to a neighbour, when that still fits.
+
+    Only neighbours with no pause between them qualify. A short caption that cannot join
+    stays short; it is never made longer than the caption rules allow.
+    """
+    merged = list(groups)
+    index = 0
+    while index < len(merged) and len(merged) > 1:
+        members = merged[index]
+        if members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS:
+            index += 1
+            continue
+        options = []
+        if index > 0 and members[0][0] - merged[index - 1][-1][1] <= PAUSE_SECONDS:
+            options.append((index - 1, merged[index - 1] + members))
+        if (
+            index + 1 < len(merged)
+            and merged[index + 1][0][0] - members[-1][1] <= PAUSE_SECONDS
+        ):
+            options.append((index, members + merged[index + 1]))
+        joined = next(
+            (
+                (position, combined)
+                for position, combined in options
+                if _fits_caption(combined, measure, line_px, max_lines)
+            ),
+            None,
+        )
+        if joined is None:
+            index += 1
+            continue
+        position, combined = joined
+        merged[position : position + 2] = [combined]
+        index = position
+    return merged
 
 
 def with_breaks(text, breaks):
