@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       check_platform_secrets:
-        description: Also check repository Secrets and Twitch/YouTube API authentication
+        description: Also check repository Secrets and Twitch/Kick/YouTube API authentication
         type: boolean
         default: false
 
@@ -58,12 +58,15 @@ jobs:
           import json
           import os
           from clipforge.integrations import credential_status
-          from clipforge.integrations.clients import Twitch, YouTube
+          from clipforge.integrations.clients import Kick, Twitch, YouTube
           from clipforge.integrations.state import State
           print(json.dumps(credential_status(), indent=2))
           if os.environ.get('TWITCH_CLIENT_ID') and os.environ.get('TWITCH_CLIENT_SECRET'):
               users = Twitch(State()).request('/users', params={'login': 'yu179191'})['data']
               print(json.dumps({'twitch_api_authentication': 'accepted', 'account_lookup_found': bool(users)}))
+          if os.environ.get('KICK_CLIENT_ID') and os.environ.get('KICK_CLIENT_SECRET'):
+              channels = Kick(State()).discover('yu1791')
+              print(json.dumps({'kick_api_authentication': 'accepted', 'account_lookup_found': bool(channels)}))
           if os.environ.get('YOUTUBE_API_KEY'):
               items = YouTube(State()).videos(['jNQXAC9IVRw'])
               print(json.dumps({'youtube_api_authentication': 'accepted', 'metadata_items': len(items)}))
