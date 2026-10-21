@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import tempfile
 
-from . import __version__, media, signals
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from . import __version__, media, signals, silence
 from .captions import create as create_captions
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import PipelineError, digest, fingerprint, stage, within, write_json
@@ -112,71 +114,100 @@ def record_failure(output, error, current_stage):
     write_json(output / "manifest.json", {**failure, "rendered": []})
 
 
+def cut_regions(source, transcript, clip, settings):
+    """Original-time intervals to keep when silence cutting is enabled, else None."""
+    if not settings.silence_cut:
+        return None
+    if settings.vad == "transcript":
+        spans = silence.transcript_spans(transcript, clip.start, clip.end)
+    else:
+        spans = silence.silero_spans(source, clip.start, clip.end)
+    regions = silence.keep_regions(
+        spans, clip.start, clip.end, settings.silence_pad, settings.silence_min_gap
+    )
+    return regions or None
+
+
+def render_clip(source, root, index, clip, transcript, settings, key):
+    name = f"clip-{index:03}"
+    target = root / name
+    render_key = fingerprint(
+        {
+            "job": key,
+            "clip": clip.model_dump(),
+            "transcript": transcript.model_dump(),
+        }
+    )
+    receipt = target / "render.json"
+    if target.exists():
+        if not receipt.is_file():
+            raise PipelineError("existing clip has no verified render receipt")
+        old = json.loads(receipt.read_text())
+        if (
+            not isinstance(old, dict)
+            or old.get("key") != render_key
+            or not isinstance(old.get("sha256"), dict)
+            or set(old.get("sha256", {}))
+            != {"video.mp4", "captions.ass", "captions.srt"}
+            or any(
+                not (target / n).is_file() or digest(target / n) != sha
+                for n, sha in old.get("sha256", {}).items()
+            )
+        ):
+            raise PipelineError("existing clip differs from the saved render receipt")
+        return {"directory": "clips/" + name, **old}
+    keep = cut_regions(source, transcript, clip, settings)
+    with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
+        directory = Path(temporary)
+        caption = create_captions(transcript, clip, directory, settings, keep)
+        info = media.render(
+            source,
+            directory / "video.mp4",
+            clip,
+            settings,
+            ass=directory / "captions.ass",
+            keep=keep,
+        )
+        old = {
+            "key": render_key,
+            "selection": clip.model_dump(),
+            "status": "rendered",
+            "media": info,
+            "captions": caption,
+            "keep": keep,
+            "sha256": {
+                n: digest(directory / n)
+                for n in ["video.mp4", "captions.ass", "captions.srt"]
+            },
+        }
+        write_json(directory / "render.json", old)
+        # Commit the whole clip directory only when MP4 and captions are complete.
+        if target.exists():
+            raise PipelineError("clip output already exists")
+        directory.rename(target)
+    return {"directory": "clips/" + name, **old}
+
+
 def render_clips(source, output, clips, transcript, settings, key):
+    """Render clips in parallel; results keep the selection order."""
     root = within(output, output / "clips")
     root.mkdir(exist_ok=True)
-    rendered = []
-    for index, clip in enumerate(clips, 1):
-        name = f"clip-{index:03}"
-        target = root / name
-        render_key = fingerprint(
-            {
-                "job": key,
-                "clip": clip.model_dump(),
-                "transcript": transcript.model_dump(),
-            }
-        )
-        receipt = target / "render.json"
-        if target.exists():
-            if not receipt.is_file():
-                raise PipelineError("existing clip has no verified render receipt")
-            old = json.loads(receipt.read_text())
-            if (
-                not isinstance(old, dict)
-                or old.get("key") != render_key
-                or not isinstance(old.get("sha256"), dict)
-                or set(old.get("sha256", {}))
-                != {"video.mp4", "captions.ass", "captions.srt"}
-                or any(
-                    not (target / n).is_file() or digest(target / n) != sha
-                    for n, sha in old.get("sha256", {}).items()
-                )
-            ):
-                raise PipelineError(
-                    "existing clip differs from the saved render receipt"
-                )
-            rendered.append({"directory": "clips/" + name, **old})
-            continue
-        with tempfile.TemporaryDirectory(
-            prefix="." + name + "-", dir=root
-        ) as temporary:
-            directory = Path(temporary)
-            caption = create_captions(transcript, clip, directory, settings)
-            info = media.render(
-                source,
-                directory / "video.mp4",
-                clip,
-                settings,
-                ass=directory / "captions.ass",
-            )
-            old = {
-                "key": render_key,
-                "selection": clip.model_dump(),
-                "status": "rendered",
-                "media": info,
-                "captions": caption,
-                "sha256": {
-                    n: digest(directory / n)
-                    for n in ["video.mp4", "captions.ass", "captions.srt"]
-                },
-            }
-            write_json(directory / "render.json", old)
-            # Commit the whole clip directory only when MP4 and captions are complete.
-            if target.exists():
-                raise PipelineError("clip output already exists")
-            directory.rename(target)
-        rendered.append({"directory": "clips/" + name, **old})
-    return rendered
+    results = [None] * len(clips)
+    with ThreadPoolExecutor(max_workers=settings.workers) as pool:
+        futures = {
+            pool.submit(
+                render_clip, source, root, index, clip, transcript, settings, key
+            ): index - 1
+            for index, clip in enumerate(clips, 1)
+        }
+        try:
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        except BaseException:
+            for future in futures:
+                future.cancel()
+            raise
+    return results
 
 
 def run(source, output, settings, resume=False, chat_file=None, selection_file=None):
@@ -246,19 +277,22 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
 
             preview_root = within(output, output / ".analysis")
             preview_root.mkdir(exist_ok=True)
-            paths = []
+            paths = [
+                within(preview_root, preview_root / (candidate.id + ".mp4"))
+                for candidate in candidates
+            ]
+
+            def make_preview(item):
+                candidate, path = item
+                result = media.preview(source, path, candidate, settings)
+                if abs(result["duration"] - (candidate.end - candidate.start)) > 0.3:
+                    raise PipelineError(
+                        "analysis preview duration does not match original interval"
+                    )
+
             try:
-                for candidate in candidates:
-                    path = within(preview_root, preview_root / (candidate.id + ".mp4"))
-                    paths.append(path)
-                    result = media.preview(source, path, candidate, settings)
-                    if (
-                        abs(result["duration"] - (candidate.end - candidate.start))
-                        > 0.3
-                    ):
-                        raise PipelineError(
-                            "analysis preview duration does not match original interval"
-                        )
+                with ThreadPoolExecutor(max_workers=settings.workers) as pool:
+                    list(pool.map(make_preview, zip(candidates, paths)))
                 verify_source(source, output)
                 print("Requesting one Gemini visual selection…", flush=True)
                 return choose(source, paths, candidates, transcript, info, settings)
