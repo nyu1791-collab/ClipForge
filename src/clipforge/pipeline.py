@@ -3,8 +3,8 @@
 import fcntl
 import json
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 from . import __version__, media, signals
 from .captions import create as create_captions
@@ -57,6 +57,8 @@ def prepare(source, output, resume, settings):
         info = media.probe(source)
         if info["duration"] > settings.max_source_seconds:
             raise PipelineError("input exceeds the configured duration limit")
+        if any(p.end > info["duration"] + 0.01 for p in settings.punch_ins):
+            raise PipelineError("presenter punch-in exceeds the original video")
         write_json(old, {"key": key, **identity, "media": info})
     except BaseException:
         lock.close()
@@ -115,6 +117,10 @@ def render_clips(source, output, clips, transcript, settings, key):
                 "status": "rendered",
                 "media": info,
                 "captions": caption,
+                "review_required": sorted(
+                    set(caption["review_required"] + info["layout"]["review_required"])
+                ),
+                "human_review_performed": False,
                 "sha256": {
                     n: digest(directory / n)
                     for n in ["video.mp4", "captions.ass", "captions.srt"]
@@ -279,6 +285,8 @@ def cut(source, output, start, end, settings, transcript_file=None, resume=False
         value = {
             "status": "complete",
             "source_sha256": digest(source),
+            "version": __version__,
+            "settings": settings.model_dump(),
             "rendered": results,
             "selection_receipt": {"provider": "manual", "generation_requests": 0},
             "human_review_performed": False,

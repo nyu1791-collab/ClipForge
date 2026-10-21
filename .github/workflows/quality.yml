@@ -1,0 +1,49 @@
+name: Shorts quality review
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shorts-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU tools and Japanese font
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+          uv sync --locked
+      - name: Regression tests without inference
+        run: uv run --no-sync python -m unittest discover -s tests -v
+      - name: Render and decode synthetic review fixtures
+        run: uv run --no-sync python tools/review_quality.py --output work/quality-review
+      - name: Build wheel with upstream notice
+        run: uv build
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shorts-quality-review
+          path: |
+            work/quality-review/
+            dist/*.whl
+          retention-days: 3
+          if-no-files-found: warn
+

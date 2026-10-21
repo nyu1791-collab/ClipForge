@@ -2,8 +2,8 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def main():
@@ -18,8 +18,12 @@ def main():
         p.add_argument("--config", type=Path)
         p.add_argument("--resume", action="store_true")
         p.add_argument("--aspect", choices=["9:16", "16:9", "1:1"])
-        p.add_argument("--framing", choices=["fit", "center-crop"])
-        p.add_argument("--height", type=int, choices=[720, 1080])
+        p.add_argument(
+            "--framing", choices=["fit", "blur-fit", "center-crop", "stacked"]
+        )
+        p.add_argument("--height", type=int, choices=[720, 1080, 1280, 1920])
+        p.add_argument("--caption", choices=["plain", "karaoke", "progressive"])
+        p.add_argument("--headline")
         if name == "run":
             p.add_argument("--gemini-model")
             p.add_argument("--clips", type=int)
@@ -37,13 +41,15 @@ def main():
     args = parser.parse_args()
     try:
         from .models import Settings
-        from .pipeline import run, cut
+        from .pipeline import cut, run
 
         config = json.loads(args.config.read_text()) if args.config else {}
         for key in [
             "aspect",
             "framing",
             "height",
+            "caption",
+            "headline",
             "gemini_model",
             "clips",
             "candidates",
@@ -95,7 +101,7 @@ def main():
     except KeyboardInterrupt:
         print("Interrupted; completed stages can be resumed.", file=sys.stderr)
         return 130
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - redact provider bodies and local paths
         # Do not print SDK bodies, transcript text, URLs or credential-bearing errors.
         from .storage import PipelineError
 
