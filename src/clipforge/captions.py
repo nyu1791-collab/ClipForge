@@ -16,17 +16,20 @@ def safe(text):
 
 
 def width(text):
-    return sum(2 if unicodedata.east_asian_width(c) in {"W", "F"} else 1 for c in text)
+    return sum(
+        2 if unicodedata.east_asian_width(c) in {"W", "F"} or c in "MW@#%" else 1
+        for c in text
+    )
 
 
-def wrap_tokens(words, karaoke, start):
+def wrap_tokens(words, karaoke, start, line_cells):
     result, line_width, lines = [], 0, 1
     for index, word in enumerate(words):
         text = safe(word.text)
         pieces = []
         for char in text:
             size = width(char)
-            if line_width + size > 34:
+            if line_width + size > line_cells:
                 if lines < 2:
                     pieces.append(r"\N")
                     lines += 1
@@ -49,6 +52,13 @@ def wrap_tokens(words, karaoke, start):
 def create(transcript, clip, directory, settings):
     import pysubs2
 
+    height = settings.height
+    numerator, denominator = map(int, settings.aspect.split(":"))
+    frame_width = round(height * numerator / denominator / 2) * 2
+    font_size = round(height * 0.048)
+    margin = 35
+    # Reserve space for outlines and differences between Latin/CJK font metrics.
+    line_cells = max(12, min(52, int((frame_width - margin * 2) / (font_size * 0.6))))
     words = []
     for segment in transcript.segments:
         if segment.end <= clip.start or segment.start >= clip.end:
@@ -65,7 +75,7 @@ def create(transcript, clip, directory, settings):
                 # Divide overlong ASR tokens for layout only, proportionally in time.
                 chunks, pending = [], ""
                 for char in word.text:
-                    if width(pending + char) > 32 and pending:
+                    if width(pending + char) > line_cells - 2 and pending:
                         chunks.append(pending)
                         pending = ""
                     pending += char
@@ -82,7 +92,7 @@ def create(transcript, clip, directory, settings):
     groups, current = [], []
     for word in words:
         if current and (
-            width("".join(w.text for w in current) + word.text) > 62
+            width("".join(w.text for w in current) + word.text) > line_cells * 2 - 2
             or word.end - current[0].start > 4
             or word.start - current[-1].end > 0.7
         ):
@@ -92,17 +102,15 @@ def create(transcript, clip, directory, settings):
     if current:
         groups.append(current)
     subtitles = pysubs2.SSAFile()
-    height = settings.height
-    numerator, denominator = map(int, settings.aspect.split(":"))
     subtitles.info.update(
-        PlayResX=str(round(height * numerator / denominator / 2) * 2),
+        PlayResX=str(frame_width),
         PlayResY=str(height),
         WrapStyle="2",
         ScaledBorderAndShadow="yes",
     )
     subtitles.styles["Default"] = pysubs2.SSAStyle(
         fontname=settings.font,
-        fontsize=round(height * 0.048),
+        fontsize=font_size,
         primarycolor=pysubs2.Color(255, 255, 255),
         secondarycolor=pysubs2.Color(255, 210, 40),
         outlinecolor=pysubs2.Color(0, 0, 0),
@@ -124,7 +132,9 @@ def create(transcript, clip, directory, settings):
             pysubs2.SSAEvent(
                 start=start,
                 end=end,
-                text=wrap_tokens(group, settings.caption == "karaoke", start / 1000),
+                text=wrap_tokens(
+                    group, settings.caption == "karaoke", start / 1000, line_cells
+                ),
             )
         )
         previous_end = end
