@@ -11,7 +11,13 @@ import pysubs2
 from clipforge import captions
 from clipforge.batch import run, speech_end
 from clipforge.batch_models import ClipsManifest, ProductionPlan
-from clipforge.batch_workflow import automatic, cache_lock, reviewed, transcribe_full
+from clipforge.batch_workflow import (
+    automatic,
+    cache_lock,
+    cached_transcript,
+    reviewed,
+    transcribe_full,
+)
 from clipforge.caption_layout import NO_START, timed_units, units
 from clipforge.media import frame_rate
 from clipforge.models import SelectedClip, Settings, Transcript, Word
@@ -22,10 +28,20 @@ URL = "https://kick.com/example/videos/01a1574c-2350-77ce-90e2-4a7fefd4235c"
 
 
 class VideoFoundationTests(unittest.TestCase):
-    def reviewed_plan(self):
+    def reviewed_plan(self, metadata=False):
         short = json.loads(Path("jobs/examples/kick-test-3.json").read_text())
         topic = json.loads(Path("jobs/examples/kick-topics-test-3.json").read_text())
         short["selection_method"] = topic["selection_method"] = "manual"
+        if not metadata:
+            for manifest in (short, topic):
+                for clip in manifest["clips"]:
+                    clip["subtitles"] = [
+                        {
+                            "start": clip["start_time"],
+                            "end": clip["start_time"] + 2,
+                            "text": "合成の確認用発話",
+                        }
+                    ]
         return ProductionPlan(
             shorts=short, topics=topic, review_basis="assistant_transcript"
         )
@@ -291,9 +307,29 @@ class VideoFoundationTests(unittest.TestCase):
                     len(transcribe_full(audio, 700, root, "small").segments), 2
                 )
                 engine.assert_not_called()
+            # Reviewed submissions must fail closed on incomplete/corrupt ASR,
+            # rather than silently performing expensive inference again.
+            saved_audio = root / "audio" / (fingerprint({"source": URL}) + ".m4a")
+            saved_audio.parent.mkdir()
+            saved_audio.write_bytes(audio.read_bytes())
+            write_json(
+                saved_audio.with_suffix(".json"),
+                {"sha256": digest(audio), "source_url": URL, "source_duration": 700},
+            )
+            with patch("faster_whisper.WhisperModel") as engine:
+                restored, _ = cached_transcript(root, URL, "small")
+                self.assertEqual(len(restored.segments), 2)
+                engine.assert_not_called()
             (checkpoints / "chunk_0001.json").write_text(
                 '{"language":"ja","segments":[]}'
             )
+            with self.assertRaises(PipelineError) as caught:
+                cached_transcript(root, URL, "small")
+            self.assertEqual(caught.exception.code, "asr_cache_integrity")
+            (checkpoints / "chunk_0001.json").unlink()
+            with self.assertRaises(PipelineError) as caught:
+                cached_transcript(root, URL, "small")
+            self.assertEqual(caught.exception.code, "asr_cache_required")
             with (
                 patch("faster_whisper.WhisperModel") as engine,
                 patch("clipforge.batch_workflow.process"),
@@ -446,34 +482,86 @@ class VideoFoundationTests(unittest.TestCase):
         spec.loader.exec_module(module)
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "plan.json"
-            write_json(path, self.reviewed_plan().model_dump())
+            write_json(path, self.reviewed_plan(metadata=True).model_dump())
 
             def invoke(*args):
                 return json.dumps({"private": True}) if args[0] == "api" else ""
 
             with patch.object(module, "gh", side_effect=invoke) as gh:
-                a = module.submit(path, "a" * 40, state=Path(d) / "state")
+                a = module.submit(path, "a" * 40, "123", state=Path(d) / "state")
                 path.write_text(
                     json.dumps(
-                        self.reviewed_plan().model_dump(),
+                        self.reviewed_plan(metadata=True).model_dump(),
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )
                 )
-                b = module.submit(path, "a" * 40, state=Path(d) / "state")
+                b = module.submit(path, "a" * 40, "123", state=Path(d) / "state")
                 self.assertEqual(a, b)
                 self.assertEqual(
                     sum(c.args[0] == "workflow" for c in gh.call_args_list), 1
                 )
                 self.assertEqual(
-                    sum(c.args[0] == "release" for c in gh.call_args_list), 1
+                    sum(c.args[0] == "release" for c in gh.call_args_list), 0
+                )
+                dispatch = next(c for c in gh.call_args_list if c.args[0] == "workflow")
+                wire = json.loads(
+                    next(
+                        s.split("=", 1)[1]
+                        for s in dispatch.args
+                        if isinstance(s, str) and s.startswith("plan_json=")
+                    )
+                )
+                self.assertTrue(
+                    all(
+                        not c["subtitles"]
+                        for k in ("shorts", "topics")
+                        for c in wire[k]["clips"]
+                    )
                 )
             with patch.object(
                 module, "gh", return_value=json.dumps({"private": False})
             ) as gh:
                 with self.assertRaises(PipelineError):
-                    module.submit(path, "b" * 40, state=Path(d) / "public")
+                    module.submit(path, "b" * 40, "123", state=Path(d) / "public")
                 self.assertEqual(gh.call_count, 1)
+            write_json(path, self.reviewed_plan().model_dump())
+            with patch.object(module, "gh") as gh:
+                with self.assertRaises(PipelineError) as caught:
+                    module.submit(path, "a" * 40, "123", state=Path(d) / "speech")
+                self.assertEqual(caught.exception.code, "interval_metadata_required")
+                gh.assert_not_called()
+
+    def test_reviewed_intervals_restore_speech_once_without_asr(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch(
+                "clipforge.batch_workflow.cached_transcript",
+                return_value=(self.transcript(), {"source_duration": 7864.686}),
+            ) as cache,
+            patch("clipforge.batch_workflow.transcribe_full") as asr,
+            patch(
+                "clipforge.batch_workflow.run",
+                return_value={"clips": [{}, {}, {}], "media_budget_used": 100},
+            ) as render,
+        ):
+            result = reviewed(
+                self.reviewed_plan(metadata=True),
+                Path(d) / "out",
+                Path(d) / "cache",
+                "assets",
+            )
+            cache.assert_called_once()
+            asr.assert_not_called()
+            self.assertTrue(result["asr_cache_reused"])
+            self.assertFalse(result["global_asr_performed"])
+            self.assertTrue(
+                all(
+                    c.subtitles
+                    for call in render.call_args_list
+                    for c in call.args[0].clips
+                )
+            )
 
 
 if __name__ == "__main__":

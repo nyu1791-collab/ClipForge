@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-"""Submit a reviewed production plan through a private, temporary input release."""
+"""Submit private interval metadata; the worker restores subtitles from its ASR cache."""
 
 import argparse
 import fcntl
 import json
 import re
 import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 
@@ -35,12 +34,26 @@ def submit(path, source_ref, cache_run_id="", state=Path("workspace/control/batc
         r"[a-f0-9]{40}", source_ref
     ):
         raise ValueError("invalid plan size or source commit")
-    if cache_run_id and not re.fullmatch(r"[0-9]+", cache_run_id):
-        raise ValueError("cache run must be numeric")
+    if not re.fullmatch(r"[0-9]+", cache_run_id):
+        raise PipelineError(
+            "reviewed intervals require a complete private ASR cache run",
+            code="asr_cache_required",
+        )
     plan = ProductionPlan.model_validate_json(path.read_text())
+    if any(c.subtitles for m in (plan.shorts, plan.topics) for c in m.clips):
+        raise PipelineError(
+            "remote submissions accept intervals only; keep edited subtitles on the worker",
+            code="interval_metadata_required",
+        )
     if not json.loads(gh("api", f"repos/{PRIVATE_REPO}"))["private"]:
         raise PipelineError("designated worker repository must be private")
-    key = fingerprint({"plan": plan.model_dump(), "source_ref": source_ref})
+    key = fingerprint(
+        {
+            "plan": plan.model_dump(),
+            "source_ref": source_ref,
+            "cache_run_id": cache_run_id,
+        }
+    )
     state = Path(state)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     receipt = state / (key + ".json")
@@ -51,10 +64,24 @@ def submit(path, source_ref, cache_run_id="", state=Path("workspace/control/batc
             raise PipelineError("same plan submission is in progress") from None
         if receipt.exists():
             return json.loads(receipt.read_text())
-        tag = "clipforge-manifest-" + uuid.uuid4().hex
+        submission_id = "clipforge-reviewed-" + uuid.uuid4().hex
+        fields = {
+            "source_ref": source_ref,
+            "mode": "reviewed",
+            "submission_id": submission_id,
+            "cache_run_id": cache_run_id,
+            "plan_json": json.dumps(
+                plan.model_dump(), ensure_ascii=False, separators=(",", ":")
+            ),
+        }
+        if len(json.dumps({"inputs": fields}, ensure_ascii=True).encode()) > 60000:
+            raise PipelineError(
+                "interval metadata exceeds Actions input budget",
+                code="plan_input_budget",
+            )
         record = {
-            "status": "preparing",
-            "input_tag": tag,
+            "status": "dispatching",
+            "submission_id": submission_id,
             "repository": PRIVATE_REPO,
             "workflow": WORKFLOW,
             "source_ref": source_ref,
@@ -63,39 +90,11 @@ def submit(path, source_ref, cache_run_id="", state=Path("workspace/control/batc
             "review_basis": plan.review_basis,
         }
         write_json(receipt, record)
+        args = []
+        for name, value in fields.items():
+            args += ["-f", f"{name}={value}"]
         try:
-            with tempfile.TemporaryDirectory(prefix="clipforge-plan-") as d:
-                fixed = Path(d) / "production_plan.json"
-                write_json(fixed, plan.model_dump())
-                gh(
-                    "release",
-                    "create",
-                    tag,
-                    fixed,
-                    "--repo",
-                    PRIVATE_REPO,
-                    "--title",
-                    "Private reviewed ClipForge input",
-                    "--notes",
-                    "Temporary private input; remove after the linked worker finishes.",
-                )
-            record["status"] = "dispatching"
-            write_json(receipt, record)
-            gh(
-                "workflow",
-                "run",
-                WORKFLOW,
-                "--repo",
-                PRIVATE_REPO,
-                "-f",
-                f"source_ref={source_ref}",
-                "-f",
-                "mode=reviewed",
-                "-f",
-                f"manifest_release={tag}",
-                "-f",
-                f"cache_run_id={cache_run_id}",
-            )
+            gh("workflow", "run", WORKFLOW, "--repo", PRIVATE_REPO, *args)
             record["status"] = "submitted"
             record["workflow_url"] = (
                 f"https://github.com/{PRIVATE_REPO}/actions/workflows/{WORKFLOW}"
@@ -103,8 +102,8 @@ def submit(path, source_ref, cache_run_id="", state=Path("workspace/control/batc
             write_json(receipt, record)
             return record
         except Exception:
-            # A network failure after dispatch may still have started a job. Keep
-            # the unique tag/receipt and never automatically send it a second time.
+            # A failed response can follow a successful dispatch. Retain its unique
+            # ID and never automatically submit the same input a second time.
             record["status"] = "submission_uncertain"
             write_json(receipt, record)
             raise
@@ -114,7 +113,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--plan", type=Path, required=True)
     p.add_argument("--source-ref", required=True)
-    p.add_argument("--cache-run-id", default="")
+    p.add_argument("--cache-run-id", required=True)
     a = p.parse_args()
     try:
         print(json.dumps(submit(a.plan, a.source_ref, a.cache_run_id)))

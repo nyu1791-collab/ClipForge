@@ -106,6 +106,61 @@ def transcribe_full(audio, duration, cache, model):
     return Transcript(language="ja", segments=segments)
 
 
+def cached_transcript(cache, url, model):
+    """Read verified complete checkpoints; this path never starts ASR."""
+    cache = Path(cache)
+    audio = cache / "audio" / (fingerprint({"source": url}) + ".m4a")
+    receipt = audio.with_suffix(".json")
+    if not audio.is_file() or not receipt.is_file():
+        raise PipelineError(
+            "reviewed intervals need a complete matching ASR cache",
+            code="asr_cache_required",
+        )
+    info = json.loads(receipt.read_text())
+    if info.get("source_url") != url or digest(audio) != info["sha256"]:
+        raise PipelineError("reviewed audio cache changed", code="asr_cache_integrity")
+    duration = info["source_duration"]
+    identity = fingerprint(
+        {
+            "audio": info["sha256"],
+            "model": model,
+            "language": "ja",
+            "chunk_seconds": 600,
+            "transcription_version": 1,
+        }
+    )
+    root = cache / "transcripts" / identity
+    segments = []
+    for i, start in enumerate(range(0, int(duration + 0.999), 600)):
+        length = min(600, duration - start)
+        if length <= 0:
+            continue
+        data, state = (
+            root / f"chunk_{i:04}.json",
+            root / ".state" / f"chunk_{i:04}.json",
+        )
+        if not data.is_file() or not state.is_file():
+            raise PipelineError(
+                "reviewed ASR cache is incomplete", code="asr_cache_required"
+            )
+        saved = json.loads(state.read_text())
+        key = fingerprint({"identity": identity, "start": start, "length": length})
+        if saved.get("key") != key or saved.get("sha256") != digest(data):
+            raise PipelineError(
+                "reviewed ASR cache changed", code="asr_cache_integrity"
+            )
+        value = Transcript.model_validate_json(data.read_text())
+        if any(
+            s.start < start - 0.01 or s.end > start + length + 0.3
+            for s in value.segments
+        ):
+            raise PipelineError(
+                "reviewed checkpoint exceeds source range", code="asr_cache_integrity"
+            )
+        segments.extend(value.segments)
+    return Transcript(language="ja", segments=segments), info
+
+
 def automatic(
     url,
     output,
@@ -230,6 +285,37 @@ def reviewed(
     with cache_lock(cache, identity):
         if output.exists() and not resume:
             raise PipelineError("output exists; choose another directory or resume")
+        cache_reused = any(
+            not c.subtitles for m in (plan.shorts, plan.topics) for c in m.clips
+        )
+        if cache_reused:
+            from .batch import clipped_subtitles
+            from .batch_models import ClipsManifest, ProductionPlan
+
+            transcript, info = cached_transcript(cache, plan.shorts.source_url, model)
+            if abs(info["source_duration"] - plan.shorts.source_duration) > 2:
+                raise PipelineError(
+                    "reviewed plan differs from cached source",
+                    code="asr_cache_integrity",
+                )
+            filled = {}
+            for kind in ("shorts", "topics"):
+                manifest = getattr(plan, kind)
+                clips = []
+                for c in manifest.clips:
+                    subs = c.subtitles or clipped_subtitles(
+                        transcript, c.start_time, c.end_time
+                    )
+                    if not subs:
+                        raise PipelineError(
+                            "reviewed interval has no cached speech",
+                            code="reviewed_empty_speech",
+                        )
+                    clips.append(c.model_copy(update={"subtitles": subs}))
+                filled[kind] = ClipsManifest.model_validate(
+                    {**manifest.model_dump(), "clips": [c.model_dump() for c in clips]}
+                )
+            plan = ProductionPlan.model_validate({**plan.model_dump(), **filled})
         used, rows = 0, []
         for manifest in (plan.shorts, plan.topics):
             if used >= max_bytes:
@@ -257,6 +343,9 @@ def reviewed(
             "review_basis": plan.review_basis,
             "human_review_performed": False,
             "remote_model_requests": 0,
+            "asr_cache_reused": cache_reused,
+            "global_asr_performed": False,
+            "asr_model": model if cache_reused else None,
         }
         write_json(output / "production_result.json", summary)
         return summary

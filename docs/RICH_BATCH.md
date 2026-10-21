@@ -175,21 +175,27 @@ ASSとSRTは同じ10ms単位の境界と改行です。見出しはSRTへ入れ�
 
 ```sh
 uv run python tools/submit_rich_batch.py \
-  --plan workspace/output/reviewed-plan.json \
+  --plan workspace/output/reviewed-intervals.json \
   --source-ref FULL_COMMIT_SHA --cache-run-id PREVIOUS_PRIVATE_RUN_ID
 ```
 
 制御VMはJSONを検証し、指定workerが非公開であることをAPIで確認してから、
-私有の一時入力Releaseへ`production_plan.json`だけを送ります。
-workerの`mode=reviewed`はこの入力を読み、共通の描画・品質ゲートで両形式を生成します。
-実発話を含む入力を公開リポジトリへcommitする必要はありません。
-字幕を提供した区間は再ASRせず、同じ高画質取得キャッシュも利用できます。
+私有Actionsへ区間・タイトル・スタイルだけを入力します。送信用planの全clipは`subtitles=[]`としてください。
+実発話を含むplanを誤送信・破棄しないよう、字幕入りのplanは送信ツールで拒否します。
+元の字幕入りplanは保持し、区間のみのコピーを別名で用意してください。
 
-同じplan内容と実装SHAの送信は`workspace/control/batches/`の私有記録で再送を防ぎます。
-通信失敗時は実際には投入済みの可能性があるため、`submission_uncertain`と入力tagを保存し、
-自動で二度目のdispatchはしません。Actionsで同じ入力tagの実行を確認してから対応します。
-完了後は一時入力Releaseを削除し、完成物とmanifestは非公開Artifactsの保持期間内に回収してください。
-`tools/render_reviewed_batch.py --plan ...`で、十分なCPUのworker上へ直接実行することもできます。
+workerの`mode=reviewed`は`cache_run_id`の全編音声と10分単位ASRをSHA-256で検証し、
+指定した元配信時刻の字幕を復元して、共通の描画・品質ゲートで両形式を生成します。
+この経路はASRを開始しません。完全なキャッシュがない、実装モデルや配信長が一致しない、
+チェックサムが違う場合は停止します。同じ高画質取得キャッシュも利用できます。
+実発話をGitへcommitしたり、私有ファイルのアップロード先へ再送する必要はありません。
+
+同じplan内容・実装SHA・cache runの送信は`workspace/control/batches/`の私有記録で再送を防ぎます。
+通信失敗時は実際には投入済みの可能性があるため、`submission_uncertain`と一意の`submission_id`を保存し、
+自動で二度目のdispatchはしません。Actionsの実行名で同じIDを確認してから対応します。
+完成物とmanifestは非公開Artifactsの保持期間内に回収してください。
+`tools/render_reviewed_batch.py --plan ...`で、十分なCPUのworker上へ直接実行する場合は、
+編集済み字幕を含むplanもそのまま利用でき、字幕が揃っていればASRキャッシュは不要です。
 
 ## マニフェスト契約
 
