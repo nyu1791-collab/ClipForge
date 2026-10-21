@@ -64,6 +64,21 @@ class SelectedClip(Span):
     confidence: float = Field(ge=0, le=1)
 
 
+class Facecam(Record):
+    """Manually measured source-frame rectangle, as fractions of source dimensions."""
+
+    x: float = Field(ge=0, lt=1)
+    y: float = Field(ge=0, lt=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def inside_frame(self):
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("facecam rectangle exceeds the source frame")
+        return self
+
+
 class Settings(Record):
     gemini_model: str = Field(min_length=1, max_length=160)
     clips: int = Field(default=3, ge=1, le=10)
@@ -75,7 +90,13 @@ class Settings(Record):
     language: str | None = None
     threads: int = Field(default=2, ge=1, le=8)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
-    framing: Literal["fit", "center-crop"] = "fit"
+    framing: Literal["fit", "blur-fit", "center-crop", "two-panel"] = "fit"
+    facecam: Facecam | None = None
+    facecam_panel_ratio: float = Field(default=0.35, ge=0.2, le=0.5)
+    headline: bool = False
+    hook_title: str | None = Field(default=None, min_length=1, max_length=120)
+    caption_size_ratio: float = Field(default=0.055, ge=0.035, le=0.075)
+    caption_outline: float = Field(default=3.5, ge=1, le=8)
     height: Literal[720, 1080] = 720
     caption: Literal["plain", "karaoke"] = "karaoke"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
@@ -102,6 +123,12 @@ class Settings(Record):
             raise ValueError("analysis frame budget exceeds 6000")
         if any(c in self.font for c in "\r\n,\\{}"):
             raise ValueError("invalid font name")
+        if self.framing == "two-panel" and (
+            self.facecam is None or self.aspect != "9:16"
+        ):
+            raise ValueError(
+                "two-panel requires aspect 9:16 and a measured facecam rectangle"
+            )
         return self
 
 

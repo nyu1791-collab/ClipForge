@@ -1,0 +1,11 @@
+{
+  "aspect": "9:16",
+  "framing": "two-panel",
+  "facecam": {"x": 0.0, "y": 0.68, "width": 0.23, "height": 0.32},
+  "facecam_panel_ratio": 0.35,
+  "height": 720,
+  "headline": true,
+  "caption": "plain",
+  "caption_size_ratio": 0.055,
+  "caption_outline": 3.5
+}

@@ -55,7 +55,7 @@ def create(transcript, clip, directory, settings):
     height = settings.height
     numerator, denominator = map(int, settings.aspect.split(":"))
     frame_width = round(height * numerator / denominator / 2) * 2
-    font_size = round(height * 0.048)
+    font_size = round(height * settings.caption_size_ratio)
     margin = 35
     # Reserve space for outlines and differences between Latin/CJK font metrics.
     line_cells = max(12, min(52, int((frame_width - margin * 2) / (font_size * 0.6))))
@@ -114,7 +114,7 @@ def create(transcript, clip, directory, settings):
         primarycolor=pysubs2.Color(255, 255, 255),
         secondarycolor=pysubs2.Color(255, 210, 40),
         outlinecolor=pysubs2.Color(0, 0, 0),
-        outline=2.5,
+        outline=settings.caption_outline,
         shadow=0.7,
         bold=True,
         alignment=2,
@@ -122,6 +122,49 @@ def create(transcript, clip, directory, settings):
         marginr=35,
         marginv=round(height * 0.12),
     )
+    if settings.headline:
+        title = settings.hook_title or clip.title
+        headline_size = round(height * 0.052)
+        while True:
+            title_cells = max(10, int((frame_width - 50) / (headline_size * 0.65)))
+            lines, current = [], ""
+            for char in safe(title):
+                if width(current + char) > title_cells:
+                    lines.append(current)
+                    current = ""
+                current += char
+            if current:
+                lines.append(current)
+            if len(lines) <= 2 or headline_size <= round(height * 0.037):
+                break
+            headline_size -= 1
+        # A hook must fit in two lines. Truncate explicitly rather than covering
+        # the source with a long AI-generated title.
+        if len(lines) > 2:
+            lines = lines[:2]
+            lines[1] = lines[1][:-1] + "…"
+        subtitles.styles["Headline"] = pysubs2.SSAStyle(
+            fontname=settings.font,
+            fontsize=headline_size,
+            primarycolor=pysubs2.Color(255, 220, 30),
+            outlinecolor=pysubs2.Color(0, 0, 0),
+            outline=settings.caption_outline,
+            shadow=1,
+            bold=True,
+            alignment=8,
+            marginl=25,
+            marginr=25,
+            marginv=round(height * 0.07),
+        )
+        subtitles.append(
+            pysubs2.SSAEvent(
+                start=0,
+                end=round((clip.end - clip.start) * 1000),
+                style="Headline",
+                text=r"\N".join(lines),
+                layer=1,
+            )
+        )
     previous_end = 0
     for group in groups:
         start = max(previous_end, round(group[0].start * 1000))
@@ -143,6 +186,8 @@ def create(transcript, clip, directory, settings):
     # SRT deliberately has no ASS overrides; exported text comes from plaintext.
     plain = pysubs2.SSAFile()
     for event in subtitles:
+        if event.style == "Headline":
+            continue
         plain.append(
             pysubs2.SSAEvent(start=event.start, end=event.end, text=event.plaintext)
         )

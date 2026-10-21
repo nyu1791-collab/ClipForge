@@ -2,7 +2,8 @@
 
 Faster-Whisper → チャット／場面転換から候補抽出 → **映像と音声をGeminiに渡して選定** → FFmpegで切り抜き・ASS字幕、というCPU向けパイプラインです。
 
-実装と実行基盤を用意しました。**実動画による通し実行、文字起こし精度、Geminiの応答、字幕の見た目は未確認です。**
+CPUの切り抜き基盤に、公式の配信API連携と縦型ショート向けレイアウトを追加しました。
+実配信の認証・通知受信・VOD取得、実素材の文字起こしとGemini選定は、それぞれ実行して確認が必要です。
 
 ## できること
 
@@ -13,7 +14,25 @@ Faster-Whisper → チャット／場面転換から候補抽出 → **映像と
 - 日本語のASS字幕を焼き込み、編集用SRT・ASS、選定結果と生成記録も保存。カラオケ字幕／通常字幕を選択。
 - 完了した段階をチェックサム付きで再利用。モデルは明示指定し、自動再試行・別モデルへのfallbackを行いません。
 
-初期値は候補8件、各最大75秒、最大3本出力、Whisper `small`、720px高。Geminiが見るのは候補動画だけです。動画全体の全場面を視聴・評価する設計ではありません。
+設定例は30〜45秒、ぼかし背景、太字・黒縁字幕、黄色の見出しです。
+ライブラリの既存デフォルト（20〜75秒、fit）は保持。候補8件、最大3本出力、Whisper `small`、720px高。
+Geminiが見るのは候補動画だけです。動画全体の全場面を視聴・評価する設計ではありません。
+
+## 配信API・認証情報
+
+Twitchを優先し、Kick Developer Portalの**公式API**、ツイキャス公式API、YouTubeのRSSと
+Data APIに対応。認証情報は `.env.example` の名前で環境へ設定し、実値はSecretsで管理します。
+
+```bash
+uv sync --locked --extra platforms
+uv run --no-sync clipforge-platforms credentials
+uv run --no-sync clipforge-platforms discover twitch CHANNEL_LOGIN
+```
+
+Twitch/Kickの署名付きWebhookを軽量VMで受信し、最小限のイベントをSQLiteへ保存できます。
+動画本体の自動取得・自動ジョブ投入は含みません。
+詳しい発行・登録・受信手順は[配信API設定](docs/PLATFORM_SETUP.md)、
+YouTubeのキャッシュ・予算・拒否時の対応は[YouTube運用](docs/YOUTUBE_OPERATIONS.md)へ。
 
 ## 推奨：制御VMから非公開Actionsへ依頼
 
@@ -77,5 +96,22 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
 顔追跡、音源分離、自動SNS投稿、URLからの動画取得は含みません。
+
+## ショート動画の見た目
+
+`--framing blur-fit` は元映像を拡大してガウスぼかしをかけた背景へ、全体が見える映像を重ねます。
+字幕は白太字＋黒縁。`--headline --hook-title '見出し'` で黄色の見出しを上部へ表示。
+`run` の見出しは選定されたタイトルを使用し、必要なら `--hook-title` で上書きできます。
+
+```bash
+uv run --no-sync clipforge cut /path/to/source.mp4 \
+  --start 120 --end 159 --config config.example.json \
+  --hook-title '親になった途端に教育を語り出す' \
+  --transcript /path/to/transcript.json --output outputs/short-001
+```
+
+顔を大きくする場合は `config.facecam.example.json` の矩形を**実素材で計測して**変更します。
+値は元映像の幅・高さに対する0〜1の比率。例の左下位置は仮値です。
+`two-panel` は上段にゲーム、下段に顔を拡大表示します。自動で顔の位置を推測しません。
 
 詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。

@@ -369,7 +369,7 @@ wheels = [
 
 [[package]]
 name = "clipforge"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "faster-whisper" },
@@ -383,17 +383,21 @@ dependencies = [
 chat = [
     { name = "chat-downloader" },
 ]
+platforms = [
+    { name = "cryptography" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "chat-downloader", marker = "extra == 'chat'", specifier = "==0.2.8" },
+    { name = "cryptography", marker = "extra == 'platforms'", specifier = ">=46,<51" },
     { name = "faster-whisper", specifier = "==1.2.1" },
     { name = "google-genai", specifier = "==2.32.0" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pysubs2", specifier = "==1.8.1" },
     { name = "scenedetect-headless", specifier = "==0.7.2" },
 ]
-provides-extras = ["chat"]
+provides-extras = ["chat", "platforms"]
 
 [[package]]
 name = "colorama"
