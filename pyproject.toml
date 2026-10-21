@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=77,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipforge"
+version = "0.1.0"
+description = "Foundation for AI-assisted video clipping and subtitle editing"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/nyu1791-collab/ClipForge"
+Issues = "https://github.com/nyu1791-collab/ClipForge/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

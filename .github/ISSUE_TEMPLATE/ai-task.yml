@@ -1,0 +1,21 @@
+name: AI開発タスク
+description: ClipForgeの実装・改善をAIへ依頼する
+title: "[AI] "
+labels: [ai-task]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 作りたい機能・直したいこと
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 完了と判断できる条件
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: 関連するIssue・ファイル・補足
