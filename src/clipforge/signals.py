@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import re
 import tempfile
+import threading
 import wave
 
 from . import media
@@ -27,24 +28,61 @@ def read_samples(path):
     return np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
 
 
+_MODELS = {}
+_MODELS_LOCK = threading.Lock()
+# One decoder at a time. A loaded model is not assumed to be safe for concurrent calls,
+# so batched videos share the model and take turns in the decoder only.
+_DECODE_LOCK = threading.Lock()
+
+
+def _shared_model(settings):
+    """One loaded Whisper model per configuration, reused by every video in the process."""
+    from faster_whisper import WhisperModel
+
+    key = (settings.whisper_model, settings.whisper_revision, settings.threads)
+    with _MODELS_LOCK:
+        if key not in _MODELS:
+            _MODELS[key] = WhisperModel(
+                settings.whisper_model,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=settings.threads,
+                num_workers=1,
+                revision=settings.whisper_revision,
+            )
+        return _MODELS[key]
+
+
+def _utterances(segments, info):
+    """Segments in the file's own clock, with words kept inside their segment."""
+    output = []
+    # The extracted WAV starts where the audio stream starts; shift back to the file's clock.
+    offset = float(info.get("audio_start", 0.0))
+    for segment in segments:
+        start = max(0, segment.start + offset)
+        end = min(info["duration"], segment.end + offset)
+        if end <= start:
+            continue
+        words = []
+        for word in segment.words or []:
+            ws = max(start, word.start + offset)
+            we = min(end, word.end + offset)
+            if we > ws and word.word.strip():
+                words.append(Word(start=ws, end=we, text=word.word))
+        output.append(Segment(start=start, end=end, text=segment.text, words=words))
+    return output
+
+
 def transcribe(source, info, settings):
     if not info["audio"]:
         return Transcript(language="und", segments=[]).model_dump()
-    from faster_whisper import WhisperModel
-
     with tempfile.TemporaryDirectory(prefix="clipforge-asr-") as temporary:
         path = Path(temporary) / "audio.wav"
         media.audio(source, path, info["duration"])
-        model = WhisperModel(
-            settings.whisper_model,
-            device="cpu",
-            compute_type="int8",
-            cpu_threads=settings.threads,
-            num_workers=1,
-            revision=settings.whisper_revision,
-        )
         # Samples, not a path: faster-whisper would otherwise decode with PyAV, whose
         # open() arguments changed in PyAV 19 (the locked build for Python 3.12+).
+        audio = read_samples(path)
+        model = _shared_model(settings)
         options = dict(
             language=settings.language,
             word_timestamps=True,
@@ -52,33 +90,19 @@ def transcribe(source, info, settings):
             beam_size=5,
             condition_on_previous_text=False,
         )
-        audio = read_samples(path)
-        if settings.asr_batch_size:
-            # Batched decoding is about twice as fast on CPU, but it merges silences
-            # differently, which changes topic boundaries; it is opt-in for that reason.
-            from faster_whisper import BatchedInferencePipeline
+        with _DECODE_LOCK:
+            if settings.asr_batch_size:
+                # Batched decoding is about twice as fast on CPU, but it merges silences
+                # differently, which changes topic boundaries; it is opt-in for that reason.
+                from faster_whisper import BatchedInferencePipeline
 
-            pipeline = BatchedInferencePipeline(model=model)
-            segments, metadata = pipeline.transcribe(
-                audio, batch_size=settings.asr_batch_size, **options
-            )
-        else:
-            segments, metadata = model.transcribe(audio, **options)
-        output = []
-        # The extracted WAV starts where the audio stream starts; shift back to the file's clock.
-        offset = float(info.get("audio_start", 0.0))
-        for segment in segments:
-            start = max(0, segment.start + offset)
-            end = min(info["duration"], segment.end + offset)
-            if end <= start:
-                continue
-            words = []
-            for word in segment.words or []:
-                ws = max(start, word.start + offset)
-                we = min(end, word.end + offset)
-                if we > ws and word.word.strip():
-                    words.append(Word(start=ws, end=we, text=word.word))
-            output.append(Segment(start=start, end=end, text=segment.text, words=words))
+                pipeline = BatchedInferencePipeline(model=model)
+                segments, metadata = pipeline.transcribe(
+                    audio, batch_size=settings.asr_batch_size, **options
+                )
+            else:
+                segments, metadata = model.transcribe(audio, **options)
+            output = _utterances(segments, info)
         return Transcript(
             language=metadata.language or "und", segments=output
         ).model_dump()

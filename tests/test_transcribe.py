@@ -10,6 +10,13 @@ from clipforge.models import Transcript
 from clipforge.storage import PipelineError
 
 
+@pytest.fixture(autouse=True)
+def fresh_model_cache():
+    signals._MODELS.clear()
+    yield
+    signals._MODELS.clear()
+
+
 def write_wav(path, samples, rate=16000, channels=1):
     data = (np.clip(samples, -1, 1) * 32767).astype("<i2")
     with wave.open(str(path), "wb") as wav:
@@ -135,3 +142,18 @@ def test_batched_decoding_is_used_only_when_requested(monkeypatch, settings):
     settings.asr_batch_size = 4
     signals.transcribe("/in.mp4", info, settings)
     assert used["batch_size"] == 4 and "sequential" not in used
+
+
+def test_one_model_is_loaded_per_configuration(monkeypatch, settings):
+    loads = []
+
+    class CountingModel:
+        def __init__(self, name, **kwargs):
+            loads.append((name, kwargs["cpu_threads"]))
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", CountingModel)
+    first = signals._shared_model(settings)
+    assert signals._shared_model(settings) is first
+    settings.threads = 4
+    assert signals._shared_model(settings) is not first
+    assert loads == [("small", 2), ("small", 4)]
