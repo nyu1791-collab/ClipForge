@@ -81,3 +81,5 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 顔追跡、音源分離、自動SNS投稿、URLからの動画取得は含みません。
 
 詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。
+
+開発作業は[OpenCode連携ハーネス](docs/DEVELOPMENT_HARNESS.md)で、専用worktree・目標・検査・再開・モデル提案・採否を記録できます。Opusは提案、主担当は実装と検証を担当します。
