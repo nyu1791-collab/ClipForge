@@ -14,12 +14,17 @@ dependencies = [
   "google-genai==2.32.0",
   "pysubs2==1.8.1",
   "pydantic>=2.11,<3",
+  "budoux==0.10.0",
+  "Janome==0.5.0",
+  "pillow==13.0.0",
+  "fonttools==4.67.0",
 ]
 
 [project.optional-dependencies]
 chat = ["chat-downloader==0.2.8"]
 platforms = ["cryptography>=46,<51"]
 media-fetch = ["yt-dlp[default,curl-cffi]==2026.8.19", "curl-cffi==0.16.3"]
+storage = ["boto3>=1.40,<2"]
 
 [project.scripts]
 clipforge = "clipforge.cli:main"

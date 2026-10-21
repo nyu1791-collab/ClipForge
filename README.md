@@ -1,9 +1,19 @@
 # ClipForge
 
-Faster-Whisper → チャット／場面転換から候補抽出 → **映像と音声をGeminiに渡して選定** → FFmpegで切り抜き・ASS字幕、というCPU向けパイプラインです。
+動画ファイルやKickのVODから、CPUの文字起こしとFFmpeg編集で字幕付き動画を生成します。
+Kickバッチは全編の軽量音声解析を共有し、Shortsと話題別の通常動画を各3〜5本作成します。
+既存のローカル動画向けには、候補の映像・音声を明示指定したGeminiモデルへ渡して選定する経路もあります。
 
-CPUの切り抜き基盤に、公式の配信API連携と縦型ショート向けレイアウトを追加しました。
-実配信の認証・通知受信・VOD取得、実素材の文字起こしとGemini選定は、それぞれ実行して確認が必要です。
+## Kick配信からShortsと話題別の通常動画
+
+1配信の全編音声とCPU文字起こしを共有し、**縦型Shorts 3〜5本**と**16:9の話題別動画3〜5本**を作れます。
+通常動画の既定目標は5分、Shortsは45秒です。ローカルの語彙変化・発話境界・音量を使う経路で、外部LLMを呼びません。
+背景ブラー、箱付き見出し、日本語の語・文節を使う2行字幕、BGMダッキング、開始SE、透過枠に対応します。
+
+重い処理は非公開workerへ渡します。`tools/render_rich_videos.py --output-kind both`の使い方、
+キャッシュによる再開、検証済みの範囲は[運用手順](docs/RICH_BATCH.md)と[品質確認記録](docs/QUALITY_REVIEW.md)を参照してください。
+自動選定のスコアは意味的な面白さや話題の完結を保証しません。
+文脈を確認して調整した区間は、`tools/submit_rich_batch.py`で私有の入力としてworkerへ渡せます。
 
 ## できること
 
@@ -30,7 +40,7 @@ uv run --no-sync clipforge-platforms discover twitch CHANNEL_LOGIN
 ```
 
 Twitch/Kickの署名付きWebhookを軽量VMで受信し、最小限のイベントをSQLiteへ保存できます。
-動画本体の自動取得・自動ジョブ投入は含みません。
+Webhookからの自動ジョブ投入は未接続です。Kick URLからの取得・制作は上記のバッチ入口を使います。
 実装済み・未設定の一覧は[自動取り込み確認](docs/INTEGRATION_AUDIT.md)。
 Kick VODのブラウザ互換通信による短いMP4サンプル取得は
 [取得方法と実測結果](docs/KICK_VOD_DIAGNOSIS.md)を参照してください。
@@ -98,7 +108,8 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 ```
 
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
-顔追跡、音源分離、自動SNS投稿、URLからの動画取得は含みません。
+Kick URLを入力する場合は、`tools/render_rich_videos.py`のバッチ入口を使います。
+顔追跡、音源分離、自動SNS投稿は未実装です。
 
 ## ショート動画の見た目
 

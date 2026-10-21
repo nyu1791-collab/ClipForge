@@ -2,13 +2,15 @@
 
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import uuid
+from pathlib import Path
 
 
 class PipelineError(RuntimeError):
-    pass
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 def digest(path):

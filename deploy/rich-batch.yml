@@ -1,0 +1,199 @@
+name: ClipForge rich batch
+run-name: ClipForge ${{ inputs.mode }} ${{ inputs.submission_id || inputs.output_kind }} ${{ inputs.source_ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact ClipForge implementation commit SHA
+        required: true
+        type: string
+      mode:
+        type: choice
+        options: [manifest, auto, reviewed, caption_update]
+        default: manifest
+      manifest_path:
+        description: Repository example manifest without media or secrets
+        default: jobs/examples/kick-test-3.json
+        type: string
+      source_url:
+        description: Canonical public Kick VOD page URL (auto only, never playback URLs)
+        type: string
+      submission_id:
+        description: Unique reviewed request ID created by the submit tool
+        type: string
+        default: ''
+      plan_json:
+        description: Private interval metadata only; subtitles come from the ASR cache
+        type: string
+        default: ''
+      output_kind:
+        type: choice
+        options: [both, shorts, topics]
+        default: both
+      count:
+        type: choice
+        options: ['3', '4', '5']
+        default: '3'
+      topic_seconds:
+        description: Target normal topic duration, 60-1200 seconds
+        type: number
+        default: 300
+      cache_run_id:
+        description: Optional previous private run containing analysis-cache-RUN_ID
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: clipforge-video
+  cancel-in-progress: false
+
+jobs:
+  rich:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      SOURCE_REF: ${{ inputs.source_ref }}
+      MANIFEST_PATH: ${{ inputs.manifest_path }}
+      SOURCE_URL: ${{ inputs.source_url }}
+      OUTPUT_KIND: ${{ inputs.output_kind }}
+      BATCH_MODE: ${{ inputs.mode }}
+      PICK_COUNT: ${{ inputs.count }}
+      TOPIC_SECONDS: ${{ inputs.topic_seconds }}
+      CACHE_RUN_ID: ${{ inputs.cache_run_id }}
+      PYTHONUNBUFFERED: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+    steps:
+      - name: Validate control inputs
+        run: |
+          python - <<'PY'
+          import os, re
+          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['SOURCE_REF'])
+          assert re.fullmatch(r'jobs/examples/[A-Za-z0-9_-]+\.json', os.environ['MANIFEST_PATH'])
+          assert os.environ['BATCH_MODE'] in {'manifest','auto','reviewed','caption_update'}
+          if os.environ['BATCH_MODE']=='caption_update':
+              import json
+              event=json.load(open(os.environ['GITHUB_EVENT_PATH']))['inputs']
+              control=json.loads(event['plan_json'])
+              assert re.fullmatch(r'clipforge-caption-[a-f0-9]{32}',event['submission_id'])
+              assert set(control)=={'clip_id'} and re.fullmatch(r'clip_0[1-5]',control['clip_id'])
+              assert os.environ['CACHE_RUN_ID'] and os.environ['OUTPUT_KIND'] in {'shorts','topics'}
+          if os.environ['BATCH_MODE']=='reviewed':
+              import json
+              event=json.load(open(os.environ['GITHUB_EVENT_PATH']))['inputs']
+              assert re.fullmatch(r'clipforge-reviewed-[a-f0-9]{32}',event['submission_id'])
+              assert len(event['plan_json'].encode()) <= 60000
+              assert os.environ['CACHE_RUN_ID']
+              plan=json.loads(event['plan_json'])
+              assert all(not c.get('subtitles') for k in ('shorts','topics') for c in plan[k]['clips'])
+          assert os.environ['OUTPUT_KIND'] in {'shorts','topics','both'}
+          assert os.environ['PICK_COUNT'] in {'3','4','5'}
+          assert 60 <= float(os.environ['TOPIC_SECONDS']) <= 1200
+          assert not os.environ['CACHE_RUN_ID'] or re.fullmatch(r'[0-9]+',os.environ['CACHE_RUN_ID'])
+          if os.environ['BATCH_MODE']=='auto':
+              assert re.fullmatch(r'https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', os.environ['SOURCE_URL'])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          path: source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU media tools and Japanese font
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+      - name: Install locked dependencies
+        working-directory: source
+        run: uv sync --locked --extra media-fetch --no-dev
+      - name: Boundary and failure regression checks
+        working-directory: source
+        run: uv run python -m unittest discover -s tests -v
+      - name: Synthetic video integration checks for both formats
+        working-directory: source
+        run: uv run python tools/verify_video_foundation.py
+      - uses: actions/download-artifact@v4
+        if: inputs.cache_run_id != ''
+        with:
+          name: analysis-cache-${{ inputs.cache_run_id }}
+          run-id: ${{ inputs.cache_run_id }}
+          github-token: ${{ github.token }}
+          path: source/workspace/cache
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'caption_update'
+        with:
+          name: rich-videos-${{ inputs.cache_run_id }}
+          run-id: ${{ inputs.cache_run_id }}
+          github-token: ${{ github.token }}
+          path: source/workspace/previous
+      - name: Fetch, transcribe, select and render
+        working-directory: source
+        run: |
+          if [ "$BATCH_MODE" = auto ]; then
+            uv run python tools/render_rich_videos.py --auto "$SOURCE_URL" \
+              --output-kind "$OUTPUT_KIND" --count "$PICK_COUNT" --topic-seconds "$TOPIC_SECONDS" \
+              --style assets/style.example.json --topic-style assets/style.topics.example.json \
+              --output workspace/output/production --cache workspace/cache --assets assets \
+              --quality 720p --whisper-model small --max-bytes 8589934592 --resume
+          elif [ "$BATCH_MODE" = reviewed ]; then
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          value=json.load(open(os.environ['GITHUB_EVENT_PATH']))['inputs']['plan_json']
+          target=Path('workspace/input/production_plan.json')
+          target.parent.mkdir(parents=True,exist_ok=True)
+          target.write_text(value)
+          target.chmod(0o600)
+          PY
+            uv run python tools/render_reviewed_batch.py --plan workspace/input/production_plan.json \
+              --output workspace/output/production --cache workspace/cache --assets assets \
+              --quality 720p --whisper-model small --max-bytes 8589934592 --resume
+          elif [ "$BATCH_MODE" = caption_update ]; then
+            CLIP_ID=$(python -c "import json,os; print(json.loads(json.load(open(os.environ['GITHUB_EVENT_PATH']))['inputs']['plan_json'])['clip_id'])")
+            uv run python tools/verify_caption_update.py --previous workspace/previous/production \
+              --cache workspace/cache --assets assets --output-kind "$OUTPUT_KIND" --clip-id "$CLIP_ID" \
+              --output workspace/output/caption-update
+          else
+            uv run python tools/render_rich_videos.py --manifest "$MANIFEST_PATH" \
+              --output workspace/output/production --cache workspace/cache --assets assets \
+              --quality 720p --whisper-model small --resume
+          fi
+      - name: Decode every completed output and check receipts
+        if: inputs.mode != 'caption_update'
+        working-directory: source
+        run: uv run python tools/check_rich_batch.py workspace/output/production
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rich-videos-${{ github.run_id }}
+          path: source/workspace/output/
+          include-hidden-files: false
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.mode != 'caption_update'
+        with:
+          name: analysis-cache-${{ github.run_id }}
+          path: |
+            source/workspace/cache/audio/
+            source/workspace/cache/transcripts/
+            source/workspace/cache/ranges/
+            source/workspace/cache/asr/
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,8 +1,11 @@
-"""ASS/SRT captions in clip-relative time; no executable user override tags."""
+"""ASS/SRT generation with measured Japanese word and phrase boundaries."""
 
 import unicodedata
 
+from . import caption_layout as layout
+from .fonts import Measure
 from .models import Word
+from .storage import PipelineError, digest, write_json
 
 
 def safe(text):
@@ -16,91 +19,61 @@ def safe(text):
 
 
 def width(text):
-    return sum(
-        2 if unicodedata.east_asian_width(c) in {"W", "F"} or c in "MW@#%" else 1
-        for c in text
-    )
+    # Kept for callers that estimate terminal-style character cells.
+    return sum(2 if unicodedata.east_asian_width(c) in {"W", "F"} else 1 for c in text)
 
 
 def wrap_tokens(words, karaoke, start, line_cells):
-    result, line_width, lines = [], 0, 1
-    for index, word in enumerate(words):
-        text = safe(word.text)
-        pieces = []
-        for char in text:
-            size = width(char)
-            if line_width + size > line_cells:
-                if lines < 2:
-                    pieces.append(r"\N")
-                    lines += 1
-                else:
-                    # A single ASR token may be an entire Japanese phrase. The group
-                    # builder limits this case; preserve text instead of discarding it.
-                    pieces.append(r"\N")
-                line_width = 0
-            pieces.append(char)
-            line_width += size
+    # Compatibility helper; production uses measured font widths in create().
+    return _text(words, karaoke, start, width, line_cells)
+
+
+def _text(words, karaoke, start, measure, limit):
+    breaks = layout.line_break([w.text for w in words], measure, limit)
+    if breaks is None:
+        raise PipelineError("caption exceeds two measured lines")
+    result = []
+    for i, w in enumerate(words):
+        if i in breaks:
+            result.append(r"\N")
         if karaoke:
-            cursor = start if index == 0 else word.start
-            end = words[index + 1].start if index + 1 < len(words) else word.end
-            centiseconds = max(1, round((end - cursor) * 100))
-            result.append(r"{\kf" + str(centiseconds) + "}")
-        result.append("".join(pieces))
-    return "".join(result).strip()
+            begin = start if i == 0 else max(start, w.start)
+            until = words[i + 1].start if i + 1 < len(words) else w.end
+            result.append(r"{\kf" + str(max(1, round((until - begin) * 100))) + "}")
+        result.append(w.text)
+    return "".join(result)
 
 
-def create(transcript, clip, directory, settings):
+def create(transcript, clip, directory, settings, fonts_dir=None):
     import pysubs2
 
     height = settings.height
-    numerator, denominator = map(int, settings.aspect.split(":"))
-    frame_width = round(height * numerator / denominator / 2) * 2
-    font_size = round(height * settings.caption_size_ratio)
-    margin = 35
-    # Reserve space for outlines and differences between Latin/CJK font metrics.
-    line_cells = max(12, min(52, int((frame_width - margin * 2) / (font_size * 0.6))))
+    n, d = map(int, settings.aspect.split(":"))
+    frame_width = round(height * n / d / 2) * 2
+    font_size = round(height * (0.048 if settings.aspect == "9:16" else 0.052))
+    measure = Measure(settings.font, font_size, fonts_dir)
+    limit = frame_width - 86
     words = []
-    for segment in transcript.segments:
-        if segment.end <= clip.start or segment.start >= clip.end:
+    for s in transcript.segments:
+        if s.end <= clip.start or s.start >= clip.end:
             continue
-        source = segment.words or [
-            Word(start=segment.start, end=segment.end, text=segment.text or " ")
-        ]
-        for word in source:
-            start, end = (
-                max(clip.start, word.start) - clip.start,
-                min(clip.end, word.end) - clip.start,
+        for w in s.words or [Word(start=s.start, end=s.end, text=s.text or " ")]:
+            a, b = (
+                max(clip.start, w.start) - clip.start,
+                min(clip.end, w.end) - clip.start,
             )
-            if end > start and word.text.strip():
-                # Divide overlong ASR tokens for layout only, proportionally in time.
-                chunks, pending = [], ""
-                for char in word.text:
-                    if width(pending + char) > line_cells - 2 and pending:
-                        chunks.append(pending)
-                        pending = ""
-                    pending += char
-                if pending:
-                    chunks.append(pending)
-                total = max(1, sum(len(t) for t in chunks))
-                cursor = start
-                for chunk in chunks:
-                    until = min(end, cursor + (end - start) * len(chunk) / total)
-                    if until > cursor:
-                        words.append(Word(start=cursor, end=until, text=chunk))
-                    cursor = until
+            if b > a and w.text.strip():
+                words.append(Word(start=a, end=b, text=layout.normalize(safe(w.text))))
     words.sort(key=lambda w: (w.start, w.end))
-    groups, current = [], []
-    for word in words:
-        if current and (
-            width("".join(w.text for w in current) + word.text) > line_cells * 2 - 2
-            or word.end - current[0].start > 4
-            or word.start - current[-1].end > 0.7
-        ):
-            groups.append(current)
-            current = []
-        current.append(word)
-    if current:
-        groups.append(current)
+    words, approximated = layout.timed_units(words)
+    groups = layout.groups(words, measure.width, limit, duration=clip.end - clip.start)
+    # SRT readers trim event-edge whitespace. Canonicalize it before either export
+    # so an ASR word beginning with a space cannot make ASS/SRT disagree.
+    for i, members in enumerate(groups):
+        members = list(members)
+        members[0] = members[0].model_copy(update={"text": members[0].text.lstrip()})
+        members[-1] = members[-1].model_copy(update={"text": members[-1].text.rstrip()})
+        groups[i] = members
     subtitles = pysubs2.SSAFile()
     subtitles.info.update(
         PlayResX=str(frame_width),
@@ -120,76 +93,104 @@ def create(transcript, clip, directory, settings):
         alignment=2,
         marginl=35,
         marginr=35,
-        marginv=round(height * 0.12),
+        marginv=round(height * (0.12 if settings.aspect == "9:16" else 0.06)),
     )
+    duration_ms = round((clip.end - clip.start) * 1000)
     if settings.headline:
-        title = settings.hook_title or clip.title
-        headline_size = round(height * 0.052)
-        while True:
-            title_cells = max(10, int((frame_width - 50) / (headline_size * 0.65)))
-            lines, current = [], ""
-            for char in safe(title):
-                if width(current + char) > title_cells:
-                    lines.append(current)
-                    current = ""
-                current += char
-            if current:
-                lines.append(current)
-            if len(lines) <= 2 or headline_size <= round(height * 0.037):
+        title = layout.normalize(safe(settings.hook_title or clip.title))
+        for size in range(round(height * 0.052), round(height * 0.028) - 1, -1):
+            title_measure = Measure(settings.font, size, fonts_dir)
+            parts = layout.units(title)
+            cuts = layout.line_break(parts, title_measure.width, frame_width - 90)
+            if cuts is not None:
                 break
-            headline_size -= 1
-        # A hook must fit in two lines. Truncate explicitly rather than covering
-        # the source with a long AI-generated title.
-        if len(lines) > 2:
-            lines = lines[:2]
-            lines[1] = lines[1][:-1] + "…"
+        else:
+            raise PipelineError("title exceeds two lines; shorten the title")
+        title_text = "".join(
+            (r"\N" if i in cuts else "") + p for i, p in enumerate(parts)
+        )
         subtitles.styles["Headline"] = pysubs2.SSAStyle(
             fontname=settings.font,
-            fontsize=headline_size,
+            fontsize=size,
             primarycolor=pysubs2.Color(255, 220, 30),
             outlinecolor=pysubs2.Color(0, 0, 0),
-            outline=settings.caption_outline,
+            outline=3.5,
             shadow=1,
             bold=True,
             alignment=8,
-            marginl=25,
-            marginr=25,
-            marginv=round(height * 0.07),
+            marginl=35,
+            marginr=35,
+            marginv=round(height * 0.05),
         )
         subtitles.append(
             pysubs2.SSAEvent(
-                start=0,
-                end=round((clip.end - clip.start) * 1000),
-                style="Headline",
-                text=r"\N".join(lines),
-                layer=1,
+                start=0, end=duration_ms, style="Headline", text=title_text, layer=1
             )
         )
-    previous_end = 0
-    for group in groups:
-        start = max(previous_end, round(group[0].start * 1000))
-        end = min(round((clip.end - clip.start) * 1000), round(group[-1].end * 1000))
+    warnings, previous = [], 0
+    for i, group in enumerate(groups):
+        start = max(previous, round(group[0].start * 100) * 10)
+        ceiling = (
+            min(duration_ms, round(groups[i + 1][0].start * 100) * 10)
+            if i + 1 < len(groups)
+            else duration_ms
+        )
+        spoken = "".join(w.text for w in group)
+        wanted = start + max(1000, round(len(spoken.strip()) * 1000 / 10))
+        end = min(ceiling, start + 4000, max(round(group[-1].end * 1000), wanted))
+        end = (
+            end // 10 * 10
+        )  # ASS uses centiseconds; SRT must keep identical boundaries.
         if end <= start:
-            continue
-        subtitles.append(
-            pysubs2.SSAEvent(
-                start=start,
-                end=end,
-                text=wrap_tokens(
-                    group, settings.caption == "karaoke", start / 1000, line_cells
-                ),
+            raise PipelineError("overlapping ASR timing leaves no caption duration")
+        event_measure, prefix = measure.width, ""
+        if layout.line_break([w.text for w in group], event_measure, limit) is None:
+            scale = min(1, limit / measure.width(spoken))
+            if scale < 0.6:
+                raise PipelineError("caption word cannot fit at minimum font size")
+            size = int(font_size * scale)
+            event_measure = Measure(settings.font, size, fonts_dir).width
+            prefix = r"{\fs" + str(size) + "}"
+            warnings.append(
+                {"event": i, "type": "long_word_font_reduced", "font_size": size}
             )
+        text = prefix + _text(
+            group, settings.caption == "karaoke", start / 1000, event_measure, limit
         )
-        previous_end = end
-    ass, directory_srt = directory / "captions.ass", directory / "captions.srt"
+        subtitles.append(pysubs2.SSAEvent(start=start, end=end, text=text))
+        cps = len("".join(spoken.split())) * 1000 / (end - start)
+        if cps > 15 or end - start < 1000:
+            warnings.append(
+                {
+                    "event": i,
+                    "start": start / 1000,
+                    "seconds": (end - start) / 1000,
+                    "cps": round(cps, 2),
+                }
+            )
+        previous = end
+    missing = measure.missing("".join(e.plaintext for e in subtitles))
+    if missing:
+        raise PipelineError("selected font lacks caption glyphs")
+    ass, srt = directory / "captions.ass", directory / "captions.srt"
     subtitles.save(str(ass), encoding="utf-8")
-    # SRT deliberately has no ASS overrides; exported text comes from plaintext.
     plain = pysubs2.SSAFile()
-    for event in subtitles:
-        if event.style == "Headline":
-            continue
-        plain.append(
-            pysubs2.SSAEvent(start=event.start, end=event.end, text=event.plaintext)
-        )
-    plain.save(str(directory_srt), encoding="utf-8")
-    return {"ass": ass.name, "srt": directory_srt.name, "events": len(subtitles)}
+    for e in subtitles:
+        if e.style != "Headline":
+            plain.append(pysubs2.SSAEvent(start=e.start, end=e.end, text=e.plaintext))
+    plain.save(str(srt), encoding="utf-8")
+    report = {
+        "ass": ass.name,
+        "srt": srt.name,
+        "events": len(plain),
+        "max_lines": 2,
+        "approximate_word_boundaries": approximated,
+        "warnings": warnings,
+        "font_sha256": digest(measure.path),
+        "font_size": font_size,
+        "line_pixels": limit,
+        "layout_engine": "janome+budoux+measured-font",
+        "missing_glyphs": missing,
+    }
+    write_json(directory / "caption_review.json", report)
+    return report

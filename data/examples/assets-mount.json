@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "path": "bgm/demo-soft.wav",
+      "source": "bgm/demo-soft.wav",
+      "sha256": "2c695f6033157a43b2820142c65acd44d285aeb5e0cb7eb74836c1ddb741008d",
+      "license": "CC0-1.0",
+      "max_bytes": 33554432
+    },
+    {
+      "path": "se/demo-hook.wav",
+      "source": "se/demo-hook.wav",
+      "sha256": "63445a0b27e7a32d8bd84de0df227f5b84cf154acf82f2e9aad938934622567d",
+      "license": "CC0-1.0",
+      "max_bytes": 33554432
+    },
+    {
+      "path": "overlays/demo-frame.png",
+      "source": "overlays/demo-frame.png",
+      "sha256": "d022ecdea8b913934f6aa01a676bac80fdf2d8071f3e3c64851edb89546d82d3",
+      "license": "CC0-1.0",
+      "max_bytes": 33554432
+    }
+  ]
+}

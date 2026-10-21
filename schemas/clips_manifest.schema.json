@@ -1,0 +1,309 @@
+{
+  "$defs": {
+    "BatchClip": {
+      "additionalProperties": false,
+      "properties": {
+        "clip_id": {
+          "pattern": "clip_0[1-5]",
+          "title": "Clip Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "topic",
+            "highlight"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "hook_title": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Hook Title",
+          "type": "string"
+        },
+        "start_time": {
+          "minimum": 0,
+          "title": "Start Time",
+          "type": "number"
+        },
+        "end_time": {
+          "exclusiveMinimum": 0,
+          "title": "End Time",
+          "type": "number"
+        },
+        "subtitles": {
+          "items": {
+            "$ref": "#/$defs/Segment"
+          },
+          "maxItems": 10000,
+          "title": "Subtitles",
+          "type": "array"
+        },
+        "score": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Score",
+          "type": "number"
+        },
+        "reason": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "clip_id",
+        "type",
+        "hook_title",
+        "start_time",
+        "end_time",
+        "score",
+        "reason"
+      ],
+      "title": "BatchClip",
+      "type": "object"
+    },
+    "RichStyle": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "default": 720,
+          "enum": [
+            720,
+            1080
+          ],
+          "title": "Height",
+          "type": "integer"
+        },
+        "font": {
+          "default": "Noto Sans CJK JP",
+          "title": "Font",
+          "type": "string"
+        },
+        "fonts_dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fonts Dir"
+        },
+        "caption_color": {
+          "default": "#FFFFFF",
+          "title": "Caption Color",
+          "type": "string"
+        },
+        "outline_color": {
+          "default": "#000000",
+          "title": "Outline Color",
+          "type": "string"
+        },
+        "highlight_color": {
+          "default": "#FFD228",
+          "title": "Highlight Color",
+          "type": "string"
+        },
+        "bgm": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bgm"
+        },
+        "se": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Se"
+        },
+        "overlay": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Overlay"
+        },
+        "bgm_gain": {
+          "default": 0.07,
+          "maximum": 0.3,
+          "minimum": 0,
+          "title": "Bgm Gain",
+          "type": "number"
+        },
+        "se_gain": {
+          "default": 0.15,
+          "maximum": 0.6,
+          "minimum": 0,
+          "title": "Se Gain",
+          "type": "number"
+        },
+        "preset": {
+          "default": "slow",
+          "enum": [
+            "slow",
+            "medium",
+            "veryfast"
+          ],
+          "title": "Preset",
+          "type": "string"
+        },
+        "crf": {
+          "default": 18,
+          "maximum": 28,
+          "minimum": 14,
+          "title": "Crf",
+          "type": "integer"
+        }
+      },
+      "title": "RichStyle",
+      "type": "object"
+    },
+    "Segment": {
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "title": "End",
+          "type": "number"
+        },
+        "text": {
+          "maxLength": 16000,
+          "title": "Text",
+          "type": "string"
+        },
+        "words": {
+          "items": {
+            "$ref": "#/$defs/Word"
+          },
+          "title": "Words",
+          "type": "array"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "text"
+      ],
+      "title": "Segment",
+      "type": "object"
+    },
+    "Word": {
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "minimum": 0,
+          "title": "Start",
+          "type": "number"
+        },
+        "end": {
+          "exclusiveMinimum": 0,
+          "title": "End",
+          "type": "number"
+        },
+        "text": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "text"
+      ],
+      "title": "Word",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_url": {
+      "title": "Source Url",
+      "type": "string"
+    },
+    "source_duration": {
+      "exclusiveMinimum": 0,
+      "maximum": 86400,
+      "title": "Source Duration",
+      "type": "number"
+    },
+    "subtitle_timebase": {
+      "const": "source",
+      "default": "source",
+      "title": "Subtitle Timebase",
+      "type": "string"
+    },
+    "selection_method": {
+      "enum": [
+        "test_intervals",
+        "manual",
+        "local_transcript_audio"
+      ],
+      "title": "Selection Method",
+      "type": "string"
+    },
+    "output_kind": {
+      "default": "shorts",
+      "enum": [
+        "shorts",
+        "topics"
+      ],
+      "title": "Output Kind",
+      "type": "string"
+    },
+    "style": {
+      "$ref": "#/$defs/RichStyle"
+    },
+    "clips": {
+      "items": {
+        "$ref": "#/$defs/BatchClip"
+      },
+      "maxItems": 5,
+      "minItems": 3,
+      "title": "Clips",
+      "type": "array"
+    }
+  },
+  "required": [
+    "source_url",
+    "source_duration",
+    "selection_method",
+    "clips"
+  ],
+  "title": "ClipsManifest",
+  "type": "object"
+}

@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "source_url": "https://kick.com/meat_gengorou/videos/01a1574c-2350-77ce-90e2-4a7fefd4235c",
+  "source_duration": 7864.686,
+  "subtitle_timebase": "source",
+  "selection_method": "test_intervals",
+  "style": {
+    "height": 720,
+    "bgm": "bgm/demo-soft.wav",
+    "se": "se/demo-hook.wav",
+    "overlay": "overlays/demo-frame.png"
+  },
+  "clips": [
+    {
+      "clip_id": "clip_01",
+      "type": "topic",
+      "hook_title": "料理配信・検証区間1",
+      "start_time": 60.3,
+      "end_time": 90.3,
+      "subtitles": [],
+      "score": 0,
+      "reason": "取得・ASR字幕・音声ミックス・縦型編集を確認するための指定区間。見どころ評価は未実施。"
+    },
+    {
+      "clip_id": "clip_02",
+      "type": "highlight",
+      "hook_title": "料理配信・検証区間2",
+      "start_time": 240.7,
+      "end_time": 270.7,
+      "subtitles": [],
+      "score": 0,
+      "reason": "取得・ASR字幕・音声ミックス・縦型編集を確認するための指定区間。見どころ評価は未実施。"
+    },
+    {
+      "clip_id": "clip_03",
+      "type": "topic",
+      "hook_title": "料理配信・検証区間3",
+      "start_time": 600.2,
+      "end_time": 630.2,
+      "subtitles": [],
+      "score": 0,
+      "reason": "取得・ASR字幕・音声ミックス・縦型編集を確認するための指定区間。見どころ評価は未実施。"
+    }
+  ]
+}
