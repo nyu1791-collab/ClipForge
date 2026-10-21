@@ -62,7 +62,7 @@ jobs:
       - name: Install CPU media tools and Japanese fonts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2
       - name: Install locked Python dependencies without API credentials
         working-directory: clipforge-source
         run: uv sync --locked --extra chat --no-dev

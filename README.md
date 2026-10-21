@@ -46,7 +46,7 @@ clipforge-submit \
 Linux、Python 3.11以上、FFmpeg/FFprobe（libass入り）、日本語フォントが必要です。1GBの制御VMでは実行しません。
 
 ```bash
-sudo apt-get install -y ffmpeg fontconfig fonts-noto-cjk
+sudo apt-get install -y ffmpeg fontconfig fonts-noto-cjk libcairo2
 uv sync --locked --extra chat
 
 uv run --no-sync clipforge run /path/to/source.mp4 \
