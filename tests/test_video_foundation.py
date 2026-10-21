@@ -453,6 +453,13 @@ class VideoFoundationTests(unittest.TestCase):
 
             with patch.object(module, "gh", side_effect=invoke) as gh:
                 a = module.submit(path, "a" * 40, state=Path(d) / "state")
+                path.write_text(
+                    json.dumps(
+                        self.reviewed_plan().model_dump(),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                )
                 b = module.submit(path, "a" * 40, state=Path(d) / "state")
                 self.assertEqual(a, b)
                 self.assertEqual(

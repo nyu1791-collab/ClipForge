@@ -40,7 +40,7 @@ def submit(path, source_ref, cache_run_id="", state=Path("workspace/control/batc
     plan = ProductionPlan.model_validate_json(path.read_text())
     if not json.loads(gh("api", f"repos/{PRIVATE_REPO}"))["private"]:
         raise PipelineError("designated worker repository must be private")
-    key = fingerprint({"plan": digest(path), "source_ref": source_ref})
+    key = fingerprint({"plan": plan.model_dump(), "source_ref": source_ref})
     state = Path(state)
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     receipt = state / (key + ".json")
