@@ -91,6 +91,7 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 | `image_search`, `image_sources` | 題名で画像を検索。Wikimedia CommonsまたはOpenverseのうち、CC0・パブリックドメイン・CC BY・CC BY-SAだけを使用 |
 | `bgm`, `bgm_gain_db`, `ducking`, `sound_effects` | 背景音楽（声の間は自動で下げる）と効果音 |
 | `thumbnail` | 切り抜きの1フレームに題名を載せた1280×720のサムネイル |
+| `encode_preset` | 動画の符号化の速さ。既定は `veryfast`。`faster` は約1dB画質が上がり、時間は約15%増えます。`superfast` は速いが容量が約2倍 |
 | `table_query` | 日本語版Wikipediaの表を検索し、独自の表として描画。記事のURLとCC BY-SA 4.0の表記を画面に表示 |
 
 速度を優先する場合は `asr_batch_size`（1〜16）で文字起こしを一括処理できます。実測では約2倍速くなりましたが、無音の扱いが変わり、話題の区切りも変わります（実音声では15件→10件）。既定の `0`（逐次処理）が品質の基準です。

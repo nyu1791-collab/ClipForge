@@ -9,6 +9,7 @@
   "aspect": "9:16",
   "framing": "fit",
   "height": 720,
+  "encode_preset": "veryfast",
   "caption": "karaoke",
   "font": "Noto Sans CJK JP",
   "layout": "fit",

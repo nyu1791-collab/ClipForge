@@ -30,6 +30,7 @@ SETTINGS_FIELDS = {
     "aspect",
     "framing",
     "height",
+    "encode_preset",
     "caption",
     "font",
     "layout",

@@ -533,7 +533,7 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        settings.encode_preset,
         "-crf",
         "20",
         "-pix_fmt",

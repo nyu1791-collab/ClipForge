@@ -118,6 +118,11 @@ def test_render_commands_are_local_relative_and_cpu(
         assert command[command.index("-map") + 1] == "[vout]"
         assert ("[aout]" in command) == audio
         assert command[command.index("-c:v") + 1] == "libx264"
+        assert (
+            command[command.index("-preset") + 1]
+            == settings.encode_preset
+            == "veryfast"
+        )
         graph = command[command.index("-filter_complex") + 1]
         assert "setpts=PTS-STARTPTS" in graph
         assert "ass=filename=captions.ass" in graph

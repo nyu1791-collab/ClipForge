@@ -150,6 +150,9 @@ class Settings(Record):
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
     height: Literal[720, 1080] = 720
+    # x264 speed preset. Measured on a 65 s clip: faster is about 1 dB sharper than
+    # veryfast for about 15% more time; superfast is quicker but about twice the size.
+    encode_preset: Literal["superfast", "veryfast", "faster", "medium"] = "veryfast"
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
     layout: Literal["fit", "blur", "panels"] = "fit"
