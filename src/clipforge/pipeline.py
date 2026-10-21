@@ -3,8 +3,8 @@
 import fcntl
 import json
 import os
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
 from . import __version__, media, signals
 from .captions import create as create_captions

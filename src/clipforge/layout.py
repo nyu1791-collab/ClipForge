@@ -5,14 +5,14 @@ Copyright (c) 2026 Cutawan Contributors. See third_party/Cutawan-LICENSE.
 Unlike a tracking camera, a region stays fixed until an explicit punch-in cut.
 """
 
-from dataclasses import asdict, dataclass
 import math
+from dataclasses import asdict, dataclass
 
 from .storage import PipelineError
 
 
 def even(value):
-    return max(2, int(round(value / 2)) * 2)
+    return max(2, round(value / 2) * 2)
 
 
 def output_size(settings):

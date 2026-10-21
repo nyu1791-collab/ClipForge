@@ -2,8 +2,8 @@
 
 import json
 import math
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 from .layout import filter_graph, output_size
 from .storage import PipelineError, process
@@ -132,8 +132,10 @@ def preview(source, destination, candidate, settings):
             "-map",
             "0:a:0?",
             "-vf",
-            "scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,"
-            "pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1",
+            (
+                "scale=640:360:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+                "pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1"
+            ),
             "-r",
             "5",
             "-c:v",
@@ -224,6 +226,7 @@ def render(source, destination, clip, settings, ass=None):
         cwd=Path(destination).parent,
         capture_output=True,
         timeout=max(300, (clip.end - clip.start) * 20),
+        check=False,
     )
     if result.returncode or result.stderr.strip():
         raise PipelineError("clip rendering failed")

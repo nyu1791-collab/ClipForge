@@ -1,15 +1,16 @@
 """Regression cases for source geometry, Japanese layout and hidden future subtitles."""
 
-from pathlib import Path
+import itertools
 import tempfile
 import unittest
+from pathlib import Path
 
 import pysubs2
 from pydantic import ValidationError
 
 from clipforge.captions import create
 from clipforge.layout import filter_graph, output_size, source_rect
-from clipforge.models import Settings, SelectedClip, SourceRegion, Transcript
+from clipforge.models import SelectedClip, Settings, SourceRegion, Transcript
 from clipforge.storage import PipelineError
 from clipforge.typography import (
     resolve_font,
@@ -64,9 +65,9 @@ class GeometryTests(unittest.TestCase):
 
     def test_regions_reject_outside_nan_and_zero(self):
         for value in [
-            dict(x=0.9, y=0, width=0.2, height=0.2),
-            dict(x=0, y=0, width=0, height=0.2),
-            dict(x=float("nan"), y=0, width=0.2, height=0.2),
+            {"x": 0.9, "y": 0, "width": 0.2, "height": 0.2},
+            {"x": 0, "y": 0, "width": 0, "height": 0.2},
+            {"x": float("nan"), "y": 0, "width": 0.2, "height": 0.2},
         ]:
             with self.assertRaises(ValidationError):
                 SourceRegion(**value)
@@ -88,13 +89,13 @@ class GeometryTests(unittest.TestCase):
     def test_punch_in_uses_original_time_and_excludes_non_intersections(self):
         s = settings(
             framing="stacked",
-            presenter_region=dict(x=0, y=0.6, width=0.3, height=0.4),
-            punch_ins=[dict(start=11, end=13, zoom=1.3), dict(start=20, end=22)],
+            presenter_region={"x": 0, "y": 0.6, "width": 0.3, "height": 0.4},
+            punch_ins=[{"start": 11, "end": 13, "zoom": 1.3}, {"start": 20, "end": 22}],
         )
         graph, receipt = filter_graph(
-            dict(width=1280, height=720, video_index=0), clip(), s
+            {"width": 1280, "height": 720, "video_index": 0}, clip(), s
         )
-        self.assertEqual(receipt["punch_ins"], [dict(start=1, end=3, zoom=1.3)])
+        self.assertEqual(receipt["punch_ins"], [{"start": 1, "end": 3, "zoom": 1.3}])
         self.assertIn("gte(t,1.000000)*lt(t,3.000000)", graph)
         self.assertEqual(len(receipt["regions"]), 3)
         zoom = receipt["regions"][-1]["source"]
@@ -103,25 +104,25 @@ class GeometryTests(unittest.TestCase):
 
     def test_ambiguous_layouts_are_rejected(self):
         for changes in [
-            dict(framing="stacked"),
-            dict(
-                framing="stacked",
-                aspect="16:9",
-                presenter_region=dict(x=0, y=0, width=0.2, height=0.2),
-            ),
-            dict(punch_ins=[dict(start=1, end=2)]),
-            dict(
-                framing="stacked",
-                presenter_region=dict(x=0, y=0, width=0.2, height=0.2),
-                punch_ins=[dict(start=1, end=3), dict(start=2, end=4)],
-            ),
+            {"framing": "stacked"},
+            {
+                "framing": "stacked",
+                "aspect": "16:9",
+                "presenter_region": {"x": 0, "y": 0, "width": 0.2, "height": 0.2},
+            },
+            {"punch_ins": [{"start": 1, "end": 2}]},
+            {
+                "framing": "stacked",
+                "presenter_region": {"x": 0, "y": 0, "width": 0.2, "height": 0.2},
+                "punch_ins": [{"start": 1, "end": 3}, {"start": 2, "end": 4}],
+            },
         ]:
             with self.assertRaises(ValidationError):
                 settings(**changes)
 
     def test_background_and_audio_branches_are_not_duplicated(self):
         graph, _ = filter_graph(
-            dict(width=1280, height=720, video_index=2), clip(), settings()
+            {"width": 1280, "height": 720, "video_index": 2}, clip(), settings()
         )
         self.assertIn("[0:2]", graph)
         self.assertIn("gblur", graph)
@@ -193,14 +194,14 @@ class CaptionTests(unittest.TestCase):
 
     def test_captions_are_bounded_and_no_more_than_two_lines(self):
         for mode in ["plain", "karaoke", "progressive"]:
-            ass, srt, receipt = self.render(caption=mode)
+            _ass, srt, receipt = self.render(caption=mode)
             self.assertTrue(srt)
             for event in srt:
                 self.assertGreater(event.end, event.start)
                 self.assertGreaterEqual(event.start, 0)
                 self.assertLessEqual(event.end, 6000)
                 self.assertLessEqual(len(event.plaintext.splitlines()), 2)
-            for a, b in zip(srt, srt[1:]):
+            for a, b in itertools.pairwise(srt):
                 self.assertLessEqual(a.end, b.start)
             self.assertFalse(receipt["missing_glyphs"])
 
@@ -217,7 +218,7 @@ class CaptionTests(unittest.TestCase):
                 ],
             }
         )
-        ass, srt, receipt = self.render(source)
+        _ass, srt, receipt = self.render(source)
         self.assertIn("estimated_caption_timing", receipt["review_required"])
         self.assertTrue(receipt["estimated_timing_spans"])
         self.assertTrue(srt)
@@ -231,7 +232,7 @@ class CaptionTests(unittest.TestCase):
                         "start": 10.25,
                         "end": 11,
                         "text": "Hello",
-                        "words": [dict(start=10.25, end=11, text="Hello")],
+                        "words": [{"start": 10.25, "end": 11, "text": "Hello"}],
                     }
                 ],
             }
@@ -262,7 +263,7 @@ class CaptionTests(unittest.TestCase):
             self.render(
                 framing="stacked",
                 caption_font_scale=0.055,
-                presenter_region=dict(x=0, y=0, width=0.2, height=0.2),
+                presenter_region={"x": 0, "y": 0, "width": 0.2, "height": 0.2},
             )
 
 

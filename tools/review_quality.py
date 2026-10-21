@@ -116,7 +116,7 @@ def main():
                     "start": 2.2,
                     "end": 7.5,
                     "text": "".join(w[2] for w in words),
-                    "words": [dict(start=a, end=b, text=t) for a, b, t in words],
+                    "words": [{"start": a, "end": b, "text": t} for a, b, t in words],
                 }
             ],
         },
@@ -127,11 +127,14 @@ def main():
         height=1920,
         headline="親になって変わった話",
         threads=2,
-        content_region=dict(x=0, y=0, width=1, height=0.62),
-        presenter_region=dict(
-            x=40 / 960, y=360 / 540, width=200 / 960, height=160 / 540
-        ),
-        punch_ins=[dict(start=4, end=6, zoom=1.4)],
+        content_region={"x": 0, "y": 0, "width": 1, "height": 0.62},
+        presenter_region={
+            "x": 40 / 960,
+            "y": 360 / 540,
+            "width": 200 / 960,
+            "height": 160 / 540,
+        },
+        punch_ins=[{"start": 4, "end": 6, "zoom": 1.4}],
     )
     write_json(root / "profile.json", profile.model_dump())
     stacked = cut(source, root / "stacked", 2, 8, profile, transcript_path)

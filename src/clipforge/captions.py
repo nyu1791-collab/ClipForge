@@ -1,7 +1,8 @@
 """Phrase-aware ASS, progressive reveal and matching editable SRT in local seconds."""
 
-from dataclasses import dataclass
+import itertools
 import re
+from dataclasses import dataclass
 
 from .layout import output_size
 from .storage import PipelineError
@@ -33,7 +34,7 @@ def tokens(transcript, clip, font, line_width):
             if not text or word.end <= clip.start or word.start >= clip.end:
                 continue
             fragments = []
-            for left, right in zip(cuts, cuts[1:]):
+            for left, right in itertools.pairwise(cuts):
                 ends, forced = wrap_offsets(text[left:right], font, line_width)
                 if forced:
                     warnings.add("forced_line_break")
@@ -56,7 +57,7 @@ def tokens(transcript, clip, font, line_width):
                 if end > start:
                     result.append(Token(start, end, text[left:right], estimated))
     result.sort(key=lambda t: (t.start, t.end))
-    if any(a.end > b.start + 0.02 for a, b in zip(result, result[1:])):
+    if any(a.end > b.start + 0.02 for a, b in itertools.pairwise(result)):
         warnings.add("overlapping_asr_timing")
     return result, warnings
 

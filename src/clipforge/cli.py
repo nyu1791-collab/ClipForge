@@ -2,8 +2,8 @@
 
 import argparse
 import json
-from pathlib import Path
 import sys
+from pathlib import Path
 
 
 def main():
@@ -41,7 +41,7 @@ def main():
     args = parser.parse_args()
     try:
         from .models import Settings
-        from .pipeline import run, cut
+        from .pipeline import cut, run
 
         config = json.loads(args.config.read_text()) if args.config else {}
         for key in [
@@ -101,7 +101,7 @@ def main():
     except KeyboardInterrupt:
         print("Interrupted; completed stages can be resumed.", file=sys.stderr)
         return 130
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - redact provider bodies and local paths
         # Do not print SDK bodies, transcript text, URLs or credential-bearing errors.
         from .storage import PipelineError
 

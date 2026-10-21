@@ -1,5 +1,6 @@
 """Validated original-video seconds, job settings and model response contracts."""
 
+import itertools
 import math
 import re
 from typing import Literal
@@ -136,7 +137,7 @@ class Settings(Record):
         elif self.presenter_region or self.content_region or self.punch_ins:
             raise ValueError("source regions and punch-ins require stacked framing")
         intervals = sorted(self.punch_ins, key=lambda p: p.start)
-        if any(a.end > b.start for a, b in zip(intervals, intervals[1:])):
+        if any(a.end > b.start for a, b in itertools.pairwise(intervals)):
             raise ValueError("presenter punch-ins must not overlap")
         return self
 

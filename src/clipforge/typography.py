@@ -1,10 +1,10 @@
 """Measured Japanese line breaks; local BudouX model, no text sent to an API."""
 
+import re
+import unicodedata
 from bisect import bisect_right
 from dataclasses import dataclass
 from functools import lru_cache
-import re
-import unicodedata
 
 from .storage import PipelineError, process
 
