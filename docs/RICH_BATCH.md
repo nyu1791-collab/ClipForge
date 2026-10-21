@@ -200,7 +200,7 @@ workerの`mode=reviewed`は`cache_run_id`の全編音声と10分単位ASRをSHA-
 
 ## 字幕変更を1本だけ再検証する
 
-`mode=caption_update`は、完了済み私有runの`cache_run_id`、単独の`output_kind`、
+`mode=caption_update`は、完成物とanalysis-cacheの両方を持つ元の私有runの`cache_run_id`、単独の`output_kind`、
 `plan_json={"clip_id":"clip_03"}`、一意の`submission_id=clipforge-caption-`＋32桁hexを入力します。
 以前の完成物と取得済み区間のSHA-256を検証し、対象clipだけを再描画します。
 音声トラックは元の完成MP4からコピーし、デコード後の音声ハッシュが一致することも確認します。
@@ -285,7 +285,9 @@ R2/S3の保存先、認証、保持期限、容量課金は導入先で設定す
 その後、AIが文字起こしで文脈を確認した3話題を両形式へ組み直し、
 [最終worker39668413753](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39668413753)で成功。
 Shorts3本（48/58/67秒）、通常動画3本（130/82/162秒）、全デコード・品質ゲート・ASS/SRT一致を確認。
-回収後にハッシュを検証し、AIが計13フレームを確認しました。末尾0.33秒の字幕1件とASR誤認識候補は記録しています。
-最新コードのCIはPython3.11/3.12で24件通過。詳細・測定値は`docs/QUALITY_REVIEW.md`を参照してください。
+回収後にハッシュを検証し、AIが計13フレームを確認しました。
+追加修正では末尾0.33秒の字幕を1.32秒へ改善し、対象1本だけを[worker39672000618](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39672000618)で再検証しました。
+音声は元の完成版とデコード後のハッシュが一致し、納品6本の字幕警告はすべて0件です。ASR誤認識候補は残っています。
+最新コードのCIはPython3.11/3.12で28件通過。詳細・測定値は`docs/QUALITY_REVIEW.md`を参照してください。
 全編音声・全編ASR・ローカル自動選定は区間指定テストとは別の経路です。
 外部BGMやロゴの商用利用許諾、S3/R2の実アカウント接続、配信全体の自動選定品質は別途確認対象です。
