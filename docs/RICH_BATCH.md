@@ -158,7 +158,8 @@ Janomeの形態素境界でASRトークンを結合し直し、BudouXの文節�
 ASRトークン内の新しい境界は比例補間であり、強制アライメントの精度を保証しません。
 ASSとSRTは同じ10ms単位の境界と改行です。見出しはSRTへ入れません。
 `render.json`はASRセグメント数と表示イベント数を別々に記録します。
-検査レポートでは`asr_segments`と`caption_events`を使います。旧互換の`subtitle_events`はASRセグメント数です。
+検査レポートでは`asr_segments`と`caption_events`を使います。
+`tools/check_rich_batch.py`は両形式の親ディレクトリ、Shortsのみ、通常動画のみの出力先を検査できます。旧互換の`subtitle_events`はASRセグメント数です。
 
 完成MP4の全デコード・寸法・長さ・音声・真ピークを検査してからclipディレクトリを確定します。
 品質ゲートv2では出力音声48kHzを検証し、真ピークが-0.5 dBTPを超える場合は失敗。-16±2 LUFSの外側や無音は警告として記録します。

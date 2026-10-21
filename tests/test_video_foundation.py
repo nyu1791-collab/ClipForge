@@ -563,6 +563,74 @@ class VideoFoundationTests(unittest.TestCase):
                 )
             )
 
+    def test_checker_accepts_each_single_format_production_root(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "check_rich_batch", "tools/check_rich_batch.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        for kind, example, width in (
+            ("shorts", "kick-test-3.json", 404),
+            ("topics", "kick-topics-test-3.json", 1280),
+        ):
+            with tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                manifest = ClipsManifest.model_validate_json(
+                    (Path("jobs/examples") / example).read_text()
+                )
+                write_json(root / "clips_manifest.json", manifest.model_dump())
+                write_json(
+                    root / "batch_result.json",
+                    {"status": "complete", "clips": [{}, {}, {}]},
+                )
+                write_json(
+                    root / "production_result.json",
+                    {
+                        "status": "complete",
+                        "outputs": [{"output_kind": kind, "clips": 3}],
+                    },
+                )
+                for clip in manifest.clips:
+                    directory = root / clip.clip_id
+                    directory.mkdir()
+                    subtitles = pysubs2.SSAFile()
+                    subtitles.append(
+                        pysubs2.SSAEvent(
+                            start=0, end=1000, style="Headline", text="合成タイトル"
+                        )
+                    )
+                    subtitles.append(
+                        pysubs2.SSAEvent(start=0, end=1000, text="合成字幕")
+                    )
+                    subtitles.save(str(directory / "captions.ass"))
+                    write_json(
+                        directory / "render.json",
+                        {
+                            "files_sha256": {},
+                            "assets_sha256": {},
+                            "output_sha256": "synthetic",
+                        },
+                    )
+                with (
+                    patch.object(
+                        module.media,
+                        "probe",
+                        return_value={
+                            "duration": manifest.clips[0].end_time
+                            - manifest.clips[0].start_time,
+                            "audio": True,
+                            "height": 720,
+                            "width": width,
+                        },
+                    ),
+                    patch.object(module, "process"),
+                ):
+                    rows = module.check(root)
+                    self.assertEqual(len(rows), 3)
+                    self.assertEqual(rows[0]["clip_id"], "clip_01")
+
 
 if __name__ == "__main__":
     unittest.main()

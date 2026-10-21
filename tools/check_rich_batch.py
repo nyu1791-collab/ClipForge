@@ -12,17 +12,26 @@ from clipforge.storage import digest, process
 
 def check(root):
     root = Path(root)
+    expected = None
     if (root / "production_result.json").exists():
         production = json.loads((root / "production_result.json").read_text())
         assert production["status"] == "complete"
-        return [
-            dict(output_kind=kind, clips=check(root / kind))
-            for kind in ("shorts", "topics")
-        ]
+        expected = {row["output_kind"]: row["clips"] for row in production["outputs"]}
+        assert len(expected) == len(production["outputs"])
+        assert expected and set(expected) <= {"shorts", "topics"}
+        if not (root / "clips_manifest.json").exists():
+            reports = []
+            for kind, count in expected.items():
+                clips = check(root / kind)
+                assert len(clips) == count
+                reports.append(dict(output_kind=kind, clips=clips))
+            return reports
     manifest = ClipsManifest.model_validate_json(
         (root / "clips_manifest.json").read_text()
     )
     result = json.loads((root / "batch_result.json").read_text())
+    if expected is not None:
+        assert expected == {manifest.output_kind: len(manifest.clips)}
     assert result["status"] == "complete" and len(result["clips"]) == len(
         manifest.clips
     )
