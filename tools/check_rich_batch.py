@@ -11,6 +11,11 @@ from clipforge.storage import digest, process
 
 
 def check(root):
+    root = Path(root)
+    if (root / "production_result.json").exists():
+        production = json.loads((root / "production_result.json").read_text())
+        assert production["status"] == "complete"
+        return [dict(output_kind=kind, clips=check(root / kind)) for kind in ("shorts", "topics")]
     manifest = ClipsManifest.model_validate_json(
         (root / "clips_manifest.json").read_text()
     )
@@ -27,7 +32,8 @@ def check(root):
         info = media.probe(directory / "video.mp4")
         assert abs(info["duration"] - (clip.end_time - clip.start_time)) <= 0.3
         assert info["audio"] and info["height"] in (720, 1080)
-        assert info["width"] == round(info["height"] * 9 / 16 / 2) * 2
+        ratio = 16/9 if manifest.output_kind == "topics" else 9/16
+        assert info["width"] == round(info["height"] * ratio / 2) * 2
         import pysubs2
 
         subs = pysubs2.SSAFile.load(str(directory / "captions.ass"))
@@ -35,6 +41,14 @@ def check(root):
         assert all(
             0 <= e.start < e.end <= round(info["duration"] * 1000) + 100 for e in subs
         )
+        captions = [e for e in subs if e.style == "Default"]
+        assert all(len(e.plaintext.splitlines()) <= 2 for e in captions)
+        assert all(a.end <= b.start for a,b in zip(captions,captions[1:]))
+        if "caption_review" in receipt:
+            assert receipt["quality"]["status"] == "passed"
+            assert len(captions) == receipt["caption_events"]
+            srt = pysubs2.SSAFile.load(str(directory / "captions.srt"))
+            assert [(e.start,e.end,e.plaintext) for e in captions] == [(e.start,e.end,e.plaintext) for e in srt]
         process(
             [
                 "ffmpeg",

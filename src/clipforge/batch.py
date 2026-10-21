@@ -9,13 +9,13 @@ from .batch_models import BatchClip, ClipsManifest
 from .kick_media import KickVOD
 from .models import Segment, Transcript
 from .rich_render import asset, render
-from .storage import PipelineError, digest, fingerprint, process, write_json
+from .storage import PipelineError, digest, fingerprint, process, stage, write_json
 
 
-def transcribe_audio(path, model="small", language="ja", offset=0):
+def transcribe_audio(path, model="small", language="ja", offset=0, engine=None):
     from faster_whisper import WhisperModel
 
-    engine = WhisperModel(
+    engine = engine or WhisperModel(
         model, device="cpu", compute_type="int8", cpu_threads=2, num_workers=1
     )
     stream, info = engine.transcribe(
@@ -72,8 +72,21 @@ def grams(text):
     return {text[i : i + 3] for i in range(max(0, len(text) - 2))}
 
 
-def plan(url, duration, transcript, audio, count=3, seconds=45):
+def speech_end(transcript, start, seconds, duration, minimum, maximum):
+    target = min(duration, start + seconds)
+    ends = [s.end for s in transcript.segments
+            if start+minimum <= s.end <= min(duration, start+maximum)
+            and abs(s.end-target) <= max(8, seconds*0.25)]
+    # Only use actual utterance ends. Refuse a candidate rather than cutting speech.
+    return min(ends, key=lambda v: abs(v-target)) if ends else start
+
+
+def plan(url, duration, transcript, audio, count=3, seconds=45, output_kind="shorts"):
     """Extractive topic boundaries and RMS peaks; no unrequested remote model."""
+    if output_kind == "topics":
+        from .topic_selection import plan_topics
+
+        return plan_topics(url, duration, transcript, count, seconds)
     if not 3 <= count <= 5 or not 30 <= seconds <= 180:
         raise PipelineError("planner requires 3-5 clips of 30-180 seconds")
     if not transcript.segments:
@@ -84,7 +97,7 @@ def plan(url, duration, transcript, audio, count=3, seconds=45):
         if s.start + 30 > duration:
             continue
         start = s.start
-        stop = min(duration, start + seconds)
+        stop = speech_end(transcript, start, seconds, duration, 30, 180)
         text = "".join(
             t.text for t in transcript.segments if t.start < stop and t.end > start
         )
@@ -95,6 +108,8 @@ def plan(url, duration, transcript, audio, count=3, seconds=45):
             0.95,
             0.35 + min(0.25, len(right) / 500) + novelty * 0.2 + min(0.15, gap / 10),
         )
+        if stop-start < 30:
+            continue
         pool.append(
             {
                 "start": start,
@@ -146,10 +161,17 @@ def plan(url, duration, transcript, audio, count=3, seconds=45):
             s.start < start + seconds and s.end > start for s in transcript.segments
         ):
             continue
+        starts = [s.start for s in transcript.segments if abs(s.start-start) <= 5]
+        if not starts:
+            continue
+        start = min(starts, key=lambda v: abs(v-start))
+        stop = speech_end(transcript, start, seconds, duration, 30, 180)
+        if stop-start < 30 or not start <= t <= stop:
+            continue
         pool.append(
             {
                 "start": start,
-                "end": start + seconds,
+                "end": stop,
                 "type": "highlight",
                 "score": min(0.98, 0.5 + 0.15 * rms[t] / max(1, median)),
                 "reason": f"音声RMSが全体中央値の{rms[t] / max(1, median):.2f}倍。大声・物音の可能性があり、人による確認が必要。",
@@ -256,6 +278,14 @@ def run(
         implementation = fingerprint(
             {p.name: digest(p) for p in Path(__file__).parent.glob("*.py")}
         )
+        from importlib.metadata import version
+        from .fonts import Measure
+
+        runtime = {
+            "packages": {name: version(name) for name in ("faster-whisper", "pysubs2", "Janome", "budoux", "pillow")},
+            "font_sha256": digest(Measure(manifest.style.font, 35).path),
+            "ffmpeg": process(["ffmpeg", "-version"]).stdout.decode().splitlines()[0],
+        }
         key = fingerprint(
             {
                 "manifest": manifest.model_dump(),
@@ -263,6 +293,7 @@ def run(
                 "quality": quality,
                 "whisper_model": whisper_model,
                 "implementation": implementation,
+                "runtime": runtime,
             }
         )
         old = output / "batch_input.json"
@@ -321,9 +352,12 @@ def run(
             asr = not clip.subtitles
             if asr:
                 print(f"Transcribing {clip.clip_id} on CPU…", flush=True)
-                transcript = transcribe_audio(
-                    source, whisper_model, offset=clip.start_time
-                )
+                asr_key = fingerprint({"source": digest(source), "model": whisper_model,
+                                       "offset": clip.start_time, "asr_version": 1})
+                transcript = Transcript.model_validate(stage(
+                    cache / "asr", asr_key, asr_key,
+                    lambda: transcribe_audio(source, whisper_model, offset=clip.start_time).model_dump(),
+                ))
                 clip = clip.model_copy(
                     update={
                         "subtitles": clipped_subtitles(
@@ -336,7 +370,7 @@ def run(
                 prefix="." + clip.clip_id, dir=output
             ) as temp:
                 staging = Path(temp) / "render"
-                receipt = render(source, staging, clip, manifest.style, assets)
+                receipt = render(source, staging, clip, manifest.style, assets, manifest.output_kind)
                 receipt.update(
                     batch_key=key,
                     fetch=download,
@@ -344,7 +378,7 @@ def run(
                     whisper_model=whisper_model if asr else None,
                     files_sha256={
                         name: digest(staging / name)
-                        for name in ("video.mp4", "captions.ass", "captions.srt")
+                        for name in ("video.mp4", "captions.ass", "captions.srt", "caption_review.json")
                     },
                 )
                 write_json(staging / "render.json", receipt)
@@ -365,11 +399,14 @@ def run(
             "status": "complete",
             "key": key,
             "selection_method": manifest.selection_method,
+            "output_kind": manifest.output_kind,
             "clips": results,
             "human_review_performed": False,
             "remote_model_requests": 0,
+            "media_budget_used": vod.used,
         }
         write_json(output / "batch_result.json", result)
+        write_json(output / "progress.json", {"status": "complete", "completed": len(results), "total": len(results)})
         (output / "failure.json").unlink(missing_ok=True)
         return result
     except Exception as e:

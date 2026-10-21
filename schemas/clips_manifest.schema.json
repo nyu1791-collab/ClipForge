@@ -36,7 +36,7 @@
           "items": {
             "$ref": "#/$defs/Segment"
           },
-          "maxItems": 1000,
+          "maxItems": 10000,
           "title": "Subtitles",
           "type": "array"
         },
@@ -158,6 +158,23 @@
           "minimum": 0,
           "title": "Se Gain",
           "type": "number"
+        },
+        "preset": {
+          "default": "slow",
+          "enum": [
+            "slow",
+            "medium",
+            "veryfast"
+          ],
+          "title": "Preset",
+          "type": "string"
+        },
+        "crf": {
+          "default": 18,
+          "maximum": 28,
+          "minimum": 14,
+          "title": "Crf",
+          "type": "integer"
         }
       },
       "title": "RichStyle",
@@ -257,6 +274,15 @@
         "local_transcript_audio"
       ],
       "title": "Selection Method",
+      "type": "string"
+    },
+    "output_kind": {
+      "default": "shorts",
+      "enum": [
+        "shorts",
+        "topics"
+      ],
+      "title": "Output Kind",
       "type": "string"
     },
     "style": {

@@ -1,5 +1,5 @@
 name: ClipForge rich batch
-run-name: Rich shorts ${{ inputs.source_ref }}
+run-name: ClipForge ${{ inputs.mode }} ${{ inputs.output_kind }} ${{ inputs.source_ref }}
 
 on:
   workflow_dispatch:
@@ -8,13 +8,37 @@ on:
         description: Exact ClipForge implementation commit SHA
         required: true
         type: string
+      mode:
+        type: choice
+        options: [manifest, auto]
+        default: manifest
       manifest_path:
-        description: Repository test manifest (contains no media or secrets)
+        description: Repository example manifest without media or secrets
         default: jobs/examples/kick-test-3.json
         type: string
+      source_url:
+        description: Canonical public Kick VOD page URL (auto only, never playback URLs)
+        type: string
+      output_kind:
+        type: choice
+        options: [both, shorts, topics]
+        default: both
+      count:
+        type: choice
+        options: ['3', '4', '5']
+        default: '3'
+      topic_seconds:
+        description: Target normal topic duration, 60-1200 seconds
+        type: number
+        default: 300
+      cache_run_id:
+        description: Optional previous private run containing analysis-cache-RUN_ID
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: clipforge-video
@@ -24,20 +48,33 @@ jobs:
   rich:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 360
     env:
       SOURCE_REF: ${{ inputs.source_ref }}
       MANIFEST_PATH: ${{ inputs.manifest_path }}
+      SOURCE_URL: ${{ inputs.source_url }}
+      OUTPUT_KIND: ${{ inputs.output_kind }}
+      BATCH_MODE: ${{ inputs.mode }}
+      PICK_COUNT: ${{ inputs.count }}
+      TOPIC_SECONDS: ${{ inputs.topic_seconds }}
+      CACHE_RUN_ID: ${{ inputs.cache_run_id }}
       PYTHONUNBUFFERED: '1'
       HF_HUB_DISABLE_TELEMETRY: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
     steps:
-      - name: Validate source commit and example path
+      - name: Validate control inputs
         run: |
           python - <<'PY'
           import os, re
           assert re.fullmatch(r'[a-f0-9]{40}', os.environ['SOURCE_REF'])
           assert re.fullmatch(r'jobs/examples/[A-Za-z0-9_-]+\.json', os.environ['MANIFEST_PATH'])
+          assert os.environ['BATCH_MODE'] in {'manifest','auto'}
+          assert os.environ['OUTPUT_KIND'] in {'shorts','topics','both'}
+          assert os.environ['PICK_COUNT'] in {'3','4','5'}
+          assert 60 <= float(os.environ['TOPIC_SECONDS']) <= 1200
+          assert not os.environ['CACHE_RUN_ID'] or re.fullmatch(r'[0-9]+',os.environ['CACHE_RUN_ID'])
+          if os.environ['BATCH_MODE']=='auto':
+              assert re.fullmatch(r'https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', os.environ['SOURCE_URL'])
           PY
       - uses: actions/checkout@v4
         with:
@@ -59,22 +96,55 @@ jobs:
       - name: Install locked dependencies
         working-directory: source
         run: uv sync --locked --extra media-fetch --no-dev
-      - name: Fetch, transcribe and render batch
+      - name: Boundary and failure regression checks
+        working-directory: source
+        run: uv run python -m unittest discover -s tests -v
+      - name: Synthetic video integration checks for both formats
+        working-directory: source
+        run: uv run python tools/verify_video_foundation.py
+      - uses: actions/download-artifact@v4
+        if: inputs.cache_run_id != ''
+        with:
+          name: analysis-cache-${{ inputs.cache_run_id }}
+          run-id: ${{ inputs.cache_run_id }}
+          github-token: ${{ github.token }}
+          path: source/workspace/cache
+      - name: Fetch, transcribe, select and render
         working-directory: source
         run: |
-          uv run python tools/render_rich_shorts.py --manifest "$MANIFEST_PATH" \
-            --output workspace/output/test --cache workspace/cache --assets assets \
-            --quality 720p --whisper-model small
+          if [ "$BATCH_MODE" = auto ]; then
+            uv run python tools/render_rich_videos.py --auto "$SOURCE_URL" \
+              --output-kind "$OUTPUT_KIND" --count "$PICK_COUNT" --topic-seconds "$TOPIC_SECONDS" \
+              --style assets/style.example.json --topic-style assets/style.topics.example.json \
+              --output workspace/output/production --cache workspace/cache --assets assets \
+              --quality 720p --whisper-model small --max-bytes 8589934592 --resume
+          else
+            uv run python tools/render_rich_videos.py --manifest "$MANIFEST_PATH" \
+              --output workspace/output/production --cache workspace/cache --assets assets \
+              --quality 720p --whisper-model small --resume
+          fi
       - name: Decode every completed output and check receipts
         working-directory: source
-        run: |
-          uv run python tools/check_rich_batch.py workspace/output/test
+        run: uv run python tools/check_rich_batch.py workspace/output/production
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: rich-shorts-${{ github.run_id }}
-          path: source/workspace/output/test/
+          name: rich-videos-${{ github.run_id }}
+          path: source/workspace/output/
           include-hidden-files: false
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: analysis-cache-${{ github.run_id }}
+          path: |
+            source/workspace/cache/audio/
+            source/workspace/cache/transcripts/
+            source/workspace/cache/ranges/
+            source/workspace/cache/asr/
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: ignore

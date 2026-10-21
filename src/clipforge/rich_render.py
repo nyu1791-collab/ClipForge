@@ -34,7 +34,7 @@ def color(value):
     return pysubs2.Color(*(int(value[i : i + 2], 16) for i in (1, 3, 5)))
 
 
-def render(source, directory, clip, style: RichStyle, assets):
+def render(source, directory, clip, style: RichStyle, assets, output_kind="shorts"):
     import pysubs2
 
     source, directory = Path(source).resolve(), Path(directory).resolve()
@@ -54,6 +54,7 @@ def render(source, directory, clip, style: RichStyle, assets):
         framing="blur-fit",
         headline=True,
         hook_title=clip.hook_title,
+        aspect="16:9" if output_kind == "topics" else "9:16",
     )
     local = SelectedClip(
         start=0,
@@ -73,7 +74,7 @@ def render(source, directory, clip, style: RichStyle, assets):
             w["end"] -= clip.start_time
         segments.append(value)
     transcript = Transcript.model_validate({"language": "ja", "segments": segments})
-    captions.create(transcript, local, directory, settings)
+    caption_report = captions.create(transcript, local, directory, settings)
     ass = pysubs2.SSAFile.load(str(directory / "captions.ass"))
     ass.styles["Default"].primarycolor = color(style.caption_color)
     ass.styles["Default"].outlinecolor = color(style.outline_color)
@@ -85,6 +86,8 @@ def render(source, directory, clip, style: RichStyle, assets):
     for event in ass:
         if event.style == "Default":
             event.text = r"{\fad(60,60)}" + event.text
+        elif event.style == "Headline" and output_kind == "topics":
+            event.end = min(event.end, 8000)
     ass.save(str(directory / "captions.ass"))
     graph, width, height = media.layout(settings, info)
     command = [
@@ -172,13 +175,13 @@ def render(source, directory, clip, style: RichStyle, assets):
         "-t",
         str(duration),
         "-r",
-        "30",
+        info["fps"],
         "-c:v",
         "libx264",
         "-preset",
-        "veryfast",
+        style.preset,
         "-crf",
-        "20",
+        str(style.crf),
         "-pix_fmt",
         "yuv420p",
         "-threads",
@@ -213,7 +216,13 @@ def render(source, directory, clip, style: RichStyle, assets):
         "assets_sha256": hashes,
         "output_sha256": digest(destination),
         "subtitle_events": len(clip.subtitles),
+        "caption_events": caption_report["events"],
+        "caption_review": caption_report,
+        "output_kind": output_kind,
         "style": style.model_dump(),
     }
+    from .quality import inspect_video
+
+    receipt["quality"] = inspect_video(destination, duration, width, height)
     write_json(directory / "render.json", receipt)
     return receipt

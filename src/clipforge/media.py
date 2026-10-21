@@ -3,6 +3,7 @@
 import json
 import math
 import shutil
+from fractions import Fraction
 from pathlib import Path
 
 from .storage import PipelineError, process
@@ -59,7 +60,16 @@ def probe(path):
         "width": int(video["width"]),
         "height": int(video["height"]),
         "audio": any(s.get("codec_type") == "audio" for s in streams),
+        "fps": frame_rate(video.get("avg_frame_rate", "0/0")),
     }
+
+
+def frame_rate(value):
+    try:
+        rate = Fraction(value)
+        return str(min(rate, Fraction(30))) if rate > 0 else "30"
+    except (ValueError, ZeroDivisionError):
+        return "30"
 
 
 def audio(source, destination, duration):

@@ -1,0 +1,6 @@
+{
+  "height": 720,
+  "bgm": "bgm/demo-soft.wav",
+  "se": "se/demo-hook.wav",
+  "overlay": "overlays/demo-frame-wide.png"
+}

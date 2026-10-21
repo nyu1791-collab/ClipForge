@@ -19,6 +19,8 @@ class RichStyle(Record):
     overlay: str | None = None
     bgm_gain: float = Field(default=0.07, ge=0, le=0.3)
     se_gain: float = Field(default=0.15, ge=0, le=0.6)
+    preset: Literal["slow", "medium", "veryfast"] = "slow"
+    crf: int = Field(default=18, ge=14, le=28)
 
 
 class BatchClip(Record):
@@ -27,14 +29,14 @@ class BatchClip(Record):
     hook_title: str = Field(min_length=1, max_length=100)
     start_time: float = Field(ge=0)
     end_time: float = Field(gt=0)
-    subtitles: list[Segment] = Field(default_factory=list, max_length=1000)
+    subtitles: list[Segment] = Field(default_factory=list, max_length=10000)
     score: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1, max_length=2000)
 
     @model_validator(mode="after")
     def interval(self):
-        if not 30 <= self.end_time - self.start_time <= 180:
-            raise ValueError("each clip must last 30-180 seconds")
+        if not 30 <= self.end_time - self.start_time <= 1200:
+            raise ValueError("each clip must last 30-1200 seconds")
         previous = self.start_time
         for s in self.subtitles:
             if s.start < previous - 0.01 or s.end > self.end_time + 0.01:
@@ -53,6 +55,7 @@ class ClipsManifest(Record):
     source_duration: float = Field(gt=0, le=86400)
     subtitle_timebase: Literal["source"] = "source"
     selection_method: Literal["test_intervals", "manual", "local_transcript_audio"]
+    output_kind: Literal["shorts", "topics"] = "shorts"
     style: RichStyle = Field(default_factory=RichStyle)
     clips: list[BatchClip] = Field(min_length=3, max_length=5)
 
@@ -68,6 +71,11 @@ class ClipsManifest(Record):
             )
         accepted = []
         for c in self.clips:
+            lower, upper = (30, 180) if self.output_kind == "shorts" else (60, 1200)
+            if not lower <= c.end_time - c.start_time <= upper:
+                raise ValueError(f"{self.output_kind} duration must be {lower}-{upper} seconds")
+            if self.output_kind == "topics" and c.type != "topic":
+                raise ValueError("normal topic videos require topic intervals")
             if c.end_time > self.source_duration + 0.01:
                 raise ValueError("clip exceeds original stream")
             for other in accepted:
