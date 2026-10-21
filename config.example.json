@@ -1,0 +1,18 @@
+{
+  "clips": 3,
+  "candidates": 8,
+  "min_seconds": 20,
+  "max_seconds": 75,
+  "whisper_model": "small",
+  "language": "ja",
+  "threads": 2,
+  "aspect": "9:16",
+  "framing": "fit",
+  "height": 720,
+  "caption": "karaoke",
+  "font": "Noto Sans CJK JP",
+  "analysis_fps": 2,
+  "max_source_seconds": 3600,
+  "max_input_bytes": 1073741824,
+  "chat_offset_seconds": 0
+}

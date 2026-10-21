@@ -1,3 +1,3 @@
-"""ClipForge development foundation; clipping features are not implemented yet."""
+"""CPU clipping pipeline. Importing this module does not load ASR models."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

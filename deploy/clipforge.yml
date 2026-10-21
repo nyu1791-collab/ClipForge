@@ -1,0 +1,128 @@
+name: ClipForge
+run-name: ClipForge ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: VM-generated request identifier (32 lowercase hex characters)
+        type: string
+        required: true
+      input_tag:
+        description: Temporary private input release tag
+        type: string
+        required: true
+      source_ref:
+        description: Exact reviewed ClipForge commit SHA
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clipforge-video
+  cancel-in-progress: false
+
+jobs:
+  clip:
+    if: github.repository == 'nyu1791-collab/ai-model-workers'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      INPUT_TAG: ${{ inputs.input_tag }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      PYTHONUNBUFFERED: '1'
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - name: Validate request identifiers
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
+          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
+          assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          path: clipforge-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU media tools and Japanese fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+      - name: Install locked Python dependencies without API credentials
+        working-directory: clipforge-source
+        run: uv sync --locked --extra chat --no-dev
+      - name: Download and validate temporary private input
+        id: prepare
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py prepare \
+            --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input"
+      - uses: actions/cache/restore@v4
+        id: stages
+        with:
+          key: clipforge-stages-v1-${{ steps.prepare.outputs.cache_key }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: clipforge-stages-v1-${{ steps.prepare.outputs.cache_key }}-
+          path: |
+            ${{ runner.temp }}/clipforge-out/input.json
+            ${{ runner.temp }}/clipforge-out/transcript.json
+            ${{ runner.temp }}/clipforge-out/scenes.json
+            ${{ runner.temp }}/clipforge-out/chat.json
+            ${{ runner.temp }}/clipforge-out/candidates.json
+            ${{ runner.temp }}/clipforge-out/selection.json
+            ${{ runner.temp }}/clipforge-out/.state
+      - name: Transcribe, select with Gemini video input, render captions
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py run \
+            --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input" \
+            --output "$RUNNER_TEMP/clipforge-out"
+      - uses: actions/cache/save@v4
+        if: always() && steps.prepare.outcome == 'success'
+        continue-on-error: true
+        with:
+          key: ${{ steps.stages.outputs.cache-primary-key }}
+          path: |
+            ${{ runner.temp }}/clipforge-out/input.json
+            ${{ runner.temp }}/clipforge-out/transcript.json
+            ${{ runner.temp }}/clipforge-out/scenes.json
+            ${{ runner.temp }}/clipforge-out/chat.json
+            ${{ runner.temp }}/clipforge-out/candidates.json
+            ${{ runner.temp }}/clipforge-out/selection.json
+            ${{ runner.temp }}/clipforge-out/.state
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipforge-result-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-out/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Delete temporary private input
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -x clipforge-source/.venv/bin/python ]; then
+            clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py cleanup --tag "$INPUT_TAG"
+          else
+            echo 'Input cleanup could not run; inspect the private release before resubmitting.'
+            exit 1
+          fi

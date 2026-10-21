@@ -20,6 +20,9 @@ coverage.xml
 inputs/
 outputs/
 artifacts/
+out/
+job-input/
+.analysis/
 *.log
 .claude/settings.local.json
 .codex/auth.json
