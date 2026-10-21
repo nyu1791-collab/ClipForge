@@ -67,6 +67,13 @@ def create(transcript, clip, directory, settings, fonts_dir=None):
     words.sort(key=lambda w: (w.start, w.end))
     words, approximated = layout.timed_units(words)
     groups = layout.groups(words, measure.width, limit)
+    # SRT readers trim event-edge whitespace. Canonicalize it before either export
+    # so an ASR word beginning with a space cannot make ASS/SRT disagree.
+    for i, members in enumerate(groups):
+        members = list(members)
+        members[0] = members[0].model_copy(update={"text": members[0].text.lstrip()})
+        members[-1] = members[-1].model_copy(update={"text": members[-1].text.rstrip()})
+        groups[i] = members
     subtitles = pysubs2.SSAFile()
     subtitles.info.update(
         PlayResX=str(frame_width),

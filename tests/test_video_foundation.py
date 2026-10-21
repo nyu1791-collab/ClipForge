@@ -135,7 +135,7 @@ class VideoFoundationTests(unittest.TestCase):
                         "end": 103.5,
                         "text": "ちょうど話題が変わりました。aiを紹介します。",
                         "words": [
-                            {"start": 100, "end": 100.3, "text": "ちょ"},
+                            {"start": 100, "end": 100.3, "text": " ちょ"},
                             {"start": 100.3, "end": 100.8, "text": "うど"},
                             {
                                 "start": 100.8,
