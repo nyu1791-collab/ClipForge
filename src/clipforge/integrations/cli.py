@@ -28,6 +28,12 @@ def main():
     )
     videos.add_argument("ids", nargs="+")
     videos.add_argument("--daily-budget", type=int, default=1000)
+    archive = sub.add_parser(
+        "twitch-archive",
+        help="Resolve an ended stream by exact stream ID; metadata only",
+    )
+    archive.add_argument("broadcaster_id")
+    archive.add_argument("stream_id", help="ID captured from stream.online")
     subscribe = sub.add_parser(
         "subscribe", help="Register official events; start receiver first"
     )
@@ -63,6 +69,10 @@ def main():
                     "platform": args.platform,
                     "items": clients[args.platform](state).discover(args.channel),
                 }
+            elif args.command == "twitch-archive":
+                result = Twitch(state).resolve_archive(
+                    args.broadcaster_id, args.stream_id
+                )
             elif args.command == "youtube-videos":
                 result = {
                     "platform": "youtube",

@@ -72,6 +72,48 @@ class Twitch(OAuthClient):
     origin = "https://api.twitch.tv/helix"
     token_url = "https://id.twitch.tv/oauth2/token"
 
+    def resolve_archive(self, broadcaster_id, stream_id):
+        """Resolve a known stream identity, never guess from the latest archive."""
+        broadcaster_id = identifier(broadcaster_id, r"[0-9]+")
+        stream_id = identifier(stream_id, r"[0-9]+")
+        result = {"channel_id": broadcaster_id, "stream_id": stream_id}
+
+        # No metadata cache: a stream may have restarted since the notification.
+        def live():
+            return bool(
+                self.request("/streams", params={"user_id": broadcaster_id})["data"]
+            )
+
+        if live():
+            return {**result, "status": "channel_live", "retry_after_seconds": 300}
+        videos = self.request(
+            "/videos",
+            params={"user_id": broadcaster_id, "type": "archive", "first": 100},
+        )["data"]
+        matches = [
+            v
+            for v in videos
+            if str(v.get("stream_id")) == stream_id
+            and str(v.get("user_id")) == broadcaster_id
+            and v.get("type") == "archive"
+        ]
+        if len(matches) != 1:
+            return {
+                **result,
+                "status": "archive_not_resolved",
+                "retry_after_seconds": 300,
+            }
+        video_id = identifier(matches[0]["id"], r"[0-9]+")
+        if live():
+            return {**result, "status": "channel_live", "retry_after_seconds": 300}
+        return {
+            **result,
+            "video_id": video_id,
+            "url": "https://www.twitch.tv/videos/" + video_id,
+            "status": "matching_archive_listed",
+            "download_verified": False,
+        }
+
     def discover(self, login):
         login = identifier(login, r"[A-Za-z0-9_]{1,25}").lower()
         key = "twitch:archives:" + login
