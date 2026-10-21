@@ -131,6 +131,10 @@ ASRは10分単位で時刻・SHA-256付き保存を行い、再開時に完了�
 実行時間・GitHub Actions使用量はアカウントの契約によります。自動再試行や有料runnerへの切替はしません。
 重い取得・ASR・描画は制御VMへ戻しません。
 
+通常動画の区間指定例は`jobs/examples/kick-topics-test-3.json`です。
+`mode=manifest`でこのパスを指定すると、各120秒の16:9動画3本を生成します。
+指定区間による動作確認であり、自動で見どころを選んだ結果ではありません。
+
 同workflowのArtifactsは`rich-videos-RUN_ID`と`analysis-cache-RUN_ID`、いずれも非公開・7日保持です。
 `cache_run_id`に以前の実行IDを指定すると音声・ASR・取得済み区間を再利用します。
 キャッシュにも実発話・動画が含まれます。公開側のActionsやGitへ移さないでください。
