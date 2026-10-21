@@ -134,7 +134,7 @@ OBS録画と、必要なら同意を得たチャット時刻データを受け�
 | `YOUTUBE_API_KEY` | 既存登録を保持。リポジトリのSecretを注入したActionsでData APIの認証成功を確認 |
 | `TWITCH_EVENTSUB_SECRET` | メモリ内で新規生成し、リポジトリのSecretへ直接登録。VMへのキーファイル作成なし |
 | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | 登録済み。リポジトリSecretsを注入したActionsでトークン取得とHelix APIのアカウント照会に成功 |
-| `KICK_CLIENT_ID`, `KICK_CLIENT_SECRET` | 未発行・未登録。VMからDeveloper PortalへHTTP403 |
+| `KICK_CLIENT_ID`, `KICK_CLIENT_SECRET` | 登録済み。リポジトリSecretsを注入したActionsで公式OAuth認証・yu1791のチャンネル情報取得に成功 |
 | `TWITCASTING_CLIENT_ID`, `TWITCASTING_CLIENT_SECRET` | 未発行・未登録。ユーザー指定で保留 |
 
 確認用の[Actions実行](https://github.com/nyu1791-collab/ClipForge/actions/runs/39634142932)は成功。
@@ -143,4 +143,6 @@ YouTubeの実リクエストは1回・1動画IDで、キーの値をログへ出
 Twitchは[追加のActions実行](https://github.com/nyu1791-collab/ClipForge/actions/runs/39641863757)で、
 Client Credentials認証・Helix APIの `yu179191` アカウント照会に成功。
 この確認でもキーやアクセストークンはログに表示せず、VMへ保存していません。
-Twitchの本番Webhook購読・実通知受信は別途設定が必要です。Kickのアプリ発行は未完了です。
+Kickも[追加のActions実行](https://github.com/nyu1791-collab/ClipForge/actions/runs/39643414003)で
+公式OAuth認証・`yu1791` のチャンネル情報取得に成功。同じ実行でTwitch・YouTubeの認証も成功。
+Twitch/Kickの本番Webhook購読・実通知受信は別途設定が必要です。KickのWebhookは現在オフです。
