@@ -16,6 +16,18 @@ MIN_EVENT_MS = 100
 TARGET_CAPTION_CPS = 10
 MAX_CAPTION_CPS = 15
 OUTLINE_ALLOWANCE = 8
+# Characters that may not start a line: closing marks, small kana, long vowel, spaces.
+NO_LINE_START = set(
+    "、。，．・：；！？!?」』）〕］｝ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶー 　"
+)
+# Characters that may not end a line: opening brackets.
+NO_LINE_END = set("「『（〔［｛")
+# Characters after which a line may break, preferred over any word boundary.
+BREAK_AFTER = set("、。，．！？!? 　")
+# A preferred break must leave a first line at least this share of the width.
+MIN_FILL = 0.3
+# Latin terms that speech recognition often writes in lower case.
+TERMS = {"ai": "AI", "agi": "AGI", "asi": "ASI"}
 YELLOW = (255, 210, 40)
 _PARSER = None
 
@@ -27,6 +39,15 @@ def safe(text):
         .replace("}", "｝")
         .replace("\r", " ")
         .replace("\n", " ")
+    )
+
+
+def normalize_terms(text):
+    """Writes the Latin terms in TERMS in their usual capitals, e.g. ai becomes AI."""
+    return re.sub(
+        r"[A-Za-z]+",
+        lambda match: TERMS.get(match.group(0).lower(), match.group(0)),
+        text,
     )
 
 
@@ -50,7 +71,7 @@ def collect_tokens(transcript, clip, keep):
             Word(start=segment.start, end=segment.end, text=segment.text or " ")
         ]
         for word in source:
-            text = safe(word.text)
+            text = normalize_terms(safe(word.text))
             if not text.strip():
                 continue
             a, b = max(clip.start, word.start), min(clip.end, word.end)
@@ -124,8 +145,43 @@ def _unbreakable(text):
     return blocked
 
 
+def _is_kanji(char):
+    return "一" <= char <= "鿿" or char in "々〆ヶ"
+
+
+def _is_hiragana(char):
+    return "぀" <= char <= "ゟ"
+
+
+def _is_katakana(char):
+    return "゠" <= char <= "ヿ"
+
+
+def _boundary_rank(prev, nxt):
+    """How well text may break between two characters.
+
+    3: after a space or sentence punctuation; 2: where a word starts (kana before kanji,
+    katakana or a Latin word); 1: between two kana; 0: inside a word, or not allowed.
+    """
+    if not prev or not nxt or nxt in NO_LINE_START or prev in NO_LINE_END:
+        return 0
+    if prev in BREAK_AFTER:
+        return 3
+    if _is_hiragana(prev) and (
+        _is_kanji(nxt) or _is_katakana(nxt) or (nxt.isascii() and nxt.isalnum())
+    ):
+        return 2
+    if _is_hiragana(prev) and _is_hiragana(nxt):
+        return 1
+    return 0
+
+
 def wrap_breaks(text, measure, line_px):
-    """Character indices where a new line starts; lines break at phrase edges when possible."""
+    """Character indices where a new line starts, at the strongest break that fits.
+
+    A phrase edge from BudouX ranks highest, then the boundaries of _boundary_rank. A break
+    inside a word is used only for a word wider than a whole line.
+    """
     phrase_starts = set()
     position = 0
     for phrase in parser().parse(text):
@@ -133,17 +189,30 @@ def wrap_breaks(text, measure, line_px):
             phrase_starts.add(position)
         position += len(phrase)
     blocked = _unbreakable(text)
-    breaks, begin, used, last_phrase = [], 0, 0.0, None
+    breaks, begin, used = [], 0, 0.0
+    best = {3: None, 2: None, 1: None}
     for index, char in enumerate(text):
         size = measure.width(char)
-        if index > begin and index in phrase_starts:
-            last_phrase = index
+        if index > begin:
+            rank = _boundary_rank(text[index - 1], char)
+            if rank and index in phrase_starts:
+                rank = 3
+            if rank:
+                best[rank] = index
         if used + size > line_px and index > begin:
-            cut = (
-                last_phrase
-                if last_phrase is not None and last_phrase > begin
-                else index
+            cut = next(
+                (
+                    best[rank]
+                    for rank in (3, 2, 1)
+                    if best[rank] is not None
+                    and measure.width(text[begin : best[rank]]) >= MIN_FILL * line_px
+                ),
+                None,
             )
+            if cut is None:
+                cut = index
+                while cut > begin + 1 and text[cut] in NO_LINE_START:
+                    cut -= 1
             # Move the break in front of a number; a number wider than a line is split.
             start = cut
             while start in blocked and start > begin:
@@ -153,23 +222,45 @@ def wrap_breaks(text, measure, line_px):
             breaks.append(cut)
             begin = cut
             used = measure.width(text[cut:index])
-            last_phrase = None
+            # Candidates beyond the new break still apply to the new line.
+            best = {
+                r: (c if c is not None and c > cut else None) for r, c in best.items()
+            }
         used += size
     return breaks
 
 
+def _word_cut(members):
+    """Where a caption may end inside members without splitting a word, or None."""
+    for rank in (2, 1):
+        for k in range(len(members) - 1, 0, -1):
+            prev, nxt = members[k - 1][2][-1:], members[k][2][:1]
+            if _boundary_rank(prev, nxt) >= rank:
+                return k
+    return None
+
+
 def group(tokens, measure, line_px, max_lines=2):
-    """Caption groups that fit in max_lines, with pauses and long runs ending a group."""
+    """Caption groups that fit in max_lines.
+
+    A pause ends a group. When the text overflows, the group ends at the last word boundary
+    before the overflow, so no word is split between two captions; the rest carries over.
+    """
+
+    def overflows(members, token):
+        joined = "".join(item[2] for item in members) + token[2]
+        too_many_lines = len(wrap_breaks(joined, measure, line_px)) + 1 > max_lines
+        return too_many_lines or token[1] - members[0][0] > 4
+
     groups, current = [], []
     for token in tokens:
-        if current:
-            joined = "".join(item[2] for item in current) + token[2]
-            too_many_lines = len(wrap_breaks(joined, measure, line_px)) + 1 > max_lines
-            too_long = token[1] - current[0][0] > 4
-            pause = token[0] - current[-1][1] > 0.7
-            if too_many_lines or too_long or pause:
-                groups.append(current)
-                current = []
+        if current and token[0] - current[-1][1] > 0.7:
+            groups.append(current)
+            current = []
+        while current and overflows(current, token):
+            cut = _word_cut(current) or len(current)
+            groups.append(current[:cut])
+            current = current[cut:]
         current.append(token)
     if current:
         groups.append(current)

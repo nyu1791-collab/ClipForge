@@ -210,3 +210,50 @@ def test_fast_speech_stays_on_screen_until_the_next_caption_needs_the_room(
     assert (first.start, first.end) == (0, 2000)
     # Two characters at 10 per second need 0.2 s; the speech lasts 0.1 s, so it grows by that.
     assert (second.start, second.end) == (2500, 2700)
+
+
+class OnePhrase:
+    """Stands in for BudouX so the tests do not depend on its phrase model."""
+
+    def parse(self, text):
+        return [text]
+
+
+def test_a_word_start_is_preferred_to_a_break_inside_a_word(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    # Six characters fit a line; the break goes before 奪 (a word start), not inside 奪われる.
+    assert captions.wrap_breaks("ことは仕事が奪われる", FixedWidth(), 60) == [6]
+
+
+def test_a_line_never_starts_with_a_closing_mark_or_a_small_kana(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    text = "ああああ、いいい"
+    # The first line would end before 、 at index 4, so it stops at 3 instead;
+    # the second line then breaks after the 、, which is a preferred edge.
+    breaks = captions.wrap_breaks(text, FixedWidth(), 40)
+    assert breaks == [3, 5]
+    assert all(text[index] not in captions.NO_LINE_START for index in breaks)
+
+
+def test_captions_end_at_a_word_boundary_instead_of_inside_a_word(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    tokens = [
+        (0.0, 0.2, "仕"),
+        (0.2, 0.4, "事"),
+        (0.4, 0.6, "が"),
+        (0.6, 0.8, "奪"),
+        (0.8, 1.0, "わ"),
+        (1.0, 1.2, "れる"),
+    ]
+    groups = captions.group(tokens, FixedWidth(), 30)
+    assert [[token[2] for token in g] for g in groups] == [
+        ["仕", "事", "が"],
+        ["奪", "わ", "れる"],
+    ]
+
+
+def test_latin_terms_that_recognition_writes_in_lower_case_are_capitalized():
+    assert (
+        captions.normalize_terms("ai には agi と asi、Aiko")
+        == "AI には AGI と ASI、Aiko"
+    )
