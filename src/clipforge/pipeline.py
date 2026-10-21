@@ -156,10 +156,12 @@ def valid_receipt(target, saved, render_key):
         <= REQUIRED_FILES | OPTIONAL_FILES | visual_names(ledger)
     ):
         return False
-    return all(
+    files_intact = all(
         (target / name).is_file() and digest(target / name) == expected
         for name, expected in hashes.items()
     )
+    # render.json is not hashed itself, so its ledger must match the hashed ledger.json.
+    return files_intact and json.loads((target / "ledger.json").read_text()) == ledger
 
 
 def prepare_visuals(clip, settings, directory, duration):

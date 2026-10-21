@@ -9,6 +9,7 @@ from .models import Word
 from .storage import PipelineError
 
 MARGIN = 35
+MIN_EVENT_MS = 100
 OUTLINE_ALLOWANCE = 8
 YELLOW = (255, 210, 40)
 _PARSER = None
@@ -310,15 +311,14 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     previous_end = 0
     for items in groups:
         start = max(previous_end, round(items[0][0] * 1000))
-        end = round(items[-1][1] * 1000)
-        if end <= start:
-            continue
+        # A group squeezed out by the previous one is kept for a moment, never dropped.
+        end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
         text = group_text(items, measure, line_px, settings.caption)
         subtitles.append(pysubs2.SSAEvent(start=start, end=end, style=style, text=text))
         plain_lines.append("".join(item[2] for item in items))
         previous_end = end
 
-    corpus = "".join(plain_lines) + (heading_text or "")
+    corpus = "".join(plain_lines) + (heading_text or "") + "".join(credits or [])
     missing = fonts.missing_glyphs(font_path, corpus)
 
     ass, srt = directory / "captions.ass", directory / "captions.srt"

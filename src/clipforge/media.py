@@ -61,11 +61,14 @@ def probe(path):
     duration = float(data.get("format", {}).get("duration", video.get("duration", 0)))
     if not math.isfinite(duration) or duration <= 0:
         raise PipelineError("video duration is unavailable")
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
     return {
         "duration": duration,
         "width": int(video["width"]),
         "height": int(video["height"]),
-        "audio": any(s.get("codec_type") == "audio" for s in streams),
+        "audio": audio is not None,
+        # Speech extraction starts at the audio stream's own start, not at 0 s.
+        "audio_start": float(audio.get("start_time") or 0) if audio else 0.0,
     }
 
 

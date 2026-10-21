@@ -115,13 +115,15 @@ class Diagram(Record):
         if self.end <= self.start:
             raise ValueError("diagram start must be before end")
         if self.kind == "table" and (
-            not self.rows or len({len(r) for r in self.rows}) != 1
+            not self.rows or not self.rows[0] or len({len(r) for r in self.rows}) != 1
         ):
-            raise ValueError("table needs rows of equal length")
+            raise ValueError("table needs rows of equal, non-empty length")
         if self.kind == "bars" and (
             not self.labels or len(self.labels) != len(self.values)
         ):
             raise ValueError("bars need matching labels and values")
+        if self.kind == "bars" and any(value < 0 for value in self.values):
+            raise ValueError("bar values must not be negative")
         if self.kind == "steps" and not self.steps:
             raise ValueError("steps diagram needs at least one step")
         return self
@@ -206,6 +208,9 @@ class Settings(Record):
     def limits(self):
         if self.min_seconds >= self.max_seconds:
             raise ValueError("minimum duration must be less than maximum")
+        if self.topic_max_seconds < 2 * self.topic_min_seconds:
+            # Splitting an overlong topic in two must leave both halves at least the minimum.
+            raise ValueError("topic maximum must be at least twice the topic minimum")
         if self.layout == "panels" and self.face_box is None:
             raise ValueError("layout panels needs face_box")
         if self.zoom and self.face_box is None:

@@ -72,3 +72,29 @@ def test_transcription_passes_samples_and_keeps_only_spoken_words(
 def test_videos_without_audio_have_an_empty_transcript():
     result = signals.transcribe("/in.mp4", {"audio": False, "duration": 5}, None)
     assert result == {"language": "und", "segments": []}
+
+
+def test_transcript_times_follow_the_audio_stream_start(monkeypatch, settings):
+    monkeypatch.setattr(
+        media,
+        "audio",
+        lambda source, destination, duration: write_wav(destination, np.zeros(16000)),
+    )
+
+    class FakeModel:
+        def __init__(self, name, **kwargs):
+            pass
+
+        def transcribe(self, audio, **kwargs):
+            word = SimpleNamespace(start=0.5, end=1.0, word="あ")
+            segment = SimpleNamespace(start=0.5, end=1.0, text="あ", words=[word])
+            return iter([segment]), SimpleNamespace(language="ja")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", FakeModel)
+    info = {"audio": True, "duration": 10.0, "audio_start": 2.0}
+    transcript = Transcript.model_validate(
+        signals.transcribe("/in.mp4", info, settings)
+    )
+    segment = transcript.segments[0]
+    assert (segment.start, segment.end) == (2.5, 3.0)
+    assert (segment.words[0].start, segment.words[0].end) == (2.5, 3.0)

@@ -77,6 +77,7 @@ def test_probe_whitelists_protocols_and_ignores_cover_art(monkeypatch, tmp_path)
         "width": 320,
         "height": 180,
         "audio": True,
+        "audio_start": 0.0,
     }
 
 

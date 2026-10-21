@@ -63,7 +63,7 @@ def test_boundary_strengths_are_higher_for_longer_pauses():
     strengths = topics.boundary_strengths(
         sorted(transcript.segments, key=lambda s: s.start)
     )
-    assert [index for index, _, _ in strengths] == [0, 1]
+    assert [index for index, _, _, _ in strengths] == [0, 1]
     assert strengths[1][2] > strengths[0][2]
 
 
@@ -132,3 +132,15 @@ def test_missing_glyphs_report_only_characters_the_font_lacks(japanese_font):
 def test_measured_width_grows_with_text_and_size(japanese_font):
     small, large = fonts.Measure(japanese_font, 20), fonts.Measure(japanese_font, 40)
     assert small.width("字幕") < small.width("字幕字幕") < large.width("字幕字幕")
+
+
+def test_a_segment_nested_in_a_longer_one_does_not_shift_the_cut():
+    transcript = speech((0, 10, "長い発話"), (5, 6, "内側"), (12, 20, "次の発話"))
+    spans = topics.split(transcript, 20, min_seconds=1, max_seconds=100)
+    assert [round(b, 1) for _, b in spans] == [11.0, 20.0]
+
+
+def test_silent_video_still_respects_the_maximum_topic_length():
+    spans = topics.split(Transcript(language="ja", segments=[]), 600, 25, 180)
+    assert len(spans) == 4
+    assert all(b - a <= 180 for a, b in spans)

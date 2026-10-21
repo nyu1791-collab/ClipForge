@@ -54,13 +54,17 @@ def transcribe(source, info, settings):
             condition_on_previous_text=False,
         )
         output = []
+        # The extracted WAV starts where the audio stream starts; shift back to the file's clock.
+        offset = float(info.get("audio_start", 0.0))
         for segment in segments:
-            start, end = max(0, segment.start), min(info["duration"], segment.end)
+            start = max(0, segment.start + offset)
+            end = min(info["duration"], segment.end + offset)
             if end <= start:
                 continue
             words = []
             for word in segment.words or []:
-                ws, we = max(start, word.start), min(end, word.end)
+                ws = max(start, word.start + offset)
+                we = min(end, word.end + offset)
                 if we > ws and word.word.strip():
                     words.append(Word(start=ws, end=we, text=word.word))
             output.append(Segment(start=start, end=end, text=segment.text, words=words))
@@ -150,6 +154,21 @@ def chat_signals(duration, settings, supplied=None):
     }
 
 
+def _covered_seconds(intervals):
+    """Seconds covered by the union of intervals, so overlapping speech is not counted twice."""
+    total, run_start, run_end = 0.0, None, None
+    for a, b in sorted(intervals):
+        if run_end is None or a > run_end:
+            if run_end is not None:
+                total += run_end - run_start
+            run_start, run_end = a, b
+        else:
+            run_end = max(run_end, b)
+    if run_end is not None:
+        total += run_end - run_start
+    return total
+
+
 def candidates(info, transcript, scenes, chat, settings, topics=None):
     duration = info["duration"]
     if duration < settings.min_seconds:
@@ -201,8 +220,12 @@ def candidates(info, transcript, scenes, chat, settings, topics=None):
             start, end = initial, min(duration, initial + window)
             if end - start < settings.min_seconds:
                 continue
-        speech = sum(
-            max(0, min(s.end, end) - max(s.start, start)) for s in transcript.segments
+        speech = _covered_seconds(
+            [
+                (max(s.start, start), min(s.end, end))
+                for s in transcript.segments
+                if min(s.end, end) > max(s.start, start)
+            ]
         )
         left, right = (
             bisect.bisect_left(event_times, start),
@@ -286,8 +309,12 @@ def candidates(info, transcript, scenes, chat, settings, topics=None):
         heads = []
         for a, b in topic_spans:
             inside = [item for item in ranked if a <= middle(item) < b]
-            if inside:
-                heads.append(inside[0])
+            # A topic shorter than a window has no window centred in it; any overlap will do.
+            overlapping = [
+                item for item in ranked if min(item.end, b) - max(item.start, a) > 0
+            ]
+            if inside or overlapping:
+                heads.append((inside or overlapping)[0])
         spread(heads, remaining)
     else:
         spread(ranked, remaining)

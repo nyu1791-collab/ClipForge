@@ -1,3 +1,4 @@
+import http.client
 import io
 import socket
 import subprocess
@@ -423,4 +424,52 @@ def test_thumbnail_reports_a_failed_frame_extraction(
     with pytest.raises(PipelineError, match="could not be extracted"):
         thumbnail.make(
             tmp_path / "video.mp4", tmp_path / "t.png", "題", japanese_font, 0
+        )
+
+
+def test_nat64_addresses_are_judged_by_their_embedded_ipv4(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda *a, **k: [(socket.AF_INET6, 0, 0, "", ("64:ff9b::7f00:1", 443, 0, 0))],
+    )
+    with pytest.raises(PipelineError, match="non-public"):
+        assets._public_https("https://example.org/a.jpg")
+
+
+def test_malformed_image_urls_and_truncated_bodies_are_pipeline_errors(monkeypatch):
+    with pytest.raises(PipelineError, match="malformed"):
+        assets._public_https("https://[bad/x.jpg")
+
+    class Opener:
+        def open(self, request, timeout):
+            raise http.client.IncompleteRead(b"partial")
+
+    monkeypatch.setattr(assets, "_OPENER", Opener())
+    monkeypatch.setattr(assets, "_public_https", lambda url: url)
+    with pytest.raises(PipelineError, match="request failed"):
+        assets._get("https://example.org/x")
+
+
+def test_commons_entries_with_null_metadata_are_skipped(monkeypatch):
+    payload = {
+        "query": {
+            "pages": [{"imageinfo": [{"mime": "image/jpeg", "extmetadata": None}]}]
+        }
+    }
+    monkeypatch.setattr(assets, "_json", lambda url: payload)
+    assert assets.search_commons("富士山", 3) == []
+
+
+def test_thumbnail_refuses_a_title_that_cannot_fit(
+    monkeypatch, tmp_path, japanese_font
+):
+    def fake_ffmpeg(command, **kwargs):
+        Image.new("RGB", (640, 360), (40, 80, 120)).save(command[-1], format="PNG")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(thumbnail.subprocess, "run", fake_ffmpeg)
+    with pytest.raises(PipelineError, match="does not fit"):
+        thumbnail.make(
+            tmp_path / "video.mp4", tmp_path / "t.png", "あ" * 200, japanese_font, 0
         )

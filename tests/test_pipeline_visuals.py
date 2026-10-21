@@ -201,7 +201,7 @@ def test_receipt_accepts_only_its_own_untouched_files(tmp_path):
         "video.mp4": b"video",
         "captions.ass": b"ass",
         "captions.srt": b"srt",
-        "ledger.json": b"[]",
+        "ledger.json": json.dumps([{"file": "visual-01.png"}]).encode(),
         "visuals/visual-01.png": b"png",
     }
     for name, data in names.items():
@@ -218,6 +218,12 @@ def test_receipt_accepts_only_its_own_untouched_files(tmp_path):
     assert not pipeline.valid_receipt(target, saved, "k")
     assert not pipeline.valid_receipt(
         target, {**saved, "ledger": [{"file": "../x.png"}]}, "k"
+    )
+    # An edited ledger in render.json alone must not be accepted on resume.
+    assert not pipeline.valid_receipt(
+        target,
+        {**saved, "ledger": [{"file": "visual-01.png", "source_credit": "Bob"}]},
+        "k",
     )
     extra = {
         **saved,
@@ -522,6 +528,7 @@ def test_zoom_visual_and_diagram_validate_their_intervals():
         {"font": "Noto, Sans"},
         {"face_box": (0.9, 0.9, 0.5, 0.5)},
         {"min_seconds": 40, "max_seconds": 30},
+        {"topic_min_seconds": 100, "topic_max_seconds": 120},
         {"analysis_fps": 5, "max_seconds": 180, "candidates": 10},
     ],
 )
@@ -580,3 +587,15 @@ def test_no_table_query_means_no_table_search(tmp_path, monkeypatch):
         start=0, end=30, candidate_id="m", title="題", reason="r", confidence=1
     )
     assert pipeline.prepare_visuals(clip, make(), tmp_path, 30.0) == ([], [])
+
+
+def test_diagram_values_and_rows_are_validated():
+    with pytest.raises(ValidationError):
+        Diagram(kind="bars", title="t", start=0, end=1, labels=["a"], values=[-1])
+    with pytest.raises(ValidationError):
+        Diagram(kind="table", title="t", start=0, end=1, rows=[[]])
+
+
+def test_overlapping_speech_is_counted_once():
+    assert signals._covered_seconds([(0, 10), (5, 15), (20, 22)]) == 17
+    assert signals._covered_seconds([]) == 0

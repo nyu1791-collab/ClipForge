@@ -28,11 +28,22 @@ EXTERNAL = re.compile(
 
 
 def _fit(text, font_path, size, limit):
-    measure = Measure(font_path, size)
-    while size > 14 and measure.width(text) > limit:
-        size -= 2
-        measure = Measure(font_path, size)
-    return measure, size
+    """Text and font for a size in output pixels, drawn on the supersampled canvas.
+
+    The font shrinks to 14 px before the text is cut with an ellipsis, so nothing runs
+    past its box. Returns (text, measure).
+    """
+    size_px, limit_px = size * SUPERSAMPLE, limit * SUPERSAMPLE
+    measure = Measure(font_path, size_px)
+    while size_px > 14 * SUPERSAMPLE and measure.width(text) > limit_px:
+        size_px -= 2 * SUPERSAMPLE
+        measure = Measure(font_path, size_px)
+    if measure.width(text) > limit_px:
+        cut = len(text)
+        while cut > 1 and measure.width(text[:cut] + "…") > limit_px:
+            cut -= 1
+        text = text[:cut] + "…"
+    return text, measure
 
 
 def _canvas(height):
@@ -62,7 +73,7 @@ def table(title, rows, font_path, destination):
     height = 150 + row_h * len(rows)
     image = _canvas(height)
     draw = ImageDraw.Draw(image)
-    title_m, _ = _fit(title, font_path, 44, WIDTH - 2 * margin)
+    title, title_m = _fit(title, font_path, 44, WIDTH - 2 * margin)
     _text(draw, (margin, 28), title, title_m, INK)
     cell_w = (WIDTH - 2 * margin) / columns
     top = 110
@@ -79,8 +90,8 @@ def table(title, rows, font_path, destination):
             fill=fill,
         )
         for c, cell in enumerate(row):
-            measure, _ = _fit(str(cell), font_path, 30, cell_w - 24)
-            _text(draw, (margin + c * cell_w + 12, y + 16), str(cell), measure, INK)
+            cell_text, measure = _fit(str(cell), font_path, 30, cell_w - 24)
+            _text(draw, (margin + c * cell_w + 12, y + 16), cell_text, measure, INK)
     return _finish(image, destination)
 
 
@@ -89,15 +100,15 @@ def bars(title, labels, values, font_path, destination):
     height = 150 + row_h * len(labels)
     image = _canvas(height)
     draw = ImageDraw.Draw(image)
-    title_m, _ = _fit(title, font_path, 44, WIDTH - 2 * margin)
+    title, title_m = _fit(title, font_path, 44, WIDTH - 2 * margin)
     _text(draw, (margin, 28), title, title_m, INK)
     peak = max(abs(v) for v in values) or 1.0
     label_w = 300
     track = WIDTH - 2 * margin - label_w - 140
     for i, (label, value) in enumerate(zip(labels, values)):
         y = 116 + i * row_h
-        measure, _ = _fit(label, font_path, 30, label_w - 16)
-        _text(draw, (margin, y + 14), label, measure, INK)
+        label_text, measure = _fit(label, font_path, 30, label_w - 16)
+        _text(draw, (margin, y + 14), label_text, measure, INK)
         length = max(4, track * abs(value) / peak)
         x0 = margin + label_w
         draw.rounded_rectangle(
@@ -111,7 +122,7 @@ def bars(title, labels, values, font_path, destination):
             fill=ACCENT,
         )
         number = f"{value:g}"
-        measure_v, _ = _fit(number, font_path, 30, 120)
+        number, measure_v = _fit(number, font_path, 30, 120)
         _text(draw, (x0 + length + 14, y + 14), number, measure_v, MUTED)
     return _finish(image, destination)
 
@@ -121,7 +132,7 @@ def steps(title, items, font_path, destination):
     height = 150 + (box_h + gap) * len(items)
     image = _canvas(height)
     draw = ImageDraw.Draw(image)
-    title_m, _ = _fit(title, font_path, 44, WIDTH - 2 * margin)
+    title, title_m = _fit(title, font_path, 44, WIDTH - 2 * margin)
     _text(draw, (margin, 28), title, title_m, INK)
     for i, item in enumerate(items):
         y = 116 + i * (box_h + gap)
@@ -137,10 +148,10 @@ def steps(title, items, font_path, destination):
             outline=ACCENT,
             width=3 * SUPERSAMPLE,
         )
-        number_m, _ = _fit(str(i + 1), font_path, 36, 40)
-        _text(draw, (margin + 22, y + 26), str(i + 1), number_m, INK)
-        measure, _ = _fit(item, font_path, 32, WIDTH - 2 * margin - 110)
-        _text(draw, (margin + 90, y + 28), item, measure, INK)
+        number_text, number_m = _fit(str(i + 1), font_path, 36, 40)
+        _text(draw, (margin + 22, y + 26), number_text, number_m, INK)
+        item_text, measure = _fit(item, font_path, 32, WIDTH - 2 * margin - 110)
+        _text(draw, (margin + 90, y + 28), item_text, measure, INK)
         if i + 1 < len(items):
             cx = (margin + 48) * SUPERSAMPLE
             draw.line(

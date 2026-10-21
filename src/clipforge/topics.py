@@ -43,15 +43,22 @@ def _context_after(segments, index):
 
 
 def boundary_strengths(segments):
-    """(gap index, strength, pause) for each gap between consecutive utterances."""
+    """(gap index, strength, pause, edge) for each gap between consecutive utterances.
+
+    The pause runs from the latest speech end so far, so a short segment nested inside a
+    longer one cannot make a gap look longer than the silence really is. The edge is the
+    time that latest speech ends.
+    """
     strengths = []
+    edge = 0.0
     for index in range(len(segments) - 1):
-        pause = max(0.0, segments[index + 1].start - segments[index].end)
+        edge = max(edge, segments[index].end)
+        pause = max(0.0, segments[index + 1].start - edge)
         similarity = _similarity(
             _context_before(segments, index), _context_after(segments, index)
         )
         strength = 0.5 * min(1.0, pause / 1.5) + 0.5 * (1.0 - similarity)
-        strengths.append((index, strength, pause))
+        strengths.append((index, strength, pause, edge))
     return strengths
 
 
@@ -59,12 +66,10 @@ def split(transcript, duration, min_seconds=25.0, max_seconds=180.0):
     """Return ordered (start, end) topic spans that cover [0, duration]."""
     duration = float(duration)
     segments = sorted(transcript.segments, key=lambda s: s.start)
-    if not segments:
-        return [(0.0, duration)]
     # Every gap is a possible split point (time, strength, pause); only some are cut now.
     gaps = [
-        (segments[index].end + pause / 2, strength, pause)
-        for index, strength, pause in boundary_strengths(segments)
+        (edge + pause / 2, strength, pause)
+        for index, strength, pause, edge in boundary_strengths(segments)
     ]
     cuts = {
         t: strength

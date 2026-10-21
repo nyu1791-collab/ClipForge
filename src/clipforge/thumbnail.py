@@ -49,13 +49,15 @@ def make(video, destination, title, font_path, at_seconds):
     image = Image.composite(Image.new("RGB", SIZE, (0, 0, 0)), image, shade)
     draw = ImageDraw.Draw(image)
     size = 96
-    while size > 40:
+    while size > 24:
         measure = Measure(font_path, size)
         if measure.width(title) <= SIZE[0] - 2 * MARGIN:
             break
         size -= 4
     measure = Measure(font_path, size)
     width = measure.width(title)
+    if width > SIZE[0] - 2 * MARGIN:
+        raise PipelineError("thumbnail title does not fit; shorten the clip title")
     x = (SIZE[0] - width) / 2
     y = SIZE[1] - MARGIN - size
     draw.text(

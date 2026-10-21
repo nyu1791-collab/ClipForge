@@ -42,7 +42,7 @@ flowchart TD
 ## 配置
 
 - `src/clipforge/`：CLI、文字起こし、候補抽出、Gemini、字幕、描画。
-  - `topics.py`（話題の区切り）、`silence.py`（無音カット）、`fonts.py`（フォントの確認）、`assets.py`（画像検索と出典台帳）、`diagrams.py`（独自図解とSVG）、`thumbnail.py`（サムネイル）。
+  - `topics.py`（話題の区切り）、`silence.py`（無音カット）、`fonts.py`（フォントの確認）、`assets.py`（画像検索と出典台帳）、`tables.py`（Wikipediaの表の検索）、`diagrams.py`（独自図解とSVG）、`thumbnail.py`（サムネイル）。
 - `tools/submit_job.py`：標準ライブラリだけで動く制御VM用の依頼・回収ツール。
 - `tools/run_request.py`：指定の非公開リポジトリで入力を検査し、処理・削除する入口。
 - `deploy/clipforge.yml`：非公開 `ai-model-workers/.github/workflows/clipforge.yml` に配置するワークフロー原本。公開側では実行しません。

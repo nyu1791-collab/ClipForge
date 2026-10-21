@@ -6,6 +6,7 @@ credit line and licence; a visual without a complete entry is never rendered.
 """
 
 import html
+import http.client
 import ipaddress
 import json
 import re
@@ -29,6 +30,7 @@ ALLOWED_LICENSE = re.compile(
     r"^(CC0( 1\.0)?|Public domain|CC BY(-SA)?( [0-9]\.[0-9])?)$", re.IGNORECASE
 )
 OPENVERSE_LICENSES = "cc0,pdm,by,by-sa"
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
 COMMONS_QUERY_SUFFIX = " filetype:bitmap"
 
 
@@ -36,9 +38,20 @@ def _strip_html(value):
     return html.unescape(re.sub(r"<[^>]+>", "", value or "")).strip()
 
 
+def _public_address(address):
+    # A NAT64 address embeds an IPv4 address; the embedded one decides.
+    if address.version == 6 and address in NAT64:
+        address = ipaddress.ip_address(int(address) & 0xFFFFFFFF)
+    return address.is_global
+
+
 def _public_https(url):
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "https" or not parts.hostname:
+    try:
+        parts = urllib.parse.urlsplit(url)
+        host = parts.hostname
+    except ValueError as error:
+        raise PipelineError("image URL is malformed") from error
+    if parts.scheme != "https" or not host:
         raise PipelineError("only https image URLs are accepted")
     try:
         infos = socket.getaddrinfo(parts.hostname, 443, proto=socket.IPPROTO_TCP)
@@ -46,7 +59,7 @@ def _public_https(url):
         raise PipelineError("image host could not be resolved") from error
     for info in infos:
         address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
-        if not address.is_global:
+        if not _public_address(address):
             raise PipelineError("image host resolves to a non-public address")
     return url
 
@@ -81,12 +94,17 @@ def _get(url):
                 time.sleep(_retry_after(error.headers))
                 continue
             raise PipelineError(f"request failed with HTTP {error.code}") from error
-        except (urllib.error.URLError, OSError) as error:
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as error:
             raise PipelineError("request failed") from error
         if len(data) > MAX_BYTES:
             raise PipelineError("response is larger than the allowed size")
         return data
     raise PipelineError("request was rate limited")
+
+
+def _meta(meta, key):
+    """Value of one extmetadata field; a missing or null field reads as empty."""
+    return (meta.get(key) or {}).get("value")
 
 
 def _json(url):
@@ -114,13 +132,13 @@ def search_commons(query, limit):
     results = []
     for page in data.get("query", {}).get("pages", []):
         info = (page.get("imageinfo") or [{}])[0]
-        meta = info.get("extmetadata", {})
-        license_name = _strip_html(meta.get("LicenseShortName", {}).get("value"))
+        meta = info.get("extmetadata") or {}
+        license_name = _strip_html(_meta(meta, "LicenseShortName"))
         if not ALLOWED_LICENSE.match(license_name):
             continue
         if info.get("mime") not in {"image/jpeg", "image/png", "image/webp"}:
             continue
-        artist = _strip_html(meta.get("Artist", {}).get("value")) or "unknown author"
+        artist = _strip_html(_meta(meta, "Artist")) or "unknown author"
         results.append(
             {
                 "provider": "wikimedia-commons",
@@ -128,7 +146,7 @@ def search_commons(query, limit):
                 "source_url": info.get("descriptionurl"),
                 "source_credit": f"{artist} / {license_name} / Wikimedia Commons",
                 "license": license_name,
-                "license_url": _strip_html(meta.get("LicenseUrl", {}).get("value")),
+                "license_url": _strip_html(_meta(meta, "LicenseUrl")),
                 "query": query,
             }
         )
