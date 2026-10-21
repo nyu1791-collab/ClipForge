@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 chat = ["chat-downloader==0.2.8"]
 platforms = ["cryptography>=46,<51"]
+media-fetch = ["yt-dlp[default,curl-cffi]==2026.8.19", "curl-cffi==0.16.3"]
 
 [project.scripts]
 clipforge = "clipforge.cli:main"

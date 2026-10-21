@@ -32,6 +32,8 @@ uv run --no-sync clipforge-platforms discover twitch CHANNEL_LOGIN
 Twitch/Kickの署名付きWebhookを軽量VMで受信し、最小限のイベントをSQLiteへ保存できます。
 動画本体の自動取得・自動ジョブ投入は含みません。
 実装済み・未設定の一覧は[自動取り込み確認](docs/INTEGRATION_AUDIT.md)。
+Kick VODのブラウザ互換通信による短いMP4サンプル取得は
+[取得方法と実測結果](docs/KICK_VOD_DIAGNOSIS.md)を参照してください。
 詳しい発行・登録・受信手順は[配信API設定](docs/PLATFORM_SETUP.md)、
 YouTubeのキャッシュ・予算・拒否時の対応は[YouTube運用](docs/YOUTUBE_OPERATIONS.md)へ。
 

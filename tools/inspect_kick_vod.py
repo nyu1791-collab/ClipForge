@@ -3,7 +3,9 @@
 
 import argparse
 import json
+import os
 import re
+import ssl
 from html.parser import HTMLParser
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -31,6 +33,38 @@ def fetch(url, limit):
         if re.search(rb"error code:\s*1010\b", body):
             result["reason"] = "client_signature_denied_1010"
         return result, None
+
+
+def browser_fetch(url, limit):
+    """Explicit browser-compatible transport; preserve runtime proxy and CA trust."""
+    from curl_cffi import requests
+
+    ca = (
+        os.environ.get("SSL_CERT_FILE")
+        or os.environ.get("REQUESTS_CA_BUNDLE")
+        or ssl.get_default_verify_paths().cafile
+    )
+    response = requests.get(
+        url,
+        impersonate="chrome",
+        headers={"Referer": "https://kick.com/"},
+        verify=ca or True,
+        allow_redirects=False,
+        timeout=20,
+        stream=True,
+    )
+    try:
+        if response.status_code != 200:
+            return {"status": "http_error", "http_status": response.status_code}, None
+        chunks, size = [], 0
+        for chunk in response.iter_content():
+            size += len(chunk)
+            if size > limit:
+                return {"status": "response_too_large"}, None
+            chunks.append(chunk)
+        return {"status": "ok", "http_status": 200}, b"".join(chunks)
+    finally:
+        response.close()
 
 
 class VideoMetadata(HTMLParser):
@@ -67,14 +101,14 @@ class VideoMetadata(HTMLParser):
                 )
 
 
-def inspect(url):
+def inspect(url, fetcher=fetch):
     if not re.fullmatch(
         r"https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}"
         r"(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
         url,
     ):
         raise ValueError("expected a canonical HTTPS Kick VOD URL")
-    page, body = fetch(url, 2 * 1024 * 1024)
+    page, body = fetcher(url, 2 * 1024 * 1024)
     result = {"url": url, "page": page, "video_downloaded": False}
     if body is None:
         return result
@@ -102,7 +136,7 @@ def inspect(url):
     ):
         result["playlist"] = {"status": "unsupported_media_url"}
         return result
-    playlist, content = fetch(media_url, 256 * 1024)
+    playlist, content = fetcher(media_url, 256 * 1024)
     result["playlist"] = playlist
     if content is not None:
         playlist["valid_hls"] = content.lstrip().startswith(b"#EXTM3U")
@@ -112,9 +146,10 @@ def inspect(url):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url")
+    parser.add_argument("--browser-compatible", action="store_true")
     args = parser.parse_args()
     try:
-        result = inspect(args.url)
+        result = inspect(args.url, browser_fetch if args.browser_compatible else fetch)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("playlist", {}).get("valid_hls") else 2
     except Exception as error:

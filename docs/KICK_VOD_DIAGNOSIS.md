@@ -2,6 +2,35 @@
 
 対象：https://kick.com/meat_gengorou/videos/01a1574c-2350-77ce-90e2-4a7fefd4235c
 
+## 更新：ブラウザ互換通信で短いサンプルを取得成功
+
+ユーザー指定の`curl-cffi`のChrome互換通信とKickのRefererを付けたところ、
+同じHLS再生先がHTTP 200になりました。既存プロキシ・CA信頼・証明書検証は維持しています。
+TLS特性とヘッダーを同時に変えた比較であり、どちらが決定要因だったかは未分離です。
+yt-dlp 2026.8.19のKick VOD extractorはメタデータ取得で404になるため、
+公開ページのVideoObjectと指定VOD URLを照合してからcontentUrlを使います。
+
+冒頭10秒の360p動画を1セグメント928,344バイトからMP4に変換できました。
+ffprobeでH.264映像640×360、AAC音声、長さ10.007333秒、783,660バイトを確認し、
+ffmpegで全映像・音声を最後までデコードしてエラーがないことを確認しました。
+全編取得、AI候補選定、字幕・縦型編集、公開はまだ実行していません。
+別IP・別アカウントへの切替、Cookie取得、証明書検証の無効化は使用していません。
+
+```sh
+uv sync --extra media-fetch
+uv run python tools/inspect_kick_vod.py --browser-compatible 'https://kick.com/CHANNEL/videos/VOD_UUID'
+uv run python tools/download_kick_sample.py 'https://kick.com/CHANNEL/videos/VOD_UUID' --seconds 10 --output sample.mp4
+```
+
+`media-fetch`は任意依存です。ChromeのUser-Agentはcurl-cffiの互換設定が生成するものを使い、
+古い固定Chromeバージョンとの不整合を避けます。現行パッケージの最新ターゲットはChrome 150でした。
+サンプル取得は1〜120秒・360p以下・合計64MiBまで、HTTPSの同一アーカイブパス内に限定します。
+暗号化・byte-range・fMP4・不連続のプレイリスト、クエリ付き再生先、リダイレクトは未対応として停止します。
+HTTPエラーは自動再試行せず、保存済みファイルも上書きしません。
+ffmpegへ渡すのはダウンロード済みのローカルTSだけです。動画や再生トークンはGitへ保存しません。
+
+以下はブラウザ互換通信導入前の診断記録です。
+
 ## 実際に確認した結果
 
 - 公開ページはHTTP 200。構造化データのVideoObjectのURLと指定URLが一致。

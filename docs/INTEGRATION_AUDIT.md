@@ -10,7 +10,7 @@
 | 公式ライブチャット収集 | 未実装。Client ID/Secretだけでは完了せず、ユーザーのOAuth権限等が必要 |
 | YouTube URL発見 | RSSからvideoIdと視聴URLを取得済み。既知IDをvideos.listで最大50件まとめて状態確認 |
 | YouTube呼び出し削減 | RSSキャッシュ・条件付き取得、APIキャッシュ、ローカル日次予算、拒否時クールダウンは実装済み。WebSub受信・購読更新は未実装 |
-| 動画の自動ダウンロード・ジョブ投入 | 未実装。視聴URLやVOD一覧の取得は動画ファイルの取得成功を意味しない。現在は許諾を得たローカル録画を既存ジョブに渡す |
+| 動画の自動ダウンロード・ジョブ投入 | 常駐自動取り込みは未実装。Kick指定VODの短いサンプル取得は任意のmedia-fetch依存で実装・実動画確認済み。[取得方法と制限](KICK_VOD_DIAGNOSIS.md)。視聴URL取得と全編取得・ジョブ投入は別 |
 | Twitch/Kick/YouTube認証 | リポジトリSecretsを用いた公式APIの認証成功を確認済み。ツイキャスは依頼に従って保留 |
 
 ## VOD照合の実行
@@ -32,7 +32,7 @@ clipforge-platforms twitch-archive BROADCASTER_ID STREAM_ID
 - Twitchの通知は動画の保存完了通知ではありません。IPブロックがないという保証もしません。
 - YouTubeの現行公式クォータ表ではsearch.listは専用枠で標準100回/日、1回1単位、その他のAPIは合計10,000単位/日です。画像の100単位という説明は現行表と異なります。
 - YouTube WebSubは投稿・タイトル・説明更新の通知です。配信終了の確実な通知として扱いません。
-- APIのクォータと動画取得のボット判定は別です。Cookieのリポジトリ保存、住宅用プロキシや別アカウントへの切替で拒否を回避する処理は組み込みません。
+- APIのクォータと動画取得のボット判定は別です。ユーザー指定のChrome互換通信・RefererはKickサンプル取得に利用可能です。Cookieのリポジトリ保存、住宅用プロキシや別アカウントへの切替は組み込みません。
 - 安定した入力は配信者が許諾・提供したOBS等の元録画です。小容量VMは制御のみ、動画処理は既存のCPU runnerに渡します。
 
 公式仕様：[Twitch動画](https://dev.twitch.tv/docs/api/reference/#get-videos)、
