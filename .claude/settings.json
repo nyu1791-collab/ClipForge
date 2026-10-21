@@ -1,6 +1,14 @@
 {
+  "language": "japanese",
   "permissions": {
     "defaultMode": "acceptEdits",
-    "allow": ["Read", "Edit", "Write", "Glob", "Grep", "Bash"]
+    "allow": [
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash"
+    ]
   }
 }
