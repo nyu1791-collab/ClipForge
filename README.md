@@ -57,6 +57,16 @@ uv run --no-sync clipforge run /path/to/source.mp4 \
 `GEMINI_API_KEY` は保護された環境変数として渡します。チャット・コマンド履歴・Gitへ値を貼らないでください。
 同じ入力・設定・コードで続行する場合は `--resume`。入力や設定が変わった場合は新しい出力先にします。
 
+複数の動画をまとめて処理するには `batch` を使います。動画ごとに別のフォルダへ出力し、1本が失敗しても他は続きます。
+
+```bash
+uv run --no-sync clipforge batch a.mp4 b.mp4 c.mp4 \
+  --config config.example.json --gemini-model YOUR_VIDEO_MODEL_ID \
+  --output-root outputs/batch-001
+```
+
+同時に処理する本数は、既定ではCPUコア数を各動画のスレッド数と描画ワーカー数で割った値です（4コアで既定設定なら1本）。`--concurrency` で変えられます。結果は `batch.json` にまとまります。
+
 AIを呼ばず、秒数を指定して切り抜くこともできます。
 
 ```bash
@@ -83,6 +93,8 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 | `thumbnail` | 切り抜きの1フレームに題名を載せた1280×720のサムネイル |
 | `table_query` | 日本語版Wikipediaの表を検索し、独自の表として描画。記事のURLとCC BY-SA 4.0の表記を画面に表示 |
 
+速度を優先する場合は `asr_batch_size`（1〜16）で文字起こしを一括処理できます。実測では約2倍速くなりましたが、無音の扱いが変わり、話題の区切りも変わります（実音声では15件→10件）。既定の `0`（逐次処理）が品質の基準です。
+
 使った画像と出典は `visuals/` と `ledger.json` に保存されます。画像の出典は画面の下部に表示されます（ClipForge作成の図解は除く）。
 SVGは外部参照やDTDを含むものを拒否します。`visuals`・`bgm`・`sound_effects` はローカルのファイルを指すため、非公開Actionsへの依頼では使えません。
 画像検索は題名の語で行うため、関係のない画像が選ばれることがあります。出力前に必ず確認してください。
@@ -104,6 +116,7 @@ clips/clip-001/thumbnail.png 任意：サムネイル
 clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 ```
 
+`manifest.json` の `timings` には、各段階の実時間（秒）が入ります。
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
 顔追跡、音源分離、自動SNS投稿、URLからの動画取得は含みません。
 

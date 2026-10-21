@@ -98,3 +98,40 @@ def test_transcript_times_follow_the_audio_stream_start(monkeypatch, settings):
     segment = transcript.segments[0]
     assert (segment.start, segment.end) == (2.5, 3.0)
     assert (segment.words[0].start, segment.words[0].end) == (2.5, 3.0)
+
+
+def test_batched_decoding_is_used_only_when_requested(monkeypatch, settings):
+    monkeypatch.setattr(
+        media,
+        "audio",
+        lambda source, destination, duration: write_wav(destination, np.zeros(16000)),
+    )
+    used = {}
+
+    class SequentialModel:
+        def __init__(self, name, **kwargs):
+            pass
+
+        def transcribe(self, audio, **kwargs):
+            used["sequential"] = True
+            return iter([]), SimpleNamespace(language="ja")
+
+    class BatchedPipeline:
+        def __init__(self, model):
+            used["model"] = model
+
+        def transcribe(self, audio, batch_size, **kwargs):
+            used["batch_size"] = batch_size
+            return iter([]), SimpleNamespace(language="ja")
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", SequentialModel)
+    monkeypatch.setattr(
+        faster_whisper, "BatchedInferencePipeline", BatchedPipeline, raising=False
+    )
+    info = {"audio": True, "duration": 1.0}
+    signals.transcribe("/in.mp4", info, settings)
+    assert used == {"sequential": True}
+    used.clear()
+    settings.asr_batch_size = 4
+    signals.transcribe("/in.mp4", info, settings)
+    assert used["batch_size"] == 4 and "sequential" not in used

@@ -24,6 +24,7 @@ SETTINGS_FIELDS = {
     "max_seconds",
     "whisper_model",
     "whisper_revision",
+    "asr_batch_size",
     "language",
     "threads",
     "aspect",

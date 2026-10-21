@@ -599,3 +599,16 @@ def test_diagram_values_and_rows_are_validated():
 def test_overlapping_speech_is_counted_once():
     assert signals._covered_seconds([(0, 10), (5, 15), (20, 22)]) == 17
     assert signals._covered_seconds([]) == 0
+
+
+def test_a_silent_video_yields_non_overlapping_candidates_and_says_when_short():
+    settings = make(candidates=8, min_seconds=20, max_seconds=75)
+    raw = signals.candidates(
+        {"duration": 300},
+        Transcript(language="ja", segments=[]),
+        {"boundaries": []},
+        {"events": [], "status": "not_requested"},
+        settings,
+    )
+    # Eight 75 s windows cannot all fit in 300 s without overlapping by more than 45%.
+    assert 5 <= len(raw) < 8

@@ -76,7 +76,8 @@ def test_full_orchestration_and_exact_resume(job, settings):
     assert len(result["rendered"]) == 1
     before = dict(counts)
     second = pipeline.run(source, output, settings, resume=True)
-    assert second == result
+    # Timings describe each run's own wall-clock time; the results must match exactly.
+    assert {**second, "timings": None} == {**result, "timings": None}
     assert counts == before
     assert digest(source) == original
     assert not list((output / ".analysis").glob("*.mp4"))

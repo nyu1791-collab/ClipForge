@@ -34,10 +34,17 @@ def main():
             p.add_argument("--start", type=float, required=True)
             p.add_argument("--end", type=float, required=True)
             p.add_argument("--transcript", type=Path)
+    batch = sub.add_parser("batch", help="several videos, each in its own folder")
+    batch.add_argument("inputs", type=Path, nargs="+")
+    batch.add_argument("--output-root", type=Path, required=True)
+    batch.add_argument("--config", type=Path)
+    batch.add_argument("--gemini-model")
+    batch.add_argument("--concurrency", type=int, help="videos processed at once")
+    batch.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     try:
         from .models import Settings
-        from .pipeline import run, cut
+        from .pipeline import cut, default_concurrency, run, run_batch
 
         config = json.loads(args.config.read_text()) if args.config else {}
         for key in [
@@ -62,6 +69,24 @@ def main():
                 "Specify an explicit --gemini-model or config.gemini_model"
             )
         settings = Settings.model_validate(config)
+        if args.command == "batch":
+            concurrency = args.concurrency or default_concurrency(settings)
+            results = run_batch(
+                args.inputs, args.output_root, settings, concurrency, args.resume
+            )
+            failed = sum(item["status"] == "failed" for item in results)
+            print(
+                json.dumps(
+                    {
+                        "videos": len(results),
+                        "complete": len(results) - failed,
+                        "failed": failed,
+                        "human_review_performed": False,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            return 1 if failed else 0
         if args.command == "run":
             result = run(
                 args.input,

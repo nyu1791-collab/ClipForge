@@ -3,10 +3,12 @@
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import tempfile
 import threading
+import time
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -415,29 +417,49 @@ def render_clips(source, output, clips, transcript, settings, key):
     )
 
 
+def timed(timings, name, function, *args):
+    """Run one stage and record its wall-clock seconds in the job's timings."""
+    started = time.monotonic()
+    try:
+        return function(*args)
+    finally:
+        timings[name] = round(time.monotonic() - started, 2)
+
+
 def run(source, output, settings, resume=False, chat_file=None, selection_file=None):
     os.umask(0o077)
     source, output, info, key, lock = prepare(source, output, resume, settings)
+    timings = {}
     current_stage = "initialization"
     try:
         start_job(source, output)
         current_stage = "transcription"
         print("Transcribing on CPU…", flush=True)
-        raw = stage(
-            output,
-            "transcript",
-            key,
-            lambda: signals.transcribe(source, info, settings),
-        )
-        transcript = Transcript.model_validate(raw)
-        current_stage = "scene_detection"
         print("Detecting scene boundaries…", flush=True)
-        scenes = stage(
-            output,
-            "scenes",
-            key,
-            lambda: signals.scene_boundaries(source, info["duration"]),
-        )
+        # Scene detection does not depend on speech, so the two run side by side.
+        with ThreadPoolExecutor(max_workers=1) as side:
+            scene_future = side.submit(
+                timed,
+                timings,
+                "scene_detection",
+                stage,
+                output,
+                "scenes",
+                key,
+                lambda: signals.scene_boundaries(source, info["duration"]),
+            )
+            raw = timed(
+                timings,
+                "transcription",
+                stage,
+                output,
+                "transcript",
+                key,
+                lambda: signals.transcribe(source, info, settings),
+            )
+            transcript = Transcript.model_validate(raw)
+            current_stage = "scene_detection"
+            scenes = scene_future.result()
         current_stage = "chat_signals"
         supplied = json.loads(Path(chat_file).read_text()) if chat_file else None
         chat_key = fingerprint(
@@ -476,6 +498,13 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
             f"Constructed {len(candidates)} candidates; chat status: {chat['status']}",
             flush=True,
         )
+        if len(candidates) < settings.candidates:
+            # Non-overlapping windows may not fit a short or sparse video; say so.
+            print(
+                f"Only {len(candidates)} of {settings.candidates} requested candidates "
+                "fit without overlapping; the video is short or mostly silent.",
+                flush=True,
+            )
 
         def selection():
             if selection_file:
@@ -525,7 +554,9 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                 "manual": digest(selection_file) if selection_file else None,
             }
         )
-        selected = stage(output, "selection", selection_key, selection)
+        selected = timed(
+            timings, "selection", stage, output, "selection", selection_key, selection
+        )
         clips = [SelectedClip.model_validate(c) for c in selected["clips"]]
         validate_picks(clips, info["duration"], settings)
         write_json(
@@ -541,7 +572,17 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
         verify_source(source, output)
         current_stage = "rendering"
         print(f"Rendering {len(clips)} selected clips…", flush=True)
-        results = render_clips(source, output, clips, transcript, settings, key)
+        results = timed(
+            timings,
+            "rendering",
+            render_clips,
+            source,
+            output,
+            clips,
+            transcript,
+            settings,
+            key,
+        )
         current_stage = "verification"
         manifest = {
             "status": "complete",
@@ -553,6 +594,11 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
             "selection_receipt": selected["receipt"],
             "chat_status": chat["status"],
             "topics": topic_spans,
+            "candidate_count": {
+                "requested": settings.candidates,
+                "built": len(candidates),
+            },
+            "timings": timings,
             "human_review_performed": False,
         }
         write_json(output / "manifest.json", manifest)
@@ -563,6 +609,49 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
         raise
     finally:
         lock.close()
+
+
+def run_batch(inputs, output_root, settings, concurrency, resume=False):
+    """Several videos, each in its own folder, with bounded concurrency.
+
+    One failing video does not stop the others; each result is recorded in batch.json.
+    """
+    root = Path(output_root)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    names = [f"{index:03}-{_folder_name(path)}" for index, path in enumerate(inputs, 1)]
+
+    def one(item):
+        source, name = item
+        try:
+            manifest = run(source, root / name, settings, resume)
+            return {
+                "folder": name,
+                "status": manifest["status"],
+                "rendered": len(manifest["rendered"]),
+            }
+        except Exception as error:
+            detail = (
+                str(error) if isinstance(error, PipelineError) else type(error).__name__
+            )
+            return {"folder": name, "status": "failed", "error": detail[:240]}
+
+    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+        results = list(pool.map(one, zip(inputs, names)))
+    write_json(
+        root / "batch.json", {"results": results, "human_review_performed": False}
+    )
+    return results
+
+
+def default_concurrency(settings):
+    """Videos processed at once: enough cores for each video's threads and render workers."""
+    cores = os.cpu_count() or 1
+    return max(1, cores // max(1, settings.threads * settings.workers))
+
+
+def _folder_name(path):
+    stem = re.sub(r"[^\w-]", "_", Path(path).stem)[:40].strip("._")
+    return stem or "video"
 
 
 def cut(source, output, start, end, settings, transcript_file=None, resume=False):

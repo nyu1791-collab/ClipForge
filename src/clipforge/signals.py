@@ -45,14 +45,25 @@ def transcribe(source, info, settings):
         )
         # Samples, not a path: faster-whisper would otherwise decode with PyAV, whose
         # open() arguments changed in PyAV 19 (the locked build for Python 3.12+).
-        segments, metadata = model.transcribe(
-            read_samples(path),
+        options = dict(
             language=settings.language,
             word_timestamps=True,
             vad_filter=True,
             beam_size=5,
             condition_on_previous_text=False,
         )
+        audio = read_samples(path)
+        if settings.asr_batch_size:
+            # Batched decoding is about twice as fast on CPU, but it merges silences
+            # differently, which changes topic boundaries; it is opt-in for that reason.
+            from faster_whisper import BatchedInferencePipeline
+
+            pipeline = BatchedInferencePipeline(model=model)
+            segments, metadata = pipeline.transcribe(
+                audio, batch_size=settings.asr_batch_size, **options
+            )
+        else:
+            segments, metadata = model.transcribe(audio, **options)
         output = []
         # The extracted WAV starts where the audio stream starts; shift back to the file's clock.
         offset = float(info.get("audio_start", 0.0))
@@ -200,6 +211,14 @@ def candidates(info, transcript, scenes, chat, settings, topics=None):
         span_start = max(0.0, min(a, duration - window))
         for k in range(int(max(0.0, b - a - window) / step) + 1):
             starts.add(round(min(span_start + k * step, max(0, duration - window)), 4))
+    if len(starts) < 2 * settings.candidates:
+        # Few distinct windows (a short or sparse video): add a finer grid. Only the chosen
+        # candidates are previewed, so this costs scoring time, not rendering time.
+        fine = step / 2
+        starts |= {
+            round(min(i * fine, max(0, duration - window)), 4)
+            for i in range(int(duration / fine) + 1)
+        }
     pool = []
     for initial in sorted(starts):
         start = initial

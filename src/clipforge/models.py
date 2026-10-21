@@ -143,6 +143,8 @@ class Settings(Record):
     max_seconds: float = Field(default=75, ge=3, le=180)
     whisper_model: str = Field(default="small", min_length=1, max_length=160)
     whisper_revision: str | None = None
+    # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
+    asr_batch_size: int = Field(default=0, ge=0, le=16)
     language: str | None = None
     threads: int = Field(default=2, ge=1, le=8)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
