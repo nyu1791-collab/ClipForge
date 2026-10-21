@@ -33,7 +33,7 @@
 P1では[送信量の上限](ANALYSIS_BUDGET.md)を追加しました。過去の36秒素材での成功を、新しい上限の実API検証とは扱いません。この修正の検証で追加のGemini生成はしていません。
 P1のローカル検査はPython 3.12で182 unit passed、coverage 91.48%。ruff lint/format、`uv lock --check`、0.2.1のwheel buildも成功しました。重いvideo/ASR検査は制御VMでは実行せず、PRのGitHub CIで確認します。
 
-OpenCode連携の[開発ハーネス](DEVELOPMENT_HARNESS.md)も追加しました。ハーネスの隔離worktree、同じソースでの検査再開、古いCI・skippedジョブ・モデル不一致・空回答の拒否、失敗時の再送禁止を含め、ローカルは合計201 unit passed、coverage 91.48%。外部モデルの実接続結果とオフライン検査は別に記録します。
+OpenCodeの作業方式を取り入れた[モデル非依存の開発ハーネス](DEVELOPMENT_HARNESS.md)を追加しました。隔離worktree、同じソースでの検査再開、古いCI・skippedジョブの拒否、受領済み提案と採否の記録をオフラインで検査します。モデルの選択・呼び出し機能はありません。DeepSeekの依頼は送信前に検査で止まり、外部workerへの依頼は0件でした。
 
 ## 品質確認の意味と限界
 

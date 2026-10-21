@@ -104,97 +104,47 @@ def checked(task, harness, monkeypatch):
     return state, workspace, job
 
 
-@pytest.mark.parametrize(
-    "bad", ["stale", "untracked", "model", "path", "large", "range"]
-)
-def test_review_preconditions_stop_before_dispatch(checked, harness, bad):
+@pytest.mark.parametrize("bad", [None, "stale", "source", "empty", "binary", "large"])
+def test_offline_proposal_import_and_decision(
+    checked, harness, tmp_path, monkeypatch, bad
+):
     state, workspace, job = checked
-    context = "src/clipforge/example.py"
-    model = "opencode/test-free"
+    file = tmp_path / "proposal.md"
+    file.write_text("Concrete proposal\n")
+    commit = job["base_commit"]
     if bad == "stale":
         job["snapshot"] = "different"
-    elif bad == "untracked":
-        (workspace / "new.py").write_text("untracked")
-        job["snapshot"] = harness.snapshot(workspace)
-    elif bad == "model":
-        model = "other/paid-model"
-    elif bad == "path":
-        context = "../../.env"
-    elif bad == "range":
-        context = "src/clipforge/example.py:1:500"
+    elif bad == "source":
+        commit = "wrong"
+    elif bad == "empty":
+        file.write_text("")
+    elif bad == "binary":
+        file.write_bytes(b"\x00")
     elif bad == "large":
-        (workspace / context).write_text("#" * 17000)
-        harness.git(workspace, "add", ".")
-        harness.git(workspace, "commit", "-m", "large")
-        job["snapshot"] = harness.snapshot(workspace)
-    with pytest.raises(RuntimeError):
-        harness.review(state, job, model, [context], "Review this")
-    assert not job["reviews"]
-
-
-@pytest.mark.parametrize(
-    "result", ["complete", "gateway_failure", "wrong_model", "empty_answer"]
-)
-def test_remote_review_records_identity_and_never_retries(
-    checked, harness, monkeypatch, result
-):
-    state, _, job = checked
+        file.write_text("x" * 200001)
     real_run = subprocess.run
-    invocations = []
 
     def run(command, **kwargs):
-        if command[0] == "git":
-            return real_run(command, **kwargs)
-        assert command[:3] == ["ai-models", "run", "opencode/test-free"]
-        invocations.append(command)
-        output = Path(command[command.index("--out") + 1])
-        output.write_text(
-            json.dumps(
-                {
-                    "result": {
-                        "answer": "" if result == "empty_answer" else "proposal"
-                    },
-                    "receipt": {
-                        "provider": "opencode",
-                        "requested_model": "wrong"
-                        if result == "wrong_model"
-                        else "test-free",
-                    },
-                }
-            )
+        assert command[0] == "git", (
+            "Offline harness must never invoke an external model"
         )
-        return SimpleNamespace(
-            returncode=1 if result == "gateway_failure" else 0,
-            stdout=b"run id",
-            stderr=b"",
-        )
+        return real_run(command, **kwargs)
 
     monkeypatch.setattr(harness.subprocess, "run", run)
-    if result == "complete":
-        harness.review(
-            state, job, "opencode/test-free", ["src/clipforge/example.py"], "Review"
-        )
-        assert job["status"] == "review_complete"
-    else:
+    before = harness.snapshot(workspace)
+    if bad:
         with pytest.raises(RuntimeError):
-            harness.review(
-                state, job, "opencode/test-free", ["src/clipforge/example.py"], "Review"
-            )
-        assert job["status"] == "review_failed_or_unconfirmed"
-    assert len(invocations) == 1
-    with pytest.raises(RuntimeError):
-        harness.review(
-            state, job, "opencode/test-free", ["src/clipforge/example.py"], "Review"
+            harness.proposal(state, job, commit, "Owner supplied proposal", file)
+        assert not job.get("proposals")
+    else:
+        harness.proposal(state, job, commit, "Owner supplied proposal", file)
+        assert job["status"] == "proposal_received"
+        assert job["proposals"][0]["origin_verified"] is False
+        harness.decide(
+            state, job, "accept", "Primary will implement after verification"
         )
-    assert len(invocations) == 1
-    saved = json.loads((state / "job.json").read_text())
-    assert saved["reviews"][0]["source_commit"] == job["base_commit"]
-    assert saved["reviews"][0]["manifest"][0]["sha256"]
-    if result == "complete":
-        before = harness.snapshot(Path(job["workspace"]))
-        harness.decide(state, job, "accept", "Apply after primary review")
-        assert harness.snapshot(Path(job["workspace"])) == before
         assert job["decisions"][0]["decision"] == "accept"
+    assert harness.snapshot(workspace) == before
 
 
 @pytest.mark.parametrize(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checkpointed development loop with isolated worktrees and an OpenCode worker."""
+"""Model-independent development loop with isolated worktrees and verified checkpoints."""
 
 import argparse
 import datetime
@@ -88,7 +88,7 @@ def start(source, ref, workspace, state, name, goal):
         "branch": "harness/" + name,
         "status": "preparing",
         "checks": [],
-        "reviews": [],
+        "proposals": [],
     }
     save(state, job)
     try:
@@ -226,7 +226,7 @@ def check_ci(state, job, repository, quality_run, build_run):
     return job
 
 
-def review(state, job, model, contexts, question):
+def proposal(state, job, source_commit, author, file):
     root = Path(job["workspace"])
     current = snapshot(root)
     if (
@@ -235,152 +235,58 @@ def review(state, job, model, contexts, question):
         or len(job["checks"]) != (2 if job.get("check_kind") == "ci" else len(CHECKS))
         or any(c.get("returncode") != 0 for c in job["checks"])
     ):
-        raise RuntimeError("Current source must pass all checks before review")
-    if git(root, "status", "--porcelain").strip():
-        raise RuntimeError("Commit a source checkpoint before sending it to OpenCode")
-    if not re.fullmatch(r"opencode/[A-Za-z0-9._-]+", model):
-        raise RuntimeError("Select an explicit OpenCode provider/model")
-    if not contexts or not question.strip():
-        raise RuntimeError("Explicit context paths and review question are required")
-    if any(r["snapshot"] == current for r in job["reviews"]):
         raise RuntimeError(
-            "A review was already attempted for this checkpoint; inspect its record"
+            "Current source must pass all checks before importing a proposal"
         )
     commit = git(root, "rev-parse", "HEAD").decode().strip()
-    prompt = (
-        "Review only; do not modify files, execute tools, or delegate. Reply in Japanese with "
-        "evidence, risks and concrete fixes. Distinguish proposals from verified facts.\n"
-        + f"Source commit: {commit}\nGoal: {job['goal']}\nQuestion: {question}\n"
-        + "Verified checks: "
-        + json.dumps(job["checks"], ensure_ascii=False)
-        + "\n"
-    )
-    manifest = []
-    for selector in dict.fromkeys(contexts):
-        name = selector
-        line_range = None
-        if ":" in selector:
-            name, first, last = selector.rsplit(":", 2)
-            if (
-                not first.isdigit()
-                or not last.isdigit()
-                or not 1 <= int(first) <= int(last)
-            ):
-                raise RuntimeError(
-                    "Use FILE:FIRST:LAST with an explicit positive line range"
-                )
-            line_range = [int(first), int(last)]
-        path = Path(name)
-        if (
-            path.is_absolute()
-            or ".." in path.parts
-            or not re.fullmatch(
-                r"(?:src/clipforge/|tests/|tools/|docs/)[A-Za-z0-9_./-]+\.(?:py|md)|README\.md|config\.example\.json",
-                name,
-            )
-        ):
-            raise RuntimeError(
-                "Only explicit tracked source/documentation paths can be sent"
-            )
-        data = git(root, "show", commit + ":" + name)
-        text = data.decode("utf-8")
-        if line_range:
-            lines = text.splitlines(keepends=True)
-            if line_range[1] > len(lines):
-                raise RuntimeError("Requested context line range exceeds the file")
-            text = "".join(lines[line_range[0] - 1 : line_range[1]])
-        if "\x00" in text or re.search(
-            r"-----BEGIN .*PRIVATE KEY-----|\b(?:sk-ant-|ghp_|github_pat_)[A-Za-z0-9_-]{16,}",
-            text,
-        ):
-            raise RuntimeError(
-                "Binary content or possible embedded credential rejected"
-            )
-        manifest.append(
-            {
-                "path": name,
-                "sha256": hashlib.sha256(data).hexdigest(),
-                "lines": line_range,
-                "sent_sha256": hashlib.sha256(text.encode()).hexdigest(),
-            }
-        )
-        prompt += "\nEXPLICIT SOURCE " + selector + "\n" + text
-    if len(prompt) > 16000:
+    if git(root, "status", "--porcelain").strip() or source_commit != commit:
+        raise RuntimeError("Proposal must name the current committed source checkpoint")
+    if (
+        not author.strip()
+        or len(author) > 100
+        or not file.is_file()
+        or file.stat().st_size > 200000
+    ):
         raise RuntimeError(
-            "Explicit context exceeds the worker's 16000-character limit; narrow the scope"
+            "Use an explicit author and a UTF-8 proposal file up to 200KB"
         )
-    request = {
-        "model": model,
-        "snapshot": current,
-        "source_commit": commit,
-        "manifest": manifest,
-        "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
-        "status": "dispatching",
-        "started_at": now(),
-        "attempts": 1,
-    }
-    prompt_file = state / "opencode-prompt.txt"
-    prompt_file.write_text(prompt)
-    request["output"] = str((state / "opencode-result.json").absolute())
-    job["reviews"].append(request)
-    job["status"] = "review_dispatched"
+    data = file.read_bytes()
+    text = data.decode("utf-8")
+    if not text.strip() or "\x00" in text:
+        raise RuntimeError("Proposal must contain nonempty UTF-8 text")
+    digest = hashlib.sha256(data).hexdigest()
+    target = state / ("proposal-" + digest + ".md")
+    target.write_bytes(data)
+    target.chmod(0o600)
+    job.setdefault("proposals", []).append(
+        {
+            "author": author,
+            "source_commit": commit,
+            "snapshot": current,
+            "sha256": digest,
+            "file": str(target.absolute()),
+            "imported_at": now(),
+            "origin_verified": False,
+        }
+    )
+    job["status"] = "proposal_received"
     save(state, job)
-    try:
-        result = subprocess.run(
-            [
-                "ai-models",
-                "run",
-                model,
-                "--prompt-file",
-                str(prompt_file.absolute()),
-                "--out",
-                request["output"],
-            ],
-            cwd=root,
-            capture_output=True,
-            timeout=1250,
-        )
-        (state / "opencode-dispatch.log").write_bytes(
-            (result.stdout + result.stderr)[-2000000:]
-        )
-        if result.returncode:
-            raise RuntimeError(
-                "OpenCode worker failed or is unconfirmed; inspect recorded run, do not retry automatically"
-            )
-        response = json.loads(Path(request["output"]).read_text())
-        receipt = response.get("receipt", {})
-        if (
-            receipt.get("provider") != "opencode"
-            or receipt.get("requested_model", receipt.get("model"))
-            != model.split("/", 1)[1]
-        ):
-            raise RuntimeError("Returned OpenCode model identity mismatch")
-        answer = response.get("result", {}).get("answer")
-        if not isinstance(answer, str) or not answer.strip():
-            raise RuntimeError("OpenCode returned no completed proposal")
-        if snapshot(root) != current:
-            raise RuntimeError("Review completed for an older source checkpoint")
-        request["status"] = "complete"
-        job["status"] = "review_complete"
-    except BaseException:
-        request["status"] = "failed_or_unconfirmed"
-        job["status"] = "review_failed_or_unconfirmed"
-        raise
-    finally:
-        request["finished_at"] = now()
-        save(state, job)
     return job
 
 
 def decide(state, job, decision, note):
-    if job.get("status") != "review_complete" or snapshot(
+    if job.get("status") != "proposal_received" or snapshot(
         Path(job["workspace"])
     ) != job.get("snapshot"):
-        raise RuntimeError(
-            "Decision requires a completed review for the current checkpoint"
-        )
+        raise RuntimeError("Decision requires a proposal for the current checkpoint")
     job.setdefault("decisions", []).append(
-        {"decision": decision, "note": note, "snapshot": job["snapshot"], "at": now()}
+        {
+            "decision": decision,
+            "note": note,
+            "proposal_sha256": job["proposals"][-1]["sha256"],
+            "snapshot": job["snapshot"],
+            "at": now(),
+        }
     )
     save(state, job)
     return job
@@ -395,7 +301,7 @@ def main():
         s.add_argument("--" + name, type=Path, required=True)
     for name in ("ref", "name", "goal"):
         s.add_argument("--" + name, required=True)
-    for command in ("check", "check-ci", "review", "decide", "status"):
+    for command in ("check", "check-ci", "proposal", "decide", "status"):
         s = sub.add_parser(command)
         s.add_argument("--state", type=Path, required=True)
         if command == "check":
@@ -407,10 +313,10 @@ def main():
         if command == "decide":
             s.add_argument("--decision", choices=["accept", "reject"], required=True)
             s.add_argument("--note", required=True)
-        if command == "review":
-            s.add_argument("--model", required=True)
-            s.add_argument("--context", action="append", required=True)
-            s.add_argument("--question", required=True)
+        if command == "proposal":
+            s.add_argument("--file", type=Path, required=True)
+            s.add_argument("--author", required=True)
+            s.add_argument("--source-commit", required=True)
     a = p.parse_args()
     if a.command == "start":
         job = start(a.source, a.ref, a.workspace, a.state, a.name, a.goal)
@@ -427,8 +333,8 @@ def main():
                 job = check(a.state, job, a.resume)
             elif a.command == "check-ci":
                 job = check_ci(a.state, job, a.repository, a.quality_run, a.build_run)
-            elif a.command == "review":
-                job = review(a.state, job, a.model, a.context, a.question)
+            elif a.command == "proposal":
+                job = proposal(a.state, job, a.source_commit, a.author, a.file)
             elif a.command == "decide":
                 job = decide(a.state, job, a.decision, a.note)
     print(json.dumps(job, ensure_ascii=False, indent=2))

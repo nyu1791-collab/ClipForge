@@ -82,4 +82,4 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 
 詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。
 
-開発作業は[OpenCode連携ハーネス](docs/DEVELOPMENT_HARNESS.md)で、専用worktree・目標・検査・再開・モデル提案・採否を記録できます。Opusは提案、主担当は実装と検証を担当します。
+開発作業は[モデルを追加しない作業ハーネス](docs/DEVELOPMENT_HARNESS.md)で、専用worktree・目標・検査・再開・受け取った提案・採否を記録できます。Opusは提案、主担当は実装と検証を担当します。
