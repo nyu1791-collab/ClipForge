@@ -29,6 +29,11 @@ SCENES = [
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--japanese",
+        action="store_true",
+        help="Also generate an attributed Open JTalk Japanese fixture",
+    )
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -116,10 +121,74 @@ def main():
         str(output / "source.mp4"),
     ]
     subprocess.run(command, check=True, capture_output=True, timeout=120)
+    if args.japanese:
+        dictionary = Path("/var/lib/mecab/dic/open-jtalk/naist-jdic")
+        voices = list(
+            Path("/usr/share/hts-voice").rglob("nitech_jp_atr503_m001.htsvoice")
+        )
+        if (
+            not shutil.which("open_jtalk")
+            or not dictionary.is_dir()
+            or len(voices) != 1
+        ):
+            raise SystemExit(
+                "Install Open JTalk, NAIST dictionary and the Nitech Japanese voice."
+            )
+        japanese = "こんにちは。これはクリップフォージの品質確認用の音声です。画面が赤く変わった場面には、大切な説明があります。字幕の時刻と日本語の表示を確認します。"
+        subprocess.run(
+            [
+                "open_jtalk",
+                "-x",
+                str(dictionary),
+                "-m",
+                str(voices[0]),
+                "-ow",
+                str(output / "speech-ja.wav"),
+            ],
+            input=japanese,
+            text=True,
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-n",
+                "-i",
+                str(output / "source.mp4"),
+                "-i",
+                str(output / "speech-ja.wav"),
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-c:v",
+                "copy",
+                "-c:a",
+                "aac",
+                "-shortest",
+                str(output / "source-japanese.mp4"),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=60,
+        )
     (output / "fixture.json").write_text(
         json.dumps(
             {
                 "kind": "synthetic_quality_fixture",
+                "japanese_voice_attribution": {
+                    "model": "HTS voice nitech_jp_atr503_m001",
+                    "copyright": "2003-2012 Nagoya Institute of Technology; 2003-2008 Tokyo Institute of Technology",
+                    "source": "https://open-jtalk.sourceforge.net",
+                    "license": "CC-BY-3.0",
+                    "license_url": "https://creativecommons.org/licenses/by/3.0/",
+                }
+                if args.japanese
+                else None,
                 "duration": 36,
                 "scenes": [
                     {

@@ -18,3 +18,13 @@ Whisperモデルの重みは実行時に取得され、各モデルの配布条�
 ライブラリの利用許諾と、動画・楽曲・配信チャットを利用する権利は別です。
 
 WhisperX、Demucs、顔追跡は初期実装に含めません。音源分離を追加しても著作権上の許可やContent IDの回避を保証するものではありません。
+
+## 品質確認用の合成音声
+
+通常の動画処理とは別に、CIの検証素材をeSpeak NGとOpen JTalkで生成します。
+日本語の検証音声には **HTS voice nitech_jp_atr503_m001** を使用します。
+Copyright 2003–2012 Nagoya Institute of Technology, Department of Computer Science;
+2003–2008 Tokyo Institute of Technology, Interdisciplinary Graduate School of Science and Engineering。
+音声モデルは [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)、配布元は
+[Open JTalk](https://open-jtalk.sourceforge.net)です。音声モデル自体はこのリポジトリに複製しません。
+生成した検証素材の `fixture.json` にもクレジットとライセンスURLを記録します。

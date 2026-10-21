@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   unit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
       fail-fast: false
@@ -47,7 +47,7 @@ jobs:
           retention-days: 7
 
   video:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CLIPFORGE_FIXTURE_PATH: ${{ github.workspace }}/artifacts/quality-fixture/source.mp4
@@ -68,10 +68,10 @@ jobs:
       - name: Install CPU tools and Japanese fonts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk espeak-ng
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk espeak-ng open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
       - run: uv sync --locked --extra chat
       - name: Generate labelled synthetic video and speech
-        run: uv run --no-sync python tools/make_quality_fixture.py --output artifacts/quality-fixture
+        run: uv run --no-sync python tools/make_quality_fixture.py --output artifacts/quality-fixture --japanese
       - name: Real video and speech-recognition checks
         run: uv run --no-sync pytest -m 'integration or asr' --junitxml=artifacts/video-results.xml
       - uses: actions/upload-artifact@v4
@@ -80,7 +80,9 @@ jobs:
           name: quality-synthetic-video
           path: |
             artifacts/quality-fixture/source.mp4
+            artifacts/quality-fixture/source-japanese.mp4
             artifacts/quality-fixture/fixture.json
+            artifacts/quality-outputs/preview-*.png
             artifacts/video-results.xml
           retention-days: 7
           if-no-files-found: warn

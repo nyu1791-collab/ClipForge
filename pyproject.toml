@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipforge"
-version = "0.2.0"
+version = "0.2.1"
 description = "CPU video clipping with timestamped transcription, visual Gemini selection and ASS captions"
 readme = "README.md"
 requires-python = ">=3.11"

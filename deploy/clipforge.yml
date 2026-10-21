@@ -27,7 +27,7 @@ concurrency:
 jobs:
   clip:
     if: github.repository == 'nyu1791-collab/ai-model-workers'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}

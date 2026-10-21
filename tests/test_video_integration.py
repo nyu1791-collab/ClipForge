@@ -83,6 +83,21 @@ def test_real_cut_subtitles_frames_audio_and_resume(
     ).stdout
     assert len(pixel) == 3 and pixel[0] > 150 and pixel[1] < 90 and pixel[2] < 90
     assert digest(source_video) == before
+    import cv2
+
+    capture = cv2.VideoCapture(str(target))
+    try:
+        capture.set(cv2.CAP_PROP_POS_MSEC, 2000)
+        ok, frame = capture.read()
+        assert ok
+        assert cv2.imwrite(
+            str(
+                root / ("preview-" + aspect.replace(":", "x") + "-" + framing + ".png")
+            ),
+            frame,
+        )
+    finally:
+        capture.release()
     assert (
         pipeline.cut(source_video, output, 13, 19, settings, reference, resume=True)
         == result
@@ -141,6 +156,7 @@ def test_silent_video_render_has_no_audio(source_video, tmp_path, settings):
 @pytest.mark.asr
 def test_real_cpu_asr_and_manual_pipeline(source_video, tmp_path, settings):
     settings.whisper_model = "tiny.en"
+    settings.whisper_revision = "0d3d19a32d3338f10357c0889762bd8d64bbdeba"
     settings.language = "en"
     info = media.probe(source_video)
     transcript = Transcript.model_validate(
@@ -178,3 +194,23 @@ def test_real_cpu_asr_and_manual_pipeline(source_video, tmp_path, settings):
     assert result["status"] == "complete"
     assert result["selection_receipt"]["generation_requests"] == 0
     assert result["rendered"][0]["captions"]["events"] > 0
+
+
+@pytest.mark.asr
+def test_default_small_model_recognizes_japanese(source_video, settings):
+    japanese = source_video.with_name("source-japanese.mp4")
+    assert japanese.is_file(), "Generate the fixture with --japanese"
+    settings.language = "ja"
+    settings.whisper_revision = "536b0662742c02347bc0e980a01041f333bce120"
+    assert settings.whisper_model == "small"
+    info = media.probe(japanese)
+    transcript = Transcript.model_validate(signals.transcribe(japanese, info, settings))
+    text = "".join(s.text for s in transcript.segments)
+    assert sum(word in text for word in ["字幕", "画面", "確認", "音声"]) >= 2
+    assert any(s.words for s in transcript.segments)
+    assert all(0 <= s.start < s.end <= info["duration"] for s in transcript.segments)
+    assert all(
+        s.start <= w.start < w.end <= s.end
+        for s in transcript.segments
+        for w in s.words
+    )
