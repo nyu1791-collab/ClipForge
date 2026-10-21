@@ -198,6 +198,23 @@ workerの`mode=reviewed`は`cache_run_id`の全編音声と10分単位ASRをSHA-
 `tools/render_reviewed_batch.py --plan ...`で、十分なCPUのworker上へ直接実行する場合は、
 編集済み字幕を含むplanもそのまま利用でき、字幕が揃っていればASRキャッシュは不要です。
 
+## 字幕変更を1本だけ再検証する
+
+`mode=caption_update`は、完了済み私有runの`cache_run_id`、単独の`output_kind`、
+`plan_json={"clip_id":"clip_03"}`、一意の`submission_id=clipforge-caption-`＋32桁hexを入力します。
+以前の完成物と取得済み区間のSHA-256を検証し、対象clipだけを再描画します。
+音声トラックは元の完成MP4からコピーし、デコード後の音声ハッシュが一致することも確認します。
+全編ASR・区間取得・ほかの完成clipの再生成は行いません。元runに完全な素材がなければ停止します。
+
+workerで直接使う入口は`tools/verify_caption_update.py`です。
+ASS/SRT一致、本文保持、1〜4秒・最大2行、完成MP4の品質ゲートを検査し、
+`update_result.json`へ結果を保存します。元の完成物とmanifestは上書きしません。
+このモードでは変更していない解析キャッシュを再アップロードしません。
+
+短い字幕を結合できないときは、隣の字幕と合わせて語・文節の境界で分け直します。
+両方が1秒以上・4秒以内・最大2行に収まる場合だけ採用し、本文と語の時刻を保持します。
+表示を延長するだけで1秒確保できる字幕は既存のまとまりを保ちます。
+
 ## マニフェスト契約
 
 `schemas/clips_manifest.schema.json`が正式なJSON Schemaです。

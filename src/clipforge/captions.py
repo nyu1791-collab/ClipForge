@@ -66,7 +66,7 @@ def create(transcript, clip, directory, settings, fonts_dir=None):
                 words.append(Word(start=a, end=b, text=layout.normalize(safe(w.text))))
     words.sort(key=lambda w: (w.start, w.end))
     words, approximated = layout.timed_units(words)
-    groups = layout.groups(words, measure.width, limit)
+    groups = layout.groups(words, measure.width, limit, duration=clip.end - clip.start)
     # SRT readers trim event-edge whitespace. Canonicalize it before either export
     # so an ASR word beginning with a space cannot make ASS/SRT disagree.
     for i, members in enumerate(groups):

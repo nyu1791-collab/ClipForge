@@ -153,7 +153,7 @@ def timed_units(words):
     return result, interpolated
 
 
-def groups(words, measure, limit):
+def groups(words, measure, limit, duration=None):
     result, current = [], []
 
     def fits(items):
@@ -188,6 +188,46 @@ def groups(words, measure, limit):
                 if result[b][0].start - result[a][-1].end <= 0.7 and fits(combined):
                     result[a : b + 1] = [combined]
                     index = max(-1, a - 1)
+                    break
+                # A greedy full cue can leave a tiny particle at the end. When
+                # merging exceeds the two-line/4s limit, move whole lexical
+                # units across the existing boundary instead of changing ASR
+                # timing or splitting a word. Both resulting cues must fit.
+                ceiling = (
+                    result[index + 1][0].start if index + 1 < len(result) else duration
+                )
+                if ceiling is not None and ceiling - result[index][0].start >= 1:
+                    # create() can already hold this cue for a readable second.
+                    continue
+                if result[b][0].start - result[a][-1].end > 0.7:
+                    continue
+                phrases = phrase_edges("".join(w.text for w in combined))
+                candidates, cursor = [], 0
+                for cut in range(1, len(combined)):
+                    cursor += len(combined[cut - 1].text)
+                    left, right = combined[:cut], combined[cut:]
+                    spans = (
+                        left[-1].end - left[0].start,
+                        right[-1].end - right[0].start,
+                    )
+                    if min(spans) < 1.01 or not fits(left) or not fits(right):
+                        continue
+                    punctuation = left[-1].text.rstrip().endswith(tuple("、。！？!?"))
+                    candidates.append(
+                        (
+                            (
+                                not punctuation,
+                                cursor not in phrases,
+                                abs(spans[0] - spans[1]),
+                                abs(cut - len(result[a])),
+                            ),
+                            left,
+                            right,
+                        )
+                    )
+                if candidates:
+                    _, left, right = min(candidates, key=lambda c: c[0])
+                    result[a : b + 1] = [left, right]
                     break
         index += 1
     return result

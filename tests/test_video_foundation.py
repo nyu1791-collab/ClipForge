@@ -18,7 +18,7 @@ from clipforge.batch_workflow import (
     reviewed,
     transcribe_full,
 )
-from clipforge.caption_layout import NO_START, timed_units, units
+from clipforge.caption_layout import NO_START, groups, line_break, timed_units, units
 from clipforge.media import frame_rate
 from clipforge.models import SelectedClip, Settings, Transcript, Word
 from clipforge.storage import PipelineError, digest, fingerprint, write_json
@@ -204,6 +204,98 @@ class VideoFoundationTests(unittest.TestCase):
             {"language": "ja", "segments": [{"start": 0, "end": 200, "text": "long"}]}
         )
         self.assertEqual(speech_end(t, 0, 45, 300, 30, 180), 0)
+
+    def test_short_caption_rebalances_whole_words_without_changing_timing(self):
+        words = [
+            Word(start=i * 0.9, end=min(4.2, (i + 1) * 0.9), text=t)
+            for i, t in enumerate(("料理", "の", "準備", "です。", "次"))
+        ]
+        result = groups(words, len, 100)
+        self.assertEqual(len(result), 2)
+        self.assertEqual([w for group in result for w in group], words)
+        self.assertTrue(all(1.01 <= g[-1].end - g[0].start <= 4.001 for g in result))
+        self.assertTrue(
+            all(line_break([w.text for w in g], len, 100) is not None for g in result)
+        )
+
+    def test_short_caption_rebalance_respects_pause_and_line_capacity(self):
+        for gap, limit in ((2, 100), (0, 1)):
+            words = [
+                Word(start=0, end=2, text="語"),
+                Word(start=2 + gap, end=2.2 + gap, text="末"),
+            ]
+            result = groups(words, len, limit)
+            if gap:
+                self.assertEqual(len(result), 2)
+            self.assertEqual([w for group in result for w in group], words)
+        # Neither cue can borrow a whole word while both stay >=1s and fit.
+        words = [
+            Word(start=0, end=3.9, text="あい"),
+            Word(start=3.9, end=4.1, text="うえ"),
+        ]
+        result = groups(words, len, 2)
+        self.assertEqual(len(result), 2)
+        self.assertEqual([w for group in result for w in group], words)
+
+    def test_short_speech_with_display_hold_keeps_existing_grouping(self):
+        words = [
+            Word(start=i * 0.9, end=min(4.2, (i + 1) * 0.9), text=t)
+            for i, t in enumerate(("料理", "の", "準備", "です。", "次"))
+        ]
+        result = groups(words, len, 100, duration=6)
+        self.assertEqual(result[-1], words[-1:])
+        self.assertEqual([w for group in result for w in group], words)
+
+    def test_caption_update_stops_before_rendering_changed_or_missing_inputs(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "verify_caption_update", "tools/verify_caption_update.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            manifest = self.reviewed_plan().shorts
+            old = root / "previous" / "shorts" / "clip_01"
+            old.mkdir(parents=True)
+            write_json(old.parent / "clips_manifest.json", manifest.model_dump())
+            names = ("video.mp4", "captions.ass", "captions.srt", "caption_review.json")
+            for name in names:
+                (old / name).write_bytes(b"fixture")
+            write_json(
+                old / "render.json",
+                {
+                    "clip": manifest.clips[0].model_dump(),
+                    "quality": {"status": "passed"},
+                    "source_sha256": "synthetic",
+                    "files_sha256": {name: digest(old / name) for name in names},
+                },
+            )
+            with patch.object(module, "render") as render:
+                (old / "video.mp4").write_bytes(b"changed")
+                with self.assertRaises(PipelineError) as caught:
+                    module.verify(
+                        root / "previous",
+                        root / "cache",
+                        root / "out",
+                        "assets",
+                        "shorts",
+                        "clip_01",
+                    )
+                self.assertEqual(caught.exception.code, "previous_clip_integrity")
+                (old / "video.mp4").write_bytes(b"fixture")
+                with self.assertRaises(PipelineError) as caught:
+                    module.verify(
+                        root / "previous",
+                        root / "cache",
+                        root / "out",
+                        "assets",
+                        "shorts",
+                        "clip_01",
+                    )
+                self.assertEqual(caught.exception.code, "source_cache_required")
+                render.assert_not_called()
 
     def test_unknown_long_sentence_uses_phrase_edges_without_losing_text(self):
         from unittest.mock import Mock
