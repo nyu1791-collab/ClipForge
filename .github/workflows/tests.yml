@@ -31,10 +31,10 @@ jobs:
         with:
           version: '0.12.23'
           enable-cache: false
-      - name: Install font tools for layout checks
+      - name: Install media metadata and font tools for offline checks
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
       - name: Install locked package
         run: uv sync --locked --no-dev
       - name: Check offline contracts, layout and resume behavior
