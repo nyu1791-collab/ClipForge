@@ -17,7 +17,9 @@ Faster-Whisper → チャット／場面転換から候補抽出 → **映像と
 - 縦型のぼかし背景、顔と画面の2段配置、題名の見出し、2パスの音量調整（-16 LUFS）。
 - 出典つきの画像、独自の表・棒グラフ・手順図、背景音楽（声の間は自動で下げる）、効果音、サムネイル。
 
-初期値は候補8件、各最大75秒、最大3本出力、Whisper `small`、720px高。Geminiが見るのは候補動画だけです。動画全体の全場面を視聴・評価する設計ではありません。
+初期値は候補8件、各最大75秒、最大3本出力、720px高。文字起こしは Whisper `large-v3-turbo`（日本語の認識精度を優先）、符号化は `slow`・CRF 18、背景はぼかし、品質ゲートは `strict` です。Geminiが見るのは候補動画だけです。動画全体の全場面を視聴・評価する設計ではありません。
+
+処理時間の目安（4スレッド、この環境での実測）：文字起こしは入力の約0.65倍の時間、切り抜きは1本あたり数十秒です。60分の入力では文字起こしだけで約40分かかります。GitHub Actionsの上限（90分）に近づくため、長い入力は分けて依頼してください。
 
 ## 推奨：制御VMから非公開Actionsへ依頼
 
@@ -82,7 +84,7 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 
 | 設定 | 内容 |
 |---|---|
-| `layout` | `fit`（従来）、`blur`（ぼかし背景）、`panels`（顔と画面の2段。`face_box` が必要） |
+| `layout` | `blur`（既定。ぼかした背景で画面を埋める）、`fit`（黒帯を入れて全体を残す）、`panels`（顔と画面の2段。`face_box` が必要） |
 | `heading` | 題名を画面上部に表示 |
 | `topics`, `topic_min_seconds`, `topic_max_seconds` | 話題ごとに候補を作る。既定は25〜180秒 |
 | `silence_cut`, `silence_pad`, `silence_min_gap` | 文字起こしに基づき長い無音を詰める |
@@ -91,9 +93,9 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 | `image_search`, `image_sources` | 題名で画像を検索。Wikimedia CommonsまたはOpenverseのうち、CC0・パブリックドメイン・CC BY・CC BY-SAだけを使用 |
 | `bgm`, `bgm_gain_db`, `ducking`, `sound_effects` | 背景音楽（声の間は自動で下げる）と効果音 |
 | `thumbnail` | 切り抜きの1フレームに題名を載せた1280×720のサムネイル |
-| `encode_preset` | 動画の符号化の速さ。既定は `veryfast`。`faster` は約1dB画質が上がり、時間は約15%増えます。`superfast` は速いが容量が約2倍 |
+| `encode_preset` | x264の速度設定。既定は `slow`（CRF 18と組み合わせ）。`medium` と同程度の時間で、`veryfast`（CRF 20）より約4dB画質が高い。速さを優先するなら `veryfast` や `faster` |
 | `table_query` | 日本語版Wikipediaの表を検索し、独自の表として描画。記事のURLとCC BY-SA 4.0の表記を画面に表示 |
-| `quality_gate` | `report`（既定）は結果を `quality.json` に残して出力します。`strict` は失敗（字幕の重なり、フォントにない文字、出典・ライセンス不足、音量の測定不能）があると、そのクリップを確定せず停止します |
+| `quality_gate` | `strict`（既定）は失敗（字幕の重なり、フォントにない文字、出典・ライセンス不足、音量の測定不能）があるクリップを確定せず停止します。`report` は結果を `quality.json` に残して出力します |
 
 速度を優先する場合は `asr_batch_size`（1〜16）で文字起こしを一括処理できます。実測では約2倍速くなりましたが、無音の扱いが変わり、話題の区切りも変わります（実音声では15件→10件）。既定の `0`（逐次処理）が品質の基準です。
 

@@ -33,13 +33,24 @@ _MODELS_LOCK = threading.Lock()
 # One decoder at a time. A loaded model is not assumed to be safe for concurrent calls,
 # so batched videos share the model and take turns in the decoder only.
 _DECODE_LOCK = threading.Lock()
+# The revision the default model was tested with. A repository update cannot change the
+# transcript of an existing job, because the same weights are fetched every time.
+PINNED_REVISIONS = {
+    "mobiuslabsgmbh/faster-whisper-large-v3-turbo": "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf",
+}
+
+
+def model_revision(settings):
+    """Explicit revision, else the pinned one for a known model; None floats with the hub."""
+    return settings.whisper_revision or PINNED_REVISIONS.get(settings.whisper_model)
 
 
 def _shared_model(settings):
     """One loaded Whisper model per configuration, reused by every video in the process."""
     from faster_whisper import WhisperModel
 
-    key = (settings.whisper_model, settings.whisper_revision, settings.threads)
+    revision = model_revision(settings)
+    key = (settings.whisper_model, revision, settings.threads)
     with _MODELS_LOCK:
         if key not in _MODELS:
             _MODELS[key] = WhisperModel(
@@ -48,7 +59,7 @@ def _shared_model(settings):
                 compute_type="int8",
                 cpu_threads=settings.threads,
                 num_workers=1,
-                revision=settings.whisper_revision,
+                revision=revision,
             )
         return _MODELS[key]
 

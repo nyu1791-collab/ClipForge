@@ -17,7 +17,9 @@ LOUDNESS = "I=-16:TP=-1.5:LRA=11"
 MAX_KEEP_REGIONS = 60
 MAX_SOUND_EFFECTS = 20
 SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio
-VIDEO_CRF = 20  # x264 quality: lower is sharper and larger
+VIDEO_CRF = (
+    18  # x264 quality: lower is sharper and larger; 18 is near visually lossless
+)
 PROGRESS_RGB = (255, 196, 0)
 
 

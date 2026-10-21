@@ -197,12 +197,15 @@ def test_real_cpu_asr_and_manual_pipeline(source_video, tmp_path, settings):
 
 
 @pytest.mark.asr
-def test_default_small_model_recognizes_japanese(source_video, settings):
+def test_default_model_recognizes_japanese(source_video, settings):
     japanese = source_video.with_name("source-japanese.mp4")
     assert japanese.is_file(), "Generate the fixture with --japanese"
     settings.language = "ja"
-    settings.whisper_revision = "536b0662742c02347bc0e980a01041f333bce120"
-    assert settings.whisper_model == "small"
+    # The default model, at the revision that is pinned for it.
+    assert (
+        signals.model_revision(settings)
+        == signals.PINNED_REVISIONS[settings.whisper_model]
+    )
     info = media.probe(japanese)
     transcript = Transcript.model_validate(signals.transcribe(japanese, info, settings))
     text = "".join(s.text for s in transcript.segments)

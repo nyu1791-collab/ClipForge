@@ -145,6 +145,7 @@ def test_render_commands_are_local_relative_and_cpu(
     monkeypatch, tmp_path, settings, audio, framing
 ):
     settings.framing = framing
+    settings.layout = "fit"  # the framing choice only applies to the fit layout
     clip = SelectedClip(
         start=21, end=27, candidate_id="manual", title="t", reason="r", confidence=1
     )
@@ -159,11 +160,8 @@ def test_render_commands_are_local_relative_and_cpu(
         assert command[command.index("-map") + 1] == "[vout]"
         assert ("[aout]" in command) == audio
         assert command[command.index("-c:v") + 1] == "libx264"
-        assert (
-            command[command.index("-preset") + 1]
-            == settings.encode_preset
-            == "veryfast"
-        )
+        assert command[command.index("-preset") + 1] == settings.encode_preset == "slow"
+        assert command[command.index("-crf") + 1] == str(media.VIDEO_CRF) == "18"
         graph = command[command.index("-filter_complex") + 1]
         assert "setpts=PTS-STARTPTS" in graph
         assert "ass=filename=captions.ass" in graph

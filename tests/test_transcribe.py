@@ -156,4 +156,13 @@ def test_one_model_is_loaded_per_configuration(monkeypatch, settings):
     assert signals._shared_model(settings) is first
     settings.threads = 4
     assert signals._shared_model(settings) is not first
-    assert loads == [("small", 2), ("small", 4)]
+    assert loads == [(settings.whisper_model, 2), (settings.whisper_model, 4)]
+
+
+def test_default_model_is_pinned_and_other_models_float_unless_set(settings):
+    default = signals.model_revision(settings)
+    assert default == signals.PINNED_REVISIONS[settings.whisper_model]
+    settings.whisper_model = "small"
+    assert signals.model_revision(settings) is None
+    settings.whisper_revision = "abc123"
+    assert signals.model_revision(settings) == "abc123"

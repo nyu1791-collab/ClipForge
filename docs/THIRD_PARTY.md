@@ -5,6 +5,7 @@
 | 用途 | 採用元 | 版 / ライセンス |
 |---|---|---|
 | CPU文字起こし・単語時刻・VAD | [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) | 1.2.1 / MIT |
+| 既定の文字起こしモデル | [mobiuslabsgmbh/faster-whisper-large-v3-turbo](https://huggingface.co/mobiuslabsgmbh/faster-whisper-large-v3-turbo)（OpenAI Whisper large-v3-turbo の変換版） | リビジョン `0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf` 固定 / MIT（Hugging Face の表記） |
 | 場面転換 | [Breakthrough/PySceneDetect](https://github.com/Breakthrough/PySceneDetect) | `scenedetect-headless` 0.7.2 / BSD-3-Clause |
 | 映像を含むGemini API呼び出し | [googleapis/python-genai](https://github.com/googleapis/python-genai) | 2.32.0 / Apache-2.0 |
 | ASS/SRT編集 | [tkarabela/pysubs2](https://github.com/tkarabela/pysubs2) | 1.8.1 / MIT。Python 3.11対応版 |

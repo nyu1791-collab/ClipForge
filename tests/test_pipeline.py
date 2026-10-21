@@ -241,6 +241,7 @@ def missing_a_glyph(monkeypatch):
 def test_report_gate_keeps_the_clip_and_records_its_failure(job, settings, monkeypatch):
     source, output, _ = job
     missing_a_glyph(monkeypatch)
+    settings.quality_gate = "report"
     result = pipeline.run(source, output, settings)
     recorded = json.loads((output / "clips/clip-001/quality.json").read_text())
     assert recorded["passed"] is False

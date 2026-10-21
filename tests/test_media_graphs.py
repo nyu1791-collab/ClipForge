@@ -62,9 +62,11 @@ def test_a_very_short_kept_piece_fades_by_at_most_half_its_length():
 
 def test_layouts_end_with_the_requested_label():
     box = (0.0, 0.0, 1.0, 1.0)
-    fit = media._layout(make(framing="fit"), 404, 720, "vin", "out")
+    fit = media._layout(make(framing="fit", layout="fit"), 404, 720, "vin", "out")
     assert "pad=404:720" in fit and fit.endswith("[out]")
-    crop = media._layout(make(framing="center-crop"), 404, 720, "vin", "out")
+    crop = media._layout(
+        make(framing="center-crop", layout="fit"), 404, 720, "vin", "out"
+    )
     assert "crop=404:720" in crop and "pad=" not in crop
     blur = media._layout(make(layout="blur"), 404, 720, "vin", "out")
     assert (
@@ -158,7 +160,7 @@ def test_short_overlays_fade_by_at_most_half_their_length():
 
 
 def test_plain_video_graph_has_no_optional_stages():
-    settings = make(progress_bar=False, fade_seconds=0)
+    settings = make(progress_bar=False, fade_seconds=0, layout="fit")
     graph = media._video_graph(CLIP, settings, 404, 720, None, 10.0, [], None)
     assert "split=" not in graph and "fade=" not in graph and "geq=" not in graph
     assert graph.endswith("null[vout]")

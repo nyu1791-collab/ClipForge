@@ -141,7 +141,14 @@ class Settings(Record):
     candidates: int = Field(default=8, ge=1, le=10)
     min_seconds: float = Field(default=20, ge=2, le=120)
     max_seconds: float = Field(default=75, ge=3, le=180)
-    whisper_model: str = Field(default="small", min_length=1, max_length=160)
+    # large-v3-turbo transcribes Japanese clearly better than small at about the same speed
+    # (measured on 4 minutes of speech: mean word probability 0.96 against 0.88).
+    whisper_model: str = Field(
+        default="mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        min_length=1,
+        max_length=160,
+    )
+    # None uses the pinned revision of the default model; other models float unless set.
     whisper_revision: str | None = None
     # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
     asr_batch_size: int = Field(default=0, ge=0, le=16)
@@ -150,12 +157,13 @@ class Settings(Record):
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
     height: Literal[720, 1080] = 720
-    # x264 speed preset. Measured on a 65 s clip: faster is about 1 dB sharper than
-    # veryfast for about 15% more time; superfast is quicker but about twice the size.
-    encode_preset: Literal["superfast", "veryfast", "faster", "medium"] = "veryfast"
+    # x264 speed preset. On a 40 s clip with CRF 18, slow matched medium's time and gained
+    # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
+    encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
-    layout: Literal["fit", "blur", "panels"] = "fit"
+    # blur fills the frame with a softened copy of the picture; fit leaves black bars.
+    layout: Literal["fit", "blur", "panels"] = "blur"
     heading: bool = False
     face_box: tuple[float, float, float, float] | None = None
     game_box: tuple[float, float, float, float] | None = None
@@ -184,8 +192,8 @@ class Settings(Record):
     thumbnail: bool = False
     fade_seconds: float = Field(default=0.3, ge=0, le=2)
     progress_bar: bool = True
-    # report keeps a clip whose quality.json lists failures; strict refuses such a clip.
-    quality_gate: Literal["report", "strict"] = "report"
+    # strict refuses a clip whose quality.json lists failures; report keeps it and records them.
+    quality_gate: Literal["report", "strict"] = "strict"
     analysis_fps: float = Field(default=2, ge=0.5, le=5)
     max_source_seconds: float = Field(default=3600, ge=5, le=7200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
