@@ -64,7 +64,11 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
         gemini_model="local-batch",
         height=style.height,
         font=style.font,
-        framing="blur-fit",
+        framing=(
+            "fit"
+            if output_kind == "topics" and info["width"] * 9 == info["height"] * 16
+            else "blur-fit"
+        ),
         headline=True,
         hook_title=clip.hook_title,
         aspect="16:9" if output_kind == "topics" else "9:16",
@@ -244,6 +248,7 @@ def render(source, directory, clip, style: RichStyle, assets, output_kind="short
         "caption_events": caption_report["events"],
         "caption_review": caption_report,
         "output_kind": output_kind,
+        "framing": settings.framing,
         "style": style.model_dump(),
     }
     from .quality import inspect_video

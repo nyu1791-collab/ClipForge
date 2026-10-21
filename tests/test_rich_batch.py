@@ -79,6 +79,7 @@ class RichBatchTests(unittest.TestCase):
         self.assertEqual(result[0].start, 60.3)
         self.assertEqual(result[0].words[0].start, 60.3)
         self.assertEqual(result[0].end, 62)
+        self.assertEqual(result[0].text, "発話")
 
     def test_mount_sync_checksum_and_no_overwrite(self):
         spec = importlib.util.spec_from_file_location(

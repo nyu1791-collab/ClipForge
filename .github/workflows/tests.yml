@@ -44,6 +44,7 @@ jobs:
           uv run python - <<'PY'
           import json
           from pathlib import Path
-          from clipforge.batch_models import ClipsManifest
+          from clipforge.batch_models import ClipsManifest, ProductionPlan
           assert json.loads(Path('schemas/clips_manifest.schema.json').read_text()) == ClipsManifest.model_json_schema()
+          assert json.loads(Path('schemas/production_plan.schema.json').read_text()) == ProductionPlan.model_json_schema()
           PY

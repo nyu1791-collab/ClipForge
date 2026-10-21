@@ -10,8 +10,8 @@ import pysubs2
 
 from clipforge import captions
 from clipforge.batch import run, speech_end
-from clipforge.batch_models import ClipsManifest
-from clipforge.batch_workflow import automatic, cache_lock, transcribe_full
+from clipforge.batch_models import ClipsManifest, ProductionPlan
+from clipforge.batch_workflow import automatic, cache_lock, reviewed, transcribe_full
 from clipforge.caption_layout import NO_START, timed_units, units
 from clipforge.media import frame_rate
 from clipforge.models import SelectedClip, Settings, Transcript, Word
@@ -22,6 +22,14 @@ URL = "https://kick.com/example/videos/01a1574c-2350-77ce-90e2-4a7fefd4235c"
 
 
 class VideoFoundationTests(unittest.TestCase):
+    def reviewed_plan(self):
+        short = json.loads(Path("jobs/examples/kick-test-3.json").read_text())
+        topic = json.loads(Path("jobs/examples/kick-topics-test-3.json").read_text())
+        short["selection_method"] = topic["selection_method"] = "manual"
+        return ProductionPlan(
+            shorts=short, topics=topic, review_basis="assistant_transcript"
+        )
+
     def transcript(self):
         topics = [
             "料理の材料を切り鍋に入れて煮込む夕食の準備",
@@ -396,6 +404,69 @@ class VideoFoundationTests(unittest.TestCase):
                 inspect_video("synthetic.mp4", 30, 404, 720)
             self.assertEqual(caught.exception.code, "audio_sample_rate")
             decode.assert_not_called()
+
+    def test_reviewed_bundle_rejects_different_sources_and_auto_provenance(self):
+        p = self.reviewed_plan().model_dump()
+        p["topics"]["source_url"] = URL
+        with self.assertRaises(ValueError):
+            ProductionPlan.model_validate(p)
+        p = self.reviewed_plan().model_dump()
+        p["shorts"]["selection_method"] = "local_transcript_audio"
+        with self.assertRaises(ValueError):
+            ProductionPlan.model_validate(p)
+
+    def test_reviewed_bundle_shares_budget_without_global_asr(self):
+        with (
+            tempfile.TemporaryDirectory() as d,
+            patch("clipforge.batch_workflow.transcribe_full") as asr,
+            patch(
+                "clipforge.batch_workflow.run",
+                return_value={"clips": [{}, {}, {}], "media_budget_used": 100},
+            ) as render,
+        ):
+            result = reviewed(
+                self.reviewed_plan(),
+                Path(d) / "out",
+                Path(d) / "cache",
+                "assets",
+                max_bytes=1000,
+            )
+            asr.assert_not_called()
+            self.assertEqual([x.args[-1] for x in render.call_args_list], [1000, 900])
+            self.assertEqual(result["review_basis"], "assistant_transcript")
+            self.assertFalse(result["human_review_performed"])
+
+    def test_private_plan_submission_is_idempotent_and_refuses_public_repo(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "submit_rich_batch", "tools/submit_rich_batch.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "plan.json"
+            write_json(path, self.reviewed_plan().model_dump())
+
+            def invoke(*args):
+                return json.dumps({"private": True}) if args[0] == "api" else ""
+
+            with patch.object(module, "gh", side_effect=invoke) as gh:
+                a = module.submit(path, "a" * 40, state=Path(d) / "state")
+                b = module.submit(path, "a" * 40, state=Path(d) / "state")
+                self.assertEqual(a, b)
+                self.assertEqual(
+                    sum(c.args[0] == "workflow" for c in gh.call_args_list), 1
+                )
+                self.assertEqual(
+                    sum(c.args[0] == "release" for c in gh.call_args_list), 1
+                )
+            with patch.object(
+                module, "gh", return_value=json.dumps({"private": False})
+            ) as gh:
+                with self.assertRaises(PipelineError):
+                    module.submit(path, "b" * 40, state=Path(d) / "public")
+                self.assertEqual(gh.call_count, 1)
 
 
 if __name__ == "__main__":

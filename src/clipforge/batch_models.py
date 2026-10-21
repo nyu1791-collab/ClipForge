@@ -94,3 +94,32 @@ class ClipsManifest(Record):
                     raise ValueError("clips overlap by more than 20 percent")
             accepted.append(c)
         return self
+
+
+class ProductionPlan(Record):
+    """Private, reviewed source intervals for both delivery formats."""
+
+    schema_version: Literal[1] = 1
+    review_basis: Literal["manual_intervals", "assistant_transcript"] = (
+        "manual_intervals"
+    )
+    shorts: ClipsManifest
+    topics: ClipsManifest
+
+    @model_validator(mode="after")
+    def same_source(self):
+        if self.shorts.output_kind != "shorts" or self.topics.output_kind != "topics":
+            raise ValueError("production plan requires shorts and topics profiles")
+        if (
+            self.shorts.source_url != self.topics.source_url
+            or abs(self.shorts.source_duration - self.topics.source_duration) > 0.01
+        ):
+            raise ValueError("both formats must refer to the same source")
+        if (
+            self.shorts.selection_method != "manual"
+            or self.topics.selection_method != "manual"
+        ):
+            raise ValueError(
+                "reviewed production plans require manual interval provenance"
+            )
+        return self

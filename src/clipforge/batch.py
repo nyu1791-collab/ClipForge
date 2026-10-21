@@ -63,6 +63,8 @@ def clipped_subtitles(transcript, start, end):
             for w in s.words
             if w.end > start and w.start < end
         ]
+        if s.words:
+            value["text"] = "".join(w["text"] for w in value["words"])
         result.append(Segment.model_validate(value))
     return result
 

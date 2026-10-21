@@ -212,3 +212,51 @@ def automatic(
         if output_kind == "both":
             write_json(output / "production_result.json", summary)
         return summary
+
+
+def reviewed(
+    plan,
+    output,
+    cache,
+    assets,
+    quality="720p",
+    model="small",
+    resume=False,
+    max_bytes=2 * 1024**3,
+):
+    """Render a provided private plan; no global analysis or remote model request."""
+    output, cache = Path(output).resolve(), Path(cache).resolve()
+    identity = fingerprint({"source": plan.shorts.source_url})
+    with cache_lock(cache, identity):
+        if output.exists() and not resume:
+            raise PipelineError("output exists; choose another directory or resume")
+        used, rows = 0, []
+        for manifest in (plan.shorts, plan.topics):
+            if used >= max_bytes:
+                raise PipelineError("shared media budget exhausted")
+            result = run(
+                manifest,
+                output / manifest.output_kind,
+                cache,
+                assets,
+                quality,
+                model,
+                resume,
+                max_bytes - used,
+            )
+            used += result["media_budget_used"]
+            rows.append(
+                {"output_kind": manifest.output_kind, "clips": len(result["clips"])}
+            )
+        write_json(output / "production_plan.json", plan.model_dump())
+        summary = {
+            "status": "complete",
+            "outputs": rows,
+            "media_budget_used": used,
+            "selection_method": "manual",
+            "review_basis": plan.review_basis,
+            "human_review_performed": False,
+            "remote_model_requests": 0,
+        }
+        write_json(output / "production_result.json", summary)
+        return summary

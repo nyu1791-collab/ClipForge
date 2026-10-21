@@ -165,6 +165,32 @@ ASSとSRTは同じ10ms単位の境界と改行です。見出しはSRTへ入れ�
 失敗時は`failure.json`に段階・clip ID・固定のエラーコードを記録し、発話やプロバイダ応答をログへ出しません。
 機械検査の合格、AIによるフレーム確認、人による全編視聴・試聴、選定の面白さは別の状態です。
 
+## 文脈を確認した区間を非公開のまま実行する
+
+自動候補を見て区間を調整した場合は、`ProductionPlan`へShortsと通常動画のmanifestをまとめます。
+正式スキーマは`schemas/production_plan.schema.json`です。両方のsource URL・動画長・形式・manual由来を検証します。
+各形式3〜5本、タイトル、字幕の時刻、スタイルを既存manifestと同じ契約で扱います。
+`review_basis=assistant_transcript`はこのセッションのAIによる文字起こしの文脈確認、
+`manual_intervals`は提供された指定区間です。どちらも人による映像・音声承認を意味しません。
+
+```sh
+uv run python tools/submit_rich_batch.py \
+  --plan workspace/output/reviewed-plan.json \
+  --source-ref FULL_COMMIT_SHA --cache-run-id PREVIOUS_PRIVATE_RUN_ID
+```
+
+制御VMはJSONを検証し、指定workerが非公開であることをAPIで確認してから、
+私有の一時入力Releaseへ`production_plan.json`だけを送ります。
+workerの`mode=reviewed`はこの入力を読み、共通の描画・品質ゲートで両形式を生成します。
+実発話を含む入力を公開リポジトリへcommitする必要はありません。
+字幕を提供した区間は再ASRせず、同じ高画質取得キャッシュも利用できます。
+
+同じplan内容と実装SHAの送信は`workspace/control/batches/`の私有記録で再送を防ぎます。
+通信失敗時は実際には投入済みの可能性があるため、`submission_uncertain`と入力tagを保存し、
+自動で二度目のdispatchはしません。Actionsで同じ入力tagの実行を確認してから対応します。
+完了後は一時入力Releaseを削除し、完成物とmanifestは非公開Artifactsの保持期間内に回収してください。
+`tools/render_reviewed_batch.py --plan ...`で、十分なCPUのworker上へ直接実行することもできます。
+
 ## マニフェスト契約
 
 `schemas/clips_manifest.schema.json`が正式なJSON Schemaです。

@@ -15,6 +15,7 @@ CPUの切り抜き基盤に、公式の配信API連携と縦型ショート向�
 重い処理は非公開workerへ渡します。`tools/render_rich_videos.py --output-kind both`の使い方、
 キャッシュによる再開、検証済みの範囲は[運用手順](docs/RICH_BATCH.md)と[品質確認記録](docs/QUALITY_REVIEW.md)を参照してください。
 自動選定のスコアは意味的な面白さや話題の完結を保証しません。
+文脈を確認して調整した区間は、`tools/submit_rich_batch.py`で私有の入力としてworkerへ渡せます。
 
 ## できること
 
