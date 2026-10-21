@@ -48,6 +48,7 @@ SETTINGS_FIELDS = {
     "diagrams",
     "image_search",
     "image_sources",
+    "table_query",
     "bgm_gain_db",
     "ducking",
     "thumbnail",

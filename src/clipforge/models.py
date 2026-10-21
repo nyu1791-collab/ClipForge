@@ -168,6 +168,8 @@ class Settings(Record):
     image_sources: list[Literal["commons", "openverse"]] = Field(
         default_factory=lambda: ["commons"], max_length=2
     )
+    # Searches Japanese Wikipedia tables for this query; off when unset.
+    table_query: str | None = Field(default=None, min_length=1, max_length=100)
     bgm: str | None = Field(default=None, max_length=1000)
     bgm_gain_db: float = Field(default=-24, ge=-60, le=-12)
     ducking: bool = True

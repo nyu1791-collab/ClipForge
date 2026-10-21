@@ -80,22 +80,20 @@ def _get(url):
             if error.code == 429 and attempt == 0:
                 time.sleep(_retry_after(error.headers))
                 continue
-            raise PipelineError(
-                f"image search request failed with HTTP {error.code}"
-            ) from error
+            raise PipelineError(f"request failed with HTTP {error.code}") from error
         except (urllib.error.URLError, OSError) as error:
-            raise PipelineError("image search request failed") from error
+            raise PipelineError("request failed") from error
         if len(data) > MAX_BYTES:
             raise PipelineError("response is larger than the allowed size")
         return data
-    raise PipelineError("image search request was rate limited")
+    raise PipelineError("request was rate limited")
 
 
 def _json(url):
     try:
         return json.loads(_get(url))
     except ValueError as error:
-        raise PipelineError("image search returned unreadable data") from error
+        raise PipelineError("search returned unreadable data") from error
 
 
 def search_commons(query, limit):

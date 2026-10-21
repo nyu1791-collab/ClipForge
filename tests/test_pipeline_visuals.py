@@ -535,3 +535,48 @@ def test_settings_accept_a_consistent_panel_layout():
         layout="panels", face_box=(0.1, 0.1, 0.4, 0.4), game_box=(0, 0, 1, 1)
     )
     assert settings.layout == "panels" and math.isclose(settings.face_box[2], 0.4)
+
+
+def test_numbers_with_their_units_never_split_across_lines():
+    text = "あいう1,234万円えお"
+    # "1,234万円" is 70 px here, so it fits on an 80 px line and must not be broken.
+    breaks = captions.wrap_breaks(text, FixedWidth(), 80)
+    assert breaks and not any(4 <= b <= 9 for b in breaks)
+    # A number wider than the whole line has to be split somewhere.
+    assert captions.wrap_breaks("1,234万円", FixedWidth(), 60)
+
+
+def test_table_query_adds_a_sourced_table_overlay(tmp_path, monkeypatch, japanese_font):
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    found = [
+        {
+            "title": "日本の人口",
+            "rows": [["年", "人口"], ["2020", "1億2千万"], ["2021", "1億2千万"]],
+            "source_url": "https://ja.wikipedia.org/wiki/x",
+            "source_credit": "日本語版Wikipedia「日本の人口」の表 / CC BY-SA 4.0",
+            "license": "CC BY-SA 4.0",
+        }
+    ]
+    monkeypatch.setattr(pipeline.tables, "search", lambda query, limit=3: found)
+    settings = make(table_query="日本の人口")
+    clip = SelectedClip(
+        start=0, end=30, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    visuals, ledger = pipeline.prepare_visuals(clip, settings, tmp_path, 30.0)
+    assert [entry["kind"] for entry in ledger] == ["table"]
+    assert ledger[0]["license"] == "CC BY-SA 4.0"
+    assert (tmp_path / "visuals" / "table-01.png").is_file()
+    overlay = visuals[0]
+    assert overlay["position"] == "center"
+    assert (overlay["start"], overlay["end"]) == (15, 23)
+
+
+def test_no_table_query_means_no_table_search(tmp_path, monkeypatch):
+    def must_not_search(query, limit=3):
+        raise AssertionError("table search runs only when table_query is set")
+
+    monkeypatch.setattr(pipeline.tables, "search", must_not_search)
+    clip = SelectedClip(
+        start=0, end=30, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    assert pipeline.prepare_visuals(clip, make(), tmp_path, 30.0) == ([], [])

@@ -10,7 +10,17 @@ import threading
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import __version__, assets, diagrams, fonts, media, signals, silence, thumbnail
+from . import (
+    __version__,
+    assets,
+    diagrams,
+    fonts,
+    media,
+    signals,
+    silence,
+    tables,
+    thumbnail,
+)
 from . import topics as topic_tools
 from .captions import create as create_captions
 from .models import Candidate, SelectedClip, Transcript, validate_picks
@@ -240,6 +250,38 @@ def prepare_visuals(clip, settings, directory, duration):
                     "end": (number + 1) * slot,
                     "position": "right",
                     "max_fraction": 0.38,
+                }
+            )
+    if settings.table_query:
+        found = tables.search(settings.table_query)
+        if found:
+            # One original rendering of the best table, with its article as the source.
+            table = found[0]
+            png = folder / "table-01.png"
+            diagrams.table(
+                table["title"][:60], table["rows"], fonts.resolve(settings.font), png
+            )
+            ledger.append(
+                assets.validate_entry(
+                    {
+                        "id": "table-01",
+                        "file": png.name,
+                        "kind": "table",
+                        "sha256": digest(png),
+                        "source_url": table["source_url"],
+                        "source_credit": table["source_credit"],
+                        "license": table["license"],
+                    }
+                )
+            )
+            start = duration / 2
+            visuals.append(
+                {
+                    "file": str(png),
+                    "start": start,
+                    "end": start + min(8.0, duration / 3),
+                    "position": "center",
+                    "max_fraction": 0.85,
                 }
             )
     return visuals, ledger

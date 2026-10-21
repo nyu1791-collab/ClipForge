@@ -1,5 +1,7 @@
 """ASS/SRT captions and top heading in clip-relative output time; no user override tags."""
 
+import re
+
 import pysubs2
 
 from . import fonts, silence
@@ -102,6 +104,20 @@ def split_long(tokens, measure, limit):
     return result, split
 
 
+# A number with its unit ("1,234万円", "30%") stays on one line when it fits.
+NUMBER = re.compile(
+    r"\d[\d,.]*(?:[%％]|[年月日時分秒人円万億兆個件回本枚倍名歳点]{1,2})?"
+)
+
+
+def _unbreakable(text):
+    """Positions that may not start a line because they are inside a number and its unit."""
+    blocked = set()
+    for match in NUMBER.finditer(text):
+        blocked.update(range(match.start() + 1, match.end()))
+    return blocked
+
+
 def wrap_breaks(text, measure, line_px):
     """Character indices where a new line starts; lines break at phrase edges when possible."""
     phrase_starts = set()
@@ -110,6 +126,7 @@ def wrap_breaks(text, measure, line_px):
         if position:
             phrase_starts.add(position)
         position += len(phrase)
+    blocked = _unbreakable(text)
     breaks, begin, used, last_phrase = [], 0, 0.0, None
     for index, char in enumerate(text):
         size = measure.width(char)
@@ -121,6 +138,12 @@ def wrap_breaks(text, measure, line_px):
                 if last_phrase is not None and last_phrase > begin
                 else index
             )
+            # Move the break in front of a number; a number wider than a line is split.
+            start = cut
+            while start in blocked and start > begin:
+                start -= 1
+            if start > begin:
+                cut = start
             breaks.append(cut)
             begin = cut
             used = measure.width(text[cut:index])

@@ -81,10 +81,12 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 | `image_search`, `image_sources` | 題名で画像を検索。Wikimedia CommonsまたはOpenverseのうち、CC0・パブリックドメイン・CC BY・CC BY-SAだけを使用 |
 | `bgm`, `bgm_gain_db`, `ducking`, `sound_effects` | 背景音楽（声の間は自動で下げる）と効果音 |
 | `thumbnail` | 切り抜きの1フレームに題名を載せた1280×720のサムネイル |
+| `table_query` | 日本語版Wikipediaの表を検索し、独自の表として描画。記事のURLとCC BY-SA 4.0の表記を画面に表示 |
 
 使った画像と出典は `visuals/` と `ledger.json` に保存されます。画像の出典は画面の下部に表示されます（ClipForge作成の図解は除く）。
 SVGは外部参照やDTDを含むものを拒否します。`visuals`・`bgm`・`sound_effects` はローカルのファイルを指すため、非公開Actionsへの依頼では使えません。
 画像検索は題名の語で行うため、関係のない画像が選ばれることがあります。出力前に必ず確認してください。
+表検索は `table_query` で指定した語で行います。Wikipediaの本文はCC BY-SA 4.0のため、その表を使った動画の扱い（継承の要否）は利用者が判断してください。
 
 ## 出力
 

@@ -24,6 +24,7 @@
   "topic_max_seconds": 180,
   "image_search": false,
   "image_sources": ["commons"],
+  "table_query": null,
   "ducking": true,
   "bgm_gain_db": -24,
   "fade_seconds": 0.3,
