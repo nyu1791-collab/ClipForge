@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 chat = ["chat-downloader==0.2.8"]
+download = [
+    "yt-dlp[default]==2026.8.19",
+]
 
 [project.scripts]
 clipforge = "clipforge.cli:main"

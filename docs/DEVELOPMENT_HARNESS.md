@@ -70,3 +70,5 @@ python3 tools/dev_harness.py decide --state /path/to/task-state \
 主担当が修正したら新しいcommitで検査をやり直します。モデルの提案や採用記録を、実装・検証完了として扱いません。PRへは目的・実際の変更・検証結果・制約を書き、生ログ・認証・入力動画は公開Gitへ入れません。
 
 ClaudeとChatGPTからOpusへ明示的に依頼する窓口は、VMの `/usr/local/share/ai-access/OPUS_BRIDGE.md` を参照してください。ハーネスの検査・再開・提案取り込みにその接続は不要です。
+
+URL処理に限ってユーザーが明示的に追加したDeepSeek補助エージェントは、[URL受付](URL_AGENT.md)に記載しています。`dev_harness.py` 自体のモデル呼び出し機能は追加していません。

@@ -1,0 +1,144 @@
+name: ClipForge URL and helper
+run-name: ClipForge URL ${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact reviewed ClipForge commit SHA
+        required: true
+        type: string
+      request_id:
+        description: Unique 32-character hex request ID
+        required: true
+        type: string
+      mode:
+        description: Video request or isolated agent fixture
+        required: true
+        type: choice
+        options: [video, fixture]
+      video_url:
+        description: Public YouTube recorded video (video mode)
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: clipforge-url-helper
+  cancel-in-progress: false
+jobs:
+  video:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.mode == 'video'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      REQUEST_ID: ${{ inputs.request_id }}
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      CLIPFORGE_VIDEO_URL: ${{ inputs.video_url }}
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - name: Validate immutable identity
+        run: |
+          python3 - <<'PY'
+          import os,re
+          assert re.fullmatch('[a-f0-9]{40}',os.environ['CLIPFORGE_SOURCE_REF'])
+          assert re.fullmatch('[a-f0-9]{32}',os.environ['REQUEST_ID'])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU media tools without API credentials
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+          uv sync --locked --extra download --no-dev
+      - name: Download, transcribe, select once and render
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: uv run --no-sync python tools/url_runner.py --output artifacts/video
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: url-diagnostic-${{ inputs.request_id }}
+          path: artifacts/video/diagnostic.json
+          retention-days: 7
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: url-result-${{ inputs.request_id }}
+          path: |
+            artifacts/video/effective-settings.json
+            artifacts/video/result
+          retention-days: 7
+          if-no-files-found: warn
+  helper:
+    needs: video
+    if: always() && github.repository == 'nyu1791-collab/ai-model-workers' && (inputs.mode == 'fixture' || needs.video.result != 'cancelled')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      REQUEST_ID: ${{ inputs.request_id }}
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      MODE: ${{ inputs.mode }}
+    steps:
+      - name: Validate immutable identity
+        run: |
+          python3 - <<'PY'
+          import os,re
+          assert re.fullmatch('[a-f0-9]{40}',os.environ['CLIPFORGE_SOURCE_REF'])
+          assert re.fullmatch('[a-f0-9]{32}',os.environ['REQUEST_ID'])
+          assert os.environ['MODE'] in ('video','fixture')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install native OpenCode without API credentials
+        run: |
+          npm install --global opencode-ai@1.19.0
+          uv sync --locked --extra chat
+      - uses: actions/download-artifact@v4
+        if: inputs.mode == 'video'
+        with:
+          name: url-diagnostic-${{ inputs.request_id }}
+          path: diagnostic
+      - name: One bounded helper session
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+        run: |
+          if [ "$MODE" = fixture ]; then
+            uv run --no-sync python tools/agent_runner.py --source "$GITHUB_WORKSPACE" --output artifacts/helper --fixture
+          else
+            uv run --no-sync python tools/agent_runner.py --source "$GITHUB_WORKSPACE" --output artifacts/helper --diagnostic diagnostic/diagnostic.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: url-helper-${{ inputs.request_id }}
+          path: artifacts/helper
+          retention-days: 7
+          if-no-files-found: warn

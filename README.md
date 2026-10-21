@@ -83,3 +83,5 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。
 
 開発作業は[モデルを追加しない作業ハーネス](docs/DEVELOPMENT_HARNESS.md)で、専用worktree・目標・検査・再開・受け取った提案・採否を記録できます。Opusは提案、主担当は実装と検証を担当します。
+
+公開YouTube録画からの受付と、OpenCode／DeepSeekによる検証付きの小規模修正は、追加の[URL補助エージェント](docs/URL_AGENT.md)を使います。非公開workerへの配置が必要です。実動画の品質は、人が出力を確認して判断します。
