@@ -1,0 +1,88 @@
+name: Quality
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clipforge-quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - run: uv sync --locked --extra chat
+      - name: Static checks and unit regressions
+        run: |
+          uv run --no-sync ruff check src tools tests
+          uv run --no-sync ruff format --check src tools tests
+          uv run --no-sync pytest -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-unit-${{ matrix.python }}
+          path: |
+            artifacts/unit-results.xml
+            coverage.xml
+          retention-days: 7
+
+  video:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CLIPFORGE_FIXTURE_PATH: ${{ github.workspace }}/artifacts/quality-fixture/source.mp4
+      CLIPFORGE_QA_OUTPUT: ${{ github.workspace }}/artifacts/quality-outputs
+      HF_HUB_DISABLE_PROGRESS_BARS: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU tools and Japanese fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk espeak-ng open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
+      - run: uv sync --locked --extra chat
+      - name: Generate labelled synthetic video and speech
+        run: uv run --no-sync python tools/make_quality_fixture.py --output artifacts/quality-fixture --japanese
+      - name: Real video and speech-recognition checks
+        run: uv run --no-sync pytest -m 'integration or asr' --junitxml=artifacts/video-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-synthetic-video
+          path: |
+            artifacts/quality-fixture/source.mp4
+            artifacts/quality-fixture/source-japanese.mp4
+            artifacts/quality-fixture/fixture.json
+            artifacts/quality-outputs/preview-*.png
+            artifacts/video-results.xml
+          retention-days: 7
+          if-no-files-found: warn

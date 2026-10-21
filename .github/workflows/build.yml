@@ -27,6 +27,13 @@ jobs:
           python-version: '3.11'
       - name: Build development wheel
         run: |
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          for root in ['src', 'tools']:
+              for path in Path(root).rglob('*.py'):
+                  ast.parse(path.read_text(), filename=str(path))
+          PY
           python -m pip install build
           python -m build --wheel
       - uses: actions/upload-artifact@v4

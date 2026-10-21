@@ -1,5 +1,3 @@
-"""ClipForge: AI-assisted video clipping and subtitle editing.
+"""CPU clipping pipeline. Importing this module does not load ASR models."""
 
-Cutting an explicit time range is available. Transcription and AI selection are not implemented yet."""
-
-__version__ = "0.1.0"
+__version__ = "0.2.1"

@@ -4,18 +4,42 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "clipforge"
-version = "0.1.0"
-description = "Foundation for AI-assisted video clipping and subtitle editing"
+version = "0.2.1"
+description = "CPU video clipping with timestamped transcription, visual Gemini selection and ASS captions"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "faster-whisper==1.2.1",
+  "scenedetect-headless==0.7.2",
+  "google-genai==2.32.0",
+  "pysubs2==1.8.1",
+  "pydantic>=2.11,<3",
+]
+
+[project.optional-dependencies]
+chat = ["chat-downloader==0.2.8"]
+
+[project.scripts]
+clipforge = "clipforge.cli:main"
 
 [project.urls]
 Repository = "https://github.com/nyu1791-collab/ClipForge"
 Issues = "https://github.com/nyu1791-collab/ClipForge/issues"
 
-[project.scripts]
-clipforge = "clipforge.cli:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+  "integration: real FFmpeg, font and video checks (GitHub runner)",
+  "asr: real CPU speech recognition with downloaded model weights (GitHub runner)",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==8.4.2",
+    "pytest-cov>=6,<8",
+    "ruff==0.14.14",
+]
