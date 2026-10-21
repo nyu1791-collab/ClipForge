@@ -24,11 +24,26 @@ def make(**overrides):
 
 
 @pytest.mark.parametrize(
-    ("aspect", "width", "height"),
-    [("9:16", 404, 720), ("16:9", 1280, 720), ("1:1", 720, 720)],
+    ("aspect", "requested", "width", "height"),
+    [
+        ("9:16", 720, 404, 720),
+        ("16:9", 720, 1280, 720),
+        ("1:1", 720, 720, 720),
+        ("9:16", 1080, 608, 1080),
+        ("9:16", None, 1080, 1920),
+        ("16:9", None, 1920, 1080),
+        ("1:1", None, 1080, 1080),
+    ],
 )
-def test_frame_size_follows_the_aspect_ratio(aspect, width, height):
-    assert media.frame_size(make(aspect=aspect)) == (width, height)
+def test_frame_size_follows_the_aspect_ratio(aspect, requested, width, height):
+    assert media.frame_size(make(aspect=aspect, height=requested)) == (width, height)
+
+
+def test_default_height_is_the_standard_size_for_each_aspect():
+    assert media.frame_size(make()) == (1080, 1920)
+    assert media.frame_size(make(aspect="16:9")) == (1920, 1080)
+    with pytest.raises(ValueError, match="only for the 9:16"):
+        make(aspect="16:9", height=1920)
 
 
 def test_crop_expression_uses_normalized_box():

@@ -8,7 +8,7 @@
   "threads": 2,
   "aspect": "9:16",
   "framing": "fit",
-  "height": 720,
+  "height": 1920,
   "encode_preset": "slow",
   "caption": "karaoke",
   "font": "Noto Sans CJK JP",

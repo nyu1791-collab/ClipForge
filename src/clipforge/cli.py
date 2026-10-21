@@ -19,7 +19,7 @@ def main():
         p.add_argument("--resume", action="store_true")
         p.add_argument("--aspect", choices=["9:16", "16:9", "1:1"])
         p.add_argument("--framing", choices=["fit", "center-crop"])
-        p.add_argument("--height", type=int, choices=[720, 1080])
+        p.add_argument("--height", type=int, choices=[720, 1080, 1920])
         if name == "run":
             p.add_argument("--gemini-model")
             p.add_argument("--clips", type=int)

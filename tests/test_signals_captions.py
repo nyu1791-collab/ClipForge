@@ -137,7 +137,9 @@ def test_subtitle_time_layout_escaping_and_formats(
     assert ("\\kf" in (tmp_path / "captions.ass").read_text()) == (kind == "karaoke")
     measure = fonts.Measure(fonts.resolve(settings.font), round(height * 0.048))
     line_px = (
-        int(ass.info["PlayResX"]) - 2 * captions.MARGIN - captions.OUTLINE_ALLOWANCE
+        int(ass.info["PlayResX"])
+        - 2 * captions.margin_px(height)
+        - round(captions.OUTLINE_ALLOWANCE * captions.scale(height))
     )
     for event in ass:
         lines = event.plaintext.splitlines()
@@ -283,3 +285,9 @@ def test_word_cut_avoids_a_fragment_even_at_a_word_start():
         (2.5, 3.0, "くけ"),  # a boundary between kana with a head of 2.5 s
     ]
     assert captions._word_cut(members) == 3
+
+
+def test_margins_scale_with_the_frame_height():
+    assert captions.margin_px(720) == captions.MARGIN == 35
+    assert captions.margin_px(1920) == 93
+    assert captions.scale(1080) == pytest.approx(1.5)

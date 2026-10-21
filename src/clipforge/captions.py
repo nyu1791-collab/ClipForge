@@ -9,6 +9,7 @@ from . import fonts, silence
 from .models import Word
 from .storage import PipelineError
 
+REFERENCE_HEIGHT = 720  # the margins below are in pixels at this height
 MARGIN = 35
 MIN_EVENT_MS = 100
 # Reading speed in characters a second. A caption faster than the target stays on screen
@@ -370,10 +371,19 @@ def hold_for_reading(spans, texts, limit):
     return spans
 
 
+def scale(height):
+    """Pixels per reference pixel: margins and outlines were tuned at 720 px high."""
+    return height / REFERENCE_HEIGHT
+
+
+def margin_px(height):
+    return round(MARGIN * scale(height))
+
+
 def heading_size(title, frame_width, height, font_path):
     """Largest size that fits one line, shrinking to 60%; longer titles must be shortened."""
     base = round(height * 0.07)
-    limit = frame_width - 2 * MARGIN
+    limit = frame_width - 2 * margin_px(height)
     for size in range(base, max(12, round(base * 0.6)) - 1, -1):
         if fonts.Measure(font_path, size).width(title) <= limit:
             return size
@@ -382,12 +392,13 @@ def heading_size(title, frame_width, height, font_path):
 
 def create(transcript, clip, directory, settings, keep=None, credits=None):
     height = settings.height
+    margin = margin_px(height)
     numerator, denominator = map(int, settings.aspect.split(":"))
     frame_width = round(height * numerator / denominator / 2) * 2
     font_size = round(height * 0.048)
     font_path = fonts.resolve(settings.font)
     measure = fonts.Measure(font_path, font_size)
-    line_px = frame_width - 2 * MARGIN - OUTLINE_ALLOWANCE
+    line_px = frame_width - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
 
     tokens, approximate = collect_tokens(transcript, clip, keep)
@@ -411,8 +422,8 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         shadow=0.7,
         bold=True,
         alignment=pysubs2.Alignment.BOTTOM_CENTER,
-        marginl=MARGIN,
-        marginr=MARGIN,
+        marginl=margin,
+        marginr=margin,
         marginv=round(height * 0.12),
     )
     subtitles.styles["Default"] = pysubs2.SSAStyle(
@@ -437,8 +448,8 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             shadow=0.5,
             bold=True,
             alignment=pysubs2.Alignment.TOP_CENTER,
-            marginl=MARGIN,
-            marginr=MARGIN,
+            marginl=margin,
+            marginr=margin,
             marginv=round(height * 0.06),
         )
         subtitles.append(
@@ -460,13 +471,13 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             outlinecolor=pysubs2.Color(0, 0, 0),
             outline=1.5,
             alignment=pysubs2.Alignment.BOTTOM_RIGHT,
-            marginl=MARGIN,
-            marginr=MARGIN,
+            marginl=margin,
+            marginr=margin,
             marginv=round(height * 0.015),
         )
         credit_text = safe(" / ".join(credits))
         breaks = wrap_breaks(
-            credit_text, fonts.Measure(font_path, credit_size), frame_width - 2 * MARGIN
+            credit_text, fonts.Measure(font_path, credit_size), frame_width - 2 * margin
         )
         subtitles.append(
             pysubs2.SSAEvent(

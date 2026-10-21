@@ -156,7 +156,9 @@ class Settings(Record):
     threads: int = Field(default=2, ge=1, le=8)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
-    height: Literal[720, 1080] = 720
+    # Frame height in pixels. Unset means the standard size for the aspect: 1920 for 9:16
+    # (1080x1920, the size phones show at full sharpness), otherwise 1080.
+    height: Literal[720, 1080, 1920] | None = None
     # x264 speed preset. On a 40 s clip with CRF 18, slow matched medium's time and gained
     # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
@@ -219,8 +221,18 @@ class Settings(Record):
             )
         return value
 
+    @model_validator(mode="before")
+    @classmethod
+    def standard_height(cls, data):
+        if isinstance(data, dict) and data.get("height") is None:
+            aspect = data.get("aspect", "9:16")
+            data = {**data, "height": 1920 if aspect == "9:16" else 1080}
+        return data
+
     @model_validator(mode="after")
     def limits(self):
+        if self.height == 1920 and self.aspect != "9:16":
+            raise ValueError("height 1920 is only for the 9:16 aspect")
         if self.min_seconds >= self.max_seconds:
             raise ValueError("minimum duration must be less than maximum")
         if self.topic_max_seconds < 2 * self.topic_min_seconds:

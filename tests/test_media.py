@@ -146,6 +146,7 @@ def test_render_commands_are_local_relative_and_cpu(
 ):
     settings.framing = framing
     settings.layout = "fit"  # the framing choice only applies to the fit layout
+    settings.height = 720
     clip = SelectedClip(
         start=21, end=27, candidate_id="manual", title="t", reason="r", confidence=1
     )
