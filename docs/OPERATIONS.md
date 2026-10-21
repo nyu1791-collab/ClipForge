@@ -7,6 +7,9 @@ ActionsからPRを作成・承認できる設定も有効化する。
 `Build package` のjobは `contents: write`、`pull-requests: write`、`issues: write` を宣言する。
 権限は実行中の `ClipForge` に対するもので、GitHub全アカウントや他社サービスの全権限ではない。
 AIという共通ユーザーへ権限を付ける仕組みではなく、各エージェントが利用する認証に権限が付く。
+GitHubの仕様上、botが自身のPRを承認できるとは限らない。
+また通常の `GITHUB_TOKEN` によるpushやPR作成では、別のworkflowは自動起動しない。
+必要な処理は `workflow_dispatch` か、所有者が認証済みの制御VMから起動する。
 
 初期状態で必須レビューやブランチ保護は追加しない。自動マージは機能として有効にするが、
 AIやワークフローが勝手にPRをマージする処理は今回追加しない。
