@@ -27,3 +27,4 @@ job-input/
 .claude/settings.local.json
 .codex/auth.json
 .DS_Store
+work/

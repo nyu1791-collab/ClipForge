@@ -64,6 +64,27 @@ class SelectedClip(Span):
     confidence: float = Field(ge=0, le=1)
 
 
+class SourceRegion(Record):
+    """Rectangle in the displayed source, normalized to 0..1 (after rotation)."""
+
+    x: float = Field(ge=0, lt=1)
+    y: float = Field(ge=0, lt=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def contained(self):
+        if self.x + self.width > 1 + 1e-9 or self.y + self.height > 1 + 1e-9:
+            raise ValueError("source region must stay inside the frame")
+        return self
+
+
+class PunchIn(Span):
+    """Fixed presenter enlargement; start/end remain ORIGINAL-video seconds."""
+
+    zoom: float = Field(default=1.25, gt=1, le=1.6)
+
+
 class Settings(Record):
     gemini_model: str = Field(min_length=1, max_length=160)
     clips: int = Field(default=3, ge=1, le=10)
@@ -75,10 +96,17 @@ class Settings(Record):
     language: str | None = None
     threads: int = Field(default=2, ge=1, le=8)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
-    framing: Literal["fit", "center-crop"] = "fit"
-    height: Literal[720, 1080] = 720
-    caption: Literal["plain", "karaoke"] = "karaoke"
+    framing: Literal["fit", "blur-fit", "center-crop", "stacked"] = "blur-fit"
+    height: Literal[720, 1080, 1280, 1920] = 1920
+    caption: Literal["plain", "karaoke", "progressive"] = "progressive"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
+    caption_max_seconds: float = Field(default=2.8, ge=0.5, le=5)
+    caption_font_scale: float = Field(default=0.036, ge=0.02, le=0.055)
+    headline: str | None = Field(default=None, min_length=1, max_length=120)
+    show_title: bool = True
+    content_region: SourceRegion | None = None
+    presenter_region: SourceRegion | None = None
+    punch_ins: list[PunchIn] = Field(default_factory=list, max_length=8)
     analysis_fps: float = Field(default=2, ge=0.5, le=5)
     max_source_seconds: float = Field(default=3600, ge=5, le=7200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
@@ -102,6 +130,14 @@ class Settings(Record):
             raise ValueError("analysis frame budget exceeds 6000")
         if any(c in self.font for c in "\r\n,\\{}"):
             raise ValueError("invalid font name")
+        if self.framing == "stacked":
+            if self.aspect != "9:16" or self.presenter_region is None:
+                raise ValueError("stacked framing needs 9:16 and a presenter_region")
+        elif self.presenter_region or self.content_region or self.punch_ins:
+            raise ValueError("source regions and punch-ins require stacked framing")
+        intervals = sorted(self.punch_ins, key=lambda p: p.start)
+        if any(a.end > b.start for a, b in zip(intervals, intervals[1:])):
+            raise ValueError("presenter punch-ins must not overlap")
         return self
 
 

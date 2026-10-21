@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import shutil
 
+from .layout import filter_graph, output_size
 from .storage import PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
@@ -54,10 +55,25 @@ def probe(path):
     duration = float(data.get("format", {}).get("duration", video.get("duration", 0)))
     if not math.isfinite(duration) or duration <= 0:
         raise PipelineError("video duration is unavailable")
+    rotation = next(
+        (
+            s.get("rotation", 0)
+            for s in video.get("side_data_list", [])
+            if "rotation" in s
+        ),
+        video.get("tags", {}).get("rotate", 0),
+    )
+    width, height = int(video["width"]), int(video["height"])
+    if round(float(rotation)) % 180 == 90:
+        width, height = height, width
     return {
         "duration": duration,
-        "width": int(video["width"]),
-        "height": int(video["height"]),
+        "width": width,
+        "height": height,
+        "video_index": int(video["index"]),
+        "video_streams": sum(s.get("codec_type") == "video" for s in streams),
+        "audio_streams": sum(s.get("codec_type") == "audio" for s in streams),
+        "sample_aspect_ratio": video.get("sample_aspect_ratio", "1:1"),
         "audio": any(s.get("codec_type") == "audio" for s in streams),
     }
 
@@ -150,21 +166,9 @@ def preview(source, destination, candidate, settings):
 
 
 def render(source, destination, clip, settings, ass=None):
-    numerator, denominator = map(int, settings.aspect.split(":"))
-    height = settings.height
-    width = round(height * numerator / denominator / 2) * 2
-    mode = "decrease" if settings.framing == "fit" else "increase"
-    filters = [
-        f"scale={width}:{height}:force_original_aspect_ratio={mode}:force_divisible_by=2"
-    ]
-    if settings.framing == "fit":
-        filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2")
-    else:
-        filters.append(f"crop={width}:{height}")
-    filters += ["setsar=1", "setpts=PTS-STARTPTS"]
-    if ass:
-        # Captions are copied to a fixed basename beside the generated MP4.
-        filters.append("ass=filename=captions.ass")
+    source_info = probe(source)
+    width, height = output_size(settings)
+    graph, layout = filter_graph(source_info, clip, settings, subtitles=ass is not None)
     command = [
         "ffmpeg",
         "-nostdin",
@@ -181,11 +185,13 @@ def render(source, destination, clip, settings, ass=None):
         "-t",
         f"{clip.end - clip.start:.6f}",
         "-map",
-        "0:V:0",
+        "[video]",
         "-map",
         "0:a:0?",
-        "-vf",
-        ",".join(filters),
+        "-filter_complex_threads",
+        str(settings.threads),
+        "-filter_complex",
+        graph,
         "-r",
         "30",
         "-c:v",
@@ -199,7 +205,7 @@ def render(source, destination, clip, settings, ass=None):
         "-threads",
         str(settings.threads),
     ]
-    if probe(source)["audio"]:
+    if source_info["audio"]:
         command += [
             "-af",
             "asetpts=PTS-STARTPTS,loudnorm=I=-16:TP=-1.5:LRA=11",
@@ -207,6 +213,8 @@ def render(source, destination, clip, settings, ass=None):
             "aac",
             "-b:a",
             "160k",
+            "-ar",
+            "48000",
         ]
     command += ["-movflags", "+faststart", str(Path(destination).resolve())]
     import subprocess
@@ -224,4 +232,44 @@ def render(source, destination, clip, settings, ass=None):
         raise PipelineError("rendered duration does not match the selection")
     if (info["width"], info["height"]) != (width, height):
         raise PipelineError("rendered dimensions do not match the requested layout")
+    if info["video_streams"] != 1 or info["audio_streams"] != int(source_info["audio"]):
+        raise PipelineError("rendered stream count does not match the source")
+    # A successful encode/probe alone does not establish a decodable deliverable.
+    decoded = process(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-xerror",
+            *PROTOCOLS,
+            *FORMATS,
+            "-i",
+            str(Path(destination).resolve()),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0?",
+            "-f",
+            "null",
+            "-",
+        ],
+        timeout=max(120, (clip.end - clip.start) * 4),
+    )
+    if decoded.stderr.strip():
+        raise PipelineError("rendered output reported a decoding error")
+    if source_info["sample_aspect_ratio"] not in {"1:1", "0:1", "N/A"}:
+        layout["review_required"].append("non_square_source_pixels")
+    info.update(
+        layout=layout,
+        full_decode_verified=True,
+        audio_normalization={
+            "target_lufs": -16,
+            "target_true_peak_db": -1.5,
+            "method": "single-pass-loudnorm",
+        }
+        if source_info["audio"]
+        else None,
+    )
     return info

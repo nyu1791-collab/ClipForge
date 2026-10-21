@@ -1,0 +1,14 @@
+{
+  "aspect": "9:16",
+  "framing": "stacked",
+  "height": 1920,
+  "caption": "progressive",
+  "font": "Noto Sans CJK JP",
+  "caption_font_scale": 0.036,
+  "caption_max_seconds": 2.8,
+  "headline": "親になって変わった話",
+  "content_region": {"x": 0, "y": 0, "width": 1, "height": 0.65},
+  "presenter_region": {"x": 0, "y": 0.7, "width": 0.25, "height": 0.3},
+  "punch_ins": [],
+  "threads": 2
+}
