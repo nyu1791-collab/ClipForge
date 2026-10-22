@@ -238,24 +238,60 @@ jobs:
           uv venv "$RUNNER_TEMP/colab-control" --python 3.12
           uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
             -r clipforge-source/tools/colab-control-requirements.txt
-      - name: Create temporary private transfer release for URL-only audio analysis
+      - name: Cache ffmpeg package archives for hosted audio acquisition
+        if: inputs.audio_url != ''
+        uses: actions/cache@v4
+        with:
+          key: clipforge-ffmpeg-debs-v1-${{ runner.os }}-${{ runner.arch }}-ubuntu-24.04
+          path: ${{ runner.temp }}/clipforge-ffmpeg-debs/*.deb
+      - name: Install ffmpeg only when missing
+        if: inputs.audio_url != ''
+        shell: bash
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            exit 0
+          fi
+          archives="$RUNNER_TEMP/clipforge-ffmpeg-debs"
+          mkdir -p "$archives"
+          if compgen -G "$archives/*.deb" >/dev/null; then
+            sudo apt-get -o Dir::Cache::archives="$archives" install -y --no-install-recommends --no-download ffmpeg
+          else
+            sudo apt-get update -qq
+            sudo apt-get -o Dir::Cache::archives="$archives" -o APT::Keep-Downloaded-Packages=true install -y --no-install-recommends ffmpeg
+          fi
+      - name: Install locked audio acquisition dependencies without API credentials
+        if: inputs.audio_url != ''
+        working-directory: clipforge-source
+        run: uv sync --locked --extra media-fetch --no-dev
+      - name: Acquire audio and stage verified private input before GPU allocation
         if: inputs.audio_url != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          AUDIO_URL: ${{ inputs.audio_url }}
         run: |
-          gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main --title "$INPUT_TAG" --latest=false --notes 'Temporary private ClipForge transfer. Deleted after collection.'
+          gh release download "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern request.json --dir "$RUNNER_TEMP/clipforge-url-request"
+          clipforge-source/.venv/bin/python clipforge-source/tools/acquire_audio_url.py \
+            --url "$AUDIO_URL" --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
+            --request "$RUNNER_TEMP/clipforge-url-request/request.json" \
+            --directory "$RUNNER_TEMP/clipforge-input"
+          gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
+            "$RUNNER_TEMP/clipforge-input/input-video.bin"
+          gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$RUNNER_TEMP/clipforge-input/request.json"
       - name: Allocate a dedicated T4 for the verified Google account
         id: allocate
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
-          AUDIO_URL: ${{ inputs.audio_url }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
       - name: Run the pipeline on Colab and retrieve verified private outputs
         env:
           GH_TOKEN: ${{ github.token }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Compatibility with the control SDK's key-presence check; run_request's
+          # audio_source_url branch never constructs a Gemini client.
+          GEMINI_API_KEY: ${{ inputs.audio_url != '' && 'manual-no-api' || secrets.GEMINI_API_KEY }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
       - name: Release and verify removal of the dedicated Colab runtime

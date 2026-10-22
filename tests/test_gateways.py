@@ -81,7 +81,10 @@ def submitter(tmp_path, monkeypatch):
             request = next(Path(a) for a in args if a.endswith("/request.json"))
             control["request"] = json.loads(request.read_text())
             control["releases"].append(args[2])
-            assert Path(args[3]).read_bytes() == source.read_bytes()
+            if control["request"]["video_sha256"] is not None:
+                assert Path(args[3]).read_bytes() == source.read_bytes()
+            else:
+                assert args[3] == str(request)
             return ""
         if args[:2] == ("release", "delete"):
             control["releases"].append("deleted")
@@ -366,13 +369,23 @@ def test_audio_analysis_dispatch_has_no_model_or_secret_requirement(
     assert receipt["audio_url"] == "" and receipt["input_staged"] is True
 
 
-def test_url_only_audio_dispatch_skips_all_staging(submitter, monkeypatch, tmp_path):
+def test_url_only_audio_dispatch_stages_only_request(submitter, monkeypatch, tmp_path):
     module, _, control, _ = submitter
     url = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
+    config = tmp_path / "config.json"
+    config.write_text('{"asr_batch_size": 8, "threads": 4}')
     monkeypatch.setattr(
         sys,
         "argv",
-        ["submit_job", "--audio-analysis-url", url, "--worker", "colab-auto"],
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            url,
+            "--worker",
+            "colab-auto",
+            "--config",
+            str(config),
+        ],
     )
     monkeypatch.setattr(
         module, "digest", lambda *a: pytest.fail("URL-only submission read local media")
@@ -391,13 +404,19 @@ def test_url_only_audio_dispatch_skips_all_staging(submitter, monkeypatch, tmp_p
         "worker": "colab-auto",
         "audio_url": url,
     }
-    assert not any(call[0] == "release" for call in control["calls"])
+    assert control["releases"] == [inputs["input_tag"]]
     state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
     receipt = json.loads((state / "receipt.json").read_text())
     assert receipt["audio_url"] == url and receipt["input_staged"] is False
     request = json.loads((state / "request.json").read_text())
     assert request["audio_source_url"] == url
     assert request["video_sha256"] is None and request["video_bytes"] is None
+    assert control["request"] == request
+    assert request["settings"] == {
+        "gemini_model": "manual-no-api",
+        "asr_batch_size": 8,
+        "threads": 4,
+    }
 
 
 @pytest.mark.parametrize("worker", ["cpu", "colab-gpu"])
@@ -467,7 +486,7 @@ def test_url_only_audio_wait_collects_verified_analysis(
     assert receipt["status"] == "COMPLETE" and receipt["input_staged"] is False
     assert (destination / "audio.m4a").read_bytes() == b"synthetic-audio"
     assert (destination / "topics.json").is_file()
-    assert not control["releases"]
+    assert len(control["releases"]) == 1
 
 
 def test_url_only_audio_corruption_can_be_collected_again(
@@ -497,7 +516,50 @@ def test_url_only_audio_corruption_can_be_collected_again(
     )
     module.main()
     assert (destination / "audio.m4a").is_file()
-    assert len(control["posts"]) == 1 and not control["releases"]
+    assert len(control["posts"]) == len(control["releases"]) == 1
+
+
+@pytest.mark.parametrize("fault", ["source_url", "source_sha256"])
+def test_url_only_collection_checks_runner_audio_hash_and_submitted_url(
+    submitter, monkeypatch, tmp_path, fault
+):
+    module, _, _, _ = submitter
+    original = module.gh
+
+    def gh(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[:2] == ("run", "download"):
+            root = Path(args[args.index("--dir") + 1])
+            manifest_path = root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest[fault] = (
+                "https://kick.com/other/videos/00000000-0000-0000-0000-000000000002"
+                if fault == "source_url"
+                else "f" * 64
+            )
+            manifest_path.write_text(json.dumps(manifest))
+            receipt_path = root / "request-receipt.json"
+            receipt = json.loads(receipt_path.read_text())
+            receipt["sha256"]["manifest.json"] = module.digest(manifest_path)
+            receipt_path.write_text(json.dumps(receipt))
+        return result
+
+    monkeypatch.setattr(module, "gh", gh)
+    destination = tmp_path / "result"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--output",
+            str(destination),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="audio analysis identity"):
+        module.main()
+    assert not destination.exists()
 
 
 def test_audio_analysis_rejects_network_enrichment(submitter, tmp_path):

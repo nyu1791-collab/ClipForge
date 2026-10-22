@@ -223,6 +223,8 @@ def verify_audio_analysis(
 
 def verify_download(directory, receipt, request):
     if request.get("audio_source_url"):
+        # URL-only submissions have no local audio hash. The returned audio is the
+        # runner-acquired input, checked against both its manifest and file receipt.
         verify_audio_analysis(
             directory,
             receipt["request_id"],
@@ -886,6 +888,29 @@ def dispatch(args, state_root):
                 raise
         receipt.update(status="STAGED", input_staged=True)
         save(receipt_path, receipt)
+    else:
+        # Stage only the settings/identity; the hosted runner acquires the audio.
+        try:
+            gh(
+                "release",
+                "create",
+                tag,
+                str(state / "request.json"),
+                "--repo",
+                REPO,
+                "--target",
+                "main",
+                "--title",
+                tag,
+                "--latest=false",
+                "--notes",
+                "Temporary private ClipForge URL request. Automatically cleaned after execution.",
+                timeout=1800,
+            )
+        except Exception:
+            receipt["status"] = "STAGING_FAILED"
+            save(receipt_path, receipt)
+            raise
     send_dispatch(state, receipt)
     print("Submitted private ClipForge job " + identity, flush=True)
     deadline = time.monotonic() + 6000

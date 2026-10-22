@@ -19,6 +19,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -45,6 +46,7 @@ DEFAULT_MODEL = {"write": "sol", "read": "deepseek"}
 MAX_RUNNING = 3
 STALL_SECONDS = 120
 START_ATTEMPTS = 3
+MIN_FREE_BYTES = 3 * 1024**3
 ROOT = Path(__file__).resolve().parents[1]
 STATE = (
     Path(os.environ.get("CLIPFORGE_AGENT_STATE", tempfile.gettempdir()))
@@ -244,10 +246,39 @@ def openai_profile():
     return profile
 
 
+def check_disk_space(directory):
+    free = shutil.disk_usage(directory).free
+    if free < MIN_FREE_BYTES:
+        raise RuntimeError(
+            f"insufficient disk space in {directory}: {free} bytes free; "
+            f"at least 3 GB ({MIN_FREE_BYTES} bytes) required"
+        )
+
+
 def run_task(task, mode, base, timeout, model="deepseek"):
     name = f"{Path(task).stem}-{time.strftime('%H%M%S')}-{os.getpid()}"
     directory = STATE / "runs" / name
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    check_disk_space(directory.parent)
     directory.mkdir(parents=True, mode=0o700)
+    home = directory / "home"
+    try:
+        return _run_task(task, mode, base, timeout, model, name, directory)
+    finally:
+        # Only disposable data owned by this run; never the profile or write worktree.
+        root = directory.resolve()
+        target = home.resolve()
+        if target == root or not target.is_relative_to(root):
+            raise ValueError(
+                f"refusing to remove home outside the run directory: {home}"
+            )
+        if home.is_symlink():
+            home.unlink()
+        elif home.exists():
+            shutil.rmtree(home)
+
+
+def _run_task(task, mode, base, timeout, model, name, directory):
     workdir = worktree(base, name) if mode == "write" else ROOT
     settings = directory / "opencode.json"
     settings.write_text(json.dumps(config(mode, model), indent=2))
@@ -303,6 +334,8 @@ def run_task(task, mode, base, timeout, model="deepseek"):
         command += ["--variant", MODELS[model]["variant"]]
     command.append(prompt)
     with slot(model), log.open("w") as out:
+        # Space may have been consumed by another run while this one waited for a slot.
+        check_disk_space(directory)
         # A start that never answers is retried; one that has answered is never repeated.
         while result["attempts"] < START_ATTEMPTS:
             result["attempts"] += 1

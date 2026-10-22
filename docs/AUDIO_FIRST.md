@@ -34,8 +34,14 @@ uv run --no-sync python tools/kick_audio_first.py \
   --workspace inputs/private-vod --stage audio
 ```
 
-URLだけでColab GPUの音声取得・ASR・話題分割を投入できる。URL対応の `deploy/clipforge.yml` とColab側実装を非公開workerへ配置して使う。
-投入側では音声のアップロードやrelease作成をせず、`--output` で完了待機と検証付き回収を行う。
+URLだけで音声取得・ASR・話題分割を投入できる。対応する `deploy/clipforge.yml` と実装を非公開workerへ配置して使う。
+投入側は設定と依頼IDを含む `request.json` だけを一時releaseへ置き、音声はアップロードしない。`--output` で完了待機と検証付き回収を行う。
+GitHub-hosted `ubuntu-24.04` runnerが、GPU割り当て前に `uv sync --locked --extra media-fetch --no-dev` の環境で音声を取得する。
+`tools/acquire_audio_url.py` はKickVODの既定6並列取得と `audio_first.acquire` を使い、音声を `input-video.bin`、SHA-256・サイズ確定済みの依頼を `request.json` として同じ一時releaseへ置く。
+ffmpeg/ffprobeが導入済みなら再インストールしない。未導入なら `actions/cache@v4` の `.deb` から `apt-get install --no-download` し、キャッシュがない場合だけapt更新・通常インストールを行う。
+URL形式の検証はGoogleへの接続前に行う。Colabへ `AUDIO_URL` は渡さず、既存の `run_request.py prepare → run` の `audio_source_url` 分岐でASR・話題分割し、出力回収後すぐruntimeを停止する。
+変更待ちのColab制御コードにはキー存在確認が残るため、URL投入時だけ `GEMINI_API_KEY` に互換用固定値 `manual-no-api` を渡す。音声分岐はGeminiクライアントを作らず、モデルAPIを呼ばない。
+URL投入では手元に音声SHA-256がないため、runner取得音声のSHA-256を結果の `audio.m4a`・manifest・出力receipt間で照合し、`audio_source_url` を投入URLと照合する。
 
 ```bash
 uv run --no-sync python tools/submit_job.py \
@@ -66,7 +72,7 @@ uv run --no-sync python tools/submit_job.py --collect REQUEST_ID --run-id RUN_ID
 ```
 
 ローカル記録がある場合は従来どおりで、これらの引数は使わない。
-音声・ASR・話題・manifestのハッシュと依頼元SHAを検査する。ASRはlarge-v3-turbo・CPU/int8・2スレッド。
+音声・ASR・話題・manifestのハッシュと依頼元SHAを検査する。Colab GPUではASRをCUDA/float16で実行し、CPU workerでは設定に従う。
 キャッシュが一致しない音声や別配信のASRを流用しない。長いASRは完了まで時間を要し、失敗後の途中チェックポイント再開はこの経路では未実装。
 
 ### 失敗・タイムアウト・キャンセル時の途中保存（私有）
