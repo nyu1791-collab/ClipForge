@@ -26,6 +26,12 @@ def audio_job(tmp_path, monkeypatch):
 
     class VOD:
         url = URL
+        prefetch_failure = None
+
+        def prefetch(self, start, end):
+            events.append(("prefetch", start, end))
+            if self.prefetch_failure is not None and start == self.prefetch_failure:
+                raise PipelineError("synthetic prefetch failure")
 
         def retrieve(self, path, start=0, end=None, quality=None, audio_only=False):
             events.append(("audio" if audio_only else quality, start, end))
@@ -322,3 +328,89 @@ def test_stage_entry_point_does_not_skip_ahead(tmp_path, monkeypatch, capsys, st
     assert af.main(args) == 0
     assert calls == [step] and closed == [True]
     assert json.loads(capsys.readouterr().out)["model_generation_requests"] == 0
+
+
+INTERVALS = [(0, 85), (120, 175), (210, 295)]
+
+
+def reviewed_intervals(audio_job):
+    vod, root, settings, _, _ = audio_job
+    af.previews(vod, root, settings)
+    analysis = json.loads((root / "topics.json").read_text())
+    value = make_review(analysis)
+    for clip, (start, end) in zip(value["clips"], INTERVALS):
+        clip.update(start=start, end=end)
+    review = root / "review.json"
+    write_json(review, value)
+    return review
+
+
+def stub_clip_render(monkeypatch, events):
+    def render(source, output, index, clip, transcript, settings, key):
+        events.append(("render", index))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    monkeypatch.setattr(
+        af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
+    )
+
+
+def test_next_interval_is_prefetched_once_while_the_current_clip_renders(
+    audio_job, monkeypatch
+):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    stub_clip_render(monkeypatch, events)
+    af.render(vod, root, settings, review)
+    assert [e[1:] for e in events if e[0] == "prefetch"] == INTERVALS
+    assert [e[1:] for e in events if e[0] == "1080p"] == INTERVALS
+    for start, end in INTERVALS:
+        # Each interval is warmed before its own fetch, and fetched exactly once.
+        assert events.index(("prefetch", start, end)) < events.index(
+            ("1080p", start, end)
+        )
+    for previous, (start, end) in zip(INTERVALS, INTERVALS[1:]):
+        # The next prefetch is submitted only after the previous clip's fetch.
+        assert events.index(("1080p", *previous)) < events.index(
+            ("prefetch", start, end)
+        )
+
+
+def test_prefetch_failure_fails_that_clip_before_its_own_fetch(audio_job, monkeypatch):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    vod.prefetch_failure = 120
+    stub_clip_render(monkeypatch, events)
+    with pytest.raises(PipelineError, match="synthetic prefetch failure"):
+        af.render(vod, root, settings, review)
+    assert ("1080p", 0, 85) in events
+    assert ("1080p", 120, 175) not in events
+    assert ("1080p", 210, 295) not in events
+    assert [e for e in events if e[0] == "render"] == [("render", 1)]
+
+
+def test_render_records_seconds_per_clip_in_manifest_and_output(
+    audio_job, monkeypatch, capsys
+):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    stub_clip_render(monkeypatch, events)
+    af.render(vod, root, settings, review)
+    timings = json.loads((root / "delivery/manifest.json").read_text())["timings"]
+    assert set(timings) == {"clip-001", "clip-002", "clip-003", "total"}
+    for name in ("clip-001", "clip-002", "clip-003"):
+        assert set(timings[name]) == {"prefetch_wait", "fetch", "render"}
+        assert all(isinstance(v, float) and v >= 0 for v in timings[name].values())
+    stage_seconds = [
+        v for name in timings if name != "total" for v in timings[name].values()
+    ]
+    assert timings["total"] == pytest.approx(sum(stage_seconds), abs=0.05)
+    out = capsys.readouterr().out
+    for index in (1, 2, 3):
+        assert f"Clip {index}/3: fetch " in out
+        assert (
+            f"Clip {index}/3: fetch {timings[f'clip-{index:03}']['fetch']:.1f} s, render "
+            in out
+        )
+    assert URL not in out

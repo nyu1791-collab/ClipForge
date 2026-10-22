@@ -7,6 +7,7 @@ import os
 import re
 import ssl
 import tempfile
+import threading
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -117,6 +118,7 @@ class KickVOD:
         self.cache = Path(cache).resolve()
         self.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.max_bytes, self.max_seconds, self.used = max_bytes, max_seconds, 0
+        self._lock = threading.RLock()
         self.ca = (
             os.environ.get("SSL_CERT_FILE")
             or os.environ.get("REQUESTS_CA_BUNDLE")
@@ -180,21 +182,25 @@ class KickVOD:
         self.session.close()
 
     def fetch(self, url, limit):
-        response = self.session.get(url, allow_redirects=False, timeout=30, stream=True)
-        try:
-            if response.status_code != 200:
-                raise PipelineError(
-                    f"Kick media HTTP {response.status_code}; no automatic retry"
-                )
-            chunks, size = [], 0
-            for chunk in response.iter_content():
-                size += len(chunk)
-                if size > limit:
-                    raise PipelineError("Kick response exceeds budget")
-                chunks.append(chunk)
-            return b"".join(chunks)
-        finally:
-            response.close()
+        # The HTTP session is not shared across threads; prefetch and retrieve take turns.
+        with self._lock:
+            response = self.session.get(
+                url, allow_redirects=False, timeout=30, stream=True
+            )
+            try:
+                if response.status_code != 200:
+                    raise PipelineError(
+                        f"Kick media HTTP {response.status_code}; no automatic retry"
+                    )
+                chunks, size = [], 0
+                for chunk in response.iter_content():
+                    size += len(chunk)
+                    if size > limit:
+                        raise PipelineError("Kick response exceeds budget")
+                    chunks.append(chunk)
+                return b"".join(chunks)
+            finally:
+                response.close()
 
     def playlist(self, quality):
         if quality not in {"lowest", "preview", "720p", "1080p", "best"}:
@@ -224,7 +230,26 @@ class KickVOD:
             )
         return segments, selected["height"]
 
+    def prefetch(self, start, end):
+        """Cache the 1080p segments of one interval over HTTP only; retrieve() then reuses them."""
+        segments, _ = self.playlist("1080p")
+        duration = segments[-1]["end"]
+        if (
+            not all(math.isfinite(v) for v in (start, end))
+            or not 0 <= start < end <= duration + 0.01
+        ):
+            raise PipelineError("requested range is outside archive")
+        for s in segments:
+            if s["end"] > start and s["start"] < end:
+                self.segment(s["url"])
+
     def segment(self, url):
+        # One lock covers the cache check, the download and the byte count, so a
+        # prefetch and a retrieve for the same URL never download it twice.
+        with self._lock:
+            return self._segment(url)
+
+    def _segment(self, url):
         key = hashlib.sha256(url.encode()).hexdigest()
         path, receipt = self.cache / (key + ".ts"), self.cache / (key + ".json")
         remaining = self.max_bytes - self.used

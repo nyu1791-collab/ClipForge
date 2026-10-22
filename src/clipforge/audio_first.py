@@ -4,6 +4,7 @@ Each stage is explicit: acquiring audio never starts ASR or downloads high-quali
 """
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
 import json
@@ -305,6 +306,12 @@ def shifted_transcript(transcript, start, end):
     return Transcript(language=transcript.language, segments=segments)
 
 
+def prefetch_interval(vod, clip, target):
+    """Warm the cache for one reviewed interval; no ffmpeg and no output is written."""
+    if not target.exists():
+        vod.prefetch(clip.start, clip.end)
+
+
 def render(vod, root, settings, review_file, analysis_result=None):
     analysis, transcript = (
         analysis_result if analysis_result is not None else analyze(vod, root, settings)
@@ -341,32 +348,60 @@ def render(vod, root, settings, review_file, analysis_result=None):
             "code": landscape.code_identity(settings)["implementation_sha256"],
         }
     )
-    rows = []
-    for index, (clip, local_transcript) in enumerate(zip(clips, local_transcripts), 1):
-        target = (
-            root
-            / "ranges"
-            / f"{fingerprint({'start': clip.start, 'end': clip.end})}.mp4"
-        )
-        receipt = retrieved(vod, target, clip.start, clip.end, quality="1080p")
-        if receipt["rendition_height"] < 720:
-            raise PipelineError("selected source video is below 720p")
-        local = clip.model_copy(update={"start": 0.0, "end": clip.end - clip.start})
-        row = pipeline.render_clip(
-            target,
-            output / "clips",
-            index,
-            local,
-            local_transcript,
-            settings,
-            fingerprint({"job": key, "source": receipt["sha256"]}),
-        )
-        row["source_interval"] = {
-            "start": clip.start,
-            "end": clip.end,
-            "topic_id": clip.candidate_id,
-        }
-        rows.append(row)
+    targets = [
+        root / "ranges" / f"{fingerprint({'start': clip.start, 'end': clip.end})}.mp4"
+        for clip in clips
+    ]
+    rows, timings = [], {}
+    # The next clip's segments are fetched over HTTP while the current clip is rendered.
+    with ThreadPoolExecutor(max_workers=1) as ahead:
+        pending = ahead.submit(prefetch_interval, vod, clips[0], targets[0])
+        for index, (clip, local_transcript, target) in enumerate(
+            zip(clips, local_transcripts, targets), 1
+        ):
+            clip_timings = {}
+            # Re-raises a prefetch failure as this clip's failure, before its fetch.
+            pipeline.timed(clip_timings, "prefetch_wait", pending.result)
+            receipt = pipeline.timed(
+                clip_timings,
+                "fetch",
+                lambda: retrieved(vod, target, clip.start, clip.end, quality="1080p"),
+            )
+            if index < len(clips):
+                pending = ahead.submit(
+                    prefetch_interval, vod, clips[index], targets[index]
+                )
+            if receipt["rendition_height"] < 720:
+                raise PipelineError("selected source video is below 720p")
+            local = clip.model_copy(update={"start": 0.0, "end": clip.end - clip.start})
+            row = pipeline.timed(
+                clip_timings,
+                "render",
+                pipeline.render_clip,
+                target,
+                output / "clips",
+                index,
+                local,
+                local_transcript,
+                settings,
+                fingerprint({"job": key, "source": receipt["sha256"]}),
+            )
+            row["source_interval"] = {
+                "start": clip.start,
+                "end": clip.end,
+                "topic_id": clip.candidate_id,
+            }
+            rows.append(row)
+            timings[f"clip-{index:03}"] = clip_timings
+            print(
+                f"Clip {index}/{len(clips)}: fetch {clip_timings['fetch']:.1f} s, "
+                f"render {clip_timings['render']:.1f} s",
+                flush=True,
+            )
+    # Total wall-clock seconds spent waiting, fetching and rendering, summed over clips.
+    timings["total"] = round(
+        sum(v for t in timings.values() if isinstance(t, dict) for v in t.values()), 2
+    )
     manifest = {
         "status": "complete",
         "rendered": rows,
@@ -376,6 +411,7 @@ def render(vod, root, settings, review_file, analysis_result=None):
         "video_review_attested": True,
         "human_review_performed": False,
         "transcript_cache": json.loads((root / "asr-receipt.json").read_text()),
+        "timings": timings,
     }
     summary = landscape.summarize_delivery(manifest, output, settings.clips)
     summary["topic_content_review"] = "attested_in_selection_file"

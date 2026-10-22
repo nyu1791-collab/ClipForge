@@ -230,3 +230,54 @@ def test_clock_text_formats_stream_time(seconds, expected):
 def test_sample_label_uses_stream_time_or_candidate_relative_seconds():
     assert worker.sample_label("topic-008", 300.0, 5.2) == "topic-008 @ 5:05"
     assert worker.sample_label("topic-008", None, 5.2) == "topic-008 @ +0:05"
+
+
+def test_worker_summary_passes_manifest_timings_when_present(
+    previous_analysis, monkeypatch, capsys
+):
+    import shutil
+
+    previous, output, _ = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+
+    def gh(*args):
+        if args[:2] == ("run", "view"):
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "displayTitle": "ClipForge " + IDENTITY,
+                }
+            )
+        shutil.copytree(previous, Path(args[args.index("--dir") + 1]))
+        return ""
+
+    timings = {"clip-001": {"fetch": 1.5, "render": 20.0}, "total": 21.5}
+    monkeypatch.setattr(worker, "gh", gh)
+    monkeypatch.setattr(
+        worker,
+        "execute",
+        lambda *a: {
+            "status": "complete",
+            "source_url": URL,
+            "timings": timings,
+        },
+    )
+    args = [
+        "--stage",
+        "render",
+        "--previous-run",
+        "123",
+        "--previous-request",
+        IDENTITY,
+        "--request-id",
+        "c" * 32,
+        "--source-ref",
+        "a" * 40,
+        "--output",
+        str(output),
+    ]
+    assert worker.main(args) == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["timings"] == timings
+    assert summary["model_generation_requests"] == 0

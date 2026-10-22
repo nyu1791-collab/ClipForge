@@ -331,38 +331,56 @@ def render_clip(source, root, index, clip, transcript, settings, key):
         if not valid_receipt(target, saved, render_key):
             raise PipelineError("existing clip differs from the saved render receipt")
         return {"directory": "clips/" + name, **saved}
-    keep = cut_regions(source, transcript, clip, settings)
+    timings = {}
+    keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
     with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
         directory = Path(temporary)
         duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
-        visuals, ledger = prepare_visuals(clip, settings, directory, duration)
+        visuals, ledger = timed(
+            timings, "visuals", prepare_visuals, clip, settings, directory, duration
+        )
         write_json(directory / "ledger.json", ledger)
         # Original diagrams carry no on-screen credit; every other visual does.
         credits = sorted(
             {entry["source_credit"] for entry in ledger if entry["kind"] != "diagram"}
         )
-        caption = create_captions(
-            transcript, clip, directory, settings, keep, credits=credits
+        caption = timed(
+            timings,
+            "captions",
+            lambda: create_captions(
+                transcript, clip, directory, settings, keep, credits=credits
+            ),
         )
-        info = media.render(
-            source,
-            directory / "video.mp4",
-            clip,
-            settings,
-            ass=directory / "captions.ass",
-            keep=keep,
-            visuals=visuals,
+        info = timed(
+            timings,
+            "encode",
+            lambda: media.render(
+                source,
+                directory / "video.mp4",
+                clip,
+                settings,
+                ass=directory / "captions.ass",
+                keep=keep,
+                visuals=visuals,
+            ),
         )
         # Checked before the thumbnail, so a strict refusal costs no extra work.
-        report = quality.record(
-            directory,
-            quality.check_clip(
-                directory, info, caption["missing_glyphs"], ledger, settings
+        report = timed(
+            timings,
+            "quality",
+            lambda: quality.record(
+                directory,
+                quality.check_clip(
+                    directory, info, caption["missing_glyphs"], ledger, settings
+                ),
             ),
         )
         quality.enforce(report, settings.quality_gate)
         if settings.thumbnail:
-            thumbnail.make(
+            timed(
+                timings,
+                "thumbnail",
+                thumbnail.make,
                 directory / "video.mp4",
                 directory / "thumbnail.png",
                 clip.title,
@@ -384,6 +402,8 @@ def render_clip(source, root, index, clip, transcript, settings, key):
             "keep": keep,
             "ledger": ledger,
             "sha256": {n: digest(directory / n) for n in names},
+            # Seconds per stage; not part of the render key or the hashed files.
+            "timings": timings,
         }
         write_json(directory / "render.json", saved)
         # Commit the whole clip directory only when MP4 and captions are complete.

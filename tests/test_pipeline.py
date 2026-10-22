@@ -313,3 +313,16 @@ def test_strict_gate_refuses_a_failing_clip_before_it_is_committed(
     assert json.loads((output / "manifest.json").read_text())["status"] == "failed"
     assert not (output / "clips" / "clip-001").exists()
     assert not list((output / "clips").glob(".clip-*"))
+
+
+def test_render_timings_are_saved_in_render_json_and_manifest(job, settings):
+    source, output, _ = job
+    result = pipeline.run(source, output, settings)
+    saved = json.loads((output / "clips/clip-001/render.json").read_text())
+    stages = saved["timings"]
+    assert {"silence", "visuals", "captions", "encode", "quality"} <= set(stages)
+    assert all(isinstance(v, float) and v >= 0 for v in stages.values())
+    assert result["rendered"][0]["timings"] == stages
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["rendered"][0]["timings"] == stages
+    assert "rendering" in manifest["timings"]

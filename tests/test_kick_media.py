@@ -1,5 +1,6 @@
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
 import pytest
@@ -160,3 +161,38 @@ def test_invalid_source_and_unadvertised_video(tmp_path, vod):
     for quality in ("preview", "1080p"):
         with pytest.raises(PipelineError):
             value.playlist(quality)
+
+
+def test_prefetch_downloads_only_the_interval_over_http_and_retrieve_reuses_it(
+    vod, tmp_path
+):
+    value, _, calls, commands = vod
+    value.prefetch(12, 17)
+    assert commands == []
+    segments = [c for c in calls if c.endswith(".ts")]
+    assert segments == ["https://stream.kick.com/archive/1.ts"]
+    value.retrieve(tmp_path / "video.mp4", 12, 17)
+    assert [c for c in calls if c.endswith(".ts")] == segments
+
+
+def test_prefetch_refuses_an_interval_outside_the_archive(vod):
+    value, _, calls, _ = vod
+    with pytest.raises(PipelineError, match="outside"):
+        value.prefetch(15, 30)
+    assert not [c for c in calls if c.endswith(".ts")]
+
+
+def test_concurrent_prefetch_and_segment_never_download_a_url_twice(vod):
+    value, _, calls, _ = vod
+    url = "https://stream.kick.com/archive/0.ts"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(value.prefetch, 0, 20) for _ in range(4)]
+        futures += [pool.submit(value.segment, url) for _ in range(4)]
+        for future in futures:
+            future.result()
+    segments = [c for c in calls if c.endswith(".ts")]
+    assert sorted(segments) == sorted(set(segments))
+    assert sorted(segments) == [
+        "https://stream.kick.com/archive/0.ts",
+        "https://stream.kick.com/archive/1.ts",
+    ]

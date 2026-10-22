@@ -324,15 +324,14 @@ def main(argv=None):
                 "previous_request_id": args.previous_request,
             },
         )
-        print(
-            json.dumps(
-                {
-                    "status": result["status"],
-                    "asr_reused": True,
-                    "model_generation_requests": 0,
-                }
-            )
-        )
+        summary = {
+            "status": result["status"],
+            "asr_reused": True,
+            "model_generation_requests": 0,
+        }
+        if "timings" in result:
+            summary["timings"] = result["timings"]
+        print(json.dumps(summary))
         return 0
     except (OSError, ValueError, KeyError, TypeError, PipelineError):
         print(
