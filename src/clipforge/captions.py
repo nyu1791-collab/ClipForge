@@ -228,6 +228,18 @@ def _boundary_rank(prev, nxt):
     return 0
 
 
+def inside_word(prev, nxt):
+    """True when a break between prev and nxt would split a word.
+
+    That is a kanji compound, a katakana or Latin run, or kanji followed by okurigana
+    (hiragana other than a main particle). Used by the quality check, which reports it.
+    """
+    kind_prev, kind_next = _kind(prev), _kind(nxt)
+    if kind_prev == kind_next and kind_prev in "kaK":
+        return True
+    return kind_prev == "K" and kind_next == "h" and nxt not in MAIN_PARTICLES
+
+
 def wrap_breaks(text, measure, line_px):
     """Character indices where a new line starts, at the strongest break that fits.
 

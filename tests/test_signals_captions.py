@@ -344,3 +344,21 @@ def test_text_is_normalised_to_composed_characters():
 )
 def test_break_ranks_follow_japanese_word_boundaries(prev, nxt, rank):
     assert captions._boundary_rank(prev, nxt) == rank
+
+
+@pytest.mark.parametrize(
+    ("prev", "nxt", "inside"),
+    [
+        ("漢", "字", True),  # a kanji compound
+        ("ス", "テ", True),  # a katakana run
+        ("G", "P", True),  # a Latin run
+        ("書", "か", True),  # kanji then okurigana
+        ("解", "い", True),
+        ("字", "の", False),  # kanji then a main particle
+        ("が", "奪", False),  # a particle then kanji
+        ("ス", "解", False),  # katakana then kanji is a change of script
+        ("た", "い", False),  # hiragana alone never counts as inside a word here
+    ],
+)
+def test_inside_word_marks_only_breaks_that_split_a_word(prev, nxt, inside):
+    assert captions.inside_word(prev, nxt) is inside

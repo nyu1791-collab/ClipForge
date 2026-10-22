@@ -276,3 +276,34 @@ def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"not a video stream" * 64)
     assert quality.decode_errors(broken)
+
+
+def test_a_line_break_inside_a_word_is_a_counted_warning(tmp_path, on_target_loudness):
+    folder = write_ass(tmp_path, [(0, 2000, "情報\\N処理")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is True
+    assert report["metrics"]["word_splits"] == 1
+    assert any("inside a word" in text for text in report["warnings"])
+
+
+def test_a_caption_break_inside_a_word_is_a_counted_warning(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(tmp_path, [(0, 1000, "仕事が奪"), (1000, 2000, "われる")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["metrics"]["word_splits"] == 1
+    # The text shown is the last three characters before the break and the first three after.
+    assert quality.word_splits(quality.caption_events(folder / "captions.ass")) == [
+        "事が奪|われる"
+    ]
+
+
+def test_breaks_between_words_and_particles_are_not_flagged(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(
+        tmp_path, [(0, 2000, "仕事が\\N奪われる"), (2000, 4000, "ソフトの\\Nこと")]
+    )
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["metrics"]["word_splits"] == 0
+    assert not any("inside a word" in text for text in report["warnings"])

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pysubs2
 
-from .captions import MAX_CAPTION_CPS, spoken_length
+from .captions import MAX_CAPTION_CPS, inside_word, spoken_length
 from .media import AUDIO_RATE
 from .storage import PipelineError, write_json
 
@@ -125,6 +125,24 @@ def caption_rates(path):
     return rates, overlaps
 
 
+def word_splits(events):
+    """Places where a line or a caption starts inside a word, shown as text like 'ぐ奪|われ'.
+
+    Checked between the lines of each caption and between consecutive captions. The check
+    is a warning: it works from character scripts, so a rare legitimate break can be flagged.
+    """
+    found = []
+    for index, (_, _, text) in enumerate(events):
+        lines = text.split("\n")
+        pairs = list(zip(lines, lines[1:]))
+        if index + 1 < len(events):
+            pairs.append((lines[-1], events[index + 1][2].split("\n")[0]))
+        for before, after in pairs:
+            if before and after and inside_word(before[-1], after[0]):
+                found.append(f"{before[-3:]}|{after[:3]}")
+    return found
+
+
 def loudness_warnings(loudness):
     lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
     found = []
@@ -170,6 +188,12 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
     long = sum(end - start > LONG_CAPTION_MS for start, end, _ in events)
     if long:
         warnings.append(f"{long} caption(s) are shown for more than 4 seconds")
+    splits = word_splits(events)
+    if splits:
+        warnings.append(
+            f"{len(splits)} line or caption break(s) fall inside a word, for example "
+            + splits[0]
+        )
     decode = decode_errors(directory / "video.mp4")
     if decode:
         failures.append(
@@ -199,6 +223,7 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
             "captions_over_limit": too_fast,
             "captions_under_1s": short,
             "captions_over_4s": long,
+            "word_splits": len(splits),
             "integrated_lufs": _finite(loudness["integrated_lufs"]),
             "true_peak_dbtp": _finite(loudness["true_peak_dbtp"]),
             "duration": rendered["duration"],
