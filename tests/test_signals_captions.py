@@ -479,5 +479,15 @@ def test_landscape_captions_are_held_to_seven_characters_a_second():
     spans = [[0, 1000]]
     cps = Settings.model_fields["horizontal_target_cps"].default
     captions.hold_for_reading(spans, ["あ" * 10], 9000, cps)
-    # Ten characters at 7 a second need 1.43 s, so the caption is held to 1429 ms.
-    assert spans == [[0, 1429]]
+    # Ten characters at 7 a second need 1429 ms, held to the next whole centisecond.
+    assert spans == [[0, 1430]]
+
+
+def test_held_caption_ends_stay_on_whole_centiseconds():
+    from clipforge.captions import hold_for_reading
+
+    spans = [[1230, 1500], [4560, 4800], [9000, 9100]]
+    hold_for_reading(spans, ["あいうえおかきくけこさし", "たちつ", "な"], 20000, cps=7)
+    assert all(start % 10 == 0 and end % 10 == 0 for start, end in spans)
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
+    assert spans[0][1] == 2950  # 12 characters at 7 per second: 1715 ms, rounded up

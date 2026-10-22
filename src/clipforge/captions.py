@@ -360,7 +360,11 @@ def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0):
         ceiling = spans[index + 1][0] if index + 1 < len(spans) else max(limit, span[1])
         reading = math.ceil(spoken_length(text) * 1000 / cps)
         wanted = span[0] + max(reading, floor_ms)
-        span[1] = max(span[1], min(wanted, ceiling))
+        # ASS keeps centiseconds and SRT milliseconds, so a held end is rounded up to a whole
+        # centisecond (never short of the reading time) without passing the ceiling; speech
+        # times already are whole centiseconds, and both files then keep the same timing.
+        held = min(-(-wanted // 10) * 10, ceiling - ceiling % 10)
+        span[1] = max(span[1], held)
     return spans
 
 
