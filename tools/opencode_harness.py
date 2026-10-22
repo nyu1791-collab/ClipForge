@@ -276,6 +276,9 @@ def run_task(task, mode, base, timeout, model="deepseek"):
         XDG_DATA_HOME=str(home / ".local/share"),
         OPENCODE_CONFIG=str(settings),
     )
+    if mode == "write":
+        # The shared virtualenv installs the main checkout; tests must import this worktree.
+        environment["PYTHONPATH"] = str(workdir / "src")
     if not MODELS[model]["free"]:
         # The subscription login stays where it was made; it is used in place, never copied.
         environment["XDG_DATA_HOME"] = str(openai_profile())
