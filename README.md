@@ -37,6 +37,7 @@ clipforge-submit \
   --wait --output /path/to/new-result-directory
 ```
 
+推奨は `gemini-3.8-flash` です（2026-10-22 の公式の料金ページで、動画入力に対応し、無料枠の対象と記載）。`config.example.json` の `gemini_model` にも同じ値を入れています。上位の `gemini-4-argon` は無料枠の対象外（有料）のため、既定にしていません。無料枠の上限（RPM・RPD）は、公式の制限ページにモデル別の数値がなく、Google AI Studio の表示で確認してください。
 `YOUR_VIDEO_MODEL_ID` は実在する識別子に置き換えてください。未指定のモデルや有料モデルへの自動切替はありません。
 `--wait` を外すとActionsのURLを表示して終了します。Geminiの無料tier・利用枠・料金はキーの所属プロジェクトによります。
 

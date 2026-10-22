@@ -1,5 +1,6 @@
 {
   "clips": 3,
+  "gemini_model": "gemini-3.8-flash",
   "candidates": 8,
   "min_seconds": 20,
   "max_seconds": 75,
