@@ -319,6 +319,7 @@ def audio_recovery(submitter, tmp_path, monkeypatch):
         "existing": False,
         "active": False,
         "upload_error": False,
+        "upload_fault": None,
         "dispatch_timeout": False,
         "missing_release": False,
     }
@@ -365,6 +366,8 @@ def audio_recovery(submitter, tmp_path, monkeypatch):
                 raise TimeoutError("response lost")
             return ""
         if args[:2] == ("release", "upload"):
+            if control["upload_fault"] is not None:
+                raise control["upload_fault"]
             if control["upload_error"]:
                 raise RuntimeError("GitHub operation failed: release (HTTP 401)")
             for path in args[3 : args.index("--repo")]:
@@ -430,6 +433,37 @@ def test_audio_recovery_refuses_duplicate_or_mismatched_work(audio_recovery, fau
     with pytest.raises(RuntimeError):
         invoke()
     assert not control["posts"]
+
+
+@pytest.mark.parametrize(
+    "error, status",
+    [
+        (
+            RuntimeError("GitHub operation failed: release (HTTP 401)"),
+            "UPLOAD_FAILED_AUTH",
+        ),
+        (
+            RuntimeError("GitHub operation failed: release (HTTP 502)"),
+            "STAGING_PARTIAL",
+        ),
+        (TimeoutError("upload timed out"), "STAGING_PARTIAL"),
+    ],
+)
+def test_audio_upload_failure_status_names_only_the_observed_cause(
+    audio_recovery, error, status
+):
+    module, _, state, control, asset, invoke = audio_recovery
+    control["assets"] = [asset("input-video.bin")]
+    control["upload_fault"] = error
+    with pytest.raises(type(error)):
+        invoke()
+    assert json.loads((state / "receipt.json").read_text())["status"] == status
+    assert not control["posts"]
+    # Every non-dispatched failure stays resumable with the same request ID.
+    control["upload_fault"] = None
+    invoke()
+    assert control["uploads"] == ["request.json"] and len(control["posts"]) == 1
+    assert json.loads((state / "receipt.json").read_text())["status"] == "DISPATCHED"
 
 
 def test_audio_recovery_lost_dispatch_response_is_not_resubmitted(audio_recovery):
