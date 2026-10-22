@@ -29,3 +29,4 @@ transcript-cache/
 .claude/settings.local.json
 .codex/auth.json
 .DS_Store
+.claude/worktrees/
