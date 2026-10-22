@@ -73,7 +73,10 @@ class Settings(Record):
     whisper_model: str = Field(default="small", min_length=1, max_length=160)
     whisper_revision: str | None = None
     language: str | None = None
-    threads: int = Field(default=2, ge=1, le=8)
+    whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
+    whisper_compute_type: Literal["auto", "int8", "float16", "float32", "int8_float16"] = "auto"
+    video_encoder: Literal["auto", "libx264", "h264_nvenc"] = "auto"
+    threads: int = Field(default=0, ge=0, le=1024)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
     height: Literal[720, 1080] = 720

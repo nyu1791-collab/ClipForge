@@ -8,7 +8,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CPU video clipping and visual Gemini selection"
+        description="CPU/CUDA video clipping and visual Gemini selection"
     )
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ["run", "cut"]:
@@ -20,12 +20,19 @@ def main():
         p.add_argument("--aspect", choices=["9:16", "16:9", "1:1"])
         p.add_argument("--framing", choices=["fit", "center-crop"])
         p.add_argument("--height", type=int, choices=[720, 1080])
+        p.add_argument("--threads", type=int, help="CPU threads; 0 detects available cores")
+        p.add_argument("--video-encoder", choices=["auto", "libx264", "h264_nvenc"])
         if name == "run":
             p.add_argument("--gemini-model")
             p.add_argument("--clips", type=int)
             p.add_argument("--candidates", type=int)
             p.add_argument("--whisper-model")
             p.add_argument("--language")
+            p.add_argument("--device", dest="whisper_device", choices=["auto", "cpu", "cuda"])
+            p.add_argument(
+                "--compute-type", dest="whisper_compute_type",
+                choices=["auto", "int8", "float16", "float32", "int8_float16"],
+            )
             p.add_argument("--chat-url")
             p.add_argument("--chat-offset-seconds", type=float)
             p.add_argument("--chat-file", type=Path)
@@ -44,6 +51,10 @@ def main():
             "aspect",
             "framing",
             "height",
+            "threads",
+            "video_encoder",
+            "whisper_device",
+            "whisper_compute_type",
             "gemini_model",
             "clips",
             "candidates",

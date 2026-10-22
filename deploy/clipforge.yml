@@ -16,6 +16,11 @@ on:
         description: Exact reviewed ClipForge commit SHA
         type: string
         required: true
+      worker:
+        description: CPU hosted runner or connected Colab GPU runner
+        type: choice
+        options: [cpu, colab-gpu]
+        default: cpu
 
 permissions:
   contents: write
@@ -27,7 +32,7 @@ concurrency:
 jobs:
   clip:
     if: github.repository == 'nyu1791-collab/ai-model-workers'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.worker == 'colab-gpu' && fromJSON('["self-hosted","linux","x64","colab-gpu"]') || 'ubuntu-24.04' }}
     timeout-minutes: 90
     env:
       CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
@@ -36,6 +41,7 @@ jobs:
       PYTHONUNBUFFERED: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_DISABLE_TELEMETRY: '1'
+      CLIPFORGE_REQUIRE_CUDA: ${{ inputs.worker == 'colab-gpu' && '1' || '0' }}
     steps:
       - name: Validate request identifiers
         shell: bash
@@ -59,13 +65,31 @@ jobs:
         with:
           version: '0.12.23'
           enable-cache: false
-      - name: Install CPU media tools and Japanese fonts
+      - name: Install media tools and Japanese fonts
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+          if [ "$(id -u)" = 0 ]; then APT=(apt-get); else APT=(sudo apt-get); fi
+          "${APT[@]}" update -qq
+          "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
       - name: Install locked Python dependencies without API credentials
         working-directory: clipforge-source
-        run: uv sync --locked --extra chat --no-dev
+        shell: bash
+        run: |
+          if [ "$CLIPFORGE_REQUIRE_CUDA" = 1 ]; then
+            uv sync --locked --extra chat --extra cuda --no-dev
+            source tools/colab_cuda_env.sh
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+            nvidia-smi
+            .venv/bin/python - <<'PY'
+          import ctypes
+          import ctranslate2
+          ctypes.CDLL('libcublas.so.12')
+          ctypes.CDLL('libcudnn.so.9')
+          assert ctranslate2.get_cuda_device_count() > 0, 'GPU worker requires CUDA'
+          assert 'float16' in ctranslate2.get_supported_compute_types('cuda')
+          PY
+          else
+            uv sync --locked --extra chat --no-dev
+          fi
       - name: Download and validate temporary private input
         id: prepare
         env:

@@ -133,7 +133,7 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
     os.umask(0o077)
     source, output, info, key, lock = prepare(source, output, resume, settings)
     try:
-        print("Transcribing on CPU…", flush=True)
+        print("Transcribing (device selected from settings and available hardware)…", flush=True)
         raw = stage(
             output,
             "transcript",

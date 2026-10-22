@@ -1,12 +1,12 @@
 # ClipForge
 
-Faster-Whisper → チャット／場面転換から候補抽出 → **映像と音声をGeminiに渡して選定** → FFmpegで切り抜き・ASS字幕、というCPU向けパイプラインです。
+Faster-Whisper → チャット／場面転換から候補抽出 → **映像と音声をGeminiに渡して選定** → FFmpegで切り抜き・ASS字幕、というCPU/CUDA対応パイプラインです。
 
 実装と実行基盤を用意しました。**実動画による通し実行、文字起こし精度、Geminiの応答、字幕の見た目は未確認です。**
 
 ## できること
 
-- 動画ファイル1本から、CPU/int8のFaster-Whisperで単語時刻付き文字起こし。
+- 動画ファイル1本から、CUDA/float16またはCPU/int8のFaster-Whisperで単語時刻付き文字起こし。GPUを自動検知します。
 - PySceneDetectの場面転換、発話、任意のチャット反応を使って候補を絞る。チャットなしでも動作します。
 - 候補の低解像度動画をGeminiへ送り、映像・音声・文字起こしから区間・タイトル・理由をJSONで受け取る。
 - 元動画の時刻へ戻し、範囲・長さ・重複を検査して、縦／横／正方形のMP4を生成。
@@ -38,6 +38,8 @@ clipforge-submit \
 後者は公開チャットの取得だけに使い、動画本体はダウンロードしません。
 
 ## CPU環境で直接使う
+
+Colab GPUでの直接実行・非公開Actionsへのランナー接続は [Colab起動手順](docs/COLAB.md) と `notebooks/colab_gpu.ipynb` を参照してください。
 
 Linux、Python 3.11以上、FFmpeg/FFprobe（libass入り）、日本語フォントが必要です。1GBの制御VMでは実行しません。
 
@@ -76,6 +78,6 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 ```
 
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
-顔追跡、音源分離、自動SNS投稿、URLからの動画取得は含みません。
+顔追跡、音源分離、自動SNS投稿は含みません。Colab用ツールは直接動画ファイルのHTTPS URLを取得できますが、YouTube視聴ページやHLSには対応しません。
 
 詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。
