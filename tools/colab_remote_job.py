@@ -199,6 +199,12 @@ def main():
     accelerator = payload.get("accelerator", "T4")
     cpu_only = mode == "prepare-cache" or accelerator == "NONE"
     os.environ["CLIPFORGE_CPU_ONLY"] = "1" if cpu_only else "0"
+    cache_profile = "cpu" if cpu_only else "gpu"
+    if mode == "prepare-cache":
+        cache_profile = payload.get("cache_profile", "gpu")
+    if cache_profile not in {"cpu", "gpu"}:
+        raise RuntimeError("Invalid cache profile: use cpu or gpu")
+    os.environ["CLIPFORGE_CACHE_PROFILE"] = cache_profile
     # Releases contain the assets themselves; Drive's nested tar is not used here.
     os.environ["CLIPFORGE_PERSISTENT_CACHE"] = ""
     key, cache_root, _ = configuration()

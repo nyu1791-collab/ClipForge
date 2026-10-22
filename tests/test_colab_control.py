@@ -53,6 +53,78 @@ def unassigned_response():
 
 
 class ControlTests(unittest.TestCase):
+    def test_prepare_cache_records_profile_and_passes_it_to_cpu_worker(self):
+        from colab_cli.client import Accelerator, Variant
+
+        for profile in (None, "gpu", "cpu"):
+            with (
+                self.subTest(profile=profile),
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {
+                        **REQUEST,
+                        "COLAB_ADC_JSON": "{}",
+                        "GH_TOKEN": "test-only",
+                        "CLIPFORGE_COLAB_POOL": "",
+                    },
+                ),
+                patch.object(control, "authenticated_client") as authenticate,
+                patch("colab_cli.contents.ContentsClient") as contents,
+                patch.object(control, "runtime_from_state"),
+                patch.object(control, "checked_execute"),
+            ):
+                os.environ.pop("CLIPFORGE_CACHE_PROFILE", None)
+                if profile is not None:
+                    os.environ["CLIPFORGE_CACHE_PROFILE"] = profile
+                client = authenticate.return_value
+                client.list_assignments.return_value = []
+                client.get_consumption_user_info.side_effect = RuntimeError()
+                client.assign.return_value = granted_assignment()
+                controller = control.Controller(temporary)
+                controller.start(mode="prepare-cache")
+                expected = profile or "gpu"
+                self.assertEqual(controller.state()["cache_profile"], expected)
+                self.assertEqual(
+                    client.assign.call_args.kwargs["accelerator"], Accelerator.NONE
+                )
+                self.assertEqual(
+                    client.assign.call_args.kwargs["variant"], Variant.DEFAULT
+                )
+                # The start-time choice must survive later changes to the environment.
+                os.environ["CLIPFORGE_CACHE_PROFILE"] = (
+                    "cpu" if expected == "gpu" else "gpu"
+                )
+                uploaded = []
+                contents.return_value.upload.side_effect = lambda local, remote: (
+                    uploaded.append(json.loads(Path(local).read_text()))
+                )
+                with patch.object(controller, "collect"):
+                    controller.run(Path(temporary) / "output")
+                self.assertEqual(uploaded[0]["cache_profile"], expected)
+
+    def test_invalid_cache_profile_stops_before_google_access_or_allocation(self):
+        for profile in ("", "GPU", "other", "gpu\n"):
+            with (
+                self.subTest(profile=profile),
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {**REQUEST, "CLIPFORGE_CACHE_PROFILE": profile},
+                ),
+                patch.object(control, "authenticated_client") as authenticate,
+                patch.object(control, "colab_pool") as pool,
+            ):
+                controller = control.Controller(temporary)
+                with self.assertRaisesRegex(
+                    control.ControlError, "Invalid cache profile"
+                ):
+                    controller.start(mode="prepare-cache")
+                authenticate.assert_not_called()
+                pool.assert_not_called()
+                self.assertFalse(controller.state_path.exists())
+                self.assertFalse(controller.credentials_path.exists())
+
     def test_audio_url_is_recorded_without_changing_empty_url_requests(self):
         for url in (AUDIO_URL, ""):
             with (

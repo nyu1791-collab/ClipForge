@@ -32,7 +32,13 @@ def sha256(path):
 
 
 def profile():
-    return "cpu" if os.environ.get("CLIPFORGE_CPU_ONLY") == "1" else "gpu"
+    value = os.environ.get(
+        "CLIPFORGE_CACHE_PROFILE",
+        "cpu" if os.environ.get("CLIPFORGE_CPU_ONLY") == "1" else "gpu",
+    )
+    if value not in {"cpu", "gpu"}:
+        raise ValueError("Invalid cache profile: use cpu or gpu")
+    return value
 
 
 def release_parts():

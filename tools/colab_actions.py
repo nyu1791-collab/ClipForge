@@ -243,6 +243,11 @@ class Controller:
         )
         if not re.fullmatch(r"[a-f0-9]{40}", request["source_ref"]):
             raise ControlError("Use an exact ClipForge source SHA")
+        if mode == "prepare-cache":
+            cache_profile = os.environ.get("CLIPFORGE_CACHE_PROFILE", "gpu")
+            if cache_profile not in {"cpu", "gpu"}:
+                raise ControlError("Invalid cache profile: use cpu or gpu")
+            request["cache_profile"] = cache_profile
         audio_url = os.environ.get("AUDIO_URL", "") if mode == "pipeline" else ""
         if audio_url:
             if not re.fullmatch(

@@ -175,6 +175,7 @@ class DependencyCacheTests(unittest.TestCase):
                 {"CLIPFORGE_LOCAL_CACHE": temporary, "CLIPFORGE_PERSISTENT_CACHE": ""},
             ),
         ):
+            os.environ.pop("CLIPFORGE_CACHE_PROFILE", None)
             profiles = {}
             for cpu_only, profile in (("0", "gpu"), ("1", "cpu")):
                 os.environ["CLIPFORGE_CPU_ONLY"] = cpu_only
@@ -190,6 +191,43 @@ class DependencyCacheTests(unittest.TestCase):
                 )
             self.assertNotEqual(profiles["cpu"][0], profiles["gpu"][0])
             self.assertNotEqual(profiles["cpu"][1], profiles["gpu"][1])
+
+    def test_explicit_profile_overrides_cpu_only_for_keys_tags_and_parts(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(
+                os.environ,
+                {"CLIPFORGE_LOCAL_CACHE": temporary, "CLIPFORGE_PERSISTENT_CACHE": ""},
+            ),
+        ):
+            for profile in ("cpu", "gpu"):
+                with self.subTest(profile=profile):
+                    os.environ["CLIPFORGE_CACHE_PROFILE"] = profile
+                    keys = []
+                    for cpu_only in ("0", "1"):
+                        os.environ["CLIPFORGE_CPU_ONLY"] = cpu_only
+                        keys.append(cache.configuration()[0])
+                        self.assertEqual(cache.profile(), profile)
+                        self.assertEqual(
+                            cache.release_tag(keys[-1]),
+                            f"clipforge-cache-{profile}-{keys[-1]}",
+                        )
+                        self.assertEqual(
+                            cache.release_parts(),
+                            cache.PARTS
+                            if profile == "cpu"
+                            else (*cache.PARTS, "models/hub"),
+                        )
+                    self.assertEqual(keys[0], keys[1])
+
+    def test_invalid_explicit_profile_is_rejected(self):
+        for profile in ("", "CUDA", "other"):
+            with (
+                self.subTest(profile=profile),
+                patch.dict(os.environ, {"CLIPFORGE_CACHE_PROFILE": profile}),
+            ):
+                with self.assertRaisesRegex(ValueError, "Invalid cache profile"):
+                    cache.configuration()
 
     def test_profiled_release_tags_are_accepted_without_deleting_old_releases(self):
         bundles = object.__new__(ReleaseBundles)
@@ -401,6 +439,43 @@ class SetupScriptTests(unittest.TestCase):
         self.root = Path(__file__).resolve().parents[1]
         self.script = self.root / "tools/colab_setup.sh"
 
+    def profile_block(self):
+        return (
+            "clipforge_default_profile=gpu\n"
+            + self.script.read_text()
+            .split("clipforge_default_profile=gpu\n", 1)[1]
+            .split("clipforge_timings=", 1)[0]
+        )
+
+    def test_setup_resolves_and_validates_profile_before_preparing_assets(self):
+        for cpu_only in ("0", "1"):
+            for profile in (None, "cpu", "gpu", "", "invalid"):
+                with self.subTest(cpu_only=cpu_only, profile=profile):
+                    environment = {**os.environ, "CLIPFORGE_CPU_ONLY": cpu_only}
+                    environment.pop("CLIPFORGE_CACHE_PROFILE", None)
+                    if profile is not None:
+                        environment["CLIPFORGE_CACHE_PROFILE"] = profile
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            self.profile_block()
+                            + 'printf "%s\\n" "$CLIPFORGE_CACHE_PROFILE"',
+                        ],
+                        env=environment,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if profile in ("", "invalid"):
+                        self.assertEqual(result.returncode, 1)
+                        self.assertIn("Invalid cache profile", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0)
+                        self.assertEqual(
+                            result.stdout.strip(),
+                            profile or ("cpu" if cpu_only == "1" else "gpu"),
+                        )
+
     def test_setup_timings_are_read_and_namespaced(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "setup-timings.tsv"
@@ -424,11 +499,19 @@ class SetupScriptTests(unittest.TestCase):
         block = source.split("uv_sync_started=$(date +%s.%N)\n", 1)[1].split(
             "clipforge_record_timing uv_sync", 1
         )[0]
-        for cpu_only in ("0", "1"):
+        for cpu_only, profile in (
+            ("0", "gpu"),
+            ("1", "cpu"),
+            ("1", "gpu"),
+            ("0", "cpu"),
+        ):
             for fail_offline in ("0", "1"):
                 for offline in ("0", "1"):
                     with self.subTest(
-                        cpu_only=cpu_only, fail_offline=fail_offline, offline=offline
+                        cpu_only=cpu_only,
+                        profile=profile,
+                        fail_offline=fail_offline,
+                        offline=offline,
                     ):
                         result = subprocess.run(
                             [
@@ -440,6 +523,7 @@ class SetupScriptTests(unittest.TestCase):
                             env={
                                 **os.environ,
                                 "CLIPFORGE_CPU_ONLY": cpu_only,
+                                "CLIPFORGE_CACHE_PROFILE": profile,
                                 "FAIL_OFFLINE": fail_offline,
                                 "CLIPFORGE_OFFLINE": offline,
                             },
@@ -461,10 +545,52 @@ class SetupScriptTests(unittest.TestCase):
                             2 if fail_offline == "1" and offline == "0" else 1,
                         )
                         for arguments in calls:
-                            self.assertEqual("cuda" in arguments, cpu_only == "0")
+                            self.assertEqual("cuda" in arguments, profile == "gpu")
                             self.assertIn("--locked", arguments)
                         if len(calls) == 2:
                             self.assertNotIn("--offline", calls[1])
+
+    def test_cuda_check_uses_hardware_and_model_prepare_uses_profile(self):
+        source = self.script.read_text()
+        blocks = {
+            name: source.split(f"{name}_started=$(date +%s.%N)\n", 1)[1].split(
+                f"clipforge_record_timing {name}", 1
+            )[0]
+            for name in ("cuda_check", "model_prepare")
+        }
+        for cpu_only in ("0", "1"):
+            for profile in ("cpu", "gpu"):
+                for skip in ("0", "1"):
+                    for name, block in blocks.items():
+                        with self.subTest(
+                            cpu_only=cpu_only, profile=profile, skip=skip, stage=name
+                        ):
+                            block = block.replace(
+                                "source tools/colab_cuda_env.sh", "true"
+                            ).replace(".venv/bin/python -", "python_stub -")
+                            result = subprocess.run(
+                                [
+                                    "bash",
+                                    "-c",
+                                    'set -eu; python_stub() { printf "python-called\\n"; }; '
+                                    + block,
+                                ],
+                                env={
+                                    **os.environ,
+                                    "CLIPFORGE_CPU_ONLY": cpu_only,
+                                    "CLIPFORGE_CACHE_PROFILE": profile,
+                                    "CLIPFORGE_SKIP_MODEL_PREPARE": skip,
+                                },
+                                capture_output=True,
+                                text=True,
+                                check=True,
+                            )
+                            expected = (
+                                cpu_only != "1"
+                                if name == "cuda_check"
+                                else profile == "gpu" and skip != "1"
+                            )
+                            self.assertEqual("python-called" in result.stdout, expected)
 
     def test_os_packages_keep_render_dependencies_and_omit_unused_development_files(
         self,
@@ -515,6 +641,72 @@ class SetupScriptTests(unittest.TestCase):
 
 
 class RemotePipelineTests(unittest.TestCase):
+    def test_prepare_cache_uses_requested_profile_on_cpu_with_gpu_default(self):
+        for requested in (None, "gpu", "cpu"):
+            with (
+                self.subTest(profile=requested),
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {
+                        "CLIPFORGE_LOCAL_CACHE": temporary,
+                        "CLIPFORGE_PERSISTENT_CACHE": "",
+                        "CLIPFORGE_CPU_ONLY": "0",
+                        "CLIPFORGE_CACHE_PROFILE": requested or "gpu",
+                    },
+                ),
+            ):
+                root = Path(temporary)
+                work = root / "job"
+                profile = requested or "gpu"
+                key, cache_root, _ = cache.configuration()
+                tag = cache.release_tag(key)
+                parts = cache.release_parts()
+                # An inherited profile must not override the payload or mode default.
+                os.environ["CLIPFORGE_CACHE_PROFILE"] = (
+                    "cpu" if profile == "gpu" else "gpu"
+                )
+                payload = {
+                    "mode": "prepare-cache",
+                    "source_ref": "b" * 40,
+                    "workflow_run": "123",
+                    "github_token": "test-only-github",
+                    "accelerator": "NONE",
+                }
+                if requested is not None:
+                    payload["cache_profile"] = requested
+                bundles = Mock()
+                bundles.restore.return_value = False
+                with (
+                    patch.object(remote_job, "ROOT", root),
+                    patch.object(remote_job, "WORK", work),
+                    patch.object(remote_job, "Path") as paths,
+                    patch.object(remote_job, "ReleaseBundles", return_value=bundles),
+                    patch.object(remote_job, "gpu_info") as gpu_info,
+                    patch.object(remote_job, "host_info", return_value={}),
+                    patch.object(remote_job, "read_setup_timings", return_value={}),
+                    patch.object(remote_job.os, "umask"),
+                    patch.object(remote_job, "command") as run,
+                ):
+                    paths.return_value.read_text.return_value = json.dumps(payload)
+                    remote_job.main()
+                gpu_info.assert_not_called()
+                bundles.restore.assert_called_once_with(
+                    tag, cache_root, "assets", key, parts=parts
+                )
+                self.assertIn(f"cache-{profile}-", tag)
+                self.assertEqual("models/hub" in parts, profile == "gpu")
+                published = bundles.publish.call_args
+                self.assertEqual(published.args[:2], (tag, cache_root))
+                self.assertEqual(published.args[3:], ("assets", key))
+                self.assertEqual(published.kwargs["parts"], parts)
+                run.assert_called_once()
+                setup_env = run.call_args.args[1]
+                self.assertEqual(setup_env["CLIPFORGE_CPU_ONLY"], "1")
+                self.assertEqual(setup_env["CLIPFORGE_CACHE_PROFILE"], profile)
+                self.assertEqual(setup_env["CLIPFORGE_SKIP_MODEL_PREPARE"], "0")
+                self.assertEqual(setup_env["CLIPFORGE_PREPARE_ONLY"], "1")
+
     def test_parallel_audio_cache_is_saved_only_by_first_clip_even_on_a_miss(self):
         for cached in (False, True):
             for fetched in (False, True):
@@ -605,6 +797,7 @@ class RemotePipelineTests(unittest.TestCase):
                             if call.args[2] == "setup"
                         )
                         self.assertEqual(setup_env["CLIPFORGE_CPU_ONLY"], "1")
+                        self.assertEqual(setup_env["CLIPFORGE_CACHE_PROFILE"], "cpu")
                         self.assertEqual(setup_env["CLIPFORGE_PERSISTENT_CACHE"], "")
                         if should_save:
                             published = bundles.publish.call_args
@@ -699,6 +892,7 @@ class RemotePipelineTests(unittest.TestCase):
                     self.assertEqual(environment["GEMINI_API_KEY"], "test-only-gemini")
                     self.assertIn("prepare", calls["prepare"].args[0])
                 self.assertEqual(environment["CLIPFORGE_REQUIRE_CUDA"], "1")
+                self.assertEqual(environment["CLIPFORGE_CACHE_PROFILE"], "gpu")
                 bundles.publish.assert_called_once()
                 published = bundles.publish.call_args.args
                 self.assertEqual(published[:2], (payload["input_tag"], output))

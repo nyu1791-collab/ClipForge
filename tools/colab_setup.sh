@@ -2,6 +2,13 @@
 # First setup populates a Drive cache; subsequent setups try offline installation first.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+clipforge_default_profile=gpu
+if [[ ${CLIPFORGE_CPU_ONLY:-0} == 1 ]]; then clipforge_default_profile=cpu; fi
+export CLIPFORGE_CACHE_PROFILE=${CLIPFORGE_CACHE_PROFILE-$clipforge_default_profile}
+case "$CLIPFORGE_CACHE_PROFILE" in
+  cpu|gpu) ;;
+  *) echo 'Invalid cache profile: use cpu or gpu.' >&2; exit 1 ;;
+esac
 clipforge_timings=${CLIPFORGE_SETUP_TIMINGS:-}
 clipforge_record_timing() {
   [[ -n $clipforge_timings ]] || return 0
@@ -37,7 +44,7 @@ fi
 clipforge_record_timing uv_bootstrap "$uv_bootstrap_started"
 uv_sync_started=$(date +%s.%N)
 uv_sync_args=(--locked --python 3.11 --extra chat --extra media-fetch --no-dev)
-if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then uv_sync_args+=(--extra cuda); fi
+if [[ $CLIPFORGE_CACHE_PROFILE == gpu ]]; then uv_sync_args+=(--extra cuda); fi
 if uv sync --offline "${uv_sync_args[@]}"; then
   echo 'Python dependencies installed from the local cache; no package download required.'
 else
@@ -67,7 +74,7 @@ fi
 clipforge_record_timing cuda_check "$cuda_check_started"
 # Model files only: no inference or Gemini API call. The requested model is unchanged.
 model_prepare_started=$(date +%s.%N)
-if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 && ${CLIPFORGE_SKIP_MODEL_PREPARE:-0} != 1 ]]; then
+if [[ $CLIPFORGE_CACHE_PROFILE == gpu && ${CLIPFORGE_SKIP_MODEL_PREPARE:-0} != 1 ]]; then
   if ! HF_HUB_OFFLINE=1 .venv/bin/python - >/dev/null 2>&1 <<'PY'
 import os
 from clipforge.whisper_cache import model_path
