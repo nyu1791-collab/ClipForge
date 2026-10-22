@@ -1,4 +1,5 @@
 import wave
+from pathlib import Path
 from types import SimpleNamespace
 
 import faster_whisper
@@ -167,3 +168,57 @@ def test_default_model_is_pinned_and_other_models_float_unless_set(settings):
     assert signals.model_revision(settings) is None
     settings.whisper_revision = "abc123"
     assert signals.model_revision(settings) == "abc123"
+
+
+def test_a_saved_transcript_is_reused_only_when_its_identity_matches(
+    tmp_path, monkeypatch, settings
+):
+    from clipforge import pipeline
+
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"video")
+    info = {"audio": True, "duration": 1.0, "audio_start": 0.0}
+    calls = []
+
+    def recognise(source, info, settings):
+        calls.append(settings.threads)
+        return {"language": "ja", "segments": []}
+
+    monkeypatch.setattr(signals, "transcribe", recognise)
+    settings.transcript_cache = str(tmp_path / "cache")
+    first = pipeline.transcribe_once(source, info, settings)
+    assert pipeline.transcribe_once(source, info, settings) == first
+    assert calls == [2]
+    # Threads change the segment boundaries, so the saved transcript must not stand in.
+    settings.threads = 4
+    pipeline.transcribe_once(source, info, settings)
+    assert calls == [2, 4]
+
+
+def test_a_damaged_saved_transcript_is_recognised_again(
+    tmp_path, monkeypatch, settings
+):
+    from clipforge import pipeline
+
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"video")
+    info = {"audio": True, "duration": 1.0, "audio_start": 0.0}
+    settings.transcript_cache = str(tmp_path / "cache")
+    saved = Path(settings.transcript_cache) / (
+        pipeline.transcript_identity(source, info, settings) + ".json"
+    )
+    saved.parent.mkdir(parents=True)
+    saved.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(
+        signals,
+        "transcribe",
+        lambda source, info, settings: {"language": "ja", "segments": []},
+    )
+    assert pipeline.transcribe_once(source, info, settings) == {
+        "language": "ja",
+        "segments": [],
+    }
+    assert (
+        Transcript.model_validate_json(saved.read_text(encoding="utf-8")).language
+        == "ja"
+    )

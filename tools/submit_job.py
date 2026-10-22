@@ -64,7 +64,7 @@ SETTINGS_FIELDS = {
     "chat_offset_seconds",
 }
 # These name files on the submitting machine; the remote worker cannot read them.
-LOCAL_FILE_FIELDS = {"visuals", "bgm", "sound_effects"}
+LOCAL_FILE_FIELDS = {"visuals", "bgm", "sound_effects", "transcript_cache"}
 
 
 def gh(*args, body=None, timeout=120):
@@ -334,7 +334,7 @@ def dispatch(args, state_root):
         )
     if set(settings) & LOCAL_FILE_FIELDS:
         raise RuntimeError(
-            "visuals, bgm and sound_effects name local files; render those clips locally"
+            "visuals, bgm, sound_effects and transcript_cache name local files; render those clips locally"
         )
     settings["gemini_model"] = args.gemini_model
     if args.clips is not None:

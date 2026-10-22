@@ -30,6 +30,11 @@ def main():
             p.add_argument("--chat-offset-seconds", type=float)
             p.add_argument("--chat-file", type=Path)
             p.add_argument("--selection-file", type=Path)
+            p.add_argument(
+                "--transcript-cache",
+                type=str,
+                help="folder of saved transcripts to reuse",
+            )
         else:
             p.add_argument("--start", type=float, required=True)
             p.add_argument("--end", type=float, required=True)
@@ -58,6 +63,7 @@ def main():
             "language",
             "chat_url",
             "chat_offset_seconds",
+            "transcript_cache",
         ]:
             value = getattr(args, key, None)
             if value is not None:

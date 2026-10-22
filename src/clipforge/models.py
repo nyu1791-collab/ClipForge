@@ -152,6 +152,8 @@ class Settings(Record):
     whisper_revision: str | None = None
     # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
     asr_batch_size: int = Field(default=0, ge=0, le=16)
+    # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.
+    transcript_cache: str | None = Field(default=None, max_length=1024)
     language: str | None = None
     # CPU threads for transcription and encoding (2 is the setting every reported run used).
     threads: int = Field(default=2, ge=1, le=8)

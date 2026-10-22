@@ -440,6 +440,50 @@ def timed(timings, name, function, *args):
         timings[name] = round(time.monotonic() - started, 2)
 
 
+# The transcript depends only on the audio, the recognition settings and the code that reads and
+# recognises it, not on captions or rendering. Its own identity lets a saved transcript serve any
+# later run, so a change to captions does not repeat the recognition.
+TRANSCRIPT_CODE = ("signals.py", "media.py")
+
+
+def transcript_identity(source, info, settings):
+    code = {name: digest(Path(__file__).parent / name) for name in TRANSCRIPT_CODE}
+    return fingerprint(
+        {
+            "source_sha256": digest(source),
+            "duration": info["duration"],
+            "audio": info["audio"],
+            "audio_start": info.get("audio_start", 0.0),
+            "code": code,
+            "whisper_model": settings.whisper_model,
+            "whisper_revision": settings.whisper_revision,
+            "language": settings.language,
+            "threads": settings.threads,
+            "asr_batch_size": settings.asr_batch_size,
+        }
+    )
+
+
+def transcribe_once(source, info, settings):
+    """Recognised transcript, reused from settings.transcript_cache when its identity matches."""
+    if not settings.transcript_cache:
+        return signals.transcribe(source, info, settings)
+    path = Path(settings.transcript_cache) / (
+        transcript_identity(source, info, settings) + ".json"
+    )
+    if path.is_file():
+        try:
+            return Transcript.model_validate_json(
+                path.read_text(encoding="utf-8")
+            ).model_dump()
+        except (ValueError, UnicodeDecodeError):
+            # A damaged saved transcript is recognised again rather than used.
+            pass
+    value = signals.transcribe(source, info, settings)
+    write_json(path, value)
+    return value
+
+
 def run(source, output, settings, resume=False, chat_file=None, selection_file=None):
     os.umask(0o077)
     source, output, info, key, lock = prepare(source, output, resume, settings)
@@ -469,7 +513,7 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                 output,
                 "transcript",
                 key,
-                lambda: signals.transcribe(source, info, settings),
+                lambda: transcribe_once(source, info, settings),
             )
             transcript = Transcript.model_validate(raw)
             current_stage = "scene_detection"
