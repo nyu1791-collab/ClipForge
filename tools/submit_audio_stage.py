@@ -146,7 +146,9 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
         raise RuntimeError("stage artifact omits required files")
     found = staged_files(root) - {"request-receipt.json"}
     missing = listed - found
-    extra = found - listed
+    extra = (
+        found - listed - {".audio-first.lock"}
+    )  # an empty lock file the worker may leave
     if missing:
         raise RuntimeError(
             str(len(missing)) + " listed file(s) missing from the stage artifact"

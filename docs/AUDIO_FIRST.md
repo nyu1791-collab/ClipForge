@@ -128,6 +128,12 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
 同一stage・前段run・選定内容・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。
 生成物は非公開`clipforge-result-REQUEST_ID`artifactに7日保存する。公開側のActionsで実配信を処理しない。
 
+完了後は、同じ依頼IDを新規の出力先へ回収する。既存の出力先は上書きせず、`request-receipt.json`と生成receiptに記録されたSHA-256・依頼ID・元コミットSHA・前段runを検査する。
+
+```bash
+uv run --no-sync python tools/submit_audio_stage.py --collect SUBMITTED_REQUEST_ID --output /private/stage-NEW_DIRECTORY
+```
+
 ## 候補映像の判定と採用
 
 `--stage previews`で音声の話題候補（既定最大8件）の区間だけ低解像度映像を取得する。

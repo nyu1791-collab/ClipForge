@@ -396,8 +396,15 @@ def resume_audio_staging(args):
                         REPO,
                         timeout=1800,
                     )
-                except Exception:
-                    receipt["status"] = "UPLOAD_FAILED_AUTH"
+                except Exception as error:
+                    # Only a credential rejection is labelled as auth; other failures
+                    # stay resumable, and the next run re-verifies every asset checksum.
+                    rejected = isinstance(error, RuntimeError) and re.search(
+                        r"HTTP (401|403)\b", str(error)
+                    )
+                    receipt["status"] = (
+                        "UPLOAD_FAILED_AUTH" if rejected else "STAGING_PARTIAL"
+                    )
                     save(state / "receipt.json", receipt)
                     raise
             if verify_assets(json.loads(gh("api", endpoint))):
