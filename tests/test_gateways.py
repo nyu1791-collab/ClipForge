@@ -579,8 +579,6 @@ def runner(tmp_path, monkeypatch, settings):
     def gh(*args):
         if args[:1] == ("api",) and args[1].count("/") == 2 and "--jq" in args:
             return "true" if control["private"] else "false"
-        if args[:2] == ("repo", "view"):
-            return json.dumps({"isPrivate": control["private"]})
         if args[:2] == ("release", "view"):
             return json.dumps(
                 {

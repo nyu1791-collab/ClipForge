@@ -77,18 +77,49 @@ def restore_analysis(previous, output, previous_id):
     return url
 
 
+def clock_text(seconds):
+    """Format seconds as M:SS, or H:MM:SS from one hour on (floored)."""
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02}:{secs:02}"
+    return f"{minutes}:{secs:02}"
+
+
+def sample_label(topic_id, start, offset):
+    """Stream time when the candidate start is known, otherwise seconds inside it."""
+    if start is None:
+        return f"{topic_id} @ +{clock_text(offset)}"
+    return f"{topic_id} @ {clock_text(start + offset)}"
+
+
+def candidate_starts(root, previews):
+    """Map topic_id to its stream start, from previews.json receipts or topics.json."""
+    starts = {}
+    topics_path = root / "topics.json"
+    if topics_path.is_file():
+        for topic in json.loads(topics_path.read_text()).get("topics", []):
+            starts[topic["id"]] = topic["start"]
+    for row in previews["previews"]:
+        value = (row.get("receipt") or {}).get("source_start")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            starts[row["topic_id"]] = float(value)
+    return starts
+
+
 def preview_contact_sheet(root, previews):
     """Three labelled samples per candidate; this does not attest full-video viewing."""
     from PIL import Image, ImageDraw
 
+    starts = candidate_starts(root, previews)
     rows = []
     for row in previews["previews"]:
         source = within(root, root / row["file"])
         info = media.probe(source)
         panel = Image.new("RGB", (960, 208), "black")
-        ImageDraw.Draw(panel).text(
-            (8, 5), row["topic_id"] + " : 10%, 50%, 90%", fill="white"
-        )
+        draw = ImageDraw.Draw(panel)
+        draw.text((8, 5), row["topic_id"] + " : 10%, 50%, 90%", fill="white")
         with tempfile.TemporaryDirectory(prefix="clipforge-frames-") as temporary:
             for index, fraction in enumerate((0.1, 0.5, 0.9)):
                 target = Path(temporary) / f"{index}.jpg"
@@ -113,6 +144,17 @@ def preview_contact_sheet(root, previews):
                 )
                 with Image.open(target) as frame:
                     panel.paste(frame.convert("RGB"), (320 * index, 28))
+                offset = info["duration"] * fraction
+                label = sample_label(
+                    row["topic_id"], starts.get(row["topic_id"]), offset
+                )
+                left, top, right, bottom = draw.textbbox((0, 0), label)
+                x, y = 320 * index + 4, 28 + 4
+                draw.rectangle(
+                    (x - 2, y - 2, x + (right - left) + 2, y + (bottom - top) + 2),
+                    fill="black",
+                )
+                draw.text((x, y), label, fill="white")
         rows.append(panel)
     if not rows:
         raise PipelineError("no preview candidates to inspect")

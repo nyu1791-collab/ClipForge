@@ -217,3 +217,16 @@ def test_contact_sheet_is_labelled_samples_not_full_video_attestation(
     )
     assert len(calls) == 3
     assert Image.open(root / "preview-contact-sheet.jpg").size == (960, 208)
+
+
+@pytest.mark.parametrize(
+    "seconds, expected",
+    [(0, "0:00"), (59.9, "0:59"), (305.2, "5:05"), (3599, "59:59"), (3661, "1:01:01")],
+)
+def test_clock_text_formats_stream_time(seconds, expected):
+    assert worker.clock_text(seconds) == expected
+
+
+def test_sample_label_uses_stream_time_or_candidate_relative_seconds():
+    assert worker.sample_label("topic-008", 300.0, 5.2) == "topic-008 @ 5:05"
+    assert worker.sample_label("topic-008", None, 5.2) == "topic-008 @ +0:05"

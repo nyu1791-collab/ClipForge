@@ -86,13 +86,21 @@ jobs:
             ${{ runner.temp }}/clipforge-out/candidates.json
             ${{ runner.temp }}/clipforge-out/selection.json
             ${{ runner.temp }}/clipforge-out/.state
-      - name: Transcribe, select with Gemini video input, render captions
+      - name: Run the requested ClipForge stage (audio analysis makes no model calls)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py run \
             --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input" \
             --output "$RUNNER_TEMP/clipforge-out"
+      - name: Keep partial transcript privately after failure, timeout or cancellation
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipforge-partial-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-out/transcripts/*.partial.jsonl
+          retention-days: 7
+          if-no-files-found: ignore
       - uses: actions/cache/save@v4
         if: always() && steps.prepare.outcome == 'success'
         continue-on-error: true

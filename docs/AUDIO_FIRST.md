@@ -58,6 +58,13 @@ uv run --no-sync python tools/submit_job.py --collect REQUEST_ID --run-id RUN_ID
 音声・ASR・話題・manifestのハッシュと依頼元SHAを検査する。ASRはlarge-v3-turbo・CPU/int8・2スレッド。
 キャッシュが一致しない音声や別配信のASRを流用しない。長いASRは完了まで時間を要し、失敗後の途中チェックポイント再開はこの経路では未実装。
 
+### 失敗・タイムアウト・キャンセル時の途中保存（私有）
+
+初回workflowは、失敗・タイムアウト・キャンセル時だけ `transcripts/*.partial.jsonl` を `clipforge-partial-REQUEST_ID` 私有artifactへ7日保存する。
+取り出しは同じ非公開repoで `gh run download RUN_ID --repo nyu1791-collab/ai-model-workers -n clipforge-partial-REQUEST_ID -D /private/partial-REQUEST_ID` を使う。
+この中身は途中の発話本文で、完成した文字起こしではない。再開には使わず、同じ依頼を再実行しても途中保存からは続行しない。
+取り出し先は私有領域に限り、公開Git・公開Artifactsへ追加しない。
+
 十分なCPUのある環境なら、同じworkspaceに対して `--stage topics` でも実行できる。
 制御VMで `topics`・`previews`・`render`を実行しない。回収済み音声と `transcripts/` を対応付けて、十分なCPUのある私有環境へ渡す。
 workerから回収したファイルをworkspaceへ統合する際は、`audio.m4a`のSHAと `source_url` の一致を先に確認する。

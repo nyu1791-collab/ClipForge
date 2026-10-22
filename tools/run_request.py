@@ -26,9 +26,7 @@ def check(tag, remote=True):
         raise RuntimeError("unexpected execution repository or input tag")
     if (
         remote
-        and not json.loads(gh("repo", "view", PRIVATE_REPO, "--json", "isPrivate"))[
-            "isPrivate"
-        ]
+        and gh("api", "repos/" + PRIVATE_REPO, "--jq", ".private").strip() != "true"
     ):
         raise RuntimeError("worker repository must remain private")
 
