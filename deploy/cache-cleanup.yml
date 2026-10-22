@@ -1,0 +1,33 @@
+name: ClipForge cache release cleanup
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: Space-separated clipforge-cache-* release tags to delete
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Delete only public-asset cache releases and their tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          for tag in $TAGS; do
+            if ! [[ $tag =~ ^clipforge-cache-((cpu|gpu)-)?[a-f0-9]{24}$ ]]; then
+              echo "Refusing non-cache tag: $tag" >&2
+              exit 1
+            fi
+          done
+          for tag in $TAGS; do
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            echo "Deleted $tag"
+          done
