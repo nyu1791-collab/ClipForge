@@ -15,6 +15,13 @@ Kickバッチは全編の軽量音声解析を共有し、Shortsと話題別の�
 自動選定のスコアは意味的な面白さや話題の完結を保証しません。
 文脈を確認して調整した区間は、`tools/submit_rich_batch.py`で私有の入力としてworkerへ渡せます。
 
+## OpenCodeでの開発
+
+OpenCodeでの開発には[ClipForge用ハーネス](docs/OPENCODE_HARNESS.md)を使えます。
+`/clipforge-review`・`/clipforge-fix`・`/clipforge-verify`から、共通の自動検証へ接続します。
+`uv sync --locked --group dev`後、`uv run --offline python harness/check_pipeline.py`で
+lint・format・回帰検査・カバレッジ・設定/スキーマ・差分検査を実行できます。検証自体にAPIキーは不要です。
+
 ## できること
 
 - 動画ファイル1本から、CPU/int8のFaster-Whisperで単語時刻付き文字起こし。

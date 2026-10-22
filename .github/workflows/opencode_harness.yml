@@ -1,4 +1,4 @@
-name: Offline regression checks
+name: OpenCode Quality Harness
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: clipforge-tests-${{ github.ref }}
+  group: clipforge-harness-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -35,16 +35,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
-      - name: Install locked package
-        run: uv sync --locked --no-dev
-      - name: Check offline contracts, layout and resume behavior
-        run: uv run python -m unittest discover -s tests -v
-      - name: Verify published schema matches runtime model
-        run: |
-          uv run python - <<'PY'
-          import json
-          from pathlib import Path
-          from clipforge.batch_models import ClipsManifest, ProductionPlan
-          assert json.loads(Path('schemas/clips_manifest.schema.json').read_text()) == ClipsManifest.model_json_schema()
-          assert json.loads(Path('schemas/production_plan.schema.json').read_text()) == ProductionPlan.model_json_schema()
-          PY
+      - name: Install locked package and verification dependencies
+        run: uv sync --locked --group dev
+      - name: OpenCode harness (offline, no model credentials)
+        run: uv run --offline python harness/check_pipeline.py

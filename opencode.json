@@ -1,0 +1,39 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "clipforge",
+  "share": "disabled",
+  "autoupdate": false,
+  "instructions": ["AGENTS.md", "docs/RICH_BATCH.md"],
+  "provider": {"opencode": {"blacklist": ["gpt-6.1-sol"]}},
+  "agent": {
+    "clipforge": {
+      "mode": "primary",
+      "description": "ClipForgeの調査・修正・オフライン検証",
+      "prompt": "AGENTS.mdを守る。調査→再現→最小修正→オフライン検査→差分確認の順に進める。実動画・発話・認証情報を取得・表示・公開しない。全編ASRや描画を制御VMで実行しない。モデル変更、fallback、別エージェント、ジョブ投入、push、マージ、公開は禁止。設定読込と実際の修正・検証の完走を区別し、未確認事項を明記する。作業は指定されたプロジェクト内に限定する。",
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "todowrite": "allow",
+        "bash": {
+          "*": "deny",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "uv run --offline python harness/check_pipeline.py": "allow",
+          "python harness/check_pipeline.py": "allow",
+          "uv run --offline python -m unittest discover -s tests*": "allow",
+          "python -m unittest discover -s tests*": "allow",
+          "python -m compileall src tools": "allow"
+        },
+        "external_directory": "deny",
+        "task": "deny",
+        "webfetch": "deny",
+        "websearch": "deny"
+      }
+    }
+  }
+}

@@ -79,7 +79,10 @@ def verify(previous, cache, output, assets, kind, clip_id):
     ]
     if after != srt or not after:
         raise PipelineError("ASS/SRT differ", code="caption_consistency")
-    text = lambda rows: "".join("".join(row[2].split()) for row in rows)
+
+    def text(rows):
+        return "".join("".join(row[2].split()) for row in rows)
+
     if text(before) != text(after):
         raise PipelineError(
             "caption update changed dialogue", code="caption_text_changed"
