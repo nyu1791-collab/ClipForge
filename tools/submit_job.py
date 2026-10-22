@@ -3,15 +3,16 @@
 
 import argparse
 import fcntl
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import tempfile
 import time
 import uuid
+
+from clipforge import github_cli
+from clipforge.storage import digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
@@ -149,30 +150,18 @@ def preflight_audio_url(url, settings):
 
 
 def gh(*args, body=None, timeout=120):
-    result = subprocess.run(
-        ["gh", *args], input=body, text=True, capture_output=True, timeout=timeout
+    # The shared runner never prints stderr, where gh may echo signed URLs.
+    return github_cli.run(
+        *args,
+        body=body,
+        timeout=timeout,
+        include_command=True,
+        include_http_status=True,
     )
-    if result.returncode:
-        # Never print signed URLs that gh may include in raw stderr.
-        status = re.search(r"HTTP ([0-9]{3})\b", result.stderr)
-        suffix = " (HTTP " + status[1] + ")" if status else ""
-        raise RuntimeError("GitHub operation failed: " + args[0] + suffix)
-    return result.stdout
-
-
-def digest(path):
-    value = hashlib.sha256()
-    with path.open("rb") as source:
-        while data := source.read(1024 * 1024):
-            value.update(data)
-    return value.hexdigest()
 
 
 def save(path, receipt):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(receipt, indent=2))
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    write_json(path, receipt)
 
 
 def plain_tree(directory):

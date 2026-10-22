@@ -12,6 +12,9 @@ import subprocess
 import sys
 import tempfile
 
+from clipforge import github_cli
+from clipforge.storage import digest, write_json
+
 REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "main"
 WORKFLOW = "clipforge-stages.yml"
@@ -44,27 +47,18 @@ SUBMIT_OPTIONS = (
 
 
 def gh(*args, body=None, timeout=60):
-    result = subprocess.run(
-        ["gh", *args], input=body, text=True, capture_output=True, timeout=timeout
+    # The shared runner never prints stderr, where gh may echo signed URLs.
+    return github_cli.run(
+        *args,
+        body=body,
+        timeout=timeout,
+        message="private audio-stage GitHub operation failed; no retry",
+        include_http_status=True,
     )
-    if result.returncode:
-        raise RuntimeError("private audio-stage GitHub operation failed; no retry")
-    return result.stdout
-
-
-def digest(path):
-    value = hashlib.sha256()
-    with path.open("rb") as source:
-        while data := source.read(1024 * 1024):
-            value.update(data)
-    return value.hexdigest()
 
 
 def save(path, receipt):
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(receipt, indent=2))
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    write_json(path, receipt)
 
 
 def safe_relative(name):

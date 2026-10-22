@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import uuid
@@ -34,7 +35,9 @@ def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_name("." + path.name + "." + uuid.uuid4().hex)
     try:
-        with temporary.open("x", encoding="utf-8") as out:
+        # Created private, so the content is never readable by others while it is written.
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as out:
             json.dump(value, out, ensure_ascii=False, indent=2, allow_nan=False)
         temporary.chmod(0o600)
         temporary.replace(path)

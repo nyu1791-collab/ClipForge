@@ -10,16 +10,11 @@ import platform
 import shlex
 import sys
 
+# Standard library only: this runs on Colab before the project environment exists.
+from colab_bundle import digest as sha256
+
 REPOSITORY = Path(__file__).resolve().parents[1]
 PARTS = ("uv", "pip", "python", "apt", "bootstrap")
-
-
-def sha256(path):
-    value = hashlib.sha256()
-    with path.open("rb") as handle:
-        for data in iter(lambda: handle.read(1024 * 1024), b""):
-            value.update(data)
-    return value.hexdigest()
 
 
 def profile():

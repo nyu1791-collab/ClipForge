@@ -1169,7 +1169,7 @@ def test_audio_analysis_rejects_network_enrichment(submitter, tmp_path):
 def test_github_failure_exposes_only_http_status(monkeypatch):
     module = load_tool("submit_job")
     monkeypatch.setattr(
-        module.subprocess,
+        module.github_cli.subprocess,
         "run",
         lambda *a, **k: SimpleNamespace(
             returncode=1,

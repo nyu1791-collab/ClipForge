@@ -13,6 +13,8 @@ PRIVATE_REPO = "nyu1791-collab/ai-model-workers"
 
 
 def gh(*args):
+    # Kept standard-library only, unlike clipforge.github_cli: `cleanup` runs with the system
+    # python3 so the temporary input is deleted even when dependency setup failed.
     result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=180)
     if result.returncode:
         raise RuntimeError("private input operation failed")
