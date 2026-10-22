@@ -254,6 +254,186 @@ def collect_args(destination):
     return ["--collect", COLLECT_REQUEST, "--output", str(destination)]
 
 
+def build_delivery_collector(collector, stage):
+    module, control, state = collector
+    status = "complete" if stage == "merge" else "clip_rendered"
+    parts = ["c" * 32, "f" * 32]
+    for name in ("request.json", "receipt.json"):
+        path = state / name
+        saved = json.loads(path.read_text())
+        saved.update(audio_stage=stage, clip_index="" if stage == "merge" else "2")
+        if name == "request.json":
+            saved["part_runs"] = "11:" + parts[0] + ",12:" + parts[1]
+        path.write_text(json.dumps(saved))
+    root = control["artifact"].with_name("delivery-artifact")
+    rendered = []
+    for index in [1, 2] if stage == "merge" else [2]:
+        directory = f"delivery/clips/clip-{index:03}"
+        clip = root / directory
+        clip.mkdir(parents=True)
+        for name in ("video.mp4", "captions.ass", "captions.srt", "quality.json"):
+            (clip / name).write_bytes(b"synthetic clip output")
+        rendered.append(
+            {
+                "directory": directory,
+                "sha256": {path.name: sha(path) for path in clip.iterdir()},
+            }
+        )
+    manifest = {
+        "status": status,
+        "audio_stage": "render",
+        "source_url": KICK_URL,
+        "source_sha256": "0" * 64,
+        "rendered": rendered,
+    }
+    if stage == "render":
+        manifest["clip_index"] = 2
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    (root / "delivery/manifest.json").write_text(json.dumps(manifest))
+    if stage == "merge":
+        (root / "delivery/e2e-summary.json").write_text("{}")
+    receipt = {
+        "request_id": COLLECT_REQUEST,
+        "source_ref": SOURCE_REF,
+        "workflow_run": str(RUN_ID),
+        "status": status,
+        "audio_source_url": KICK_URL,
+        "sha256": {
+            path.relative_to(root).as_posix(): sha(path)
+            for path in root.rglob("*")
+            if path.is_file()
+        },
+        "asr_reused": True,
+        "audio_stage": stage,
+        "previous_request_id": PREVIOUS_REQUEST,
+    }
+    if stage == "merge":
+        receipt["part_request_ids"] = list(reversed(parts))
+    else:
+        receipt.update(previous_run_id=PREVIOUS_RUN, clip_index=2)
+    (root / "request-receipt.json").write_text(json.dumps(receipt))
+    control["artifact"] = root
+    return module, control, state
+
+
+@pytest.fixture(params=["merge", "render"])
+def delivery_collector(collector, request):
+    return build_delivery_collector(collector, request.param)
+
+
+def test_collect_delivery_without_analysis_files(delivery_collector, tmp_path):
+    module, control, state = delivery_collector
+    destination = tmp_path / "collected"
+    assert module.main(collect_args(destination)) == 0
+    assert (destination / "delivery/clips/clip-002/video.mp4").read_bytes() == (
+        b"synthetic clip output"
+    )
+    assert not (destination / "audio.m4a").exists()
+    assert not (destination / "transcripts").exists()
+    saved = json.loads((state / "receipt.json").read_text())
+    assert saved["status"] == "COLLECTED" and saved["run_id"] == RUN_ID
+    assert control["downloads"] == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"part_request_ids": ["c" * 32]},
+        {"part_request_ids": ["c" * 32, "e" * 32]},
+        {"part_request_ids": None},
+        {"previous_request_id": "e" * 32},
+        {"previous_request_id": None},
+        {"previous_run_id": "999"},
+    ],
+)
+def test_collect_merge_rejects_lineage_mismatch(collector, tmp_path, overrides):
+    module, control, _ = build_delivery_collector(collector, "merge")
+    path = control["artifact"] / "request-receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt.update(overrides)
+    path.write_text(json.dumps(receipt))
+    destination = tmp_path / "collected"
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("key", ["previous_request_id", "part_request_ids"])
+def test_collect_merge_requires_lineage(collector, tmp_path, key):
+    module, control, _ = build_delivery_collector(collector, "merge")
+    path = control["artifact"] / "request-receipt.json"
+    receipt = json.loads(path.read_text())
+    del receipt[key]
+    path.write_text(json.dumps(receipt))
+    destination = tmp_path / "collected"
+    with pytest.raises(RuntimeError, match="identity mismatch"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "manifest.json",
+        "delivery/clips/clip-002/video.mp4",
+        "delivery/clips/clip-002/captions.ass",
+        "delivery/clips/clip-002/captions.srt",
+    ],
+)
+def test_collect_delivery_rejects_missing_required_file(
+    delivery_collector, tmp_path, name
+):
+    module, control, state = delivery_collector
+    root = control["artifact"]
+    (root / name).unlink()
+    path = root / "request-receipt.json"
+    receipt = json.loads(path.read_text())
+    del receipt["sha256"][name]
+    path.write_text(json.dumps(receipt))
+    destination = tmp_path / "collected"
+    with pytest.raises(RuntimeError, match="omits required files"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
+    assert json.loads((state / "receipt.json").read_text())["status"] == "DISPATCHED"
+
+
+@pytest.mark.parametrize(
+    "fault", ["extra", "hash", "unsafe", "invalid_sha", "status", "receipt_status"]
+)
+def test_collect_delivery_preserves_safety_checks(delivery_collector, tmp_path, fault):
+    module, control, _ = delivery_collector
+    root = control["artifact"]
+    path = root / "request-receipt.json"
+    receipt = json.loads(path.read_text())
+    if fault == "extra":
+        (root / "unlisted.txt").write_text("synthetic extra")
+        error = "unlisted"
+    elif fault == "hash":
+        (root / "delivery/clips/clip-002/video.mp4").write_bytes(b"changed")
+        error = "SHA-256 mismatch"
+    elif fault == "unsafe":
+        receipt["sha256"]["../escape"] = "a" * 64
+        error = "unsafe path"
+    elif fault == "invalid_sha":
+        receipt["sha256"]["manifest.json"] = "invalid"
+        error = "invalid SHA-256"
+    elif fault == "receipt_status":
+        receipt["status"] = "awaiting_video_review"
+        error = "identity mismatch"
+    else:
+        manifest_path = root / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["status"] = "awaiting_video_review"
+        manifest_path.write_text(json.dumps(manifest))
+        receipt["sha256"]["manifest.json"] = sha(manifest_path)
+        error = "manifest does not match"
+    path.write_text(json.dumps(receipt))
+    destination = tmp_path / "collected"
+    with pytest.raises(RuntimeError, match=error):
+        module.main(collect_args(destination))
+    assert not destination.exists()
+
+
 def test_collect_verifies_listed_files_and_writes_new_directory(
     collector, tmp_path, capsys
 ):
@@ -267,6 +447,36 @@ def test_collect_verifies_listed_files_and_writes_new_directory(
     printed = capsys.readouterr().out
     assert KICK_URL not in printed and "sha256" not in printed
     assert control["downloads"] == 1
+
+
+@pytest.mark.parametrize("clip_index", [None, ""])
+def test_collect_full_render_keeps_analysis_requirements(
+    collector, tmp_path, clip_index
+):
+    module, control, state = collector
+    for name in ("request.json", "receipt.json"):
+        path = state / name
+        saved = json.loads(path.read_text())
+        saved.update(audio_stage="render", clip_index=clip_index)
+        path.write_text(json.dumps(saved))
+    root = control["artifact"]
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.update(audio_stage="render", status="complete")
+    manifest_path.write_text(json.dumps(manifest))
+    receipt_path = root / "request-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt.update(audio_stage="render", status="complete")
+    receipt["sha256"]["manifest.json"] = sha(manifest_path)
+    receipt_path.write_text(json.dumps(receipt))
+    assert module.main(collect_args(tmp_path / "collected")) == 0
+    (root / "audio.m4a").unlink()
+    del receipt["sha256"]["audio.m4a"]
+    receipt_path.write_text(json.dumps(receipt))
+    destination = tmp_path / "incomplete"
+    with pytest.raises(RuntimeError, match="omits required files"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
 
 
 def test_collect_rejects_sha_mismatch(collector, tmp_path):

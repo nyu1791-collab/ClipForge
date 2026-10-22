@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 import re
 import sys
+import unicodedata
 
 EDGE_START_SECONDS = 120
 EDGE_END_SECONDS = 180
@@ -30,11 +31,14 @@ GREETING_MIN_HITS = 2
 REPEAT_MIN_COUNT = 10
 REPEAT_RE = re.compile(rf"(\S{{1,4}}?)\1{{{REPEAT_MIN_COUNT - 1},}}")
 CHARS_PER_SECOND_REFERENCE = 8.0
+# Sharing at least half the distinct trigrams is a review cue, not semantic proof.
+NEAR_DUPLICATE_THRESHOLD = 0.5
 PENALTY = {
     "edge": 0.1,
     "greeting": 0.2,
     "repetition": 0.5,
     "profanity": 0.5,
+    "duplicate": 0.2,
 }
 
 
@@ -90,6 +94,58 @@ def _repeat_max(text):
     return best
 
 
+def _speech_ratio(topic):
+    length = topic["end"] - topic["start"]
+    return min(1.0, topic["speech"] / length) if length > 0 else 0.0
+
+
+def _trigrams(text):
+    normalized = "".join(
+        char
+        for char in unicodedata.normalize("NFKC", text)
+        if not char.isspace() and unicodedata.category(char)[0] not in "PS"
+    )
+    return {normalized[index : index + 3] for index in range(len(normalized) - 2)}
+
+
+def _mark_near_duplicates(topics, hints):
+    grams = [_trigrams(topic["text"]) for topic in topics]
+    densities = [_speech_ratio(topic) for topic in topics]
+    matches = [[] for _ in topics]
+    maxima = [0.0 for _ in topics]
+    duplicates = set()
+    for left in range(len(topics)):
+        for right in range(left + 1, len(topics)):
+            union = grams[left] | grams[right]
+            similarity = len(grams[left] & grams[right]) / len(union) if union else 0.0
+            maxima[left] = max(maxima[left], similarity)
+            maxima[right] = max(maxima[right], similarity)
+            if similarity >= NEAR_DUPLICATE_THRESHOLD:
+                matches[left].append((right, similarity))
+                matches[right].append((left, similarity))
+                duplicates.add(
+                    min(
+                        (left, right),
+                        key=lambda index: (
+                            densities[index],
+                            -topics[index]["start"],
+                            -index,
+                        ),
+                    )
+                )
+    for index, hint in enumerate(hints):
+        matches[index].sort(
+            key=lambda match: (-match[1], topics[match[0]]["start"], match[0])
+        )
+        hint["near_duplicates"] = [
+            topics[other]["id"] for other, _ in matches[index][:3]
+        ]
+        hint["max_similarity"] = round(maxima[index], 3)
+        hint["duplicate"] = index in duplicates
+        if hint["duplicate"]:
+            hint["score"] = round(hint["score"] - PENALTY["duplicate"], 4)
+
+
 def _hint(topic, duration, terms):
     text = topic["text"]
     start, end = topic["start"], topic["end"]
@@ -102,12 +158,11 @@ def _hint(topic, duration, terms):
     profanity = None
     if terms is not None:
         profanity = any(term in text for term in terms)
+    speech_ratio = _speech_ratio(topic)
     if length > 0:
-        speech_ratio = min(1.0, topic["speech"] / length)
         chars = len(re.sub(r"\s", "", text))
         chars_per_second = chars / length
     else:
-        speech_ratio = 0.0
         chars_per_second = 0.0
     base = 0.5 * speech_ratio + 0.5 * min(
         1.0, chars_per_second / CHARS_PER_SECOND_REFERENCE
@@ -148,6 +203,7 @@ def hint_topics(analysis, *, profanity_terms=None):
     topics = [_topic(row) for row in rows]
     duration = _stream_duration(analysis, topics)
     hints = [_hint(topic, duration, terms) for topic in topics]
+    _mark_near_duplicates(topics, hints)
     hints.sort(key=lambda hint: (-hint["score"], hint["start"]))
     return {
         "status": "topic_hints",

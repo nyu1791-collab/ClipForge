@@ -17,7 +17,11 @@ BRANCH = "ccr-12fe9485-ugaszt"
 WORKFLOW = "clipforge.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
 MAX_ACTIVE = {"colab-auto": 4}
-RESULT_STATUS = {"previews": "awaiting_video_review", "render": "complete"}
+RESULT_STATUS = {
+    "previews": "awaiting_video_review",
+    "render": "complete",
+    "merge": "complete",
+}
 REQUIRED_FILES = {
     "audio.m4a",
     "asr-receipt.json",
@@ -123,25 +127,48 @@ def find_stage_run(identity):
 
 
 def previous_identity_matches(returned, request):
-    """Receipts from before the previous-stage keys existed are checked only locally (no failure).
+    """Check merge lineage strictly, preserving legacy receipts for earlier stages.
 
     When a key is present, it must equal the locally recorded previous run or request.
     """
     for key in ("previous_run_id", "previous_request_id"):
         if key in returned and str(returned[key]) != str(request[key]):
             return False
+    if request.get("audio_stage") == "merge":
+        parts = request.get("part_runs", "")
+        returned_parts = returned.get("part_request_ids")
+        if (
+            returned.get("previous_request_id") != request["previous_request_id"]
+            or not isinstance(parts, str)
+            or not re.fullmatch(
+                r"[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}",
+                parts,
+            )
+            or not isinstance(returned_parts, list)
+            or not all(isinstance(part, str) for part in returned_parts)
+        ):
+            return False
+        return set(returned_parts) == {part.split(":")[1] for part in parts.split(",")}
     return True
+
+
+def expected_status(stage, request):
+    if stage == "render" and request.get("clip_index") not in (None, ""):
+        return "clip_rendered"
+    return RESULT_STATUS[stage]
 
 
 def verify_stage_artifact(root, identity, stage, request, run_id):
     """Check the worker receipt, every listed SHA-256, extra files and generated receipts."""
     returned = json.loads((root / "request-receipt.json").read_text())
     hashes = returned.get("sha256")
+    status = expected_status(stage, request)
+    delivery_only = stage == "merge" or status == "clip_rendered"
     if (
         returned.get("request_id") != identity
         or returned.get("source_ref") != request["source_ref"]
         or returned.get("audio_stage") != stage
-        or returned.get("status") != RESULT_STATUS[stage]
+        or returned.get("status") != status
         or returned.get("asr_reused") is not True
         or not returned.get("audio_source_url")
         or str(returned.get("workflow_run")) != str(run_id)
@@ -155,7 +182,8 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     for value in hashes.values():
         if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
             raise RuntimeError("invalid SHA-256 entry in stage receipt")
-    if not listed >= REQUIRED_FILES:
+    required = {"manifest.json"} if delivery_only else REQUIRED_FILES
+    if not listed >= required:
         raise RuntimeError("stage artifact omits required files")
     found = staged_files(root) - {"request-receipt.json"}
     missing = listed - found
@@ -171,23 +199,32 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     for name, value in hashes.items():
         if digest(root / name) != value:
             raise RuntimeError("stage artifact SHA-256 mismatch")
-    cache = json.loads((root / "asr-receipt.json").read_text())
-    key = cache.get("key", "")
-    if (
-        not cache.get("reused")
-        or not isinstance(key, str)
-        or not re.fullmatch(r"[a-f0-9]{64}", key)
-        or "transcripts/" + key + ".json" not in listed
-    ):
-        raise RuntimeError("stage ASR identity is incomplete")
+    if not delivery_only:
+        cache = json.loads((root / "asr-receipt.json").read_text())
+        key = cache.get("key", "")
+        if (
+            not cache.get("reused")
+            or not isinstance(key, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", key)
+            or "transcripts/" + key + ".json" not in listed
+        ):
+            raise RuntimeError("stage ASR identity is incomplete")
     manifest = json.loads((root / "manifest.json").read_text())
     if (
-        manifest.get("status") != RESULT_STATUS[stage]
-        or manifest.get("audio_stage") != stage
+        manifest.get("status") != status
+        # The merge worker writes a render delivery with merge lineage in its receipt.
+        or manifest.get("audio_stage")
+        not in ({stage, "render"} if stage == "merge" else {stage})
         or manifest.get("source_url") != returned["audio_source_url"]
-        or manifest.get("source_sha256") != hashes["audio.m4a"]
+        or (
+            "audio.m4a" in hashes
+            and manifest.get("source_sha256") != hashes["audio.m4a"]
+        )
     ):
         raise RuntimeError("stage manifest does not match the artifact receipt")
+    rendered = manifest.get("rendered", [])
+    if delivery_only and (not isinstance(rendered, list) or not rendered):
+        raise RuntimeError("stage artifact omits required rendered clips")
     for name in sorted(listed):
         if name.endswith(".receipt.json"):
             media = name[: -len(".receipt.json")]
@@ -198,8 +235,17 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
                 or generated.get("source_url") != returned["audio_source_url"]
             ):
                 raise RuntimeError("generated receipt does not match its media")
-    for row in manifest.get("rendered", []):
+    for row in rendered:
         directory = safe_relative(row.get("directory"))
+        if delivery_only:
+            if not re.fullmatch(r"delivery/clips/clip-[0-9]{3}", directory):
+                raise RuntimeError("stage manifest has an invalid clip directory")
+            required = {
+                directory + "/" + name
+                for name in ("video.mp4", "captions.ass", "captions.srt")
+            }
+            if not listed >= required:
+                raise RuntimeError("stage artifact omits required files")
         for name, value in row.get("sha256", {}).items():
             if hashes.get(safe_relative(directory + "/" + name)) != value:
                 raise RuntimeError("rendered clip receipt does not match its file")

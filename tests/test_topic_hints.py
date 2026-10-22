@@ -87,6 +87,91 @@ def test_profanity_not_judged_by_default_and_judged_with_terms():
     assert not hint_for(topic("a", 300, 360, 30, text), terms=["別語"])["profanity"]
 
 
+@pytest.mark.parametrize(
+    ("speech_a", "speech_b", "expected_duplicate"),
+    [(45, 30, "b"), (30, 45, "a"), (30, 30, "b"), (30, 30.0001, "a")],
+)
+def test_near_duplicates_mark_both_but_penalize_only_lower_density_or_later(
+    speech_a, speech_b, expected_duplicate
+):
+    topics = [
+        topic("a", 300, 360, speech_a, "架空の青いロボットが庭で花を育てます"),
+        topic("b", 400, 460, speech_b, "架空の青いロボットが庭で花を育てますよ"),
+    ]
+    # Reverse input order: a density tie must still prefer the earlier topic.
+    result = th.hint_topics({"duration": 1000, "topics": topics[::-1]})
+    rows = {row["id"]: row for row in result["topics"]}
+    for original in topics:
+        row = rows[original["id"]]
+        assert row["near_duplicates"] == ["b" if row["id"] == "a" else "a"]
+        assert th.NEAR_DUPLICATE_THRESHOLD <= row["max_similarity"] < 1
+        assert row["max_similarity"] == round(row["max_similarity"], 3)
+        assert row["duplicate"] is (row["id"] == expected_duplicate)
+        penalty = th.PENALTY["duplicate"] if row["duplicate"] else 0
+        assert row["score"] == pytest.approx(hint_for(original)["score"] - penalty)
+        assert original["text"] not in json.dumps(result, ensure_ascii=False)
+
+
+def test_near_duplicates_normalize_nfkc_whitespace_punctuation_and_symbols():
+    topics = [
+        topic("a", 300, 360, 30, "ＡＢＣ　架空の、庭！＋★\n花"),
+        topic("b", 400, 460, 30, "ABC架空の庭花"),
+    ]
+    rows = th.hint_topics({"duration": 1000, "topics": topics})["topics"]
+    assert all(row["near_duplicates"] for row in rows)
+    assert all(row["max_similarity"] == 1.0 for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "similarity"),
+    [
+        ("架空の青いロボット", "月面探検と宇宙船", 0.0),
+        ("abcdef", "abcxyz", 0.143),
+        ("！★", "\n　", 0.0),
+        ("あい", "あい", 0.0),
+    ],
+)
+def test_unrelated_or_short_topics_have_no_duplicate_penalty(left, right, similarity):
+    topics = [topic("a", 300, 360, 30, left), topic("b", 400, 460, 30, right)]
+    rows = th.hint_topics({"duration": 1000, "topics": topics})["topics"]
+    for row in rows:
+        assert row["near_duplicates"] == []
+        assert row["max_similarity"] == similarity
+        assert row["duplicate"] is False
+        original = next(original for original in topics if original["id"] == row["id"])
+        assert row["score"] == hint_for(original)["score"]
+
+
+def test_near_duplicates_rank_top_three_and_penalize_only_once():
+    topics = [
+        topic("a", 300, 360, 10, "abcdefghij"),
+        topic("b", 400, 460, 30, "abcdefghijXYZ"),
+        topic("c", 500, 560, 30, "abcdefghijXY"),
+        topic("d", 600, 660, 30, "abcdefghijX"),
+        topic("e", 700, 760, 30, "abcdefghij"),
+    ]
+    rows = th.hint_topics({"duration": 1000, "topics": topics})["topics"]
+    row = next(row for row in rows if row["id"] == "a")
+    assert row["near_duplicates"] == ["e", "d", "c"]
+    assert row["max_similarity"] == 1.0
+    assert row["duplicate"] is True
+    assert row["score"] == pytest.approx(
+        hint_for(topics[0])["score"] - th.PENALTY["duplicate"]
+    )
+    assert len(rows) == len(topics)
+
+
+def test_near_duplicate_threshold_is_inclusive():
+    topics = [
+        topic("a", 300, 360, 30, "abcde"),
+        topic("b", 400, 460, 30, "abcdefgh"),
+    ]
+    # Three shared trigrams out of six distinct trigrams: exactly 0.5.
+    rows = th.hint_topics({"duration": 1000, "topics": topics})["topics"]
+    assert all(row["max_similarity"] == 0.5 for row in rows)
+    assert all(row["near_duplicates"] for row in rows)
+
+
 def test_output_never_contains_body_text():
     text = SECRET * 3 + "おはよう" * 2 + "はっ" * 10
     analysis = {"duration": 1000, "topics": [topic("a", 0, 60, 30, text)]}
@@ -107,7 +192,10 @@ def test_cli_outputs_json_without_body(tmp_path):
     source = tmp_path / "topics.json"
     analysis = {
         "duration": 1000,
-        "topics": [topic("topic-001", 0, 60, 30, SECRET + "おはよう" * 2)],
+        "topics": [
+            topic("topic-001", 0, 60, 30, SECRET + "おはよう" * 2),
+            topic("topic-002", 300, 360, 20, SECRET + "おはよう" * 2),
+        ],
     }
     source.write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
     completed = subprocess.run(
@@ -122,6 +210,8 @@ def test_cli_outputs_json_without_body(tmp_path):
     data = json.loads(completed.stdout)
     assert data["topics"][0]["id"] == "topic-001"
     assert data["topics"][0]["greeting"] is True
+    assert data["topics"][0]["near_duplicates"] == ["topic-002"]
+    assert data["topics"][0]["max_similarity"] == 1.0
 
 
 def test_cli_profanity_dictionary_and_failure(tmp_path, capsys):
