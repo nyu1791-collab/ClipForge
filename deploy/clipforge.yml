@@ -17,9 +17,9 @@ on:
         type: string
         required: true
       worker:
-        description: Automatic Colab T4, already-connected Colab runner, or explicit CPU
+        description: Automatic Colab T4 or explicit CPU
         type: choice
-        options: [colab-auto, colab-gpu, cpu]
+        options: [colab-auto, cpu]
         default: colab-auto
       shape:
         description: Colab runtime shape for colab-auto (high-ram has 8 CPU cores and 51 GB)
@@ -49,15 +49,15 @@ permissions:
   actions: read
 
 # Each colab-auto job owns its own T4, so those run side by side (the account grants two).
-# Hosted and self-hosted runners share one group and run one at a time.
+# Hosted CPU jobs share one group and run one at a time.
 concurrency:
   group: ${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}
   cancel-in-progress: false
 
 jobs:
   clip:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker != 'colab-auto'
-    runs-on: ${{ inputs.worker == 'colab-gpu' && fromJSON('["self-hosted","linux","x64","colab-gpu"]') || 'ubuntu-24.04' }}
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'cpu'
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
@@ -66,7 +66,7 @@ jobs:
       PYTHONUNBUFFERED: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_DISABLE_TELEMETRY: '1'
-      CLIPFORGE_REQUIRE_CUDA: ${{ inputs.worker == 'colab-gpu' && '1' || '0' }}
+      CLIPFORGE_REQUIRE_CUDA: '0'
     steps:
       - name: Validate request identifiers
         timeout-minutes: 10
@@ -90,56 +90,25 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@v5
         timeout-minutes: 10
-        if: inputs.worker != 'colab-gpu'
         with:
           python-version: '3.11'
       - uses: astral-sh/setup-uv@v6
         timeout-minutes: 10
-        if: inputs.worker != 'colab-gpu'
         with:
           version: '0.12.23'
           enable-cache: false
       - name: Install media tools and Japanese fonts
         timeout-minutes: 10
         run: |
-          if [ "$CLIPFORGE_REQUIRE_CUDA" = 1 ] && [ -f clipforge-source/tools/colab_cache_env.sh ]; then
-            cd clipforge-source
-            source tools/colab_cache_env.sh
-            python3 tools/colab_cache.py restore
-            python3 tools/colab_cache.py github-env
-            bash tools/colab_os_deps.sh
-          else
-            if [ "$(id -u)" = 0 ]; then APT=(apt-get); else APT=(sudo apt-get); fi
-            "${APT[@]}" update -qq
-            "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk gh libcairo2
-          fi
+          if [ "$(id -u)" = 0 ]; then APT=(apt-get); else APT=(sudo apt-get); fi
+          "${APT[@]}" update -qq
+          "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk gh libcairo2
       - name: Install locked Python dependencies without API credentials
         timeout-minutes: 10
         working-directory: clipforge-source
         shell: bash
         run: |
-          if [ "$CLIPFORGE_REQUIRE_CUDA" = 1 ]; then
-            if ! uv sync --offline --locked --python 3.11 --extra chat --extra cuda --no-dev; then
-              if [ "${CLIPFORGE_OFFLINE:-0}" = 1 ]; then
-                echo 'Dependency cache incomplete; offline mode forbids downloading.' >&2
-                exit 1
-              fi
-              uv sync --locked --python 3.11 --extra chat --extra cuda --no-dev
-            fi
-            source tools/colab_cuda_env.sh
-            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
-            nvidia-smi
-            .venv/bin/python - <<'PY'
-          import ctypes
-          import ctranslate2
-          ctypes.CDLL('libcublas.so.12')
-          ctypes.CDLL('libcudnn.so.9')
-          assert ctranslate2.get_cuda_device_count() > 0, 'GPU worker requires CUDA'
-          assert 'float16' in ctranslate2.get_supported_compute_types('cuda')
-          PY
-          else
-            uv sync --locked --extra chat --no-dev
-          fi
+          uv sync --locked --extra chat --no-dev
       - name: Download and validate temporary private input
         timeout-minutes: 10
         id: prepare
@@ -170,14 +139,6 @@ jobs:
           clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py run \
             --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input" \
             --output "$RUNNER_TEMP/clipforge-out"
-      - name: Persist public GPU dependencies for the next Colab session
-        timeout-minutes: 10
-        if: always() && inputs.worker == 'colab-gpu'
-        continue-on-error: true
-        run: |
-          if [ -f clipforge-source/tools/colab_cache.py ]; then
-            python3 clipforge-source/tools/colab_cache.py save
-          fi
       - name: Keep partial transcript privately after failure, timeout or cancellation
         timeout-minutes: 10
         if: failure() || cancelled()

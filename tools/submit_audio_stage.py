@@ -15,8 +15,6 @@ import tempfile
 REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "main"
 WORKFLOW = "clipforge-stages.yml"
-LEGACY_BRANCH = "ccr-12fe9485-ugaszt"
-LEGACY_WORKFLOW = "clipforge.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
 MAX_ACTIVE = {"colab-auto": 4}
 RESULT_STATUS = {
@@ -96,8 +94,7 @@ def staged_files(root):
     return names
 
 
-def find_stage_run(identity, worker_ref=BRANCH):
-    workflow = LEGACY_WORKFLOW if worker_ref == LEGACY_BRANCH else WORKFLOW
+def find_stage_run(identity):
     runs = json.loads(
         gh(
             "run",
@@ -105,9 +102,9 @@ def find_stage_run(identity, worker_ref=BRANCH):
             "--repo",
             REPO,
             "--workflow",
-            workflow,
+            WORKFLOW,
             "--branch",
-            worker_ref,
+            BRANCH,
             "--limit",
             "100",
             "--json",
@@ -119,7 +116,7 @@ def find_stage_run(identity, worker_ref=BRANCH):
         for row in runs
         if row["displayTitle"] == "ClipForge " + identity
         and row["event"] == "workflow_dispatch"
-        and row["headBranch"] == worker_ref
+        and row["headBranch"] == BRANCH
     ]
     if len(matches) != 1:
         raise RuntimeError("expected exactly one private stage run for this request")
@@ -132,11 +129,10 @@ def find_stage_run(identity, worker_ref=BRANCH):
 
 
 def previous_identity_matches(returned, request):
-    """Check merge lineage strictly, preserving legacy receipts for earlier stages.
-
-    When a key is present, it must equal the locally recorded previous run or request.
-    """
+    """Check the previous run and request identities, including merge lineage."""
     for key in ("previous_run_id", "previous_request_id"):
+        if request.get("audio_stage") != "merge" and key not in returned:
+            return False
         if key in returned and str(returned[key]) != str(request[key]):
             return False
     if request.get("audio_stage") == "merge":
@@ -378,7 +374,7 @@ def collect(identity, destination):
     if (
         stage not in RESULT_STATUS
         or receipt.get("repository") != REPO
-        or receipt.get("worker_ref") not in {BRANCH, LEGACY_BRANCH}
+        or receipt.get("worker_ref") != BRANCH
         or receipt.get("request_id") != identity
         or request.get("request_id") != identity
         or request.get("input_tag") != "clipforge-input-" + identity
@@ -391,7 +387,7 @@ def collect(identity, destination):
     ):
         raise RuntimeError("saved stage request identity mismatch")
     destination = prepare_destination(destination)
-    run_id = find_stage_run(identity, receipt["worker_ref"])
+    run_id = find_stage_run(identity)
     with tempfile.TemporaryDirectory(
         prefix=".clipforge-collect-", dir=destination.parent
     ) as temporary:

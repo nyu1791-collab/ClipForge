@@ -430,9 +430,7 @@ def test_audio_analysis_dispatch_has_no_model_or_secret_requirement(
 
     monkeypatch.setattr(module, "gh", gh)
     url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
-    invoke(
-        "--audio-analysis-url", url, "--ref", "ccr-12fe9485-ugaszt", "--worker", worker
-    )
+    invoke("--audio-analysis-url", url, "--ref", "main", "--worker", worker)
     assert control["request"]["audio_source_url"] == url
     assert control["request"]["settings"]["gemini_model"] == "manual-no-api"
     assert len(control["posts"]) == 1
@@ -707,8 +705,15 @@ def test_settings_json_limit_counts_utf8_bytes(submitter):
         module.parse_settings_json(boundary + " ")
 
 
-@pytest.mark.parametrize("worker", ["cpu", "colab-gpu"])
-def test_url_only_audio_requires_colab_auto(submitter, monkeypatch, worker):
+def test_retired_worker_is_rejected_before_remote_access(submitter):
+    _, _, control, invoke = submitter
+    with pytest.raises(SystemExit) as error:
+        invoke("--worker", "colab-gpu")
+    assert error.value.code == 2
+    assert not control["calls"]
+
+
+def test_url_only_audio_requires_colab_auto(submitter, monkeypatch):
     module, _, control, _ = submitter
     monkeypatch.setattr(
         sys,
@@ -718,7 +723,7 @@ def test_url_only_audio_requires_colab_auto(submitter, monkeypatch, worker):
             "--audio-analysis-url",
             "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
             "--worker",
-            worker,
+            "cpu",
         ],
     )
     with pytest.raises(SystemExit) as error:

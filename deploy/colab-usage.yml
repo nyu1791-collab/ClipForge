@@ -7,6 +7,20 @@ on:
         description: Exact reviewed ClipForge commit SHA
         type: string
         required: true
+      probe:
+        description: Optionally request one runtime and release it at once (none reads the balance only)
+        type: choice
+        options: [none, T4, L4, CPU]
+        default: none
+      hold:
+        description: Seconds to keep the probed runtime while reading its hourly rate (0-300)
+        type: string
+        default: '0'
+      shape:
+        description: Runtime shape for the probe
+        type: choice
+        options: [standard, high-ram]
+        default: standard
 
 permissions:
   contents: read
@@ -46,3 +60,13 @@ jobs:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py doctor
+      - name: Probe whether one more runtime is granted, then release it
+        if: inputs.probe != 'none'
+        env:
+          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+          # GitHub compares strings without case, so the CPU runtime is named CPU here.
+          CLIPFORGE_PROBE_ACCELERATOR: ${{ inputs.probe == 'CPU' && 'NONE' || inputs.probe }}
+          CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
+          CLIPFORGE_PROBE_HOLD: ${{ inputs.hold }}
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py probe

@@ -20,7 +20,7 @@ REPO = "nyu1791-collab/ai-model-workers"
 PART_RUN = re.compile(r"([0-9]{1,20}):([a-f0-9]{32})")
 RUN_FIELDS = "status,conclusion,displayTitle,event,workflowName,headBranch"
 STAGE_WORKFLOWS = {"ClipForge audio-first stages", "ClipForge"}
-STAGE_BRANCHES = {"main", "ccr-12fe9485-ugaszt"}
+STAGE_BRANCHES = {"main"}
 
 
 def gh(*args):

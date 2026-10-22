@@ -155,7 +155,7 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
   colab-render:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto' && inputs.audio_stage == 'render'
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
     env:
@@ -173,6 +173,8 @@ jobs:
         run: |
           python3 - <<'PY'
           import os,re,json,pathlib
+          if os.environ['AUDIO_STAGE'] != 'render':
+              raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')
           for key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:
               assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])
           assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']

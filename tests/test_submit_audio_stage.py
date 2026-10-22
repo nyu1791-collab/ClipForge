@@ -126,7 +126,7 @@ def test_other_branch_does_not_block_new_stage_workflow(stage_submitter):
     control["runs"] = [
         {
             "workflow": module.WORKFLOW,
-            "headBranch": module.LEGACY_BRANCH,
+            "headBranch": "other-branch",
             "status": "in_progress",
         }
     ]
@@ -694,16 +694,15 @@ def test_collect_accepts_matching_previous_run_and_request(collector, tmp_path):
     assert receipt["previous_request_id"] == PREVIOUS_REQUEST
 
 
-def test_collect_accepts_legacy_receipt_without_previous_keys(collector, tmp_path):
+def test_collect_rejects_receipt_without_previous_keys(collector, tmp_path):
     module, control, _ = collector
     legacy = tmp_path / "legacy"
     build_artifact(legacy, drop=("previous_run_id", "previous_request_id"))
     control["artifact"] = legacy
     destination = tmp_path / "collected"
-    assert module.main(collect_args(destination)) == 0
-    assert (destination / "previews/topic-001.mp4").is_file()
-    receipt = json.loads((destination / "request-receipt.json").read_text())
-    assert "previous_run_id" not in receipt
+    with pytest.raises(RuntimeError, match="identity"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
 
 
 def test_collect_requires_a_successful_stage_run(collector, tmp_path):
@@ -715,17 +714,18 @@ def test_collect_requires_a_successful_stage_run(collector, tmp_path):
     assert control["downloads"] == 0 and not destination.exists()
 
 
-def test_collect_legacy_worker_branch_uses_legacy_workflow(collector, tmp_path):
+def test_collect_rejects_retired_worker_branch_before_download(collector, tmp_path):
     module, control, state = collector
     path = state / "receipt.json"
     receipt = json.loads(path.read_text())
-    receipt["worker_ref"] = module.LEGACY_BRANCH
+    receipt["worker_ref"] = "ccr-12fe9485-ugaszt"
     path.write_text(json.dumps(receipt))
-    control["run"]["headBranch"] = module.LEGACY_BRANCH
-    assert module.main(collect_args(tmp_path / "legacy-collected")) == 0
-    args = control["list_args"][-1]
-    assert args[args.index("--workflow") + 1] == "clipforge.yml"
-    assert args[args.index("--branch") + 1] == module.LEGACY_BRANCH
+    control["run"]["headBranch"] = receipt["worker_ref"]
+    destination = tmp_path / "legacy-collected"
+    with pytest.raises(RuntimeError, match="saved stage request identity mismatch"):
+        module.main(collect_args(destination))
+    assert not control["list_args"] and control["downloads"] == 0
+    assert not destination.exists()
 
 
 def render_args(args, tmp_path, *extra):
@@ -1061,3 +1061,63 @@ def test_audio_stages_yaml_loads_and_merge_skips_os_packages():
     install = next(step for step in steps if "dpkg-query" in step.get("run", ""))
     assert install["if"] == cache["if"]
     assert "apt-get install --no-download" in install["run"]
+
+
+@pytest.mark.parametrize("path", sorted(Path("deploy").glob("*.yml")))
+def test_deployment_yaml_loads(path):
+    import yaml
+
+    workflow = yaml.safe_load(path.read_text())
+    assert workflow[True]["workflow_dispatch"] is not None
+    assert workflow["jobs"]
+
+
+@pytest.mark.parametrize("worker", ["cpu", "colab-auto"])
+@pytest.mark.parametrize("stage", ["previews", "render", "merge"])
+def test_audio_stage_workflow_validates_worker_stage_combination(
+    tmp_path, monkeypatch, worker, stage
+):
+    import yaml
+
+    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
+    job = workflow["jobs"]["colab-render" if worker == "colab-auto" else "audio-stage"]
+    assert f"inputs.worker == '{worker}'" in job["if"]
+    assert "inputs.audio_stage" not in job["if"]
+    for name, value in {
+        "SOURCE_REF": SOURCE_REF,
+        "CLIPFORGE_SOURCE_REF": SOURCE_REF,
+        "REQUEST_ID": "d" * 32,
+        "INPUT_TAG": "clipforge-input-" + "d" * 32,
+        "PREVIOUS_RUN": str(PREVIOUS_RUN),
+        "PREVIOUS_REQUEST": PREVIOUS_REQUEST,
+        "AUDIO_STAGE": stage,
+        "CLIP_INDEX": "",
+        "PART_RUNS": "123:" + "c" * 32 if stage == "merge" else "",
+        "REVIEW_JSON": '{"clips": [{"video_reviewed": true}]}',
+        "RUNNER_TEMP": str(tmp_path),
+    }.items():
+        monkeypatch.setenv(name, value)
+    code = job["steps"][0]["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    if worker == "colab-auto" and stage != "render":
+        with pytest.raises(
+            SystemExit, match="worker=colab-auto requires audio_stage=render"
+        ):
+            exec(compile(code, "stage-validation", "exec"), {})
+        assert not (tmp_path / "review.json").exists()
+    else:
+        exec(compile(code, "stage-validation", "exec"), {})
+        assert json.loads((tmp_path / "review.json").read_text())["clips"]
+
+
+def test_video_workflow_uses_only_hosted_cpu_or_automatic_colab():
+    import yaml
+
+    workflow = yaml.safe_load(Path("deploy/clipforge.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["worker"]["options"] == ["colab-auto", "cpu"]
+    assert inputs["worker"]["default"] == "colab-auto"
+    for name, worker in (("clip", "cpu"), ("colab-auto", "colab-auto")):
+        job = workflow["jobs"][name]
+        assert job["runs-on"] == "ubuntu-24.04"
+        assert f"inputs.worker == '{worker}'" in job["if"]
+    assert workflow["jobs"]["clip"]["env"]["CLIPFORGE_REQUIRE_CUDA"] == "0"

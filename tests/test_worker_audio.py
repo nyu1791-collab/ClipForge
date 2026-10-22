@@ -251,7 +251,6 @@ def test_missing_recorded_transcript_stops_before_network_or_recognition(
     [
         ("ClipForge audio-first stages", "main"),
         ("ClipForge", "main"),
-        ("ClipForge", "ccr-12fe9485-ugaszt"),
     ],
 )
 def test_worker_main_downloads_only_a_completed_private_analysis(
@@ -700,6 +699,7 @@ def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
         ("workflowName", "Unrelated workflow"),
         ("workflowName", None),
         ("headBranch", "unreviewed"),
+        ("headBranch", "ccr-12fe9485-ugaszt"),
         ("headBranch", None),
     ],
 )
@@ -921,6 +921,7 @@ def _previews_args(output):
         ("workflowName", "Unrelated workflow"),
         ("workflowName", None),
         ("headBranch", "unreviewed"),
+        ("headBranch", "ccr-12fe9485-ugaszt"),
         ("headBranch", None),
     ],
 )
@@ -954,7 +955,7 @@ def test_previous_run_provenance_is_checked_before_downloading(
     "workflow, branch",
     [
         ("ClipForge audio-first stages", "main"),
-        ("ClipForge", "ccr-12fe9485-ugaszt"),
+        ("ClipForge", "main"),
     ],
 )
 def test_download_parts_accepts_only_confirmed_stage_metadata(

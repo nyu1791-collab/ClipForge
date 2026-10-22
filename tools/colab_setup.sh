@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# First setup populates a Drive cache; subsequent setups try offline installation first.
+# Automatic Colab setup tries the local public asset cache before downloading.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 clipforge_default_profile=gpu
@@ -15,15 +15,9 @@ clipforge_record_timing() {
   awk -v name="$1" -v started="$2" -v finished="$(date +%s.%N)" \
     'BEGIN { printf "%s\t%.3f\n", name, finished - started }' >> "$clipforge_timings"
 }
-clipforge_should_save() {
-  [[ ${1:-0} == 1 || ${2:-0} == 1 ]]
-}
 fetched=0
 if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then nvidia-smi; fi
 source tools/colab_cache_env.sh
-cache_restore_started=$(date +%s.%N)
-python3 tools/colab_cache.py restore
-clipforge_record_timing cache_restore "$cache_restore_started"
 os_deps_started=$(date +%s.%N)
 bash tools/colab_os_deps.sh
 clipforge_record_timing os_deps "$os_deps_started"
@@ -94,20 +88,8 @@ print('Requested Whisper model files are available; inference has not been run.'
 PY
 fi
 clipforge_record_timing model_prepare "$model_prepare_started"
-runner_asset_started=$(date +%s.%N)
-if [[ ${CLIPFORGE_SKIP_RUNNER_ASSET:-0} != 1 ]]; then
-  python3 tools/colab_cache.py runner >/dev/null
-fi
-clipforge_record_timing runner_asset "$runner_asset_started"
 # Tell the worker that this setup fetched something the shared cache does not hold yet.
 if [[ $fetched == 1 && -n ${CLIPFORGE_SETUP_FETCHED:-} ]]; then : > "$CLIPFORGE_SETUP_FETCHED"; fi
-if clipforge_should_save "${CLIPFORGE_PREPARE_ONLY:-0}" "$fetched"; then
-  cache_save_started=$(date +%s.%N)
-  python3 tools/colab_cache.py save
-  clipforge_record_timing cache_save "$cache_save_started"
-else
-  echo 'Dependency snapshot unchanged; save skipped.'
-fi
 if [[ ${CLIPFORGE_PREPARE_ONLY:-0} == 1 ]]; then
-  echo 'Public assets prepared without requiring a GPU. No runner registered; no inference performed.'
+  echo 'Public assets prepared without requiring a GPU. No inference performed.'
 fi

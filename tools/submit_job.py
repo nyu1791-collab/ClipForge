@@ -17,8 +17,8 @@ REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
 WORKFLOW = "clipforge.yml"
 # Each Colab job owns its own T4. The account was measured to grant two T4 runtimes at once
-# (a third was refused on 2026-10-22), so two jobs may run side by side; hosted and
-# self-hosted runners keep one job at a time.
+# (a third was refused on 2026-10-22), so two jobs may run side by side; the hosted CPU
+# runner keeps one job at a time.
 MAX_ACTIVE = {"colab-auto": 2}
 MAX_SETTINGS_JSON_BYTES = 16 * 1024
 SETTINGS_FIELDS = {
@@ -800,9 +800,7 @@ def main():
         help="allocate topics from a Kick VOD or local audio; no Gemini calls",
     )
     parser.add_argument("--ref", default="main")
-    parser.add_argument(
-        "--worker", choices=["colab-auto", "colab-gpu", "cpu"], default="colab-auto"
-    )
+    parser.add_argument("--worker", choices=["colab-auto", "cpu"], default="colab-auto")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
     parser.add_argument("--clips", type=int)
@@ -929,20 +927,6 @@ def dispatch(args, state_root):
     workflow = json.loads(gh("api", f"repos/{REPO}/actions/workflows/{WORKFLOW}"))
     if workflow.get("state") != "active":
         raise RuntimeError("private ClipForge workflow is not active")
-    if args.worker == "colab-gpu":
-        runners = json.loads(
-            gh("api", f"repos/{REPO}/actions/runners", "--paginate", "--slurp")
-        )
-        if not any(
-            runner.get("status") == "online"
-            and not runner.get("busy")
-            and "colab-gpu" in {label["name"] for label in runner.get("labels", [])}
-            for page in runners
-            for runner in page.get("runners", [])
-        ):
-            raise RuntimeError(
-                "no idle Colab GPU runner; start the notebook before submitting"
-            )
     runs = json.loads(
         gh(
             "run",

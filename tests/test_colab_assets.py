@@ -4,7 +4,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import sys
@@ -180,13 +179,14 @@ class DependencyCacheTests(unittest.TestCase):
             for cpu_only, profile in (("0", "gpu"), ("1", "cpu")):
                 os.environ["CLIPFORGE_CPU_ONLY"] = cpu_only
                 key, root, persistent = cache.configuration()
+                self.assertIsNone(persistent)
                 profiles[profile] = key, cache.release_tag(key)
                 self.assertIn(f"cache-{profile}-", cache.release_tag(key))
                 self.assertEqual(
                     "models/hub" in cache.release_parts(), profile == "gpu"
                 )
                 self.assertEqual(
-                    cache.environment(root, persistent)["HF_HUB_CACHE"],
+                    cache.environment(root)["HF_HUB_CACHE"],
                     str(root / "models/hub"),
                 )
             self.assertNotEqual(profiles["cpu"][0], profiles["gpu"][0])
@@ -279,11 +279,6 @@ class DependencyCacheTests(unittest.TestCase):
                         bundles.restore(tag, root, "assets", "key", parts=parts)
                     )
                     cache.mark_restored("key", root)
-                    # A stale Drive manifest must never be consulted after release restore.
-                    persistent = base / "drive"
-                    persistent.mkdir()
-                    (persistent / "key.json").write_text("invalid")
-                    cache.restore("key", root, persistent)
                 self.assertTrue(destinations)
                 self.assertEqual(set(destinations), {root})
                 self.assertEqual((root / "uv/alias").read_text(), "PUBLIC_WHEEL")
@@ -294,9 +289,6 @@ class DependencyCacheTests(unittest.TestCase):
                 self.assertFalse((root / "uv/cache.lock").exists())
                 self.assertFalse(list(root.glob("*.tar")))
                 self.assertEqual((root / ".restored").read_text(), "key")
-                self.assertEqual(
-                    (root / ".saved-inventory").read_text(), cache.inventory(root)
-                )
                 uploads = bundles.uploads
                 bundles.publish(tag, root, work, "assets", "key", parts=parts)
                 self.assertEqual(bundles.uploads, uploads)
@@ -348,65 +340,35 @@ class DependencyCacheTests(unittest.TestCase):
                 self.assertFalse((root / ".restored").exists())
                 self.assertFalse((base / "escape").exists())
 
-    def test_cache_restore_keeps_public_packages_and_excludes_credentials(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            root = base / "local"
-            (root / "uv/archive").mkdir(parents=True)
-            (root / "uv/archive/package").write_text("PUBLIC_WHEEL")
-            (root / "uv/alias").symlink_to(root / "uv/archive/package")
-            (root / "runner-credentials").write_text("PRIVATE_SENTINEL")
-            persistent = base / "drive"
-            persistent.mkdir()
-            cache.save("a" * 24, root, persistent)
-            manifest = json.loads((persistent / ("a" * 24 + ".json")).read_text())
-            with tarfile.open(persistent / manifest["archive"]) as bundle:
-                self.assertTrue(
-                    all(m.name.split("/")[0] in cache.PARTS for m in bundle)
-                )
-            shutil.rmtree(root)
-            root.mkdir()
-            cache.restore("a" * 24, root, persistent)
-            self.assertEqual((root / "uv/alias").read_text(), "PUBLIC_WHEEL")
-            self.assertFalse((root / "runner-credentials").exists())
-
-    def test_cache_restore_reads_archive_in_place_without_copying(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            root, persistent = base / "local", base / "drive"
-            (root / "uv").mkdir(parents=True)
-            (root / "uv/package").write_text("PUBLIC")
-            persistent.mkdir()
-            cache.save("c" * 24, root, persistent)
-            manifest = json.loads((persistent / ("c" * 24 + ".json")).read_text())
-            archive = persistent / manifest["archive"]
-            before = archive.read_bytes()
-            shutil.rmtree(root)
-            root.mkdir()
-            with patch.object(cache.shutil, "copyfile", side_effect=AssertionError):
-                cache.restore("c" * 24, root, persistent)
-            self.assertEqual((root / "uv/package").read_text(), "PUBLIC")
-            self.assertEqual(archive.read_bytes(), before)
+    def test_configuration_ignores_removed_drive_cache(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(
+                os.environ,
+                {
+                    "CLIPFORGE_LOCAL_CACHE": temporary,
+                    "CLIPFORGE_PERSISTENT_CACHE": "/content/drive/removed-cache",
+                },
+            ),
+        ):
+            key, root, persistent = cache.configuration()
+            self.assertIsNone(persistent)
+            self.assertEqual(root, Path(temporary) / key)
             self.assertEqual(
-                sorted(p.name for p in persistent.iterdir()),
-                sorted([archive.name, "c" * 24 + ".json"]),
+                cache.environment(root)["HF_HUB_CACHE"], str(root / "models/hub")
             )
 
-    def test_corrupted_dependency_snapshot_is_not_restored(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
-            root, persistent = base / "local", base / "drive"
-            (root / "python").mkdir(parents=True)
-            persistent.mkdir()
-            (root / "python/python").write_bytes(b"public interpreter")
-            cache.save("b" * 24, root, persistent)
-            manifest = json.loads((persistent / ("b" * 24 + ".json")).read_text())
-            (persistent / manifest["archive"]).write_bytes(b"broken archive")
-            shutil.rmtree(root)
-            root.mkdir()
-            with self.assertRaisesRegex(RuntimeError, "checksum"):
-                cache.restore("b" * 24, root, persistent)
-            self.assertFalse((root / "python").exists())
+    def test_removed_cache_commands_are_rejected_before_configuration(self):
+        for command in ("restore", "save", "runner", "github-env"):
+            with (
+                self.subTest(command=command),
+                patch.object(sys, "argv", ["colab_cache.py", command]),
+                patch.object(cache, "configuration") as configuration,
+                self.assertRaises(SystemExit) as error,
+            ):
+                cache.main()
+            self.assertEqual(error.exception.code, 2)
+            configuration.assert_not_called()
 
     def test_cache_configuration_changes_with_lock_and_os(self):
         with (
@@ -623,26 +585,29 @@ class SetupScriptTests(unittest.TestCase):
                 )
             )
 
-    def test_setup_save_is_skipped_only_when_nothing_new_was_fetched(self):
-        source = self.script.read_text()
-        match = re.search(
-            r"^clipforge_should_save\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL
+    def test_setup_reports_fetched_assets_for_release_publication(self):
+        block = (
+            self.script.read_text()
+            .split("# Tell the worker that this setup fetched something", 1)[1]
+            .split("\n", 1)[1]
         )
-        self.assertIsNotNone(match)
-        for prepare_only, fetched, expected in (
-            ("0", "0", 1),
-            ("1", "0", 0),
-            ("0", "1", 0),
-            ("1", "1", 0),
-        ):
-            result = subprocess.run(
-                [
-                    "bash",
-                    "-c",
-                    match.group(0) + f"clipforge_should_save {prepare_only} {fetched}",
-                ]
-            )
-            self.assertEqual(result.returncode, expected)
+        for fetched in ("0", "1"):
+            with (
+                self.subTest(fetched=fetched),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                marker = Path(temporary) / "fetched"
+                subprocess.run(
+                    ["bash", "-c", block],
+                    env={
+                        **os.environ,
+                        "fetched": fetched,
+                        "CLIPFORGE_SETUP_FETCHED": str(marker),
+                        "CLIPFORGE_PREPARE_ONLY": "0",
+                    },
+                    check=True,
+                )
+                self.assertEqual(marker.exists(), fetched == "1")
 
 
 class RemotePipelineTests(unittest.TestCase):
