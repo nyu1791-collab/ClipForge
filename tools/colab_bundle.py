@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Stream private release bundles in bounded chunks, verifying every chunk."""
 
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import tarfile
 import tempfile
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 
 REPOSITORY = "nyu1791-collab/ai-model-workers"
 CHUNK_BYTES = 512 * 1024 * 1024
+DOWNLOAD_WORKERS = 4
 MAX_BYTES = 24 * 1024**3
 CDN_HOSTS = {
     "release-assets.githubusercontent.com",
@@ -155,15 +158,59 @@ def check_manifest(data, kind, identity):
         raise BundleError("Invalid bundle size")
 
 
+class ChunkStream(io.RawIOBase):
+    """Read verified chunk files in order as one stream, deleting each once it is read.
+
+    Each item is a future that returns a chunk's path after its checksum matched, so no byte
+    is read before its whole chunk is verified.
+    """
+
+    def __init__(self, futures):
+        self.futures = list(futures)
+        self.index = 0
+        self.current = None
+
+    def readable(self):
+        return True
+
+    def readinto(self, buffer):
+        while True:
+            if self.current is None:
+                if self.index >= len(self.futures):
+                    return 0
+                path = self.futures[self.index].result()
+                self.current = (path, path.open("rb"))
+            count = self.current[1].readinto(buffer)
+            if count:
+                return count
+            path, handle = self.current
+            handle.close()
+            path.unlink()
+            self.current = None
+            self.index += 1
+
+    def finish(self):
+        """Read past tar's end padding so every chunk is verified and removed."""
+        while self.read(1024 * 1024):
+            pass
+
+
 class ReleaseBundles:
     def __init__(self, token):
         if not token:
             raise BundleError("Private release authentication is missing")
         self.token = token
-        self.opener = urllib.request.build_opener(SafeRedirect())
+        self._local = threading.local()
         info = self.json_request("GET", f"https://api.github.com/repos/{REPOSITORY}")
         if not info.get("private"):
             raise BundleError("Bundle repository must remain private")
+
+    @property
+    def opener(self):
+        # Chunks download on several threads; each thread keeps its own opener.
+        if not hasattr(self._local, "opener"):
+            self._local.opener = urllib.request.build_opener(SafeRedirect())
+        return self._local.opener
 
     def open(self, method, url, *, data=None, size=None, binary=False):
         host = urllib.parse.urlsplit(url).hostname
@@ -281,7 +328,8 @@ class ReleaseBundles:
                 ):
                     self.json_request("DELETE", asset["url"])
 
-    def download_asset(self, asset, path, maximum):
+    def download_asset(self, asset, path, maximum, hasher=None):
+        """Save one asset; hasher, when given, sees every byte as it is written."""
         if not 0 < asset["size"] <= maximum:
             raise BundleError("Private asset size exceeds its limit")
         count = 0
@@ -294,8 +342,18 @@ class ReleaseBundles:
                 if count > maximum:
                     raise BundleError("Private asset exceeds its transfer limit")
                 out.write(data)
+                if hasher is not None:
+                    hasher.update(data)
         if count != asset["size"]:
             raise BundleError("Private asset transfer was incomplete")
+
+    def download_chunk(self, asset, path, chunk):
+        """Download and verify one chunk, hashing while it arrives rather than re-reading it."""
+        sha = hashlib.sha256()
+        self.download_asset(asset, path, chunk["bytes"], sha)
+        if path.stat().st_size != chunk["bytes"] or sha.hexdigest() != chunk["sha256"]:
+            raise BundleError("Private bundle checksum mismatch")
+        return path
 
     def restore(self, tag, destination, kind, identity, required=False):
         release = self.release(tag)
@@ -315,31 +373,40 @@ class ReleaseBundles:
             self.download_asset(manifest, record, 1024 * 1024)
             data = json.loads(record.read_text())
             check_manifest(data, kind, identity)
-            archive = temporary / "bundle.tar"
-            with archive.open("wb") as out:
-                for i, chunk in enumerate(data["chunks"]):
-                    if chunk["name"] not in assets:
-                        raise BundleError("A private bundle chunk is missing")
-                    path = temporary / f"{i}.part"
-                    self.download_asset(assets[chunk["name"]], path, chunk["bytes"])
-                    if (
-                        path.stat().st_size != chunk["bytes"]
-                        or digest(path) != chunk["sha256"]
-                    ):
-                        raise BundleError("Private bundle checksum mismatch")
-                    with path.open("rb") as source:
-                        shutil.copyfileobj(source, out, 1024 * 1024)
-                    path.unlink()
+            for chunk in data["chunks"]:
+                if chunk["name"] not in assets:
+                    raise BundleError("A private bundle chunk is missing")
             unpacked = temporary / "unpacked"
             unpacked.mkdir()
-            with tarfile.open(archive) as bundle:
-                count = total = 0
-                for member in bundle:
-                    count += 1
-                    total += member.size
-                    if count > 200000 or total > MAX_BYTES:
-                        raise BundleError("Expanded bundle exceeds its size limit")
-                    bundle.extract(member, unpacked, filter="data")
+            # Chunks download side by side and are extracted in order as each one is
+            # verified, streamed straight into tar: no joined copy of the bundle is written.
+            with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
+                pending = [
+                    pool.submit(
+                        self.download_chunk,
+                        assets[chunk["name"]],
+                        temporary / f"{i}.part",
+                        chunk,
+                    )
+                    for i, chunk in enumerate(data["chunks"])
+                ]
+                try:
+                    stream = ChunkStream(pending)
+                    mode = "r|gz" if kind == "assets" else "r|"
+                    with tarfile.open(fileobj=stream, mode=mode) as bundle:
+                        count = total = 0
+                        for member in bundle:
+                            count += 1
+                            total += member.size
+                            if count > 200000 or total > MAX_BYTES:
+                                raise BundleError(
+                                    "Expanded bundle exceeds its size limit"
+                                )
+                            bundle.extract(member, unpacked, filter="data")
+                    stream.finish()
+                finally:
+                    for future in pending:
+                        future.cancel()
             if destination.exists():
                 destination.rmdir()
             unpacked.rename(destination)

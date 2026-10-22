@@ -31,11 +31,13 @@ class MemoryBundles(ReleaseBundles):
             {"name": path.name, "size": path.stat().st_size, "url": path.name}
         )
 
-    def download_asset(self, asset, path, maximum):
+    def download_asset(self, asset, path, maximum, hasher=None):
         data = self.saved[asset["name"]]
         if len(data) > maximum:
             raise BundleError("size exceeded")
         path.write_bytes(data)
+        if hasher is not None:
+            hasher.update(data)
 
     def json_request(self, method, url, **kwargs):
         if method != "DELETE":
@@ -247,3 +249,51 @@ class DependencyCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StreamedRestoreTests(unittest.TestCase):
+    def publish_many_chunks(self, root, kind, tag, identity):
+        import colab_bundle
+
+        source = root / "source"
+        source.mkdir()
+        # Incompressible bytes, so even the gzip bundle spans several small chunks.
+        (source / "blob.bin").write_bytes(os.urandom(40000))
+        (source / "small.txt").write_text("ordered")
+        bundles = MemoryBundles()
+        work = root / "upload"
+        work.mkdir()
+        with patch.object(colab_bundle.pack, "__defaults__", (4096,)):
+            bundles.publish(tag, source, work, kind, identity)
+        return bundles, source
+
+    def test_many_chunks_download_in_parallel_and_extract_in_order(self):
+        for kind, tag, identity in (
+            ("assets", "clipforge-cache-" + "a" * 24, "key"),
+            ("result", "clipforge-input-" + "a" * 32, "request"),
+        ):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                bundles, source = self.publish_many_chunks(root, kind, tag, identity)
+                self.assertGreater(
+                    sum(name.endswith(".part") for name in bundles.saved), 3
+                )
+                bundles.restore(tag, root / "restored", kind, identity, required=True)
+                for name in ("blob.bin", "small.txt"):
+                    self.assertEqual(
+                        (root / "restored" / name).read_bytes(),
+                        (source / name).read_bytes(),
+                    )
+                self.assertEqual(sorted(p.name for p in root.glob("*.part")), [])
+
+    def test_a_corrupted_middle_chunk_commits_nothing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tag = "clipforge-input-" + "b" * 32
+            bundles, _ = self.publish_many_chunks(root, "result", tag, "request")
+            names = [n for n in bundles.saved if n.endswith(".part")]
+            middle = names[len(names) // 2]
+            bundles.saved[middle] = b"X" + bundles.saved[middle][1:]
+            with self.assertRaisesRegex(BundleError, "checksum"):
+                bundles.restore(tag, root / "out", "result", "request", required=True)
+            self.assertFalse((root / "out").exists())
