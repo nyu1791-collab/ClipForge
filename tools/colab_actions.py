@@ -206,7 +206,7 @@ import json, pathlib, runpy, subprocess, sys
 def _clipforge_bootstrap():
     payload_path = pathlib.Path('/content/.clipforge-job.json')
     try:
-        subprocess.run(['git','clone','--no-checkout',{SOURCE_REPO!r},'/content/ClipForge'],
+        subprocess.run(['git','clone','--no-checkout','--filter=blob:none',{SOURCE_REPO!r},'/content/ClipForge'],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         subprocess.run(['git','-C','/content/ClipForge','checkout','--detach',{source!r}],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -228,6 +228,48 @@ del _clipforge_bootstrap
         finally:
             private_payload.unlink(missing_ok=True)
             runtime.stop()
+        release_error = None
+        if record["mode"] == "pipeline":
+            # The results are already published in the Release, so the T4 is freed before
+            # downloading them. stop() is idempotent; the workflow's final stop step retries
+            # if this release is not confirmed.
+            try:
+                self.stop()
+            except Exception as error:
+                release_error = error
+        try:
+            self.collect(record, output, execution_failed, token, remote_state)
+        finally:
+            self.report_stages(output)
+            if release_error is not None:
+                print(
+                    "Early Colab release failed: " + type(release_error).__name__,
+                    file=sys.stderr,
+                )
+        if release_error is not None:
+            raise ControlError(
+                "Colab runtime release was not confirmed after results were retrieved"
+            )
+
+    def report_stages(self, output):
+        # Prints only public stage timings and the error class recorded by the worker.
+        for name in ("gpu-receipt.json", "colab-report.json"):
+            path = Path(output) / name
+            if not path.is_file():
+                continue
+            receipt = json.loads(path.read_text())
+            print(
+                "Colab stage: "
+                + str(receipt.get("stage"))
+                + " error: "
+                + str(receipt.get("error_type"))
+                + " timings: "
+                + str(receipt.get("timings", {})),
+                flush=True,
+            )
+            return
+
+    def collect(self, record, output, execution_failed, token, remote_state):
         bundles = ReleaseBundles(token)
         if record["mode"] == "pipeline":
             bundles.restore(
@@ -294,6 +336,8 @@ del _clipforge_bootstrap
                 )
             remote_state.token = fresh.runtime_proxy_info.token
             remote_state.url = fresh.runtime_proxy_info.url
+            from colab_cli.contents import ContentsClient
+
             contents = ContentsClient(remote_state)
             report_path = self.root / "remote-report.json"
             contents.download("/content/clipforge-report.json", str(report_path))

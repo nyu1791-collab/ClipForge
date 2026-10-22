@@ -9,6 +9,8 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+from contextlib import contextmanager
 
 from colab_bundle import ReleaseBundles, REPOSITORY
 from colab_cache import configuration
@@ -16,6 +18,46 @@ from colab_cache import configuration
 ROOT = Path("/content/ClipForge")
 WORK = Path("/content/clipforge-job")
 PERSISTENT = Path("/content/clipforge-public-assets")
+
+
+@contextmanager
+def timed(timings, name):
+    # Records elapsed seconds even when the stage fails; only the stage name is stored.
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        timings[name] = round(time.monotonic() - started, 2)
+
+
+def publish_result(bundles, payload, output, report, timings):
+    # Results are published before the dependency cache so the control plane can
+    # release the T4 and retrieve them early. Returns False if publication failed.
+    receipt = output / "request-receipt.json"
+    if not receipt.is_file():
+        receipt.write_text(
+            json.dumps(
+                {
+                    "request_id": payload["request_id"],
+                    "source_ref": payload["source_ref"],
+                    "status": "failed",
+                    "rendered_clips": 0,
+                }
+            )
+        )
+    (output / "gpu-receipt.json").write_text(json.dumps(report))
+    try:
+        with (
+            timed(timings, "result_publish"),
+            tempfile.TemporaryDirectory(prefix="clipforge-result-upload-") as work,
+        ):
+            bundles.publish(
+                payload["input_tag"], output, work, "result", payload["request_id"]
+            )
+    except Exception as error:
+        report["result_error_type"] = type(error).__name__
+        return False
+    return True
 
 
 def command(arguments, environment, name, timeout=4800):
@@ -109,7 +151,9 @@ def main():
     os.environ["CLIPFORGE_PERSISTENT_CACHE"] = str(PERSISTENT)
     key, cache_root, persistent = configuration()
     cache_tag = "clipforge-cache-" + key
-    cached = bundles.restore(cache_tag, PERSISTENT, "assets", key)
+    timings = {}
+    with timed(timings, "cache_restore"):
+        cached = bundles.restore(cache_tag, PERSISTENT, "assets", key)
     environment = os.environ.copy()
     for name in ("GH_TOKEN", "GITHUB_TOKEN", "GEMINI_API_KEY", "COLAB_ADC_JSON"):
         environment.pop(name, None)
@@ -139,6 +183,7 @@ def main():
         "public_cache_restored": cached,
         "gemini_requests_in_verification": 0,
         "human_review_performed": False,
+        "timings": timings,
     }
     failed = False
     try:
@@ -146,7 +191,8 @@ def main():
         if mode != "prepare-cache":
             report["gpu"] = gpu_info()
         report["stage"] = "asset-setup"
-        command(["bash", "tools/colab_setup.sh"], environment, "setup")
+        with timed(timings, "setup"):
+            command(["bash", "tools/colab_setup.sh"], environment, "setup")
         if mode == "pipeline":
             report["stage"] = "private-input"
             tag = payload["input_tag"]
@@ -155,31 +201,33 @@ def main():
             prepare_env = {**environment, "GH_TOKEN": payload["github_token"]}
             python = str(ROOT / ".venv/bin/python")
             arguments = ["--tag", tag, "--directory", str(WORK / "input")]
-            command(
-                [python, "tools/run_request.py", "prepare", *arguments],
-                prepare_env,
-                "prepare",
-            )
+            with timed(timings, "prepare"):
+                command(
+                    [python, "tools/run_request.py", "prepare", *arguments],
+                    prepare_env,
+                    "prepare",
+                )
             # API secrets are withheld from dependency setup and cache handling.
             report["stage"] = "pipeline"
             run_env = {**environment, "GEMINI_API_KEY": payload["gemini_api_key"]}
             invocation = 'source tools/colab_cache_env.sh && source tools/colab_cuda_env.sh && exec "$@"'
-            command(
-                [
-                    "bash",
-                    "-c",
-                    invocation,
-                    "clipforge-run",
-                    python,
-                    "tools/run_request.py",
-                    "run",
-                    *arguments,
-                    "--output",
-                    str(output),
-                ],
-                run_env,
-                "pipeline",
-            )
+            with timed(timings, "pipeline"):
+                command(
+                    [
+                        "bash",
+                        "-c",
+                        invocation,
+                        "clipforge-run",
+                        python,
+                        "tools/run_request.py",
+                        "run",
+                        *arguments,
+                        "--output",
+                        str(output),
+                    ],
+                    run_env,
+                    "pipeline",
+                )
             report["status"] = json.loads((output / "manifest.json").read_text())[
                 "status"
             ]
@@ -195,39 +243,30 @@ def main():
         failed = True
         report["error_type"] = type(error).__name__
     finally:
+        # Results first (partial results included), then the dependency cache.
+        if mode == "pipeline" and not publish_result(
+            bundles, payload, output, report, timings
+        ):
+            failed = True
         try:
-            command(
-                ["python3", "tools/colab_cache.py", "save"],
-                environment,
-                "save-cache",
-                timeout=1200,
-            )
-            with tempfile.TemporaryDirectory(prefix="clipforge-cache-upload-") as work:
+            with timed(timings, "cache_save"):
+                command(
+                    ["python3", "tools/colab_cache.py", "save"],
+                    environment,
+                    "save-cache",
+                    timeout=1200,
+                )
+            with (
+                timed(timings, "cache_publish"),
+                tempfile.TemporaryDirectory(prefix="clipforge-cache-upload-") as work,
+            ):
                 bundles.publish(cache_tag, PERSISTENT, work, "assets", key)
             report["public_cache_saved"] = True
         except Exception as error:
             report["public_cache_saved"] = False
             report["cache_error_type"] = type(error).__name__
-        report_path = Path("/content/clipforge-report.json")
-        report_path.write_text(json.dumps(report))
+        Path("/content/clipforge-report.json").write_text(json.dumps(report))
         (output / "gpu-receipt.json").write_text(json.dumps(report))
-        if mode == "pipeline":
-            receipt = output / "request-receipt.json"
-            if not receipt.is_file():
-                receipt.write_text(
-                    json.dumps(
-                        {
-                            "request_id": payload["request_id"],
-                            "source_ref": payload["source_ref"],
-                            "status": "failed",
-                            "rendered_clips": 0,
-                        }
-                    )
-                )
-            with tempfile.TemporaryDirectory(prefix="clipforge-result-upload-") as work:
-                bundles.publish(
-                    payload["input_tag"], output, work, "result", payload["request_id"]
-                )
     if failed:
         raise RuntimeError("Colab job failed; available private output was preserved")
     print(

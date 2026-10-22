@@ -181,6 +181,28 @@ class DependencyCacheTests(unittest.TestCase):
             self.assertEqual((root / "uv/alias").read_text(), "PUBLIC_WHEEL")
             self.assertFalse((root / "runner-credentials").exists())
 
+    def test_cache_restore_reads_archive_in_place_without_copying(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root, persistent = base / "local", base / "drive"
+            (root / "uv").mkdir(parents=True)
+            (root / "uv/package").write_text("PUBLIC")
+            persistent.mkdir()
+            cache.save("c" * 24, root, persistent)
+            manifest = json.loads((persistent / ("c" * 24 + ".json")).read_text())
+            archive = persistent / manifest["archive"]
+            before = archive.read_bytes()
+            shutil.rmtree(root)
+            root.mkdir()
+            with patch.object(cache.shutil, "copyfile", side_effect=AssertionError):
+                cache.restore("c" * 24, root, persistent)
+            self.assertEqual((root / "uv/package").read_text(), "PUBLIC")
+            self.assertEqual(archive.read_bytes(), before)
+            self.assertEqual(
+                sorted(p.name for p in persistent.iterdir()),
+                sorted([archive.name, "c" * 24 + ".json"]),
+            )
+
     def test_corrupted_dependency_snapshot_is_not_restored(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

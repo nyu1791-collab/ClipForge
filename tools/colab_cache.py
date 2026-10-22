@@ -106,17 +106,15 @@ def restore(key, root, persistent):
         r"[a-f0-9]{64}", data["sha256"]
     ):
         raise RuntimeError("Unexpected dependency cache archive.")
+    # The archive name embeds its SHA-256 and is replaced atomically on save, so the
+    # file verified here is the one extracted below; it is read in place, never copied.
     archive = persistent / filename
+    if sha256(archive) != data["sha256"]:
+        raise RuntimeError("Dependency cache checksum mismatch; cache not restored.")
     with tempfile.TemporaryDirectory(prefix="restore-", dir=root.parent) as temporary:
-        local = Path(temporary) / "assets.tar"
-        shutil.copyfile(archive, local)
-        if sha256(local) != data["sha256"]:
-            raise RuntimeError(
-                "Dependency cache checksum mismatch; cache not restored."
-            )
         staging = Path(temporary) / "assets"
         staging.mkdir()
-        with tarfile.open(local) as bundle:
+        with tarfile.open(archive) as bundle:
             for member in bundle.getmembers():
                 if Path(member.name).parts[0] not in PARTS:
                     raise RuntimeError("Unexpected cache member.")
