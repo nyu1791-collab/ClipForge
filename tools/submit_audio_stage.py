@@ -116,6 +116,17 @@ def find_stage_run(identity):
     return run["databaseId"]
 
 
+def previous_identity_matches(returned, request):
+    """Receipts from before the previous-stage keys existed are checked only locally (no failure).
+
+    When a key is present, it must equal the locally recorded previous run or request.
+    """
+    for key in ("previous_run_id", "previous_request_id"):
+        if key in returned and str(returned[key]) != str(request[key]):
+            return False
+    return True
+
+
 def verify_stage_artifact(root, identity, stage, request, run_id):
     """Check the worker receipt, every listed SHA-256, extra files and generated receipts."""
     returned = json.loads((root / "request-receipt.json").read_text())
@@ -128,11 +139,7 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
         or returned.get("asr_reused") is not True
         or not returned.get("audio_source_url")
         or str(returned.get("workflow_run")) != str(run_id)
-        # The worker receipt does not yet name the previous run; when it does, it must match.
-        or str(returned.get("previous_run_id", request["previous_run_id"]))
-        != str(request["previous_run_id"])
-        or str(returned.get("previous_request_id", request["previous_request_id"]))
-        != str(request["previous_request_id"])
+        or not previous_identity_matches(returned, request)
         or not isinstance(hashes, dict)
         or not 1 <= len(hashes) <= MAX_LISTED_FILES
         or "request-receipt.json" in hashes
@@ -332,7 +339,18 @@ def main(argv=None):
         if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
             raise RuntimeError("audio stages require the private worker repository")
         runs = json.loads(
-            gh("run", "list", "--repo", REPO, "--limit", "100", "--json", "status")
+            gh(
+                "run",
+                "list",
+                "--repo",
+                REPO,
+                "--workflow",
+                WORKFLOW,
+                "--limit",
+                "100",
+                "--json",
+                "status",
+            )
         )
         if any(row["status"] != "completed" for row in runs):
             raise RuntimeError(

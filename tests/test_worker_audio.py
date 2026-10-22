@@ -187,6 +187,8 @@ def test_worker_main_downloads_only_a_completed_private_analysis(
     assert worker.main(args) == 0
     receipt = json.loads((output / "request-receipt.json").read_text())
     assert receipt["asr_reused"] is True and receipt["audio_stage"] == "previews"
+    assert receipt["previous_run_id"] == "123"
+    assert receipt["previous_request_id"] == IDENTITY
     assert "request-receipt.json" not in receipt["sha256"]
     assert json.loads(capsys.readouterr().out)["model_generation_requests"] == 0
     monkeypatch.setenv("GITHUB_REPOSITORY", "public/wrong")

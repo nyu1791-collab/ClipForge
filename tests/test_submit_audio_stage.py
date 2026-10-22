@@ -15,7 +15,13 @@ def stage_submitter(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setenv("HOME", str(tmp_path))
-    control = {"private": True, "active": False, "posts": [], "timeout": False}
+    control = {
+        "private": True,
+        "runs": [],
+        "list_args": [],
+        "posts": [],
+        "timeout": False,
+    }
 
     def gh(*args, body=None):
         if args[:2] == ("api", "user"):
@@ -25,7 +31,13 @@ def stage_submitter(tmp_path, monkeypatch):
         if args[:2] == ("repo", "view"):
             return json.dumps({"isPrivate": control["private"]})
         if args[:2] == ("run", "list"):
-            return json.dumps([{"status": "in_progress"}] if control["active"] else [])
+            # Mirror gh: --workflow restricts the listing to that workflow's runs.
+            control["list_args"].append(args)
+            rows = control["runs"]
+            if "--workflow" in args:
+                name = args[args.index("--workflow") + 1]
+                rows = [row for row in rows if row["workflow"] == name]
+            return json.dumps([{"status": row["status"]} for row in rows])
         control["posts"].append(json.loads(body))
         if control["timeout"]:
             raise TimeoutError("reply lost")
@@ -56,13 +68,32 @@ def test_stage_identity_prevents_duplicate_dispatch(stage_submitter):
     assert len(control["posts"]) == 1
 
 
+def test_active_clipforge_run_blocks_dispatch(stage_submitter):
+    module, control, args = stage_submitter
+    control["runs"] = [{"workflow": module.WORKFLOW, "status": "in_progress"}]
+    with pytest.raises(RuntimeError, match="another worker is active"):
+        module.main(args)
+    assert not control["posts"]
+
+
+def test_unrelated_workflow_run_does_not_block_dispatch(stage_submitter):
+    module, control, args = stage_submitter
+    control["runs"] = [{"workflow": "other.yml", "status": "in_progress"}]
+    assert module.main(args) == 0
+    assert len(control["posts"]) == 1
+    run_list = [a for a in control["list_args"] if a[:2] == ("run", "list")]
+    assert run_list and run_list[-1][run_list[-1].index("--workflow") + 1] == (
+        "clipforge.yml"
+    )
+
+
 @pytest.mark.parametrize(
     "fault", ["active", "public", "missing_review", "invalid_source"]
 )
 def test_invalid_stage_never_starts_a_worker(stage_submitter, fault):
     module, control, args = stage_submitter
     if fault == "active":
-        control["active"] = True
+        control["runs"] = [{"workflow": module.WORKFLOW, "status": "in_progress"}]
     elif fault == "public":
         control["private"] = False
     elif fault == "missing_review":
@@ -97,7 +128,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build_artifact(root, generated_sha=None, **receipt_overrides):
+def build_artifact(root, generated_sha=None, drop=(), **receipt_overrides):
     """Mirror the worker output: listed files, a generated receipt and request-receipt.json."""
     files = {
         "audio.m4a": b"synthetic audio",
@@ -142,8 +173,12 @@ def build_artifact(root, generated_sha=None, **receipt_overrides):
         "sha256": hashes,
         "asr_reused": True,
         "audio_stage": "previews",
+        "previous_run_id": PREVIOUS_RUN,
+        "previous_request_id": PREVIOUS_REQUEST,
     }
     receipt.update(receipt_overrides)
+    for key in drop:
+        receipt.pop(key)
     (root / "request-receipt.json").write_text(json.dumps(receipt))
 
 
@@ -291,6 +326,8 @@ def test_collect_never_overwrites_existing_destination(collector, tmp_path):
         {"request_id": "c" * 32},
         {"source_ref": "c" * 40},
         {"previous_run_id": "999"},
+        {"previous_request_id": "c" * 32},
+        {"previous_run_id": None},
         {"workflow_run": "1"},
         {"generated_sha": "0" * 64},
     ],
@@ -306,6 +343,27 @@ def test_collect_rejects_identity_or_generated_receipt_mismatch(
     with pytest.raises(RuntimeError):
         module.main(collect_args(destination))
     assert not destination.exists()
+
+
+def test_collect_accepts_matching_previous_run_and_request(collector, tmp_path):
+    module, control, _ = collector
+    destination = tmp_path / "collected"
+    assert module.main(collect_args(destination)) == 0
+    receipt = json.loads((destination / "request-receipt.json").read_text())
+    assert receipt["previous_run_id"] == PREVIOUS_RUN
+    assert receipt["previous_request_id"] == PREVIOUS_REQUEST
+
+
+def test_collect_accepts_legacy_receipt_without_previous_keys(collector, tmp_path):
+    module, control, _ = collector
+    legacy = tmp_path / "legacy"
+    build_artifact(legacy, drop=("previous_run_id", "previous_request_id"))
+    control["artifact"] = legacy
+    destination = tmp_path / "collected"
+    assert module.main(collect_args(destination)) == 0
+    assert (destination / "previews/topic-001.mp4").is_file()
+    receipt = json.loads((destination / "request-receipt.json").read_text())
+    assert "previous_run_id" not in receipt
 
 
 def test_collect_requires_a_successful_stage_run(collector, tmp_path):

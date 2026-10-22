@@ -276,6 +276,8 @@ def main(argv=None):
                 "sha256": hashes,
                 "asr_reused": True,
                 "audio_stage": args.stage,
+                "previous_run_id": args.previous_run,
+                "previous_request_id": args.previous_request,
             },
         )
         print(
