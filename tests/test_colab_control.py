@@ -473,6 +473,33 @@ class ProbeTests(unittest.TestCase):
         self.assertIn("Probe L4/STANDARD: granted", lines)
         self.assertIn("released", lines)
 
+    def test_a_held_probe_reports_its_own_rate_then_releases(self):
+        client = Mock()
+        client.assign.return_value = SimpleNamespace(endpoint="probe-session")
+        client.list_assignments.return_value = []
+        client.get_consumption_user_info.side_effect = [
+            SimpleNamespace(
+                paid_compute_units_balance=180.0,
+                consumption_rate_hourly=1.07,
+                assignments_count=1,
+            ),
+            SimpleNamespace(
+                paid_compute_units_balance=179.9,
+                consumption_rate_hourly=2.9,
+                assignments_count=2,
+            ),
+        ]
+        with (
+            patch.dict(os.environ, {"COLAB_ADC_JSON": '{"type":"authorized_user"}'}),
+            patch.object(control, "authenticated_client", return_value=client),
+            patch.object(control.time, "sleep"),
+            patch("builtins.print") as printed,
+        ):
+            control.probe("L4", 20)
+        lines = " ".join(str(c.args[0]) for c in printed.call_args_list)
+        self.assertIn("Probe L4/STANDARD: rate rise 1.83/h", lines)
+        client.unassign.assert_called_once_with("probe-session")
+
     def test_a_refusal_allocates_nothing(self):
         def refuse(*args, **kwargs):
             raise RuntimeError("412")

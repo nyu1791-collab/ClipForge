@@ -462,7 +462,7 @@ del _clipforge_bootstrap
             )
 
 
-def probe(accelerator_name):
+def probe(accelerator_name, hold_seconds=0):
     """Ask for one runtime and release it at once, to learn whether the account grants it.
 
     A refusal allocates nothing. A grant is released immediately and confirmed gone, so the
@@ -479,7 +479,8 @@ def probe(accelerator_name):
     variant = Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU
     shape = colab_shape()
     client = authenticated_client(json.loads(raw))
-    print_units("before probe", compute_units(client))
+    before = compute_units(client)
+    print_units("before probe", before)
     label = f"{accelerator.value}/{shape.name}"
     try:
         assignment = client.assign(
@@ -490,6 +491,17 @@ def probe(accelerator_name):
         return
     try:
         print(f"Probe {label}: granted", flush=True)
+        # The account's hourly rate covers every active runtime; the rise over the rate
+        # before the probe is this runtime's own rate.
+        waited = 0
+        while waited < hold_seconds:
+            time.sleep(min(20, hold_seconds - waited))
+            waited += min(20, hold_seconds - waited)
+            during = compute_units(client)
+            print_units(f"after {waited} s", during)
+            if before and during:
+                rise = during["hourly_rate"] - before["hourly_rate"]
+                print(f"Probe {label}: rate rise {rise:.2f}/h", flush=True)
     finally:
         client.unassign(assignment.endpoint)
         for attempt in range(4):
@@ -534,7 +546,10 @@ def main():
     elif args.command == "stop":
         controller.stop()
     elif args.command == "probe":
-        probe(os.environ.get("CLIPFORGE_PROBE_ACCELERATOR") or "T4")
+        hold = int(os.environ.get("CLIPFORGE_PROBE_HOLD") or 0)
+        if not 0 <= hold <= 300:
+            raise ControlError("Probe hold must be 0 to 300 seconds")
+        probe(os.environ.get("CLIPFORGE_PROBE_ACCELERATOR") or "T4", hold)
     else:
         raw = os.environ.get("COLAB_ADC_JSON", "")
         if not raw:
