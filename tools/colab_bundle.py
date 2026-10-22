@@ -7,7 +7,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import tarfile
 import tempfile
@@ -53,10 +53,26 @@ def digest(path):
     return result.hexdigest()
 
 
-def safe_tar_filter(root):
+def check_member_name(name, parts=None, directory=False):
+    path = PurePosixPath(name)
+    if not path.parts or path.is_absolute() or ".." in path.parts or "\\" in name:
+        raise BundleError("Unexpected bundle member name")
+    if parts is not None and not any(
+        path == PurePosixPath(part)
+        or path.is_relative_to(part)
+        or (directory and PurePosixPath(part).is_relative_to(path))
+        for part in parts
+    ):
+        raise BundleError("Unexpected cache member")
+
+
+def safe_tar_filter(root, parts=None):
     root = root.resolve()
 
     def choose(info):
+        check_member_name(info.name, parts, info.isdir())
+        if parts is not None and info.name.endswith(".lock"):
+            return None
         if not (info.isfile() or info.isdir() or info.issym() or info.islnk()):
             raise BundleError("Unsupported bundle entry")
         if info.issym():
@@ -64,28 +80,35 @@ def safe_tar_filter(root):
             target = source.resolve()
             if not target.is_relative_to(root):
                 raise BundleError("Bundle link leaves its root")
+            check_member_name(str(target.relative_to(root)), parts)
             info.linkname = os.path.relpath(target, source.parent)
         return info
 
     return choose
 
 
-def tree_id(root):
+def tree_id(root, parts=None):
     entries = []
     for path in sorted(Path(root).rglob("*")):
+        if parts is not None and not any(
+            path == Path(root) / part or path.is_relative_to(Path(root) / part)
+            for part in parts
+        ):
+            continue
         if path.name.endswith(".lock") or (path.is_dir() and not path.is_symlink()):
             continue
         stat = path.lstat()
         detail = (
-            os.readlink(path)
+            os.path.relpath(path.resolve(), path.parent)
             if path.is_symlink()
             else (digest(path) if stat.st_size <= 4096 else "")
         )
-        entries.append((str(path.relative_to(root)), stat.st_size, detail))
+        size = len(os.fsencode(detail)) if path.is_symlink() else stat.st_size
+        entries.append((str(path.relative_to(root)), size, detail))
     return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
 
 
-def pack(root, work, kind, identity, chunk_bytes=CHUNK_BYTES):
+def pack(root, work, kind, identity, chunk_bytes=CHUNK_BYTES, *, parts=None):
     if kind not in {"assets", "result"}:
         raise BundleError("Unexpected bundle kind")
     root, work = Path(root).resolve(), Path(work).resolve()
@@ -97,8 +120,14 @@ def pack(root, work, kind, identity, chunk_bytes=CHUNK_BYTES):
     mode = "w:gz" if kind == "assets" else "w"
     options = {"compresslevel": 1} if kind == "assets" else {}
     with tarfile.open(archive, mode, **options) as bundle:
-        for path in sorted(root.iterdir()):
-            bundle.add(path, arcname=path.name, filter=safe_tar_filter(root))
+        paths = (root / part for part in parts) if parts is not None else root.iterdir()
+        for path in sorted(paths):
+            if path.exists():
+                bundle.add(
+                    path,
+                    arcname=str(path.relative_to(root)),
+                    filter=safe_tar_filter(root, parts),
+                )
     if archive.stat().st_size > MAX_BYTES:
         raise BundleError("Bundle exceeds the transfer limit")
     chunks = []
@@ -252,7 +281,7 @@ class ReleaseBundles:
 
     def release(self, tag, create=False):
         if not re.fullmatch(
-            r"clipforge-(?:input-[a-f0-9]{32}|cache-[a-f0-9]{24})", tag
+            r"clipforge-(?:input-[a-f0-9]{32}|cache-(?:(?:cpu|gpu)-)?[a-f0-9]{24})", tag
         ):
             raise BundleError("Unexpected private release tag")
         url = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/{tag}"
@@ -296,11 +325,11 @@ class ReleaseBundles:
         ):
             json.load(response)
 
-    def publish(self, tag, directory, work, kind, identity):
+    def publish(self, tag, directory, work, kind, identity, *, parts=None):
         release = self.release(tag, create=kind == "assets")
         if not release:
             raise BundleError("Private input release is missing")
-        inventory = ("gzip1:" + tree_id(directory)) if kind == "assets" else None
+        inventory = ("gzip1:" + tree_id(directory, parts)) if kind == "assets" else None
         existing = next(
             (a for a in release["assets"] if a["name"] == f"cf-{kind}-manifest.json"),
             None,
@@ -313,7 +342,7 @@ class ReleaseBundles:
             if old.get("tree_id") == inventory:
                 print("Public asset cache unchanged; upload skipped.")
                 return
-        manifest = pack(directory, work, kind, identity)
+        manifest = pack(directory, work, kind, identity, parts=parts)
         data = json.loads(manifest.read_text())
         if inventory is not None:
             data["tree_id"] = inventory
@@ -357,7 +386,9 @@ class ReleaseBundles:
             raise BundleError("Private bundle checksum mismatch")
         return path
 
-    def restore(self, tag, destination, kind, identity, required=False):
+    def restore(self, tag, destination, kind, identity, required=False, *, parts=None):
+        if parts is not None and kind != "assets":
+            raise BundleError("Direct extraction is only supported for public assets")
         release = self.release(tag)
         assets = {a["name"]: a for a in release["assets"]} if release else {}
         manifest = assets.get(f"cf-{kind}-manifest.json")
@@ -378,8 +409,8 @@ class ReleaseBundles:
             for chunk in data["chunks"]:
                 if chunk["name"] not in assets:
                     raise BundleError("A private bundle chunk is missing")
-            unpacked = temporary / "unpacked"
-            unpacked.mkdir()
+            unpacked = destination if parts is not None else temporary / "unpacked"
+            unpacked.mkdir(exist_ok=True)
             # Chunks download side by side and are extracted in order as each one is
             # verified, streamed straight into tar: no joined copy of the bundle is written.
             # Refill only after consumption deletes a chunk, bounding disk use even on slow tar.
@@ -409,6 +440,20 @@ class ReleaseBundles:
                     with tarfile.open(fileobj=stream, mode=mode) as bundle:
                         count = total = 0
                         for member in bundle:
+                            check_member_name(member.name, parts, member.isdir())
+                            if member.islnk():
+                                check_member_name(member.linkname, parts)
+                            elif member.issym():
+                                # data_filter checks the resolved target, including symlinks
+                                # already extracted; the whitelist also forbids metadata links.
+                                parent = (unpacked / member.name).parent
+                                target = parent / member.linkname
+                                target = target.resolve()
+                                if not target.is_relative_to(unpacked.resolve()):
+                                    raise BundleError("Bundle link leaves its root")
+                                check_member_name(
+                                    str(target.relative_to(unpacked.resolve())), parts
+                                )
                             count += 1
                             total += member.size
                             if count > 200000 or total > MAX_BYTES:
@@ -420,7 +465,8 @@ class ReleaseBundles:
                 finally:
                     for future in pending:
                         future.cancel()
-            if destination.exists():
-                destination.rmdir()
-            unpacked.rename(destination)
+            if parts is None:
+                if destination.exists():
+                    destination.rmdir()
+                unpacked.rename(destination)
         return True

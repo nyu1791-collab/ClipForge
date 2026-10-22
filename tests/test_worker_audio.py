@@ -413,7 +413,7 @@ def merge_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         worker.landscape,
         "code_identity",
-        lambda settings: {"implementation_sha256": "x"},
+        lambda settings=None: {"implementation_sha256": "x"},
     )
     monkeypatch.setattr(
         worker, "gh", lambda *a: pytest.fail("merge must not call gh with local parts")
@@ -571,7 +571,7 @@ def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
     monkeypatch.setattr(
         worker.landscape,
         "code_identity",
-        lambda settings: {"implementation_sha256": "x"},
+        lambda settings=None: {"implementation_sha256": "x"},
     )
     output = tmp_path / "out"
     part_runs = ",".join(f"{run}:{request}" for run, request in runs.items())
@@ -695,6 +695,80 @@ def test_render_stage_passes_one_clip_index_and_records_it(
 def test_clip_index_is_limited_to_one_to_twenty(clip_index):
     with pytest.raises(SystemExit):
         worker.main(["--stage", "render", "--clip-index", clip_index])
+
+
+def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
+    previous_analysis, monkeypatch
+):
+    previous, output, settings = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    monkeypatch.setattr(worker, "gh", _previous_gh(previous))
+    monkeypatch.setattr(
+        worker, "KickVOD", lambda *a, **k: SimpleNamespace(close=lambda: None)
+    )
+
+    def render(vod, root, settings, review, analysis_result=None, only=None):
+        assert only == 2
+        for directory in ("ranges", "previews"):
+            (root / directory).mkdir(exist_ok=True)
+            (root / directory / "synthetic.mp4").write_bytes(b"intermediate")
+            (root / directory / "synthetic.mp4.receipt.json").write_text("{}")
+        (root / "previews.json").write_text("{}")
+        clip = root / "delivery/clips/clip-002"
+        clip.mkdir(parents=True)
+        for name in ("video.mp4", "captions.ass", "captions.srt", "quality.json"):
+            (clip / name).write_bytes(b"synthetic delivery")
+        manifest = {
+            "status": "clip_rendered",
+            "clip_index": 2,
+            "clip_count": settings.clips,
+            "analysis_key": ANALYSIS,
+            "selection_sha256": SELECTION,
+            "timings": {"clip-002": {"render": 1.0}, "total": 1.0},
+            "rendered": [
+                {
+                    "directory": "clips/clip-002",
+                    "sha256": {p.name: digest(p) for p in clip.iterdir()},
+                }
+            ],
+        }
+        write_json(root / "delivery/manifest.json", manifest)
+
+    monkeypatch.setattr(audio_first, "render", render)
+    args = _previews_args(output)
+    args[1] = "render"
+    args += ["--clip-index", "2", "--review-file", str(previous / "review.json")]
+    assert worker.main(args) == 0
+    for name in (
+        "ranges",
+        "audio.m4a",
+        "previews",
+        "transcripts",
+        "topics.json",
+        "previews.json",
+        ".state",
+    ):
+        assert not (output / name).exists()
+    assert (output / "asr-receipt.json").is_file()
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    files = {
+        p.relative_to(output).as_posix()
+        for p in output.rglob("*")
+        if p.is_file()
+        and not p.name.startswith(".")
+        and p.name != "request-receipt.json"
+    }
+    assert set(receipt["sha256"]) == files
+    assert all(digest(output / name) == sha for name, sha in receipt["sha256"].items())
+    for manifest_name in ("manifest.json", "delivery/manifest.json"):
+        manifest = json.loads((output / manifest_name).read_text())
+        root = output if manifest_name == "manifest.json" else output / "delivery"
+        for row in manifest["rendered"]:
+            for name, sha in row["sha256"].items():
+                assert digest(root / row["directory"] / name) == sha
+    loaded = worker.load_part(output, "c" * 32, SOURCE_REF)
+    assert loaded["index"] == 2
+    assert loaded["identity"]["transcript_key"]
 
 
 def _previous_gh(previous):

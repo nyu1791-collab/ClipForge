@@ -36,14 +36,16 @@ if [[ $(uv --version 2>/dev/null || true) != 'uv 0.12.23'* ]]; then
 fi
 clipforge_record_timing uv_bootstrap "$uv_bootstrap_started"
 uv_sync_started=$(date +%s.%N)
-if uv sync --offline --locked --python 3.11 --extra chat --extra cuda --extra media-fetch --no-dev; then
+uv_sync_args=(--locked --python 3.11 --extra chat --extra media-fetch --no-dev)
+if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then uv_sync_args+=(--extra cuda); fi
+if uv sync --offline "${uv_sync_args[@]}"; then
   echo 'Python dependencies installed from the local cache; no package download required.'
 else
   if [[ ${CLIPFORGE_OFFLINE:-0} == 1 ]]; then
     echo 'Python dependencies are not fully cached; offline mode forbids downloading.' >&2
     exit 1
   fi
-  uv sync --locked --python 3.11 --extra chat --extra cuda --extra media-fetch --no-dev
+  uv sync "${uv_sync_args[@]}"
   fetched=1
 fi
 clipforge_record_timing uv_sync "$uv_sync_started"
@@ -65,7 +67,7 @@ fi
 clipforge_record_timing cuda_check "$cuda_check_started"
 # Model files only: no inference or Gemini API call. The requested model is unchanged.
 model_prepare_started=$(date +%s.%N)
-if [[ ${CLIPFORGE_SKIP_MODEL_PREPARE:-0} != 1 ]]; then
+if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 && ${CLIPFORGE_SKIP_MODEL_PREPARE:-0} != 1 ]]; then
   if ! HF_HUB_OFFLINE=1 .venv/bin/python - >/dev/null 2>&1 <<'PY'
 import os
 from clipforge.whisper_cache import model_path

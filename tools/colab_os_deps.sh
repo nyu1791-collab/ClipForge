@@ -3,7 +3,9 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source tools/colab_cache_env.sh
 missing=()
-for package in ffmpeg fontconfig fonts-noto-cjk curl git gh libicu-dev; do
+packages=(ffmpeg fontconfig fonts-noto-cjk git gh)
+if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then packages+=(curl); fi
+for package in "${packages[@]}"; do
   if [[ $(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true) != installed ]]; then
     missing+=("$package")
   fi

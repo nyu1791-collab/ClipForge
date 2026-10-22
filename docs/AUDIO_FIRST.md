@@ -122,8 +122,12 @@ workflow起動前に`DISPATCHING`、応答不明なら`DISPATCH_UNCONFIRMED`を�
 
 ## 非公開workerで候補映像・横動画を続ける
 
-`deploy/audio-stages.yml`は、非公開workerの`ccr-12fe9485-ugaszt`ブランチにある`.github/workflows/clipforge.yml`へ配置する原本。
-main側の既存ASR用workflowは維持する。後段workflowは`contents: read`と`actions: read`だけを使い、モデルAPI用Secretを渡さない。
+`deploy/audio-stages.yml`は、非公開workerの`main`へ`.github/workflows/clipforge-stages.yml`として配置する原本。
+投入先は`clipforge-stages.yml`・refは`main`。既存ASR用の`clipforge.yml`と併設する。
+旧ブランチ`ccr-12fe9485-ugaszt`を記録したreceiptも、`--collect`では旧workflow・旧ブランチを照合して回収できる。
+後段workflowはColab転送release用の`contents: write`と`actions: read`を使い、モデルAPI用Secretを渡さない。
+CPUの`merge`ではOSパッケージ導入を省略する。他のCPU段階はImageOS・ImageVersion・パッケージ一覧をキーに`.deb`を公式`actions/cache@v4`で保存する。
+未導入分だけキャッシュから`apt-get install --no-download`し、不足時だけupdateと通常installを実施する。
 
 前段の成功artifactをworker内で回収し、元音声・ASR・話題の全ハッシュを確認する。
 有効なASRがなければ、取得・認識や別モデルへのfallbackで補わず停止する。
@@ -159,6 +163,22 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
 ```bash
 uv run --no-sync python tools/submit_audio_stage.py --collect SUBMITTED_REQUEST_ID --output /private/stage-NEW_DIRECTORY
 ```
+
+### 単一クリップ描画と制御VMでの結合
+
+`--stage render --clip-index N`（またはColabの`--clips N`）の成果物は、描画完了後に`ranges/`・`audio.m4a`（取得receipt含む）・`previews/`・`transcripts/`・作業用topics/previews JSONを除去する。
+`delivery/clips/clip-00N/`、両manifestと`asr-receipt.json`は残す。結合はASR本文でなく、そのreceiptのキーを分析の同一性確認に使う。
+SHA-256一覧は除去後に作成し、manifestのクリップ別一覧も残ったクリップ内のファイルを指す。
+
+```bash
+uv run --no-sync python tools/submit_audio_stage.py --stage merge --local \
+  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 --output /private/merged-NEW_DIRECTORY
+```
+
+制御VMから各runのcompleted・success・`ClipForge REQUEST_ID`を確認してartifactを一度取得し、既存workerの`merge_parts`で検証・コピーする。GitHub runを起動せず、ffmpeg・フォントも使わない。
+元コミットSHA・本数・前段依頼IDは検証済みpartから取得する。任意の`--source-ref REVIEWED_COMMIT_SHA`で元コミットの期待値も固定できる。
+出力は従来mergeと同じ`delivery/`・manifest・request receiptで、`--collect`と同じ検証を通過してから新規ディレクトリへ確定する。ローカル結合のreceiptは`workflow_run: "local"`と記録する。
+従来のGitHub上の結合は`--local`を付けず、`--previous-run`・`--previous-request`・`--source-ref`・`--part-runs`を指定して使える。
 
 ## 候補映像の判定と採用
 

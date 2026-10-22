@@ -256,10 +256,8 @@ def test_failed_download_does_not_leave_partial_destination(submitter, tmp_path)
     assert not destination.exists()
 
 
-@pytest.mark.parametrize(
-    "fault", ["extra", "symlink", "directory_symlink", "fifo", "directory"]
-)
-def test_video_download_rejects_unlisted_or_non_regular_entries(
+@pytest.mark.parametrize("fault", ["symlink", "directory_symlink", "fifo"])
+def test_video_download_rejects_symlinks_and_non_regular_entries(
     submitter, tmp_path, monkeypatch, fault
 ):
     module, _, control, invoke = submitter
@@ -269,16 +267,12 @@ def test_video_download_rejects_unlisted_or_non_regular_entries(
         result = original(*args, **kwargs)
         if args[:2] == ("run", "download"):
             root = Path(args[args.index("--dir") + 1])
-            if fault == "extra":
-                (root / "unlisted.txt").write_text("synthetic extra")
-            elif fault == "symlink":
+            if fault == "symlink":
                 (root / "unlisted.txt").symlink_to("manifest.json")
             elif fault == "directory_symlink":
                 (root / "alias").symlink_to("clips", target_is_directory=True)
             elif fault == "fifo":
                 module.os.mkfifo(root / "pipe")
-            else:
-                (root / "unexpected").mkdir()
         return result
 
     monkeypatch.setattr(module, "gh", gh)
@@ -293,6 +287,30 @@ def test_video_download_rejects_unlisted_or_non_regular_entries(
         / "receipt.json"
     )
     assert json.loads(receipt.read_text())["status"] == "DOWNLOAD_FAILED"
+
+
+def test_video_download_allows_extra_regular_files_and_directories(
+    submitter, tmp_path, monkeypatch
+):
+    module, _, _, invoke = submitter
+    original = module.gh
+
+    def gh(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if args[:2] == ("run", "download"):
+            root = Path(args[args.index("--dir") + 1])
+            (root / "transcripts").mkdir()
+            (root / "transcripts/synthetic.json").write_text("{}")
+            (root / "empty-directory").mkdir()
+            for name in ("render.json", "quality.json", "ledger.json", "thumbnail.png"):
+                (root / "clips/clip-001" / name).write_bytes(b"synthetic extra")
+        return result
+
+    monkeypatch.setattr(module, "gh", gh)
+    destination = tmp_path / "result"
+    invoke("--wait", "--output", str(destination))
+    assert (destination / "transcripts/synthetic.json").is_file()
+    assert (destination / "clips/clip-001/quality.json").is_file()
 
 
 def test_gateway_settings_field_list_tracks_model(submitter):

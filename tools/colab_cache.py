@@ -31,9 +31,22 @@ def sha256(path):
     return value.hexdigest()
 
 
+def profile():
+    return "cpu" if os.environ.get("CLIPFORGE_CPU_ONLY") == "1" else "gpu"
+
+
+def release_parts():
+    return PARTS if profile() == "cpu" else (*PARTS, "models/hub")
+
+
+def release_tag(key):
+    return f"clipforge-cache-{profile()}-{key}"
+
+
 def configuration():
     identity = {
         "format": 1,
+        "profile": profile(),
         "lock": sha256(REPOSITORY / "uv.lock"),
         "project": sha256(REPOSITORY / "pyproject.toml"),
         "os": {
@@ -91,6 +104,11 @@ def inventory(root):
     return hashlib.sha256(json.dumps(records).encode()).hexdigest()
 
 
+def mark_restored(key, root):
+    (root / ".restored").write_text(key)
+    (root / ".saved-inventory").write_text(inventory(root))
+
+
 def restore(key, root, persistent):
     if not persistent or (root / ".restored").is_file():
         return
@@ -122,8 +140,7 @@ def restore(key, root, persistent):
         for name in PARTS:
             if (staging / name).exists() and not (root / name).exists():
                 shutil.move(staging / name, root / name)
-    (root / ".restored").write_text(key)
-    (root / ".saved-inventory").write_text(inventory(root))
+    mark_restored(key, root)
     print(
         "Dependency cache restored and SHA-256 verified; asset transfer was required."
     )

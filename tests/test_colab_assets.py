@@ -1,4 +1,6 @@
 from concurrent.futures import Future
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -165,6 +167,149 @@ class BundleTests(unittest.TestCase):
 
 
 class DependencyCacheTests(unittest.TestCase):
+    def test_profiles_have_distinct_keys_tags_and_model_parts(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(
+                os.environ,
+                {"CLIPFORGE_LOCAL_CACHE": temporary, "CLIPFORGE_PERSISTENT_CACHE": ""},
+            ),
+        ):
+            profiles = {}
+            for cpu_only, profile in (("0", "gpu"), ("1", "cpu")):
+                os.environ["CLIPFORGE_CPU_ONLY"] = cpu_only
+                key, root, persistent = cache.configuration()
+                profiles[profile] = key, cache.release_tag(key)
+                self.assertIn(f"cache-{profile}-", cache.release_tag(key))
+                self.assertEqual(
+                    "models/hub" in cache.release_parts(), profile == "gpu"
+                )
+                self.assertEqual(
+                    cache.environment(root, persistent)["HF_HUB_CACHE"],
+                    str(root / "models/hub"),
+                )
+            self.assertNotEqual(profiles["cpu"][0], profiles["gpu"][0])
+            self.assertNotEqual(profiles["cpu"][1], profiles["gpu"][1])
+
+    def test_profiled_release_tags_are_accepted_without_deleting_old_releases(self):
+        bundles = object.__new__(ReleaseBundles)
+        bundles.json_request = Mock(return_value=None)
+        for profile in ("cpu", "gpu"):
+            tag = f"clipforge-cache-{profile}-" + "a" * 24
+            bundles.release(tag, create=True)
+            self.assertEqual(bundles.json_request.call_args.args[2]["tag_name"], tag)
+        self.assertFalse(
+            any(c.args[0] == "DELETE" for c in bundles.json_request.call_args_list)
+        )
+
+    def test_release_restores_selected_assets_once_directly_to_root(self):
+        for cpu_only in ("0", "1"):
+            with (
+                self.subTest(cpu_only=cpu_only),
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(os.environ, {"CLIPFORGE_CPU_ONLY": cpu_only}),
+            ):
+                base = Path(temporary)
+                source, root = base / "source", base / "local"
+                (source / "uv/archive").mkdir(parents=True)
+                (source / "uv/archive/package").write_text("PUBLIC_WHEEL")
+                (source / "uv/alias").symlink_to(source / "uv/archive/package")
+                (source / "uv/cache.lock").touch()
+                (source / "models/hub").mkdir(parents=True)
+                (source / "models/hub/model.bin").write_bytes(b"synthetic model")
+                (source / "unrelated").write_text("EXCLUDED")
+                work = base / "upload"
+                work.mkdir()
+                bundles = MemoryBundles()
+                tag, parts = cache.release_tag("a" * 24), cache.release_parts()
+                bundles.publish(tag, source, work, "assets", "key", parts=parts)
+                original_extract = tarfile.TarFile.extract
+                destinations = []
+
+                def extract(bundle, member, path, **kwargs):
+                    destinations.append(Path(path))
+                    self.assertEqual(kwargs["filter"], "data")
+                    return original_extract(bundle, member, path, **kwargs)
+
+                with (
+                    patch.object(tarfile.TarFile, "extract", new=extract),
+                    patch.object(
+                        cache, "sha256", side_effect=AssertionError("no inner tar")
+                    ),
+                ):
+                    self.assertTrue(
+                        bundles.restore(tag, root, "assets", "key", parts=parts)
+                    )
+                    cache.mark_restored("key", root)
+                    # A stale Drive manifest must never be consulted after release restore.
+                    persistent = base / "drive"
+                    persistent.mkdir()
+                    (persistent / "key.json").write_text("invalid")
+                    cache.restore("key", root, persistent)
+                self.assertTrue(destinations)
+                self.assertEqual(set(destinations), {root})
+                self.assertEqual((root / "uv/alias").read_text(), "PUBLIC_WHEEL")
+                self.assertEqual(
+                    (root / "models/hub/model.bin").exists(), cpu_only == "0"
+                )
+                self.assertFalse((root / "unrelated").exists())
+                self.assertFalse((root / "uv/cache.lock").exists())
+                self.assertFalse(list(root.glob("*.tar")))
+                self.assertEqual((root / ".restored").read_text(), "key")
+                self.assertEqual(
+                    (root / ".saved-inventory").read_text(), cache.inventory(root)
+                )
+                uploads = bundles.uploads
+                bundles.publish(tag, root, work, "assets", "key", parts=parts)
+                self.assertEqual(bundles.uploads, uploads)
+
+    def test_release_rejects_unsafe_or_out_of_profile_members(self):
+        for name, linkname, entry_type in (
+            ("../escape", "", tarfile.REGTYPE),
+            ("/absolute", "", tarfile.REGTYPE),
+            ("uv/../../escape", "", tarfile.REGTYPE),
+            ("models/hub/model.bin", "", tarfile.REGTYPE),
+            (".restored", "", tarfile.REGTYPE),
+            ("uv/link", "../../escape", tarfile.SYMTYPE),
+            ("uv/link", "../.restored", tarfile.SYMTYPE),
+            ("uv/link", "../escape", tarfile.LNKTYPE),
+        ):
+            with (
+                self.subTest(name=name, linkname=linkname),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                base = Path(temporary)
+                archive = io.BytesIO()
+                with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
+                    member = tarfile.TarInfo(name)
+                    member.type = entry_type
+                    member.linkname = linkname
+                    bundle.addfile(member)
+                data = archive.getvalue()
+                sha = hashlib.sha256(data).hexdigest()
+                chunk_name = f"cf-assets-{sha}.part"
+                manifest = {
+                    "schema": 1,
+                    "kind": "assets",
+                    "identity": "key",
+                    "bytes": len(data),
+                    "chunks": [{"name": chunk_name, "bytes": len(data), "sha256": sha}],
+                }
+                bundles = MemoryBundles()
+                for asset_name, asset_data in (
+                    (chunk_name, data),
+                    ("cf-assets-manifest.json", json.dumps(manifest).encode()),
+                ):
+                    bundles.saved[asset_name] = asset_data
+                    bundles.metadata["assets"].append(
+                        {"name": asset_name, "size": len(asset_data), "url": asset_name}
+                    )
+                root = base / "local"
+                with self.assertRaises((BundleError, tarfile.FilterError)):
+                    bundles.restore("tag", root, "assets", "key", parts=cache.PARTS)
+                self.assertFalse((root / ".restored").exists())
+                self.assertFalse((base / "escape").exists())
+
     def test_cache_restore_keeps_public_packages_and_excludes_credentials(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -271,7 +416,81 @@ class SetupScriptTests(unittest.TestCase):
             )
 
     def test_setup_script_has_valid_bash_syntax(self):
-        subprocess.run(["bash", "-n", self.script], check=True)
+        for script in (self.script, self.root / "tools/colab_os_deps.sh"):
+            subprocess.run(["bash", "-n", script], check=True)
+
+    def test_uv_sync_uses_profile_extras_and_offline_first(self):
+        source = self.script.read_text()
+        block = source.split("uv_sync_started=$(date +%s.%N)\n", 1)[1].split(
+            "clipforge_record_timing uv_sync", 1
+        )[0]
+        for cpu_only in ("0", "1"):
+            for fail_offline in ("0", "1"):
+                for offline in ("0", "1"):
+                    with self.subTest(
+                        cpu_only=cpu_only, fail_offline=fail_offline, offline=offline
+                    ):
+                        result = subprocess.run(
+                            [
+                                "bash",
+                                "-c",
+                                'set -e; fetched=0; uv() { printf "%s\\n" "$*"; [[ $* != *--offline* || $FAIL_OFFLINE != 1 ]]; }; '
+                                + block,
+                            ],
+                            env={
+                                **os.environ,
+                                "CLIPFORGE_CPU_ONLY": cpu_only,
+                                "FAIL_OFFLINE": fail_offline,
+                                "CLIPFORGE_OFFLINE": offline,
+                            },
+                            capture_output=True,
+                            text=True,
+                        )
+                        calls = [
+                            line.split()
+                            for line in result.stdout.splitlines()
+                            if line.startswith("sync ")
+                        ]
+                        self.assertIn("--offline", calls[0])
+                        self.assertEqual(
+                            result.returncode,
+                            int(fail_offline == "1" and offline == "1"),
+                        )
+                        self.assertEqual(
+                            len(calls),
+                            2 if fail_offline == "1" and offline == "0" else 1,
+                        )
+                        for arguments in calls:
+                            self.assertEqual("cuda" in arguments, cpu_only == "0")
+                            self.assertIn("--locked", arguments)
+                        if len(calls) == 2:
+                            self.assertNotIn("--offline", calls[1])
+
+    def test_os_packages_keep_render_dependencies_and_omit_unused_development_files(
+        self,
+    ):
+        source = (self.root / "tools/colab_os_deps.sh").read_text()
+        block = source.split("packages=(", 1)[1].split("for package in", 1)[0]
+        for cpu_only in ("0", "1"):
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "packages=(" + block + 'printf "%s\\n" "${packages[@]}"',
+                ],
+                env={**os.environ, "CLIPFORGE_CPU_ONLY": cpu_only},
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            packages = result.stdout.splitlines()
+            self.assertNotIn("libicu-dev", packages)
+            self.assertEqual("curl" in packages, cpu_only == "0")
+            self.assertTrue(
+                {"ffmpeg", "fontconfig", "fonts-noto-cjk", "git", "gh"}.issubset(
+                    packages
+                )
+            )
 
     def test_setup_save_is_skipped_only_when_nothing_new_was_fetched(self):
         source = self.script.read_text()
@@ -336,7 +555,7 @@ class RemotePipelineTests(unittest.TestCase):
                         with (
                             patch.object(remote_job, "ROOT", root),
                             patch.object(remote_job, "WORK", work),
-                            patch.object(remote_job, "PERSISTENT", root / "cache"),
+                            patch.dict(os.environ, {}),
                             patch.object(remote_job, "Path") as paths,
                             patch.object(
                                 remote_job,
@@ -354,6 +573,7 @@ class RemotePipelineTests(unittest.TestCase):
                                 remote_job, "publish_result", return_value=True
                             ),
                             patch.object(remote_job.os, "umask"),
+                            patch.object(remote_job, "mark_restored"),
                             patch.object(
                                 remote_job, "command", side_effect=command
                             ) as run,
@@ -366,13 +586,33 @@ class RemotePipelineTests(unittest.TestCase):
                             not cached or fetched
                         )
                         self.assertEqual(bundles.publish.call_count, int(should_save))
-                        self.assertEqual(
+                        self.assertFalse(
                             any(
                                 call.args[2] == "save-cache"
                                 for call in run.call_args_list
-                            ),
-                            should_save,
+                            )
                         )
+                        bundles.restore.assert_called_once_with(
+                            "clipforge-cache-cpu-cache-key",
+                            root,
+                            "assets",
+                            "cache-key",
+                            parts=cache.PARTS,
+                        )
+                        setup_env = next(
+                            call.args[1]
+                            for call in run.call_args_list
+                            if call.args[2] == "setup"
+                        )
+                        self.assertEqual(setup_env["CLIPFORGE_CPU_ONLY"], "1")
+                        self.assertEqual(setup_env["CLIPFORGE_PERSISTENT_CACHE"], "")
+                        if should_save:
+                            published = bundles.publish.call_args
+                            self.assertEqual(
+                                published.args[:2],
+                                ("clipforge-cache-cpu-cache-key", root),
+                            )
+                            self.assertEqual(published.kwargs["parts"], cache.PARTS)
 
     def test_audio_url_uses_cuda_job_and_preserves_result_publication(self):
         url = (
@@ -412,7 +652,7 @@ class RemotePipelineTests(unittest.TestCase):
                 with (
                     patch.object(remote_job, "ROOT", root),
                     patch.object(remote_job, "WORK", work),
-                    patch.object(remote_job, "PERSISTENT", root / "cache"),
+                    patch.dict(os.environ, {}),
                     patch.object(remote_job, "Path") as paths,
                     patch.object(
                         remote_job,
@@ -424,6 +664,7 @@ class RemotePipelineTests(unittest.TestCase):
                     patch.object(remote_job, "host_info", return_value={}),
                     patch.object(remote_job, "read_setup_timings", return_value={}),
                     patch.object(remote_job.os, "umask"),
+                    patch.object(remote_job, "mark_restored"),
                     patch.dict(os.environ, {"GEMINI_API_KEY": "test-only-inherited"}),
                     patch.object(remote_job, "command", side_effect=command) as run,
                 ):

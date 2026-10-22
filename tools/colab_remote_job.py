@@ -13,11 +13,10 @@ import time
 from contextlib import contextmanager
 
 from colab_bundle import ReleaseBundles, REPOSITORY
-from colab_cache import configuration
+from colab_cache import configuration, mark_restored, release_parts, release_tag
 
 ROOT = Path("/content/ClipForge")
 WORK = Path("/content/clipforge-job")
-PERSISTENT = Path("/content/clipforge-public-assets")
 
 
 @contextmanager
@@ -197,21 +196,26 @@ def main():
     WORK.mkdir(mode=0o700)
     bundles = ReleaseBundles(payload["github_token"])
     # These paths contain public assets only. No Google OAuth credentials are sent here.
-    os.environ["CLIPFORGE_PERSISTENT_CACHE"] = str(PERSISTENT)
-    key, cache_root, persistent = configuration()
-    cache_tag = "clipforge-cache-" + key
+    accelerator = payload.get("accelerator", "T4")
+    cpu_only = mode == "prepare-cache" or accelerator == "NONE"
+    os.environ["CLIPFORGE_CPU_ONLY"] = "1" if cpu_only else "0"
+    # Releases contain the assets themselves; Drive's nested tar is not used here.
+    os.environ["CLIPFORGE_PERSISTENT_CACHE"] = ""
+    key, cache_root, _ = configuration()
+    cache_tag = release_tag(key)
+    parts = release_parts()
     timings = {}
     with timed(timings, "cache_restore"):
-        cached = bundles.restore(cache_tag, PERSISTENT, "assets", key)
+        cached = bundles.restore(cache_tag, cache_root, "assets", key, parts=parts)
+        if cached:
+            mark_restored(key, cache_root)
     environment = os.environ.copy()
     for name in ("GH_TOKEN", "GITHUB_TOKEN", "GEMINI_API_KEY", "COLAB_ADC_JSON"):
         environment.pop(name, None)
     # Clip rendering may run on a CPU runtime; it needs no CUDA and no Whisper model.
-    accelerator = payload.get("accelerator", "T4")
-    cpu_only = mode == "prepare-cache" or accelerator == "NONE"
     environment.update(
         {
-            "CLIPFORGE_PERSISTENT_CACHE": str(PERSISTENT),
+            "CLIPFORGE_PERSISTENT_CACHE": "",
             "CLIPFORGE_REQUIRE_CUDA": "0" if cpu_only or mode == "audio-stage" else "1",
             "CLIPFORGE_CPU_ONLY": "1" if cpu_only else "0",
             "CLIPFORGE_SKIP_RUNNER_ASSET": "1",
@@ -377,20 +381,15 @@ def main():
             report["public_cache_saved"] = "skipped_restored"
         else:
             try:
-                with timed(timings, "cache_save"):
-                    command(
-                        ["python3", "tools/colab_cache.py", "save"],
-                        environment,
-                        "save-cache",
-                        timeout=1200,
-                    )
                 with (
                     timed(timings, "cache_publish"),
                     tempfile.TemporaryDirectory(
                         prefix="clipforge-cache-upload-"
                     ) as work,
                 ):
-                    bundles.publish(cache_tag, PERSISTENT, work, "assets", key)
+                    bundles.publish(
+                        cache_tag, cache_root, work, "assets", key, parts=parts
+                    )
                 report["public_cache_saved"] = True
             except Exception as error:
                 report["public_cache_saved"] = False

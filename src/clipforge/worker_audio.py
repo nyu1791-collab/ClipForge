@@ -242,6 +242,18 @@ def execute(
             human_review_performed=False,
         )
         write_json(output / "manifest.json", result)
+        if mode == "render" and clip_index is not None:
+            # Merge reads the ASR identity receipt, not the source or working media.
+            for name in ("ranges", "previews", "transcripts", ".state"):
+                if (output / name).exists():
+                    shutil.rmtree(output / name)
+            for name in (
+                "audio.m4a",
+                "audio.m4a.receipt.json",
+                "previews.json",
+                "topics.json",
+            ):
+                (output / name).unlink(missing_ok=True)
         return result
 
 
@@ -385,7 +397,8 @@ def merge_parts(parts, output, settings, source_ref):
     }
     summary = landscape.summarize_delivery(manifest, delivery, settings.clips)
     summary["topic_content_review"] = "attested_in_selection_file"
-    summary["reproducibility"] = landscape.code_identity(settings)
+    # Merge uses stored quality/media receipts; do not resolve fonts or invoke ffmpeg.
+    summary["reproducibility"] = landscape.code_identity()
     write_json(delivery / "manifest.json", manifest)
     write_json(delivery / "e2e-summary.json", summary)
     result = {
@@ -450,6 +463,40 @@ def download_parts(text, directory):
         )
         parts.append((destination, request))
     return parts
+
+
+def write_receipt(
+    output,
+    result,
+    lineage,
+    request_id,
+    source_ref,
+    stage,
+    workflow_run,
+    clip_index=None,
+):
+    """Receipt the retained files identically for hosted stages and local merge."""
+    hashes = {
+        str(p.relative_to(output)): digest(p)
+        for p in output.rglob("*")
+        if p.is_file()
+        and not any(part.startswith(".") for part in p.relative_to(output).parts)
+        and p.name != "request-receipt.json"
+    }
+    receipt = {
+        "request_id": request_id,
+        "source_ref": source_ref,
+        "workflow_run": workflow_run,
+        "status": result["status"],
+        "audio_source_url": result["source_url"],
+        "sha256": hashes,
+        "asr_reused": True,
+        "audio_stage": stage,
+        **lineage,
+    }
+    if clip_index is not None:
+        receipt["clip_index"] = clip_index
+    write_json(output / "request-receipt.json", receipt)
 
 
 def main(argv=None):
@@ -544,29 +591,16 @@ def main(argv=None):
                 "previous_run_id": args.previous_run,
                 "previous_request_id": args.previous_request,
             }
-        hashes = {
-            str(p.relative_to(args.output)): digest(p)
-            for p in args.output.rglob("*")
-            if p.is_file()
-            and not any(
-                part.startswith(".") for part in p.relative_to(args.output).parts
-            )
-            and p.name != "request-receipt.json"
-        }
-        receipt = {
-            "request_id": args.request_id,
-            "source_ref": args.source_ref,
-            "workflow_run": os.environ.get("GITHUB_RUN_ID"),
-            "status": result["status"],
-            "audio_source_url": result["source_url"],
-            "sha256": hashes,
-            "asr_reused": True,
-            "audio_stage": args.stage,
-            **lineage,
-        }
-        if args.clip_index is not None:
-            receipt["clip_index"] = args.clip_index
-        write_json(args.output / "request-receipt.json", receipt)
+        write_receipt(
+            args.output,
+            result,
+            lineage,
+            args.request_id,
+            args.source_ref,
+            args.stage,
+            os.environ.get("GITHUB_RUN_ID"),
+            args.clip_index,
+        )
         summary = {
             "status": result["status"],
             "asr_reused": True,

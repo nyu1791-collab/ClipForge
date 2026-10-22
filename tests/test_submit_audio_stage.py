@@ -23,6 +23,7 @@ def stage_submitter(tmp_path, monkeypatch):
         "runs": [],
         "list_args": [],
         "posts": [],
+        "post_args": [],
         "timeout": False,
     }
 
@@ -40,7 +41,11 @@ def stage_submitter(tmp_path, monkeypatch):
             if "--workflow" in args:
                 name = args[args.index("--workflow") + 1]
                 rows = [row for row in rows if row["workflow"] == name]
+            if "--branch" in args:
+                branch = args[args.index("--branch") + 1]
+                rows = [row for row in rows if row.get("headBranch", "main") == branch]
             return json.dumps([{"status": row["status"]} for row in rows])
+        control["post_args"].append(args)
         control["posts"].append(json.loads(body))
         if control["timeout"]:
             raise TimeoutError("reply lost")
@@ -64,7 +69,10 @@ def test_stage_identity_prevents_duplicate_dispatch(stage_submitter):
     module, control, args = stage_submitter
     assert module.main(args) == 0
     payload = control["posts"][0]
-    assert payload["ref"] == "ccr-12fe9485-ugaszt"
+    assert payload["ref"] == "main"
+    assert control["post_args"][0][3] == (
+        f"repos/{module.REPO}/actions/workflows/clipforge-stages.yml/dispatches"
+    )
     assert payload["inputs"]["previous_request_id"] == "b" * 32
     with pytest.raises(RuntimeError, match="already has a request"):
         module.main(args)
@@ -86,8 +94,21 @@ def test_unrelated_workflow_run_does_not_block_dispatch(stage_submitter):
     assert len(control["posts"]) == 1
     run_list = [a for a in control["list_args"] if a[:2] == ("run", "list")]
     assert run_list and run_list[-1][run_list[-1].index("--workflow") + 1] == (
-        "clipforge.yml"
+        "clipforge-stages.yml"
     )
+    assert run_list[-1][run_list[-1].index("--branch") + 1] == "main"
+
+
+def test_other_branch_does_not_block_new_stage_workflow(stage_submitter):
+    module, control, args = stage_submitter
+    control["runs"] = [
+        {
+            "workflow": module.WORKFLOW,
+            "headBranch": module.LEGACY_BRANCH,
+            "status": "in_progress",
+        }
+    ]
+    assert module.main(args) == 0
 
 
 @pytest.mark.parametrize(
@@ -254,6 +275,7 @@ def collector(tmp_path, monkeypatch):
         "artifact": artifact,
         "mutate": None,
         "downloads": 0,
+        "list_args": [],
         "run": {
             "databaseId": RUN_ID,
             "displayTitle": "ClipForge " + COLLECT_REQUEST,
@@ -266,6 +288,7 @@ def collector(tmp_path, monkeypatch):
 
     def gh(*args, body=None, timeout=60):
         if args[:2] == ("run", "list"):
+            control["list_args"].append(args)
             return json.dumps([control["run"]])
         if args[:2] == ("run", "download"):
             control["downloads"] += 1
@@ -670,6 +693,19 @@ def test_collect_requires_a_successful_stage_run(collector, tmp_path):
     assert control["downloads"] == 0 and not destination.exists()
 
 
+def test_collect_legacy_worker_branch_uses_legacy_workflow(collector, tmp_path):
+    module, control, state = collector
+    path = state / "receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt["worker_ref"] = module.LEGACY_BRANCH
+    path.write_text(json.dumps(receipt))
+    control["run"]["headBranch"] = module.LEGACY_BRANCH
+    assert module.main(collect_args(tmp_path / "legacy-collected")) == 0
+    args = control["list_args"][-1]
+    assert args[args.index("--workflow") + 1] == "clipforge.yml"
+    assert args[args.index("--branch") + 1] == module.LEGACY_BRANCH
+
+
 def render_args(args, tmp_path, *extra):
     review = tmp_path / "review.json"
     review.write_text('{"clips": []}')
@@ -720,3 +756,185 @@ def test_merge_needs_clip_runs_and_runs_on_the_hosted_runner(stage_submitter):
     assert module.main(merge + ["--part-runs", parts]) == 0
     assert control["posts"][0]["inputs"]["part_runs"] == parts
     assert control["posts"][0]["inputs"]["worker"] == "cpu"
+
+
+@pytest.fixture
+def local_merge_env(collector, tmp_path, monkeypatch):
+    from clipforge import worker_audio as worker
+
+    module = collector[0]
+    sources, runs = {}, {}
+    for index in (1, 2, 3):
+        request = str(index) * 32
+        root = tmp_path / f"part-{index}"
+        clip = root / f"delivery/clips/clip-{index:03}"
+        clip.mkdir(parents=True)
+        for name in ("video.mp4", "captions.ass", "captions.srt"):
+            (clip / name).write_bytes(b"synthetic clip")
+        quality = {"passed": True, "failures": [], "warnings": [], "metrics": {}}
+        (clip / "quality.json").write_text(json.dumps(quality))
+        (clip / "ledger.json").write_text("[]")
+        row = {
+            "directory": f"delivery/clips/clip-{index:03}",
+            "key": "synthetic-render-key",
+            "ledger": [],
+            "quality": quality,
+            "media": {"width": 1920, "height": 1080, "audio_sample_rate": 48000},
+            "sha256": {path.name: sha(path) for path in clip.iterdir()},
+        }
+        manifest = {
+            "status": "clip_rendered",
+            "audio_stage": "render",
+            "clip_index": index,
+            "clip_count": 3,
+            "rendered": [row],
+            "timings": {f"clip-{index:03}": {"render": 1.0}, "total": 1.0},
+            "analysis_key": "e" * 64,
+            "selection_sha256": "f" * 64,
+            "source_url": KICK_URL,
+            "source_sha256": "0" * 64,
+            "model_generation_requests": 0,
+        }
+        (root / "manifest.json").write_text(json.dumps(manifest))
+        (root / "delivery/manifest.json").write_text(json.dumps(manifest))
+        (root / "asr-receipt.json").write_text(
+            json.dumps({"key": ASR_KEY, "reused": True})
+        )
+        worker.write_receipt(
+            root,
+            manifest,
+            {"previous_request_id": PREVIOUS_REQUEST},
+            request,
+            SOURCE_REF,
+            "render",
+            str(100 + index),
+            index,
+        )
+        sources[request] = root
+        runs[str(100 + index)] = request
+    control = {"run_fault": {}, "calls": []}
+
+    def gh(*args):
+        control["calls"].append(args)
+        if args[:2] == ("run", "view"):
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "displayTitle": "ClipForge " + runs[args[2]],
+                    **control["run_fault"],
+                }
+            )
+        assert args[:2] == ("run", "download")
+        request = args[args.index("--name") + 1].removeprefix("clipforge-result-")
+        shutil.copytree(sources[request], Path(args[args.index("--dir") + 1]))
+        return ""
+
+    monkeypatch.setattr(worker, "gh", gh)
+    monkeypatch.setattr(
+        module, "gh", lambda *a, **k: pytest.fail("local merge dispatched")
+    )
+    monkeypatch.setattr(
+        worker.landscape.fonts,
+        "resolve",
+        lambda *a: pytest.fail("merge resolved a font"),
+    )
+    original_run = subprocess.run
+
+    def only_git(command, *args, **kwargs):
+        assert command[0] == "git", "merge invoked an external media tool"
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", only_git)
+    text = ",".join(f"{run}:{request}" for run, request in runs.items())
+    args = ["--stage", "merge", "--local", "--part-runs", text]
+    return module, worker, control, sources, args
+
+
+def test_local_merge_matches_hosted_merge_and_collect_verification(
+    local_merge_env, tmp_path, monkeypatch
+):
+    module, worker, control, sources, args = local_merge_env
+    output = tmp_path / "local"
+    assert module.main([*args, "--output", str(output)]) == 0
+    assert len([c for c in control["calls"] if c[:2] == ("run", "download")]) == 3
+    assert (output / "delivery/e2e-summary.json").is_file()
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    assert receipt["workflow_run"] == "local"
+    request = {
+        "audio_stage": "merge",
+        "source_ref": SOURCE_REF,
+        "previous_request_id": PREVIOUS_REQUEST,
+        "part_runs": args[-1],
+    }
+    assert module.verify_stage_artifact(
+        output, receipt["request_id"], "merge", request, "local"
+    ) == len(receipt["sha256"])
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    hosted = tmp_path / "hosted"
+    hosted_args = [
+        "--stage",
+        "merge",
+        "--request-id",
+        receipt["request_id"],
+        "--source-ref",
+        SOURCE_REF,
+        "--output",
+        str(hosted),
+    ]
+    for source in sources.values():
+        hosted_args += ["--part-dir", str(source)]
+    assert worker.main(hosted_args) == 0
+    assert json.loads((hosted / "manifest.json").read_text()) == json.loads(
+        (output / "manifest.json").read_text()
+    )
+    assert set(module.staged_files(hosted)) == set(module.staged_files(output))
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        {"status": "in_progress"},
+        {"conclusion": "failure"},
+        {"displayTitle": "ClipForge " + "9" * 32},
+    ],
+)
+def test_local_merge_stops_before_download_when_run_verification_fails(
+    local_merge_env, tmp_path, fault
+):
+    module, _, control, _, args = local_merge_env
+    control["run_fault"] = fault
+    output = tmp_path / "local"
+    with pytest.raises(RuntimeError, match="did not complete successfully"):
+        module.main([*args, "--output", str(output)])
+    assert not output.exists()
+    assert not any(c[:2] == ("run", "download") for c in control["calls"])
+
+
+def test_local_merge_does_not_publish_output_that_fails_collect_verification(
+    local_merge_env, tmp_path, monkeypatch
+):
+    module, worker, _, _, args = local_merge_env
+    original = worker.write_receipt
+
+    def tamper(output, *args):
+        original(output, *args)
+        (output / "delivery/clips/clip-001/video.mp4").write_bytes(b"changed")
+
+    monkeypatch.setattr(worker, "write_receipt", tamper)
+    output = tmp_path / "local"
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        module.main([*args, "--output", str(output)])
+    assert not output.exists()
+
+
+def test_audio_stages_yaml_loads_and_merge_skips_os_packages():
+    import yaml
+
+    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
+    steps = workflow["jobs"]["audio-stage"]["steps"]
+    cache = next(step for step in steps if step.get("uses") == "actions/cache@v4")
+    assert cache["if"] == "inputs.audio_stage != 'merge'"
+    install = next(step for step in steps if "dpkg-query" in step.get("run", ""))
+    assert install["if"] == cache["if"]
+    assert "apt-get install --no-download" in install["run"]

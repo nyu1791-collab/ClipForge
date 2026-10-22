@@ -60,6 +60,7 @@ jobs:
       REVIEW_JSON: ${{ inputs.review_json }}
       CLIP_INDEX: ${{ inputs.clip_index }}
       PART_RUNS: ${{ inputs.part_runs }}
+      CPU_PACKAGES: ffmpeg fontconfig fonts-noto-cjk libcairo2
       PYTHONUNBUFFERED: '1'
     steps:
       - name: Validate private stage identities
@@ -93,14 +94,40 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: '0.12.23'
-          enable-cache: false
-      - name: Install CPU media tools and fonts
+      - name: Install pinned uv
+        run: python -m pip install uv==0.12.23
+      - name: Prepare CPU package cache
+        if: inputs.audio_stage != 'merge'
+        id: debs
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2
+          mkdir -p "$RUNNER_TEMP/clipforge-debs"
+          package_hash=$(printf '%s' "$CPU_PACKAGES" | sha256sum | cut -d' ' -f1)
+          printf 'key=debs-%s-%s-%s\n' "$ImageOS" "$ImageVersion" "$package_hash" >> "$GITHUB_OUTPUT"
+      - name: Restore CPU package archives
+        if: inputs.audio_stage != 'merge'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clipforge-debs/*.deb
+          key: ${{ steps.debs.outputs.key }}
+      - name: Install missing CPU media tools and fonts
+        if: inputs.audio_stage != 'merge'
+        run: |
+          missing=()
+          for package in $CPU_PACKAGES; do
+            if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
+              missing+=("$package")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            cache="$RUNNER_TEMP/clipforge-debs"
+            options=(-y --no-install-recommends -o "Dir::Cache::archives=$cache" -o APT::Keep-Downloaded-Packages=true)
+            if ! sudo apt-get install --no-download "${options[@]}" "${missing[@]}"; then
+              sudo apt-get update -qq
+              sudo apt-get install "${options[@]}" "${missing[@]}"
+            fi
+          fi
+      - name: Install Python stage dependencies
+        run: |
           uv sync --locked --extra media-fetch --no-dev
       - name: Reuse verified ASR and execute only the requested stage
         env:

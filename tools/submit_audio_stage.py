@@ -13,8 +13,10 @@ import sys
 import tempfile
 
 REPO = "nyu1791-collab/ai-model-workers"
-BRANCH = "ccr-12fe9485-ugaszt"
-WORKFLOW = "clipforge.yml"
+BRANCH = "main"
+WORKFLOW = "clipforge-stages.yml"
+LEGACY_BRANCH = "ccr-12fe9485-ugaszt"
+LEGACY_WORKFLOW = "clipforge.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
 MAX_ACTIVE = {"colab-auto": 4}
 RESULT_STATUS = {
@@ -94,7 +96,8 @@ def staged_files(root):
     return names
 
 
-def find_stage_run(identity):
+def find_stage_run(identity, worker_ref=BRANCH):
+    workflow = LEGACY_WORKFLOW if worker_ref == LEGACY_BRANCH else WORKFLOW
     runs = json.loads(
         gh(
             "run",
@@ -102,7 +105,9 @@ def find_stage_run(identity):
             "--repo",
             REPO,
             "--workflow",
-            WORKFLOW,
+            workflow,
+            "--branch",
+            worker_ref,
             "--limit",
             "100",
             "--json",
@@ -114,7 +119,7 @@ def find_stage_run(identity):
         for row in runs
         if row["displayTitle"] == "ClipForge " + identity
         and row["event"] == "workflow_dispatch"
-        and row["headBranch"] == BRANCH
+        and row["headBranch"] == worker_ref
     ]
     if len(matches) != 1:
         raise RuntimeError("expected exactly one private stage run for this request")
@@ -261,6 +266,81 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     return len(listed)
 
 
+def prepare_destination(destination):
+    destination = Path(destination).absolute()
+    if destination.exists() or any(
+        part.is_symlink() for part in [destination, *destination.parents]
+    ):
+        raise RuntimeError(
+            "download destination already exists or uses a symlink; choose a new directory"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return destination
+
+
+def local_merge(part_runs, destination, source_ref=None):
+    """Download verified clip runs and join locally, without dispatching a workflow."""
+    from clipforge import worker_audio
+    from clipforge.models import Settings
+
+    if not re.fullmatch(
+        r"[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}", part_runs
+    ) or (source_ref is not None and not re.fullmatch(r"[a-f0-9]{40}", source_ref)):
+        raise RuntimeError("invalid local merge identity")
+    destination = prepare_destination(destination)
+    with tempfile.TemporaryDirectory(
+        prefix=".clipforge-merge-", dir=destination.parent
+    ) as temporary:
+        root = Path(temporary)
+        parts = worker_audio.download_parts(part_runs, root / "parts")
+        receipt = json.loads(
+            worker_audio.private_member(parts[0][0], "request-receipt.json").read_text()
+        )
+        source_ref = source_ref or receipt.get("source_ref")
+        if not isinstance(source_ref, str) or not re.fullmatch(
+            r"[a-f0-9]{40}", source_ref
+        ):
+            raise RuntimeError("invalid local merge source identity")
+        first = worker_audio.load_part(parts[0][0], parts[0][1], source_ref)
+        request = {
+            "audio_stage": "merge",
+            "source_ref": source_ref,
+            "part_runs": part_runs,
+            "previous_request_id": first["identity"]["previous_request_id"],
+        }
+        if not re.fullmatch(r"[a-f0-9]{32}", str(request["previous_request_id"])):
+            raise RuntimeError("invalid local merge analysis identity")
+        identity = hashlib.sha256(
+            json.dumps(request, sort_keys=True).encode()
+        ).hexdigest()[:32]
+        config = Path(__file__).resolve().parents[1] / "config.landscape.example.json"
+        settings = Settings.model_validate_json(config.read_text()).model_copy(
+            update={"clips": first["identity"]["clip_count"]}
+        )
+        staging = root / "result"
+        result, lineage = worker_audio.merge_parts(parts, staging, settings, source_ref)
+        worker_audio.write_receipt(
+            staging, result, lineage, identity, source_ref, "merge", "local"
+        )
+        count = verify_stage_artifact(staging, identity, "merge", request, "local")
+        if destination.exists() or destination.is_symlink():
+            raise RuntimeError("merge destination was created by another operation")
+        shutil.move(str(staging), str(destination))
+    print(
+        json.dumps(
+            {
+                "request_id": identity,
+                "stage": "merge",
+                "status": "COLLECTED",
+                "verified_files": count,
+                "output": str(destination),
+                "local": True,
+            }
+        )
+    )
+    return 0
+
+
 def collect(identity, destination):
     """Recover one finished private stage into a new directory; nothing is dispatched."""
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
@@ -272,7 +352,7 @@ def collect(identity, destination):
     if (
         stage not in RESULT_STATUS
         or receipt.get("repository") != REPO
-        or receipt.get("worker_ref") != BRANCH
+        or receipt.get("worker_ref") not in {BRANCH, LEGACY_BRANCH}
         or receipt.get("request_id") != identity
         or request.get("request_id") != identity
         or request.get("input_tag") != "clipforge-input-" + identity
@@ -284,15 +364,8 @@ def collect(identity, destination):
         or not re.fullmatch(r"[a-f0-9]{32}", str(request.get("previous_request_id")))
     ):
         raise RuntimeError("saved stage request identity mismatch")
-    destination = Path(destination).absolute()
-    if destination.exists() or any(
-        part.is_symlink() for part in [destination, *destination.parents]
-    ):
-        raise RuntimeError(
-            "download destination already exists or uses a symlink; choose a new directory"
-        )
-    run_id = find_stage_run(identity)
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    destination = prepare_destination(destination)
+    run_id = find_stage_run(identity, receipt["worker_ref"])
     with tempfile.TemporaryDirectory(
         prefix=".clipforge-collect-", dir=destination.parent
     ) as temporary:
@@ -374,7 +447,7 @@ def dispatch(root, inputs, args):
             "api",
             "--method",
             "POST",
-            f"repos/{REPO}/actions/workflows/clipforge.yml/dispatches",
+            f"repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches",
             "--input",
             "-",
             body=json.dumps({"ref": BRANCH, "inputs": inputs}),
@@ -421,17 +494,35 @@ def main(argv=None):
         metavar="REQUEST_ID",
         help="verify and download one finished stage artifact into a new --output",
     )
-    parser.add_argument("--output", type=Path, help="new directory for --collect")
+    parser.add_argument("--local", action="store_true", help="merge on this machine")
+    parser.add_argument(
+        "--output", type=Path, help="new directory for --collect or --local"
+    )
     args = parser.parse_args(argv)
     os.umask(0o077)
     if args.collect is not None:
-        if args.output is None or any(
-            getattr(args, name) is not None for name in SUBMIT_OPTIONS
+        if (
+            args.local
+            or args.output is None
+            or any(getattr(args, name) is not None for name in SUBMIT_OPTIONS)
         ):
             parser.error("--collect requires --output and no submission options")
         return collect(args.collect, args.output)
+    if args.local:
+        if (
+            args.stage != "merge"
+            or not args.part_runs
+            or args.output is None
+            or any(
+                getattr(args, name) is not None
+                for name in SUBMIT_OPTIONS
+                if name not in {"stage", "part_runs", "source_ref"}
+            )
+        ):
+            parser.error("--local requires --stage merge, --part-runs and --output")
+        return local_merge(args.part_runs, args.output, args.source_ref)
     if args.output is not None:
-        parser.error("--output is only used with --collect")
+        parser.error("--output is only used with --collect or --local")
     missing = [
         "--" + name.replace("_", "-")
         for name in ("stage", "previous_run", "previous_request", "source_ref")
@@ -507,6 +598,8 @@ def main(argv=None):
                 REPO,
                 "--workflow",
                 WORKFLOW,
+                "--branch",
+                BRANCH,
                 "--limit",
                 "100",
                 "--json",
