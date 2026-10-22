@@ -5,7 +5,7 @@
   "max_seconds": 75,
   "whisper_model": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
   "language": "ja",
-  "threads": 2,
+  "threads": 4,
   "aspect": "9:16",
   "framing": "fit",
   "height": 1920,

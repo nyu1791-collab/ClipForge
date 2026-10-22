@@ -152,6 +152,7 @@ def test_one_model_is_loaded_per_configuration(monkeypatch, settings):
             loads.append((name, kwargs["cpu_threads"]))
 
     monkeypatch.setattr(faster_whisper, "WhisperModel", CountingModel)
+    settings.threads = 2
     first = signals._shared_model(settings)
     assert signals._shared_model(settings) is first
     settings.threads = 4

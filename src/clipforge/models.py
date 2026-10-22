@@ -153,7 +153,8 @@ class Settings(Record):
     # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
     asr_batch_size: int = Field(default=0, ge=0, le=16)
     language: str | None = None
-    threads: int = Field(default=2, ge=1, le=8)
+    # CPU threads for transcription and encoding; 4 matches a standard 4-vCPU runner.
+    threads: int = Field(default=4, ge=1, le=8)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
     # Frame height in pixels. Unset means the standard size for the aspect: 1920 for 9:16
