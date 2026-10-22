@@ -116,7 +116,7 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
         return {
             "status": "awaiting_video_review",
             "previews": [],
-            "analysis_key": "key",
+            "analysis_key": analysis_result[0]["analysis_key"],
         }
 
     monkeypatch.setattr(audio_first, "previews", previews)
@@ -125,6 +125,60 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
     assert result["asr_reused"] is True and result["model_generation_requests"] == 0
     assert calls[0][1].segments
     assert json.loads((output / "asr-receipt.json").read_text())["reused"] is True
+
+
+def test_previews_write_unapproved_drafts_before_receipting(
+    previous_analysis, monkeypatch
+):
+    previous, output, _ = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    monkeypatch.setattr(worker, "gh", _previous_gh(previous))
+    monkeypatch.setattr(
+        worker, "KickVOD", lambda *a, **k: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(worker, "preview_contact_sheet", lambda *a: None)
+
+    def previews(vod, root, settings, analysis_result=None):
+        analysis, _ = analysis_result
+        rows = []
+        for topic in analysis["topics"]:
+            path = root / "previews" / (topic["id"] + ".mp4")
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(b"synthetic preview")
+            rows.append(
+                {
+                    "topic_id": topic["id"],
+                    "file": str(path.relative_to(root)),
+                    "receipt": {"sha256": digest(path)},
+                }
+            )
+        value = {
+            "status": "awaiting_video_review",
+            "analysis_key": analysis["analysis_key"],
+            "previews": rows,
+            "video_review_performed": False,
+        }
+        write_json(root / "previews.json", value)
+        return value
+
+    monkeypatch.setattr(audio_first, "previews", previews)
+    assert worker.main(_previews_args(output)) == 0
+    draft = json.loads((output / "review-draft.json").read_text())
+    diagnostics = json.loads((output / "review-draft-diagnostics.json").read_text())
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert draft["clips"]
+    assert all(row["video_reviewed"] is False for row in draft["clips"])
+    assert diagnostics["transcript_boundary_check"] == "performed"
+    assert diagnostics["semantic_topic_review"] == "required"
+    assert manifest["status"] == "awaiting_video_review"
+    assert manifest["human_review_performed"] is False
+    assert (
+        json.loads((output / "topics.json").read_text())["semantic_topic_review"]
+        == "required"
+    )
+    for name in ("review-draft.json", "review-draft-diagnostics.json"):
+        assert receipt["sha256"][name] == digest(output / name)
 
 
 def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(

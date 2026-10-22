@@ -194,6 +194,19 @@ uv run --no-sync python tools/submit_audio_stage.py --stage merge --local \
 映像の内容・発話との一致・画面の見やすさ・話題の始まりと結びを確認し、採用区間JSONを私有領域に作る。
 `video_reviewed: true`はその確認を行った担当者の申告。プログラム自身が人の視聴を証明する値ではない。
 
+### 自動下書きから承認ファイルを作る
+
+非公開workerの `previews` 完了時に `review-draft.json` と `review-draft-diagnostics.json` を作成し、両方を `request-receipt.json` のSHA-256一覧へ含める。成功した候補映像のある話題だけを `hint_topics()` の順位で並べ、異なるID・非重複・設定の尺に収まる元の話題区間から、既定で `settings.clips` 件（3〜5件）を下書きにする。
+ヒント順位は意味・面白さ・映像の判定ではない。全クリップは `video_reviewed: false`、`confidence: 0.0`、タイトルは `要確認：<topic-id>`、理由は未確認である旨の定型文となる。
+共有ASRの単語途中切断と、単語時刻のない発話の途中切断を既存の境界検証で除外する。安全な候補が足りなくても補充・時刻調整は行わず、diagnostics の `requested_count`・`selected_count`・`shortfall` と `skipped` に不足・除外理由を記録する。diagnostics に発話本文は含めない。文字起こしを渡さず関数を利用した場合は `transcript_boundary_check: not_available` となる。
+
+1. 成功した候補映像runを `--collect` で私有領域へ回収し、下書きとdiagnosticsを確認する。
+2. 対応する `topics.json`・共有ASRと候補映像を確認し、意味・映像・始まりと結びを判断する。静止画シートだけで視聴済みとはしない。
+3. 下書きを別名の `/private/reviewed-topics.json` にコピーし、採否・時刻・タイトル・理由・confidenceを修正する。分析キーを維持し、各区間を対応する話題内、設定尺内、単語の切れ目に収める。不足があれば別の成功済み候補を確認し、要求本数の異なる話題・非重複区間を揃える。
+4. 確認して採用する全クリップだけを `video_reviewed: true` に変更し、その承認ファイルを `--stage render --review-file` に渡す。未確認・欠落・真偽値以外のフラグを含むファイルと空の選定は、CPU・Colab・単一/並列クリップいずれも投入前に拒否する。描画側でも分析・映像・境界を引き続き検証する。
+
+下書き作成後も `semantic_topic_review: required`、`awaiting_video_review`、`human_review_performed: false` の停止点を維持する。自動作成は人の判断・承認の完了を意味しない。
+
 ```json
 {
   "analysis_key": "topics.jsonのanalysis_key",

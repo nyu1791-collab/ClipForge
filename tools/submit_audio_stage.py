@@ -428,6 +428,20 @@ def collect(identity, destination):
     return 0
 
 
+def require_video_review(value):
+    """Reject unapproved drafts before any render request is prepared or dispatched."""
+    clips = value.get("clips") if isinstance(value, dict) else None
+    if (
+        not isinstance(clips, list)
+        or not clips
+        or any(
+            not isinstance(row, dict) or row.get("video_reviewed") is not True
+            for row in clips
+        )
+    ):
+        raise RuntimeError("each selected topic requires video review")
+
+
 def clip_indices(args, worker):
     """The clip numbers to request: one request per clip when rendering in parallel."""
     if args.clips is not None and args.clip_index is not None:
@@ -563,8 +577,10 @@ def main(argv=None):
     ):
         raise RuntimeError("invalid immutable source or analysis identity")
     review = json.loads(args.review_file.read_text()) if args.review_file else None
-    if args.stage == "render" and review is None:
-        raise RuntimeError("render requires reviewed topic intervals")
+    if args.stage == "render":
+        if review is None:
+            raise RuntimeError("render requires reviewed topic intervals")
+        require_video_review(review)
     worker = args.worker or "cpu"
     indices = clip_indices(args, worker)
     part_runs = args.part_runs or ""

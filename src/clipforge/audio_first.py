@@ -364,7 +364,7 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
         {
             "review": value,
             "analysis": analysis["analysis_key"],
-            "settings": settings.model_dump(),
+            "settings": settings.model_dump(exclude={"encode_threads"}),
             "code": landscape.code_identity(settings)["implementation_sha256"],
             "media_format": RANGE_FORMAT,
         }

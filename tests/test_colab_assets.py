@@ -549,6 +549,11 @@ class SetupScriptTests(unittest.TestCase):
                             self.assertIn("--locked", arguments)
                         if len(calls) == 2:
                             self.assertNotIn("--offline", calls[1])
+                        if result.returncode:
+                            self.assertIn(
+                                "Python dependencies are not fully cached; offline mode forbids downloading.",
+                                result.stderr,
+                            )
 
     def test_cuda_check_uses_hardware_and_model_prepare_uses_profile(self):
         source = self.script.read_text()
@@ -696,6 +701,7 @@ class RemotePipelineTests(unittest.TestCase):
                 )
                 self.assertIn(f"cache-{profile}-", tag)
                 self.assertEqual("models/hub" in parts, profile == "gpu")
+                bundles.publish.assert_called_once()
                 published = bundles.publish.call_args
                 self.assertEqual(published.args[:2], (tag, cache_root))
                 self.assertEqual(published.args[3:], ("assets", key))
@@ -707,13 +713,21 @@ class RemotePipelineTests(unittest.TestCase):
                 self.assertEqual(setup_env["CLIPFORGE_SKIP_MODEL_PREPARE"], "0")
                 self.assertEqual(setup_env["CLIPFORGE_PREPARE_ONLY"], "1")
 
-    def test_parallel_audio_cache_is_saved_only_by_first_clip_even_on_a_miss(self):
-        for cached in (False, True):
+    def test_parallel_audio_cache_is_skipped_for_cpu_and_saved_by_first_gpu_clip(self):
+        for accelerator, cached in (
+            ("NONE", False),
+            ("NONE", True),
+            ("T4", False),
+            ("T4", True),
+        ):
             for fetched in (False, True):
                 for clip_index in (None, "1", "2"):
                     with (
                         self.subTest(
-                            cached=cached, fetched=fetched, clip_index=clip_index
+                            accelerator=accelerator,
+                            cached=cached,
+                            fetched=fetched,
+                            clip_index=clip_index,
                         ),
                         tempfile.TemporaryDirectory() as temporary,
                     ):
@@ -725,7 +739,7 @@ class RemotePipelineTests(unittest.TestCase):
                             "source_ref": "b" * 40,
                             "workflow_run": "123",
                             "github_token": "test-only-github",
-                            "accelerator": "NONE",
+                            "accelerator": accelerator,
                             "stage": {
                                 "previous_run": "122",
                                 "previous_request": "c" * 32,
@@ -758,12 +772,13 @@ class RemotePipelineTests(unittest.TestCase):
                                 remote_job, "ReleaseBundles", return_value=bundles
                             ),
                             patch.object(remote_job, "host_info", return_value={}),
+                            patch.object(remote_job, "gpu_info", return_value={}),
                             patch.object(
                                 remote_job, "read_setup_timings", return_value={}
                             ),
                             patch.object(
                                 remote_job, "publish_result", return_value=True
-                            ),
+                            ) as publish_result,
                             patch.object(remote_job.os, "umask"),
                             patch.object(remote_job, "mark_restored"),
                             patch.object(
@@ -774,9 +789,17 @@ class RemotePipelineTests(unittest.TestCase):
                                 payload
                             )
                             remote_job.main()
-                        should_save = clip_index in (None, "1") and (
-                            not cached or fetched
+                        cpu_only = accelerator == "NONE"
+                        profile = "cpu" if cpu_only else "gpu"
+                        parts = (
+                            cache.PARTS if cpu_only else (*cache.PARTS, "models/hub")
                         )
+                        should_save = (
+                            not cpu_only
+                            and clip_index in (None, "1")
+                            and (not cached or fetched)
+                        )
+                        publish_result.assert_called_once()
                         self.assertEqual(bundles.publish.call_count, int(should_save))
                         self.assertFalse(
                             any(
@@ -784,28 +807,44 @@ class RemotePipelineTests(unittest.TestCase):
                                 for call in run.call_args_list
                             )
                         )
-                        bundles.restore.assert_called_once_with(
-                            "clipforge-cache-cpu-cache-key",
-                            root,
-                            "assets",
-                            "cache-key",
-                            parts=cache.PARTS,
-                        )
+                        report = json.loads((work / "out/gpu-receipt.json").read_text())
+                        if cpu_only:
+                            bundles.restore.assert_not_called()
+                            self.assertEqual(
+                                report["public_cache_restored"], "skipped_cpu_profile"
+                            )
+                            self.assertEqual(
+                                report["public_cache_saved"], "skipped_cpu_profile"
+                            )
+                            self.assertNotIn("cache_restore", report["timings"])
+                            self.assertNotIn("cache_publish", report["timings"])
+                        else:
+                            bundles.restore.assert_called_once_with(
+                                "clipforge-cache-gpu-cache-key",
+                                root,
+                                "assets",
+                                "cache-key",
+                                parts=parts,
+                            )
+                            self.assertEqual(report["public_cache_restored"], cached)
                         setup_env = next(
                             call.args[1]
                             for call in run.call_args_list
                             if call.args[2] == "setup"
                         )
-                        self.assertEqual(setup_env["CLIPFORGE_CPU_ONLY"], "1")
-                        self.assertEqual(setup_env["CLIPFORGE_CACHE_PROFILE"], "cpu")
+                        self.assertEqual(
+                            setup_env["CLIPFORGE_CPU_ONLY"], "1" if cpu_only else "0"
+                        )
+                        self.assertEqual(setup_env["CLIPFORGE_CACHE_PROFILE"], profile)
+                        self.assertEqual(setup_env["CLIPFORGE_OFFLINE"], "0")
                         self.assertEqual(setup_env["CLIPFORGE_PERSISTENT_CACHE"], "")
                         if should_save:
                             published = bundles.publish.call_args
                             self.assertEqual(
                                 published.args[:2],
-                                ("clipforge-cache-cpu-cache-key", root),
+                                ("clipforge-cache-gpu-cache-key", root),
                             )
-                            self.assertEqual(published.kwargs["parts"], cache.PARTS)
+                            self.assertEqual(published.kwargs["parts"], parts)
 
     def test_pipeline_uses_staged_input_and_preserves_result_publication(self):
         for audio_analysis in (True, False):
@@ -888,7 +927,15 @@ class RemotePipelineTests(unittest.TestCase):
 
 
 class RemoteCacheRecoveryTests(unittest.TestCase):
-    def run_job(self, *, restore_fails=False, failure=None, cached=False):
+    def run_job(
+        self,
+        *,
+        restore_fails=False,
+        failure=None,
+        cached=False,
+        accelerator="T4",
+        offline=False,
+    ):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -905,7 +952,8 @@ class RemoteCacheRecoveryTests(unittest.TestCase):
             "source_ref": "b" * 40,
             "workflow_run": "123",
             "github_token": "test-only-github",
-            "accelerator": "T4",
+            "accelerator": accelerator,
+            "offline": offline,
             "stage": {
                 "previous_run": "122",
                 "previous_request": "c" * 32,
@@ -935,6 +983,7 @@ class RemoteCacheRecoveryTests(unittest.TestCase):
 
         def command(arguments, environment, name):
             commands.append(name)
+            self.assertEqual(environment["CLIPFORGE_OFFLINE"], "1" if offline else "0")
             if name == "setup" and restore_fails:
                 self.assertTrue(all(not (cache_root / name).exists() for name in parts))
                 self.assertFalse((cache_root / "pip").is_symlink())
@@ -1000,6 +1049,21 @@ class RemoteCacheRecoveryTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertEqual(commands, ["setup", "render"])
         bundles.publish.assert_called_once()
+
+    def test_cpu_failures_keep_cache_skip_report_including_offline_setup(self):
+        for failure, offline in (("setup", False), ("setup", True), ("render", False)):
+            with self.subTest(failure=failure, offline=offline):
+                report, bundles, commands = self.run_job(
+                    failure=failure, accelerator="NONE", offline=offline
+                )
+                bundles.restore.assert_not_called()
+                bundles.publish.assert_not_called()
+                self.assertEqual(report["public_cache_restored"], "skipped_cpu_profile")
+                self.assertEqual(report["public_cache_saved"], "skipped_cpu_profile")
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(
+                    commands, ["setup"] if failure == "setup" else ["setup", "render"]
+                )
 
 
 if __name__ == "__main__":

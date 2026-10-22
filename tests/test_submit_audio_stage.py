@@ -708,13 +708,49 @@ def test_collect_legacy_worker_branch_uses_legacy_workflow(collector, tmp_path):
 
 def render_args(args, tmp_path, *extra):
     review = tmp_path / "review.json"
-    review.write_text('{"clips": []}')
+    review.write_text(json.dumps({"clips": [{"video_reviewed": True}] * 3}))
     return [
         *(["--stage", "render"] + args[2:]),
         "--review-file",
         str(review),
         *extra,
     ]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [(), ("--clip-index", "1"), ("--worker", "colab-auto", "--clips", "3")],
+)
+@pytest.mark.parametrize("flag", [False, None, 1, "true", "missing"])
+def test_render_rejects_unreviewed_drafts_before_any_remote_call(
+    stage_submitter, tmp_path, monkeypatch, extra, flag
+):
+    module, control, args = stage_submitter
+    argv = render_args(args, tmp_path, *extra)
+    clips = [
+        {"video_reviewed": True},
+        {} if flag == "missing" else {"video_reviewed": flag},
+    ]
+    (tmp_path / "review.json").write_text(json.dumps({"clips": clips}))
+    monkeypatch.setattr(
+        module, "gh", lambda *a, **k: pytest.fail("unapproved review reached GitHub")
+    )
+    with pytest.raises(RuntimeError, match="requires video review"):
+        module.main(argv)
+    assert not control["posts"]
+    assert not (tmp_path / ".local/state/clipforge").exists()
+
+
+@pytest.mark.parametrize(
+    "review", [[], {}, {"clips": []}, {"clips": "invalid"}, {"clips": [None]}]
+)
+def test_render_rejects_empty_or_malformed_reviews(stage_submitter, tmp_path, review):
+    module, control, args = stage_submitter
+    argv = render_args(args, tmp_path)
+    (tmp_path / "review.json").write_text(json.dumps(review))
+    with pytest.raises(RuntimeError, match="requires video review"):
+        module.main(argv)
+    assert not control["posts"]
 
 
 def test_parallel_clips_dispatch_one_colab_request_per_clip(stage_submitter, tmp_path):

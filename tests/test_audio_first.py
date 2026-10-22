@@ -267,6 +267,35 @@ def test_render_fetches_only_reviewed_intervals_without_second_asr(
     }
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "same_key"),
+    [("encode_threads", 4, True), ("height", 720, False)],
+)
+def test_render_key_ignores_only_encode_thread_changes(
+    audio_job, monkeypatch, field, value, same_key
+):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    keys = []
+
+    def render(source, output, index, clip, transcript, settings, key):
+        keys.append(key)
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, settings, review, only=1)
+    af.render(
+        vod,
+        root,
+        settings.model_copy(update={field: value}),
+        review,
+        only=1,
+    )
+    assert len(keys) == 2
+    assert (keys[0] == keys[1]) is same_key
+    assert [e for e in events if e[0] == "1080p"] == [("1080p", 0, 85)]
+
+
 def test_changed_preview_blocks_all_high_quality_fetch(audio_job):
     vod, root, settings, events, _ = audio_job
     af.previews(vod, root, settings)

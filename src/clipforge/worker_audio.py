@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 
-from . import audio_first, landscape, media, pipeline
+from . import audio_first, landscape, media, pipeline, review_draft
 from .github_cli import run as run_gh
 from .kick_media import KickVOD, canonical
 from .models import Settings, Transcript
@@ -228,6 +228,11 @@ def execute(
                 result = audio_first.previews(
                     vod, output, settings, analysis_result=analysis, **options
                 )
+                draft, diagnostics = review_draft.build_review_draft(
+                    analysis[0], result, settings, transcript=analysis[1]
+                )
+                write_json(output / "review-draft.json", draft)
+                write_json(output / "review-draft-diagnostics.json", diagnostics)
                 preview_contact_sheet(output, result)
                 result.update(rendered=[], model_generation_requests=0)
             elif mode == "render" and review_file is not None:

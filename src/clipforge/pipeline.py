@@ -26,7 +26,7 @@ from . import (
 )
 from . import topics as topic_tools
 from .captions import create as create_captions
-from .hardware import asr_options, cpu_threads
+from .hardware import asr_options, cpu_threads, encode_threads
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import PipelineError, digest, fingerprint, stage, within, write_json
 
@@ -810,6 +810,12 @@ def run_batch(inputs, output_root, settings, concurrency, resume=False):
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     names = [f"{index:03}-{_folder_name(path)}" for index, path in enumerate(inputs, 1)]
+    concurrency = max(1, min(concurrency, len(names)))
+    if concurrency > 1 and settings.encode_threads == 0:
+        # Share available render cores across the videos actually running at once.
+        settings = settings.model_copy(
+            update={"encode_threads": max(1, encode_threads(settings) // concurrency)}
+        )
 
     def one(item):
         source, name = item
@@ -826,7 +832,7 @@ def run_batch(inputs, output_root, settings, concurrency, resume=False):
             )
             return {"folder": name, "status": "failed", "error": detail[:240]}
 
-    with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(one, zip(inputs, names)))
     write_json(
         root / "batch.json", {"results": results, "human_review_performed": False}

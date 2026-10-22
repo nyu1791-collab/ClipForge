@@ -1,7 +1,8 @@
 import json
 
+import pytest
 
-from clipforge import pipeline
+from clipforge import hardware, pipeline
 from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
@@ -32,6 +33,49 @@ def test_one_failing_video_does_not_stop_the_others(monkeypatch, tmp_path):
     saved = json.loads((tmp_path / "out" / "batch.json").read_text())
     assert saved["results"] == results
     assert saved["human_review_performed"] is False
+
+
+@pytest.mark.parametrize(
+    ("cores", "videos", "concurrency", "explicit", "expected"),
+    [
+        (8, 4, 4, 0, 2),
+        (9, 4, 4, 0, 2),
+        (2, 4, 4, 0, 1),
+        (8, 2, 4, 0, 4),
+        (8, 4, 1, 0, 0),
+        (8, 1, 4, 0, 0),
+        (8, 4, 0, 0, 0),
+        (8, 4, 4, 6, 6),
+    ],
+)
+def test_batch_shares_only_automatic_render_threads(
+    monkeypatch, tmp_path, cores, videos, concurrency, explicit, expected
+):
+    monkeypatch.setattr(hardware.os, "sched_getaffinity", lambda pid: set(range(cores)))
+    monkeypatch.setattr(hardware.os, "cpu_count", lambda: 64)
+    settings = make(threads=2, encode_threads=explicit)
+    original = settings.model_dump()
+    received = []
+
+    def fake_run(source, output, effective_settings, resume=False):
+        received.append(effective_settings)
+        assert resume is True
+        return {"status": "complete", "rendered": []}
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    inputs = [tmp_path / f"synthetic-{index}.mp4" for index in range(videos)]
+    results = pipeline.run_batch(
+        inputs, tmp_path / "out", settings, concurrency, resume=True
+    )
+    assert len(received) == len(results) == videos
+    assert all(result["status"] == "complete" for result in results)
+    for effective in received:
+        assert effective.model_dump() == {**original, "encode_threads": expected}
+        if expected == explicit:
+            assert effective is settings
+        else:
+            assert effective is not settings
+    assert settings.model_dump() == original
 
 
 def test_folder_names_are_unique_and_safe(tmp_path):

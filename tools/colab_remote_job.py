@@ -205,6 +205,9 @@ def main():
         cache_profile = payload.get("cache_profile", "gpu")
     if cache_profile not in {"cpu", "gpu"}:
         raise RuntimeError("Invalid cache profile: use cpu or gpu")
+    # 2026-10-22 Colab CPU high-RAM, 3 parallel jobs: fresh setup took 28s;
+    # restoring the 602 MB public cache plus setup took 30-72s, before publication.
+    use_public_cache = cache_profile != "cpu" or mode == "prepare-cache"
     os.environ["CLIPFORGE_CACHE_PROFILE"] = cache_profile
     # Releases contain the assets themselves; Drive's nested tar is not used here.
     os.environ["CLIPFORGE_PERSISTENT_CACHE"] = ""
@@ -249,31 +252,35 @@ def main():
         "human_review_performed": False,
         "timings": timings,
     }
+    if not use_public_cache:
+        report["public_cache_restored"] = "skipped_cpu_profile"
+        report["public_cache_saved"] = "skipped_cpu_profile"
     failed = False
     cached = False
     setup_complete = False
     try:
-        report["stage"] = "cache-restore"
-        with timed(timings, "cache_restore"):
-            try:
-                cached = bundles.restore(
-                    cache_tag, cache_root, "assets", key, parts=parts
-                )
-                if cached:
-                    mark_restored(key, cache_root)
-            except Exception as error:
-                report["cache_restore_error"] = type(error).__name__
-                cached = False
-                # Direct extraction can leave partial assets; setup must fetch them afresh.
-                for name in parts:
-                    path = cache_root / name
-                    if path.is_symlink() or path.is_file():
-                        path.unlink()
-                    elif path.exists():
-                        shutil.rmtree(path)
-                for name in (".restored", ".saved-inventory"):
-                    (cache_root / name).unlink(missing_ok=True)
-            report["public_cache_restored"] = cached
+        if use_public_cache:
+            report["stage"] = "cache-restore"
+            with timed(timings, "cache_restore"):
+                try:
+                    cached = bundles.restore(
+                        cache_tag, cache_root, "assets", key, parts=parts
+                    )
+                    if cached:
+                        mark_restored(key, cache_root)
+                except Exception as error:
+                    report["cache_restore_error"] = type(error).__name__
+                    cached = False
+                    # Direct extraction can leave partial assets; setup must fetch them afresh.
+                    for name in parts:
+                        path = cache_root / name
+                        if path.is_symlink() or path.is_file():
+                            path.unlink()
+                        elif path.exists():
+                            shutil.rmtree(path)
+                    for name in (".restored", ".saved-inventory"):
+                        (cache_root / name).unlink(missing_ok=True)
+                report["public_cache_restored"] = cached
         report["stage"] = "hardware-check"
         if not cpu_only:
             report["gpu"] = gpu_info(accelerator)
@@ -390,7 +397,9 @@ def main():
         fetched = (WORK / "setup-fetched").is_file()
         report["setup_fetched"] = fetched
         first = (payload.get("stage") or {}).get("clip_index") in (None, "1")
-        if not setup_complete:
+        if not use_public_cache:
+            report["public_cache_saved"] = "skipped_cpu_profile"
+        elif not setup_complete:
             report["public_cache_saved"] = "skipped_setup_failed"
         elif mode == "audio-stage" and not first:
             report["public_cache_saved"] = "skipped_parallel"
