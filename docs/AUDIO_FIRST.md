@@ -94,6 +94,40 @@ uv run --no-sync python tools/submit_job.py \
 すでに同じIDのworkflowがあれば新規dispatchせず、HTTP応答を失った等の不確かなdispatch状態も自動再送しない。
 workflow起動前に`DISPATCHING`、応答不明なら`DISPATCH_UNCONFIRMED`を記録する。
 
+## 非公開workerで候補映像・横動画を続ける
+
+`deploy/audio-stages.yml`は、非公開workerの`ccr-12fe9485-ugaszt`ブランチにある`.github/workflows/clipforge.yml`へ配置する原本。
+main側の既存ASR用workflowは維持する。後段workflowは`contents: read`と`actions: read`だけを使い、モデルAPI用Secretを渡さない。
+
+前段の成功artifactをworker内で回収し、元音声・ASR・話題の全ハッシュを確認する。
+有効なASRがなければ、取得・認識や別モデルへのfallbackで補わず停止する。
+後段では元音声の再アップロードも不要。候補映像は、必要ならASR本文を確認して指定した話題IDだけを取得できる。
+
+```json
+{"topic_ids": ["topic-001", "topic-005", "topic-009"]}
+```
+
+これは書式例であり、実データの話題IDを確認して私有JSONへ保存する。
+
+```bash
+uv run --no-sync python tools/submit_audio_stage.py --stage previews \
+  --previous-run SUCCESSFUL_ASR_RUN --previous-request ASR_REQUEST_ID \
+  --source-ref REVIEWED_COMMIT_SHA --review-file /private/audio-topic-shortlist.json
+```
+
+候補ごとの低解像度映像と、10%・50%・90%地点の静止画を並べた`preview-contact-sheet.jpg`を私有artifactへ保存する。
+静止画のサンプリングは動画全体を視聴したことを意味しない。話題の本文とサンプル映像で確認できた範囲を選定理由へ記す。
+その後、候補映像の成功runを指定して、確認済みの非重複3〜5区間を描画する。
+
+```bash
+uv run --no-sync python tools/submit_audio_stage.py --stage render \
+  --previous-run SUCCESSFUL_PREVIEW_RUN --previous-request PREVIEW_REQUEST_ID \
+  --source-ref REVIEWED_COMMIT_SHA --review-file /private/reviewed-topics.json
+```
+
+同一stage・前段run・選定内容・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。
+生成物は非公開`clipforge-result-REQUEST_ID`artifactに7日保存する。公開側のActionsで実配信を処理しない。
+
 ## 候補映像の判定と採用
 
 `--stage previews`で音声の話題候補（既定最大8件）の区間だけ低解像度映像を取得する。

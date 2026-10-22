@@ -1,0 +1,107 @@
+name: ClipForge audio-first stages
+run-name: ClipForge ${{ inputs.request_id }}
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        type: string
+        required: true
+      input_tag:
+        type: string
+        required: true
+      source_ref:
+        type: string
+        required: true
+      audio_stage:
+        type: choice
+        options: [previews, render]
+        required: true
+      previous_run_id:
+        type: string
+        required: true
+      previous_request_id:
+        type: string
+        required: true
+      review_json:
+        type: string
+        default: ''
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: clipforge-video
+  cancel-in-progress: false
+jobs:
+  audio-stage:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      SOURCE_REF: ${{ inputs.source_ref }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      INPUT_TAG: ${{ inputs.input_tag }}
+      AUDIO_STAGE: ${{ inputs.audio_stage }}
+      PREVIOUS_RUN: ${{ inputs.previous_run_id }}
+      PREVIOUS_REQUEST: ${{ inputs.previous_request_id }}
+      REVIEW_JSON: ${{ inputs.review_json }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Validate private stage identities
+        run: |
+          python3 - <<'PY'
+          import os,re,json,pathlib
+          for key,length in [('SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:
+              assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])
+          assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']
+          assert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])
+          assert os.environ['AUDIO_STAGE'] in {'previews','render'}
+          text=os.environ['REVIEW_JSON']
+          assert len(text.encode())<=32768
+          if os.environ['AUDIO_STAGE']=='render':
+              assert text
+          text=text or '{}'
+          json.loads(text)
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'
+          path.write_text(text)
+          path.chmod(0o600)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - name: Install CPU media tools and fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2
+          uv sync --locked --extra media-fetch --no-dev
+      - name: Reuse verified ASR and execute only the requested stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$AUDIO_STAGE" = render ]; then
+            uv run --no-sync python tools/run_audio_stage.py --stage render \
+              --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
+              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" \
+              --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage
+          else
+            uv run --no-sync python tools/run_audio_stage.py --stage previews \
+              --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
+              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" \
+              --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipforge-result-${{ inputs.request_id }}
+          path: artifacts/audio-stage/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn

@@ -87,6 +87,30 @@ def test_audio_then_topics_then_video_reuses_single_asr(audio_job):
     assert len(events) == 5
 
 
+def test_audio_review_can_choose_topics_before_video_fetch(audio_job):
+    vod, root, settings, events, _ = audio_job
+    result = af.previews(
+        vod, root, settings, topic_ids=["topic-003", "topic-001", "topic-002"]
+    )
+    assert result["preview_selection_basis"] == "reviewed_audio_topics"
+    assert [row["topic_id"] for row in result["previews"]] == [
+        "topic-003",
+        "topic-001",
+        "topic-002",
+    ]
+    assert [row[1] for row in events if row[0] == "preview"] == [200, 0, 100]
+
+
+@pytest.mark.parametrize(
+    "ids", [["missing", "topic-002", "topic-003"], ["topic-001"] * 3]
+)
+def test_invalid_audio_topic_shortlist_stops_before_video_fetch(audio_job, ids):
+    vod, root, settings, events, _ = audio_job
+    with pytest.raises(PipelineError, match="shortlist"):
+        af.previews(vod, root, settings, topic_ids=ids)
+    assert not any(row[0] == "preview" for row in events)
+
+
 @pytest.mark.parametrize(
     "field",
     ["source_url", "source_start", "source_end", "audio_only", "sha256", "missing"],

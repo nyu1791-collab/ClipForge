@@ -191,11 +191,28 @@ def allocate_audio(source, root, settings, source_url):
     return result, transcript
 
 
-def previews(vod, root, settings):
-    analysis, _ = analyze(vod, root, settings)
+def previews(vod, root, settings, analysis_result=None, topic_ids=None):
+    analysis, _ = (
+        analysis_result if analysis_result is not None else analyze(vod, root, settings)
+    )
     ordered = sorted(
         analysis["topics"], key=lambda row: (-row["speech_seconds"], row["start"])
     )
+    if topic_ids is not None:
+        available = {row["id"]: row for row in analysis["topics"]}
+        if (
+            not isinstance(topic_ids, list)
+            or not settings.clips <= len(topic_ids) <= settings.candidates
+            or any(
+                not isinstance(topic_id, str) or topic_id not in available
+                for topic_id in topic_ids
+            )
+            or len(set(topic_ids)) != len(topic_ids)
+        ):
+            raise PipelineError(
+                "audio topic shortlist must contain distinct valid topic IDs"
+            )
+        ordered = [available[topic_id] for topic_id in topic_ids]
     rows = []
     for topic in ordered[: settings.candidates]:
         target = root / "previews" / (topic["id"] + ".mp4")
@@ -215,6 +232,9 @@ def previews(vod, root, settings):
         "previews": rows,
         "video_review_performed": False,
         "model_generation_requests": 0,
+        "preview_selection_basis": "reviewed_audio_topics"
+        if topic_ids is not None
+        else "speech_duration",
     }
     write_json(root / "previews.json", value)
     return value
@@ -285,8 +305,10 @@ def shifted_transcript(transcript, start, end):
     return Transcript(language=transcript.language, segments=segments)
 
 
-def render(vod, root, settings, review_file):
-    analysis, transcript = analyze(vod, root, settings)
+def render(vod, root, settings, review_file, analysis_result=None):
+    analysis, transcript = (
+        analysis_result if analysis_result is not None else analyze(vod, root, settings)
+    )
     preview = json.loads((root / "previews.json").read_text())
     value = json.loads(review_file.read_text())
     clips = reviewed_clips(value, analysis, preview, settings)

@@ -245,6 +245,8 @@ def find_run(identity):
 def send_dispatch(state, receipt):
     """Record the uncertain interval before POST, so a lost reply cannot cause a retry."""
     receipt["status"] = "DISPATCHING"
+    receipt["job_submitted"] = None
+    receipt.pop("diagnostic_code", None)
     save(state / "receipt.json", receipt)
     payload = json.dumps(
         {
@@ -272,6 +274,7 @@ def send_dispatch(state, receipt):
         save(state / "receipt.json", receipt)
         raise
     receipt["status"] = "DISPATCHED"
+    receipt["job_submitted"] = True
     save(state / "receipt.json", receipt)
 
 
@@ -425,6 +428,7 @@ def recover(args):
     )
     receipt.update(
         run_id=run_id,
+        job_submitted=True,
         github_status=run["status"],
         conclusion=run.get("conclusion"),
         url=f"https://github.com/{REPO}/actions/runs/{run_id}",
