@@ -20,6 +20,8 @@ def stage_submitter(tmp_path, monkeypatch):
     def gh(*args, body=None):
         if args[:2] == ("api", "user"):
             return "nyu1791-collab"
+        if args[:1] == ("api",) and args[1].count("/") == 2 and "--jq" in args:
+            return "true" if control["private"] else "false"
         if args[:2] == ("repo", "view"):
             return json.dumps({"isPrivate": control["private"]})
         if args[:2] == ("run", "list"):

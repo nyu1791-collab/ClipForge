@@ -484,7 +484,7 @@ def main():
     args = parser.parse_args()
     if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
         raise RuntimeError("use the authenticated owner VM connection")
-    if not json.loads(gh("repo", "view", REPO, "--json", "isPrivate"))["isPrivate"]:
+    if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
         raise RuntimeError("worker repository must remain private")
     if args.cleanup_tag:
         if not re.fullmatch(r"clipforge-input-[a-f0-9]{32}", args.cleanup_tag):

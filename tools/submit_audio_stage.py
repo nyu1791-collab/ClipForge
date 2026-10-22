@@ -329,7 +329,7 @@ def main(argv=None):
             )
         if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
             raise RuntimeError("the approved owner connection is required")
-        if not json.loads(gh("repo", "view", REPO, "--json", "isPrivate"))["isPrivate"]:
+        if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
             raise RuntimeError("audio stages require the private worker repository")
         runs = json.loads(
             gh("run", "list", "--repo", REPO, "--limit", "100", "--json", "status")
