@@ -92,20 +92,11 @@ def test_keep_regions_cut_only_long_pauses_and_pad_speech():
     keep = silence.keep_regions(spans, 0, 10, pad=0.1, min_gap=0.5)
     # The 2.0 -> 6.0 pause is cut; the 0.3 s pause between the first two runs is kept.
     assert keep == [(0.0, 4.1), (5.9, 8.1)]
-    assert silence.output_duration(keep) == pytest.approx(6.3)
 
 
 def test_keep_regions_clamp_to_the_interval_and_drop_slivers():
     assert silence.keep_regions([(5.0, 5.01)], 5, 9, pad=0, min_gap=0.4) == []
     assert silence.keep_regions([(0, 1)], 0.5, 3, pad=1, min_gap=0.4) == [(0.5, 2.0)]
-
-
-def test_output_time_maps_across_cuts_and_snaps_inside_them():
-    keep = [(0.0, 4.0), (6.0, 10.0)]
-    assert silence.to_output(2.0, keep) == 2.0
-    assert silence.to_output(5.0, keep) == 4.0  # inside the cut: snaps to the cut edge
-    assert silence.to_output(7.5, keep) == 5.5
-    assert silence.to_output(99, keep) == 8.0
 
 
 def test_interval_pieces_split_where_cuts_remove_audio():

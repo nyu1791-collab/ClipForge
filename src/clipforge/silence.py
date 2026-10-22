@@ -1,6 +1,6 @@
 """Silence cutting from speech timing: merge short pauses, pad speech edges, map times.
 
-All times are original-video seconds until mapped with to_output().
+All times are original-video seconds until mapped with pieces().
 """
 
 import tempfile
@@ -85,22 +85,6 @@ def keep_regions(spans, start, end, pad, min_gap):
         else:
             regions.append([a, b])
     return [(a, b) for a, b in regions if b - a >= 0.05]
-
-
-def output_duration(keep):
-    return sum(b - a for a, b in keep)
-
-
-def to_output(t, keep):
-    """Map an original time onto the cut timeline; times inside cuts snap to the cut edge."""
-    elapsed = 0.0
-    for a, b in keep:
-        if t <= a:
-            return elapsed
-        if t < b:
-            return elapsed + (t - a)
-        elapsed += b - a
-    return elapsed
 
 
 def pieces(a, b, keep):
