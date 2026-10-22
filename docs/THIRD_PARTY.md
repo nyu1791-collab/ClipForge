@@ -13,6 +13,9 @@
 | 切り抜き・画面調整・エンコード | [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg) | runner配布版。主にLGPL、libx264等を有効にした構成はGPL |
 | ASS描画 | [libass/libass](https://github.com/libass/libass) | FFmpeg側で使用 / ISC |
 | 日本語字幕フォント | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) | runnerの `fonts-noto-cjk` / SIL OFL 1.1 |
+| 字幕の改行候補（文節の区切り） | [google/budoux](https://github.com/google/budoux) | 0.10.0 / Apache-2.0 |
+| 文末の判定（形態素解析） | [polm/fugashi](https://github.com/polm/fugashi) | 1.5.2 / MIT AND BSD-3-Clause |
+| 形態素解析の辞書 | [polm/unidic-lite](https://github.com/polm/unidic-lite) | 1.0.8 / パッケージ表記は MIT。同梱辞書の条件は要確認 |
 | 入出力検査 | [pydantic/pydantic](https://github.com/pydantic/pydantic) | 2.x / MIT |
 
 Whisperモデルの重みは実行時に取得され、各モデルの配布条件にも従います。

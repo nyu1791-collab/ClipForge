@@ -365,14 +365,66 @@ def _word_cut(members):
     return best[1] if best else None
 
 
-# Polite sentence endings. Recognition writes no full stop, so one of these ends a sentence.
-POLITE_ENDING = re.compile(r"(です|ます|でした|ました|ません|ませんでした)$")
+# Recognition writes almost no full stop, so a sentence end is found from the word forms:
+# です, ます and だ in the final form, た after them, and sentence-final particles (ね, よ, か ...).
+_TAGGER = None
 
 
-def _sentence_done(members):
-    """True when members end a sentence and have lasted MIN_CAPTION_SECONDS, enough for one caption."""
-    long_enough = members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS
-    return bool(POLITE_ENDING.search(members[-1][2])) and long_enough
+def _tagger():
+    """Morphological analyser (fugashi with the UniDic dictionary), made once."""
+    global _TAGGER
+    if _TAGGER is None:
+        import fugashi
+
+        _TAGGER = fugashi.Tagger()
+    return _TAGGER
+
+
+def _ends_sentence(morpheme, before):
+    """True when a morpheme ends a sentence, given the morpheme before it."""
+    form = morpheme.feature
+    final = (getattr(form, "cForm", "") or "").startswith("終止形")
+    # です and ます end a sentence in any form here: the particle check has already let a
+    # sentence go on, and without punctuation the tagger often reads them as attributive.
+    if form.pos1 == "助動詞" and form.lemma in ("です", "ます"):
+        return True
+    if form.pos1 == "助動詞" and final and form.lemma == "だ":
+        return True
+    if form.pos1 == "助動詞" and final and form.lemma == "た" and before is not None:
+        return before.feature.lemma in ("です", "ます", "だ")
+    return form.pos1 == "助詞" and form.pos2 == "終助詞"
+
+
+def sentence_ends(tokens):
+    """Indices of the tokens after which a sentence ends.
+
+    A particle or auxiliary that follows means the sentence goes on, so ですよね is not cut
+    between です and よね.
+    """
+    text, ends = "", {}
+    for index, (_, _, raw) in enumerate(tokens):
+        piece = raw.strip()
+        if piece:
+            text += piece
+            ends[len(text)] = index
+    morphemes = list(_tagger()(text))
+    found, offset = set(), 0
+    for position, morpheme in enumerate(morphemes):
+        offset += len(morpheme.surface)
+        if offset not in ends:
+            continue
+        following = morphemes[position + 1] if position + 1 < len(morphemes) else None
+        if following is not None and following.feature.pos1 in ("助詞", "助動詞"):
+            continue
+        before = morphemes[position - 1] if position else None
+        if _ends_sentence(morpheme, before):
+            found.add(ends[offset])
+    return found
+
+
+def _lasts_a_caption(members):
+    """True when members have lasted MIN_CAPTION_SECONDS, so they may close as a caption."""
+    return members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS
 
 
 def group(tokens, measure, line_px, max_lines=2):
@@ -387,12 +439,13 @@ def group(tokens, measure, line_px, max_lines=2):
         too_many_lines = len(wrap_breaks(joined, measure, line_px)) + 1 > max_lines
         return too_many_lines or token[1] - members[0][0] > 4
 
+    final = sentence_ends(tokens)
     groups, current = [], []
-    for token in tokens:
+    for index, token in enumerate(tokens):
         if current and token[0] - current[-1][1] > PAUSE_SECONDS:
             groups.append(current)
             current = []
-        elif current and _sentence_done(current):
+        elif current and index - 1 in final and _lasts_a_caption(current):
             groups.append(current)
             current = []
         while current and overflows(current, token):

@@ -390,7 +390,7 @@ def test_a_phrase_is_not_joined_across_punctuation_or_a_partial_match():
     assert captions.join_phrases(tokens) == tokens
 
 
-def test_a_polite_ending_closes_a_caption_that_has_lasted_a_second():
+def test_a_sentence_end_closes_a_caption_that_has_lasted_a_second():
     tokens = [
         (0.0, 0.6, "今日は"),
         (0.6, 1.5, "晴れです"),
@@ -404,6 +404,27 @@ def test_a_polite_ending_closes_a_caption_that_has_lasted_a_second():
     ]
 
 
-def test_a_polite_ending_does_not_close_a_caption_shorter_than_a_second():
+def test_a_sentence_end_does_not_close_a_caption_shorter_than_a_second():
     tokens = [(0.0, 0.4, "はい"), (0.4, 0.8, "です"), (0.8, 2.0, "次")]
     assert len(captions.group(tokens, FixedWidth(), 300)) == 1
+
+
+def test_a_sentence_ending_particle_stays_with_the_ending_before_it():
+    # です is followed by よ and ね, which are particles, so the sentence goes on until ね.
+    tokens = [(0.0, 1.2, "いいです"), (1.2, 1.5, "よね"), (1.5, 2.5, "次")]
+    groups = captions.group(tokens, FixedWidth(), 300)
+    assert [[token[2] for token in group] for group in groups] == [
+        ["いいです", "よね"],
+        ["次"],
+    ]
+
+
+def test_a_past_casual_ending_closes_a_caption():
+    # The final form of た is read only when a sentence-opening word follows, as it does in speech.
+    tokens = [(0.0, 1.2, "昨日は雨だった"), (1.2, 3.0, "そして")]
+    groups = captions.group(tokens, FixedWidth(), 300)
+    assert [[token[2] for token in group] for group in groups] == [
+        ["昨日は雨だった"],
+        ["そして"],
+    ]
+    assert captions.sentence_ends(tokens) == {0}
