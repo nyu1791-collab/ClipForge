@@ -30,6 +30,10 @@ on:
         description: Canonical Kick VOD URL for URL-only audio analysis on colab-auto
         type: string
         default: ''
+      settings_json:
+        description: URL-only audio analysis settings JSON (at most 16 KB)
+        type: string
+        default: '{}'
 
 permissions:
   contents: write
@@ -272,16 +276,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           AUDIO_URL: ${{ inputs.audio_url }}
+          SETTINGS_JSON: ${{ inputs.settings_json }}
         run: |
-          gh release download "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern request.json --dir "$RUNNER_TEMP/clipforge-url-request"
+          gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
+            --title "$INPUT_TAG" --latest=false \
+            --notes 'Temporary private ClipForge URL input. Automatically cleaned after execution.'
           clipforge-source/.venv/bin/python clipforge-source/tools/acquire_audio_url.py \
             --url "$AUDIO_URL" --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
-            --request "$RUNNER_TEMP/clipforge-url-request/request.json" \
+            --settings-json "$SETTINGS_JSON" \
             --directory "$RUNNER_TEMP/clipforge-input"
           gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
-            "$RUNNER_TEMP/clipforge-input/input-video.bin"
-          gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "$RUNNER_TEMP/clipforge-input/input-video.bin" \
             "$RUNNER_TEMP/clipforge-input/request.json"
       - name: Identify model API requirements from the staged request
         id: request

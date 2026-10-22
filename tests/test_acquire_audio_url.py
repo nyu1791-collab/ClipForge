@@ -15,6 +15,7 @@ URL = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
 
 @pytest.fixture
 def acquisition(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT / "tools"))
     spec = importlib.util.spec_from_file_location(
         "test_acquire_audio_url", ROOT / "tools/acquire_audio_url.py"
     )
@@ -34,7 +35,6 @@ def acquisition(tmp_path, monkeypatch):
         "chat_sha256": None,
         "audio_source_url": URL,
     }
-    request_path = tmp_path / "request.json"
     output = tmp_path / "input"
     control = {
         "created": False,
@@ -63,18 +63,19 @@ def acquisition(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "KickVOD", VOD)
     monkeypatch.setattr(module, "acquire", acquire)
 
-    def invoke(url=URL):
-        request_path.write_text(json.dumps(request))
+    def invoke(url=URL, request_id="b" * 32, source_ref="a" * 40, settings_json=None):
         module.main(
             [
                 "--url",
                 url,
                 "--request-id",
-                "b" * 32,
+                request_id,
                 "--source-ref",
-                "a" * 40,
-                "--request",
-                str(request_path),
+                source_ref,
+                "--settings-json",
+                json.dumps(request["settings"])
+                if settings_json is None
+                else settings_json,
                 "--directory",
                 str(output),
             ]
@@ -103,24 +104,41 @@ def test_acquisition_writes_prepare_input_and_preserves_settings(acquisition, ca
 
 
 @pytest.mark.parametrize(
-    "patch",
+    "settings",
     [
-        {"request_id": "c" * 32},
-        {"source_ref": "c" * 40},
-        {"audio_source_url": URL + "?extra=1"},
-        {"video_sha256": "e" * 64},
-        {"video_bytes": 1},
-        {"chat_sha256": "e" * 64},
         {"unexpected": True},
-        {"settings": {"gemini_model": "test-model"}},
-        {"settings": {"gemini_model": "manual-no-api", "image_search": True}},
+        {"bgm": "synthetic.mp3"},
+        {"gemini_model": "test-model"},
+        {"gemini_model": "manual-no-api", "image_search": True},
+        {"gemini_model": "manual-no-api", "table_query": "synthetic"},
+        {"gemini_model": "manual-no-api", "chat_url": "https://example.invalid"},
     ],
 )
-def test_acquisition_rejects_mismatched_or_enriched_requests(acquisition, patch):
+def test_acquisition_rejects_unknown_local_or_enriched_settings(acquisition, settings):
     request, output, control, invoke = acquisition
-    request.update(patch)
+    request["settings"] = settings
     with pytest.raises(RuntimeError):
         invoke()
+    assert not control["created"] and not output.exists()
+
+
+@pytest.mark.parametrize("settings_json", ["{", "[]", "null", " " * 16385])
+def test_acquisition_rejects_invalid_or_oversized_settings_before_network(
+    acquisition, settings_json
+):
+    _, output, control, invoke = acquisition
+    with pytest.raises((RuntimeError, json.JSONDecodeError)):
+        invoke(settings_json=settings_json)
+    assert not control["created"] and not output.exists()
+
+
+@pytest.mark.parametrize(
+    "identity", [{"request_id": "invalid"}, {"source_ref": "invalid"}]
+)
+def test_acquisition_rejects_invalid_identity_before_network(acquisition, identity):
+    _, output, control, invoke = acquisition
+    with pytest.raises(RuntimeError, match="identity"):
+        invoke(**identity)
     assert not control["created"] and not output.exists()
 
 
@@ -154,6 +172,8 @@ def test_acquisition_refuses_empty_or_oversized_audio(acquisition, audio):
 
 def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["settings_json"]["type"] == "string"
     job = workflow["jobs"]["colab-auto"]
     assert job["runs-on"] == "ubuntu-24.04"
     steps = job["steps"]
@@ -171,6 +191,17 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     assert sync < acquire < allocate
     assert steps[sync]["working-directory"] == "clipforge-source"
     assert steps[acquire]["if"] == "inputs.audio_url != ''"
+    assert steps[acquire]["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert steps[acquire]["env"]["SETTINGS_JSON"] == "${{ inputs.settings_json }}"
+    script = steps[acquire]["run"]
+    assert script.index("gh release create") < script.index(
+        "tools/acquire_audio_url.py"
+    )
+    assert script.index("tools/acquire_audio_url.py") < script.index(
+        "gh release upload"
+    )
+    assert '--settings-json "$SETTINGS_JSON"' in script
+    assert "gh release download" not in script
     assert '"$RUNNER_TEMP/clipforge-input/input-video.bin"' in steps[acquire]["run"]
     assert '"$RUNNER_TEMP/clipforge-input/request.json"' in steps[acquire]["run"]
     validate = steps[0]["run"]
@@ -179,6 +210,9 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     )
     assert all("AUDIO_URL" not in step.get("env", {}) for step in steps[allocate:])
     assert "AUDIO_URL" not in job["env"]
+    cleanup = steps[-1]
+    assert cleanup["if"] == "always()"
+    assert 'cleanup --tag "$INPUT_TAG"' in cleanup["run"]
     assert all("tools/audio_url_job.py" not in step.get("run", "") for step in steps)
     cache = next(step for step in steps if step.get("uses") == "actions/cache@v4")
     assert cache["if"] == "inputs.audio_url != ''"

@@ -420,7 +420,9 @@ def test_audio_analysis_dispatch_has_no_model_or_secret_requirement(
     assert receipt["audio_url"] == "" and receipt["input_staged"] is True
 
 
-def test_url_only_audio_dispatch_stages_only_request(submitter, monkeypatch, tmp_path):
+def test_url_only_audio_dispatch_sends_settings_without_release(
+    submitter, monkeypatch, tmp_path
+):
     module, _, control, _ = submitter
     url = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
     config = tmp_path / "config.json"
@@ -454,20 +456,62 @@ def test_url_only_audio_dispatch_stages_only_request(submitter, monkeypatch, tmp
         "source_ref": "a" * 40,
         "worker": "colab-auto",
         "audio_url": url,
+        "settings_json": inputs["settings_json"],
     }
-    assert control["releases"] == [inputs["input_tag"]]
+    assert not control["releases"]
+    assert not any(call[0] == "release" for call in control["calls"])
     state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
     receipt = json.loads((state / "receipt.json").read_text())
     assert receipt["audio_url"] == url and receipt["input_staged"] is False
     request = json.loads((state / "request.json").read_text())
     assert request["audio_source_url"] == url
     assert request["video_sha256"] is None and request["video_bytes"] is None
-    assert control["request"] == request
+    assert json.loads(inputs["settings_json"]) == request["settings"]
     assert request["settings"] == {
         "gemini_model": "manual-no-api",
         "asr_batch_size": 8,
         "threads": 4,
     }
+
+
+@pytest.mark.parametrize(
+    "settings, message",
+    [
+        ({"unexpected": True}, "unknown fields"),
+        ({"bgm": "synthetic.mp3"}, "local files"),
+        ({"heading": "あ" * 6000}, "16 KB"),
+    ],
+)
+def test_url_only_audio_rejects_invalid_settings_before_dispatch(
+    submitter, monkeypatch, tmp_path, settings, message
+):
+    module, _, control, _ = submitter
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(settings))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--config",
+            str(config),
+        ],
+    )
+    with pytest.raises(RuntimeError, match=message):
+        module.main()
+    assert not control["posts"] and not control["releases"]
+
+
+def test_settings_json_limit_counts_utf8_bytes(submitter):
+    module = submitter[0]
+    settings = {"heading": "あ"}
+    value = json.dumps(settings, ensure_ascii=False)
+    boundary = value + " " * (16384 - len(value.encode("utf-8")))
+    assert module.parse_settings_json(boundary) == settings
+    with pytest.raises(RuntimeError, match="16 KB"):
+        module.parse_settings_json(boundary + " ")
 
 
 @pytest.mark.parametrize("worker", ["cpu", "colab-gpu"])
@@ -537,7 +581,7 @@ def test_url_only_audio_wait_collects_verified_analysis(
     assert receipt["status"] == "COMPLETE" and receipt["input_staged"] is False
     assert (destination / "audio.m4a").read_bytes() == b"synthetic-audio"
     assert (destination / "topics.json").is_file()
-    assert len(control["releases"]) == 1
+    assert not control["releases"]
 
 
 def test_url_only_audio_corruption_can_be_collected_again(
@@ -567,10 +611,12 @@ def test_url_only_audio_corruption_can_be_collected_again(
     )
     module.main()
     assert (destination / "audio.m4a").is_file()
-    assert len(control["posts"]) == len(control["releases"]) == 1
+    assert len(control["posts"]) == 1 and not control["releases"]
 
 
-@pytest.mark.parametrize("fault", ["source_url", "source_sha256"])
+@pytest.mark.parametrize(
+    "fault", ["source_url", "source_sha256", "receipt_url", "receipt_audio_hash"]
+)
 def test_url_only_collection_checks_runner_audio_hash_and_submitted_url(
     submitter, monkeypatch, tmp_path, fault
 ):
@@ -583,15 +629,19 @@ def test_url_only_collection_checks_runner_audio_hash_and_submitted_url(
             root = Path(args[args.index("--dir") + 1])
             manifest_path = root / "manifest.json"
             manifest = json.loads(manifest_path.read_text())
-            manifest[fault] = (
+            other_url = (
                 "https://kick.com/other/videos/00000000-0000-0000-0000-000000000002"
-                if fault == "source_url"
-                else "f" * 64
             )
+            if fault in {"source_url", "source_sha256"}:
+                manifest[fault] = other_url if fault == "source_url" else "f" * 64
             manifest_path.write_text(json.dumps(manifest))
             receipt_path = root / "request-receipt.json"
             receipt = json.loads(receipt_path.read_text())
             receipt["sha256"]["manifest.json"] = module.digest(manifest_path)
+            if fault == "receipt_url":
+                receipt["audio_source_url"] = other_url
+            elif fault == "receipt_audio_hash":
+                receipt["sha256"]["audio.m4a"] = "f" * 64
             receipt_path.write_text(json.dumps(receipt))
         return result
 
@@ -608,7 +658,7 @@ def test_url_only_collection_checks_runner_audio_hash_and_submitted_url(
             str(destination),
         ],
     )
-    with pytest.raises(RuntimeError, match="audio analysis identity"):
+    with pytest.raises(RuntimeError, match="identity|checksum"):
         module.main()
     assert not destination.exists()
 

@@ -35,13 +35,13 @@ uv run --no-sync python tools/kick_audio_first.py \
 ```
 
 URLだけで音声取得・ASR・話題分割を投入できる。対応する `deploy/clipforge.yml` と実装を非公開workerへ配置して使う。
-投入側は設定と依頼IDを含む `request.json` だけを一時releaseへ置き、音声はアップロードしない。`--output` で完了待機と検証付き回収を行う。
+投入側はreleaseを作らず、設定をJSON文字列のdispatch入力 `settings_json`（UTF-8で最大16 KB）で渡す。依頼ID・設定はローカルの `request.json` にも保存する。`--output` で完了待機と検証付き回収を行う。
 GitHub-hosted `ubuntu-24.04` runnerが、GPU割り当て前に `uv sync --locked --extra media-fetch --no-dev` の環境で音声を取得する。
-`tools/acquire_audio_url.py` はKickVODの既定6並列取得と `audio_first.acquire` を使い、音声を `input-video.bin`、SHA-256・サイズ確定済みの依頼を `request.json` として同じ一時releaseへ置く。
+runnerは `GITHUB_TOKEN` で一時releaseを作り、`tools/acquire_audio_url.py` が `tools/submit_job.py` の共通関数で設定のサイズ・JSON・許可キーを検証する。KickVODの既定6並列取得と `audio_first.acquire` を使い、音声を `input-video.bin`、設定・SHA-256・サイズ確定済みの依頼を `request.json` としてrunnerがアップロードしてからGPUを割り当てる。一時releaseは既存の `always()` ステップで削除する。
 ffmpeg/ffprobeが導入済みなら再インストールしない。未導入ならImageVersionをキーに含む `actions/cache@v4` の `.deb` から `apt-get install --no-download` し、キャッシュ不足・古い依存関係で失敗した場合はapt更新・通常インストールに戻り、取得した `.deb` を保存する。
 URL形式の検証はGoogleへの接続前に行う。Colabへ `AUDIO_URL` は渡さず、既存の `run_request.py prepare → run` の `audio_source_url` 分岐でASR・話題分割し、出力回収後すぐruntimeを停止する。
 workflowが一時releaseの `request.json` にある `audio_source_url` を確認し、音声解析では `CLIPFORGE_NO_MODEL_API=1` を制御コードへ渡す。URL投入・取得済み音声投入ともGeminiキーを要求せず、Colabへ送らない。音声分岐はGeminiクライアントを作らず、モデルAPIを呼ばない。
-URL投入では手元に音声SHA-256がないため、runner取得音声のSHA-256を結果の `audio.m4a`・manifest・出力receipt間で照合し、`audio_source_url` を投入URLと照合する。
+URL投入では手元に音声SHA-256がないため、結果の `request-receipt.json` の `sha256["audio.m4a"]` を基準に `audio.m4a`・manifestを照合し、receiptの `audio_source_url` とmanifestの `source_url` を投入URLと照合する。
 
 ```bash
 uv run --no-sync python tools/submit_job.py \
@@ -89,6 +89,7 @@ workerから回収したファイルをworkspaceへ統合する際は、`audio.m
 ## 転送元GitHub認証の診断
 
 `tools/submit_job.py`の`dispatch()`は、`--input` がある場合、`gh release create`で一時release作成とファイル添付を行い、完了後にだけworkflowをdispatchする。
+2026-10-22のこの作業環境では、制御側の `gh release create` はHTTP 403となる一方、dispatch・run閲覧・artifact取得は可能だった。URLだけの投入では制御側のrelease操作を行わず、runnerの `GITHUB_TOKEN` による既存のrelease作成経路を使う。以下は取得済み音声をアップロードする経路の過去の診断記録。
 `gh()`は継承した環境でCLIを呼ぶ。この環境では`GH_TOKEN`が設定され、`GITHUB_TOKEN`は設定されていない。値は表示・取得しない。
 
 2026-10-22の再診断では、同じ接続で以下を確認した。

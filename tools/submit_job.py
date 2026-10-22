@@ -20,6 +20,7 @@ WORKFLOW = "clipforge.yml"
 # (a third was refused on 2026-10-22), so two jobs may run side by side; hosted and
 # self-hosted runners keep one job at a time.
 MAX_ACTIVE = {"colab-auto": 2}
+MAX_SETTINGS_JSON_BYTES = 16 * 1024
 SETTINGS_FIELDS = {
     "gemini_model",
     "clips",
@@ -83,6 +84,29 @@ LOCAL_FILE_FIELDS = {
     "transcript_cache",
     "require_transcript_cache",
 }
+
+
+def validate_settings(settings):
+    if (
+        not isinstance(settings, dict)
+        or set(settings) - SETTINGS_FIELDS - LOCAL_FILE_FIELDS
+    ):
+        raise RuntimeError(
+            "configuration has unknown fields; put API credentials in Secrets, not this file"
+        )
+    if set(settings) & LOCAL_FILE_FIELDS:
+        raise RuntimeError(
+            "visuals, bgm, sound_effects and transcript_cache name local files; render those clips locally"
+        )
+
+
+def parse_settings_json(value):
+    """Validate dispatch settings using the same allowlist as local submissions."""
+    if len(value.encode("utf-8")) > MAX_SETTINGS_JSON_BYTES:
+        raise RuntimeError("settings_json exceeds the 16 KB limit")
+    settings = json.loads(value)
+    validate_settings(settings)
+    return settings
 
 
 def gh(*args, body=None, timeout=120):
@@ -178,6 +202,8 @@ def verify_audio_analysis(
         or any(digest(directory / name) != hashes[name] for name in names)
     ):
         raise RuntimeError("audio analysis output checksum mismatch")
+    if source_sha256 is None:
+        source_sha256 = hashes["audio.m4a"]
     manifest = json.loads((directory / "manifest.json").read_text())
     if (
         manifest.get("status") != "topics_allocated"
@@ -236,7 +262,7 @@ def verify_download(directory, receipt, request):
             directory,
             receipt["request_id"],
             receipt["source_ref"],
-            request["video_sha256"] or digest(directory / "audio.m4a"),
+            request["video_sha256"],
             request["audio_source_url"],
         )
         return
@@ -410,6 +436,11 @@ def find_run(identity):
 
 def send_dispatch(state, receipt):
     """Record the uncertain interval before POST, so a lost reply cannot cause a retry."""
+    settings_json = "{}"
+    if receipt.get("audio_url"):
+        request = json.loads((state / "request.json").read_text())
+        settings_json = json.dumps(request["settings"], ensure_ascii=False)
+        parse_settings_json(settings_json)
     receipt["status"] = "DISPATCHING"
     receipt["job_submitted"] = None
     receipt.pop("diagnostic_code", None)
@@ -424,6 +455,7 @@ def send_dispatch(state, receipt):
                 # Receipts written before worker selection ran on the hosted CPU runner.
                 "worker": receipt.get("worker", "cpu"),
                 "audio_url": receipt.get("audio_url", ""),
+                "settings_json": settings_json,
             },
         }
     )
@@ -791,17 +823,7 @@ def dispatch(args, state_root):
             raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True) if args.input else None
     settings = json.loads(args.config.read_text()) if args.config else {}
-    if (
-        not isinstance(settings, dict)
-        or set(settings) - SETTINGS_FIELDS - LOCAL_FILE_FIELDS
-    ):
-        raise RuntimeError(
-            "configuration has unknown fields; put API credentials in Secrets, not this file"
-        )
-    if set(settings) & LOCAL_FILE_FIELDS:
-        raise RuntimeError(
-            "visuals, bgm, sound_effects and transcript_cache name local files; render those clips locally"
-        )
+    validate_settings(settings)
     settings["gemini_model"] = args.gemini_model
     if args.audio_analysis_url and (
         settings.get("image_search")
@@ -896,29 +918,6 @@ def dispatch(args, state_root):
                 raise
         receipt.update(status="STAGED", input_staged=True)
         save(receipt_path, receipt)
-    else:
-        # Stage only the settings/identity; the hosted runner acquires the audio.
-        try:
-            gh(
-                "release",
-                "create",
-                tag,
-                str(state / "request.json"),
-                "--repo",
-                REPO,
-                "--target",
-                "main",
-                "--title",
-                tag,
-                "--latest=false",
-                "--notes",
-                "Temporary private ClipForge URL request. Automatically cleaned after execution.",
-                timeout=1800,
-            )
-        except Exception:
-            receipt["status"] = "STAGING_FAILED"
-            save(receipt_path, receipt)
-            raise
     send_dispatch(state, receipt)
     return state, receipt
 

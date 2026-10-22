@@ -2,7 +2,6 @@
 """Acquire URL-only audio on the hosted runner before allocating a GPU."""
 
 import argparse
-import json
 import os
 from pathlib import Path
 import re
@@ -13,6 +12,7 @@ from clipforge.audio_first import acquire
 from clipforge.kick_media import KickVOD, canonical
 from clipforge.models import Settings
 from clipforge.storage import digest, write_json
+from submit_job import parse_settings_json
 
 
 def main(argv=None):
@@ -21,7 +21,7 @@ def main(argv=None):
     parser.add_argument("--url", required=True)
     parser.add_argument("--request-id", required=True)
     parser.add_argument("--source-ref", required=True)
-    parser.add_argument("--request", type=Path, required=True)
+    parser.add_argument("--settings-json", required=True)
     parser.add_argument("--directory", type=Path, required=True)
     args = parser.parse_args(argv)
     canonical(args.url)
@@ -29,26 +29,15 @@ def main(argv=None):
         r"[a-f0-9]{40}", args.source_ref
     ):
         raise RuntimeError("invalid request identity or source revision")
-    request = json.loads(args.request.read_text())
-    fields = {
-        "request_id",
-        "source_ref",
-        "video_sha256",
-        "video_bytes",
-        "settings",
-        "chat_sha256",
-        "audio_source_url",
+    request = {
+        "request_id": args.request_id,
+        "source_ref": args.source_ref,
+        "video_sha256": None,
+        "video_bytes": None,
+        "settings": parse_settings_json(args.settings_json),
+        "chat_sha256": None,
+        "audio_source_url": args.url,
     }
-    if (
-        set(request) != fields
-        or request["request_id"] != args.request_id
-        or request["source_ref"] != args.source_ref
-        or request["audio_source_url"] != args.url
-        or request["video_sha256"] is not None
-        or request["video_bytes"] is not None
-        or request["chat_sha256"] is not None
-    ):
-        raise RuntimeError("URL-only request identity or input mismatch")
     settings = Settings.model_validate(request["settings"])
     if (
         settings.gemini_model != "manual-no-api"
