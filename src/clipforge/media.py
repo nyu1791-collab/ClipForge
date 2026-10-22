@@ -561,6 +561,14 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
             raise PipelineError("visual interval is outside the rendered clip")
         if not Path(visual["file"]).is_file():
             raise PipelineError("visual file is missing")
+    if ass:
+        # The graph names captions.ass by its basename, so only that beside the output is used.
+        if Path(ass).resolve() != (Path(destination).parent / "captions.ass").resolve():
+            raise PipelineError(
+                "captions must be captions.ass beside the rendered clip"
+            )
+        if not Path(ass).is_file():
+            raise PipelineError("captions file is missing")
     if settings.bgm and not Path(settings.bgm).is_file():
         raise PipelineError("background music file is missing")
     if len(settings.sound_effects) > MAX_SOUND_EFFECTS:

@@ -228,6 +228,7 @@ def test_render_commands_are_local_relative_and_cpu(
         assert kwargs["cwd"] == tmp_path
         return subprocess.CompletedProcess(command, 0, "", "")
 
+    (tmp_path / "captions.ass").write_text("")
     monkeypatch.setattr(subprocess, "run", fake_ffmpeg(check))
     assert (
         media.render(
@@ -239,6 +240,33 @@ def test_render_commands_are_local_relative_and_cpu(
         )
         == info
     )
+
+
+def test_render_refuses_captions_that_are_not_beside_the_output(
+    monkeypatch, tmp_path, settings
+):
+    ran = []
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: ran.append(args))
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    output = tmp_path / "out" / "video.mp4"
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "captions.ass").write_text("")
+    with pytest.raises(PipelineError, match="captions.ass beside"):
+        media.render(
+            tmp_path / "input", output, clip, settings, ass=elsewhere / "captions.ass"
+        )
+    with pytest.raises(PipelineError, match="captions file is missing"):
+        media.render(
+            tmp_path / "input",
+            output,
+            clip,
+            settings,
+            ass=output.parent / "captions.ass",
+        )
+    assert ran == []
 
 
 @pytest.mark.parametrize(
