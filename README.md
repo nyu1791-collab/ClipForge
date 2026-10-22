@@ -17,7 +17,7 @@ Faster-Whisper → チャット／場面転換から候補抽出 → **映像と
 
 ## ActionsからColab Pro GPUを自動起動
 
-Google公式Colab CLIのSDKで、動画ジョブに合わせてT4を起動し、処理後に解放する経路を用意しました。初回だけ指定GoogleユーザーのOAuthを非公開workerの `COLAB_ADC_JSON` に登録します。依存・モデルは非公開キャッシュから再利用します。**OAuth未登録の状態では実GPU起動は未確認です。** 詳細は [Colab設定・検証手順](docs/COLAB.md)。
+Google公式Colab CLIのSDKで、動画ジョブに合わせてT4を起動し、処理後に解放する経路を用意しました。初回だけ指定GoogleユーザーのOAuthを非公開workerの `COLAB_ADC_JSON` に登録します。依存・モデルは非公開キャッシュから再利用します。指定アカウントのT4起動、Whisper CUDA/float16の合成音声処理、キャッシュ保存、解放確認は実機検証済みです。実動画での品質・所要時間は未確認です。詳細は [Colab設定・検証手順](docs/COLAB.md)。
 
 ## 推奨：制御VMから非公開Actionsへ依頼
 

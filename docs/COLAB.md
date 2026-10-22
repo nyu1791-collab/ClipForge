@@ -44,6 +44,18 @@ uv pip install --python /tmp/clipforge-colab-control/bin/python --require-hashes
 
 `COLAB_ADC_JSON` を実行環境へ安全に渡して使用します。未登録・期限切れ・同意取り消し時に、CIが対話ログインへ進むことはありません。
 
+### スマホから認証コードを登録する場合
+
+公開 `ClipForge` はソースコードの保存先です。Google認証情報と動画ジョブは非公開 `ai-model-workers` に置きます。そのため、コードの貼り付け先が `ClipForge` でなく `ai-model-workers` であるのは意図した構成です。
+
+運用者がPKCE付きのGoogle公式SDK認証URLを発行し、対応する短期の検証情報を非公開workerの `COLAB_OAUTH_PENDING` に保存した場合は、スマホで次の操作ができます。
+
+1. 発行された最新のURLで、指定Googleアカウントとして同意し、コードをコピー。
+2. [非公開workerのNew repository secret](https://github.com/nyu1791-collab/ai-model-workers/settings/secrets/actions/new) で、Nameを `COLAB_AUTH_CODE`、Secretをコピーしたコードとして保存。
+3. 運用者が `Complete private Colab Google authorization` の `mode=finish` を実行。
+
+メールアドレスと必要スコープを確認して `COLAB_ADC_JSON` を登録し、一時コードと検証情報を削除します。コードやトークンをチャット・workflow入力・Git・Artifactsへ貼りません。新しいURLを発行した場合、前のURLのコードは使えません。期限切れなら新しい認証が必要です。
+
 ## 起動時のダウンロードを減らす
 
 | アセット | 保存と再利用 |
@@ -54,6 +66,8 @@ uv pip install --python /tmp/clipforge-colab-control/bin/python --require-hashes
 | 同一セッションのツール | 導入済みツールを再利用。apt updateや重複するPython/uv導入を省略 |
 
 自動起動ではキャッシュを非公開workerの `clipforge-cache-<互換性キー>` Releaseへ保存します。512MiB以下のチャンクに分割し、転送・復元時にSHA-256を照合します。既存キャッシュと同じ内容なら再アップロードしません。更新後の不要チャンクは、そのキャッシュRelease内だけで整理します。
+
+依存スナップショット自体は展開しやすいtar、GitHubへの公開アセット転送は低圧縮率のgzipで通信量を減らします。元から圧縮済みのMP4成果物は再圧縮しません。古い未圧縮キャッシュの復元にも対応します。
 
 Google OAuth情報、Colabのプロキシトークン、Runnerの登録情報、元動画、ASR、成果物を公開アセット用キャッシュへ含めません。Googleの認証情報は制御ジョブに保持し、GPUには渡しません。GPUへはジョブに必要なGitHubの短期トークンとGeminiキーだけを非公開ファイルで渡し、読み込み後にファイルを削除します。依存導入プロセスにはこれらのキーを渡しません。
 
@@ -74,6 +88,8 @@ Google OAuth情報、Colabのプロキシトークン、Runnerの登録情報、
 - Whisper `small` をCUDA/float16でロードし、VADを切って2秒の合成音声を実際に処理。
 - NVENCの短い実行を試し、利用可否を記録。
 
+初回キャッシュ保存後、`offline=true` でもう一度実行すると、新しいランタイムで依存パッケージとモデルを追加取得せずに復元・実行できるか確認できます。キャッシュのGitHubからの転送は発生します。不足アセットは自動取得せず、検証を失敗として扱います。
+
 Geminiを呼ばず、実ユーザーの動画も使いません。結果は非公開の `colab-verification-report` に保存します。この検証はASRの文字起こし品質や実動画での所要時間の保証ではありません。
 
 `deploy/colab-integration.yml` はGPUを作らず、キャッシュ・転送・認証ガードのテスト、非公開GitHubへの実アップロード/ダウンロードと一時データ削除、合成動画のCPU切り抜きを確認します。
@@ -91,3 +107,5 @@ Geminiを呼ばず、実ユーザーの動画も使いません。結果は非�
 [調査した公式資料・ツール](COLAB_RESEARCH.md)。公式REST APIも存在しますが、2026-10-22時点でベータの許可制です。本構成は公開REST APIの許可制を迂回するコードを実装せず、Google公式CLIが提供する認証・割り当て・実行機能を使用します。
 
 Google OAuthが未登録なら実GPUの接続・起動・推論は未確認です。コードテスト・CPU合成動画の成功を、GPU成功や実動画の品質確認と混同しません。
+
+2026-10-22の[初回実機検証](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39763967607)では、指定アカウントで **Tesla T4 / VRAM 15360MiB / driver 580.82.07** を割り当て、Whisper `small` のCUDA/float16処理、依存・モデルのキャッシュ保存、専用ランタイムの解放確認が成功しました。合成音声による検証であり、実動画のASR品質・速度は別です。初回NVENC試験は検出映像の幅がTuringの最小幅を下回っていたため、320×240へ修正して再検証します。
