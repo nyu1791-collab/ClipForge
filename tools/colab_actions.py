@@ -441,7 +441,10 @@ del _clipforge_bootstrap
                 if digest(Path(output) / name) != checksum:
                     raise ControlError("GPU result checksum mismatch")
             for clip in json.loads(manifest.read_text()).get("rendered", []):
-                if not re.fullmatch(r"clips/clip-[0-9]{3}", clip.get("directory", "")):
+                # Video jobs write clips/ at the top; audio-first stages write delivery/clips/.
+                if not re.fullmatch(
+                    r"(delivery/)?clips/clip-[0-9]{3}", clip.get("directory", "")
+                ):
                     raise ControlError("Unexpected result directory")
                 checksums = clip.get("sha256", {})
                 if set(checksums) != {"video.mp4", "captions.ass", "captions.srt"}:

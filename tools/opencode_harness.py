@@ -1,13 +1,16 @@
-"""Run bounded subagent tasks on OpenCode's free DeepSeek V4.1 Flash model.
+"""Run bounded subagent tasks on OpenCode: free DeepSeek V4.1 Flash, or GPT-6.1 Sol.
 
-The model is fixed: no other provider is enabled, the title model is the same free model, and
-a run stops at once if any step reports a cost above zero. Read tasks may only read and search
+Each run enables only its model's provider and uses that model for titles too. The free model
+stops at once if any step reports a cost above zero; --model sol uses one logged-in ChatGPT
+profile (CLIPFORGE_OPENAI_PROFILE) in place and records the reported cost. Read tasks may only read and search
 the repository. Write tasks edit a private git worktree and may run tests and ruff there; they
 can never commit, push or fetch. Each task gets its own log, report and timeout, and several
 tasks run side by side.
 
     python tools/opencode_harness.py --mode read --task review.md --task captions.md
     python tools/opencode_harness.py --mode write --task fix.md --base HEAD
+    CLIPFORGE_OPENAI_PROFILE=~/.clipforge-openai/account-1/data \
+        python tools/opencode_harness.py --mode read --model sol --task design.md
 """
 
 import argparse
@@ -23,6 +26,13 @@ import threading
 import time
 
 MODEL = "opencode/deepseek-v4.1-flash-free"
+# The free model is the default; GPT-6.1 Sol runs on the owner's ChatGPT subscription through
+# one logged-in OpenCode profile named by CLIPFORGE_OPENAI_PROFILE (its data directory).
+# A profile is never switched automatically; another one is used only when the owner says so.
+MODELS = {
+    "deepseek": {"id": MODEL, "provider": "opencode", "free": True},
+    "sol": {"id": "openai/gpt-6.1-sol", "provider": "openai", "free": False},
+}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
 STALL_SECONDS = 120
@@ -91,7 +101,7 @@ MODE_RULES = {
 }
 
 
-def config(mode):
+def config(mode, model="deepseek"):
     bash = {"*": "deny"}
     bash.update(
         {pattern: "allow" for pattern in (WRITE_BASH if mode == "write" else READ_BASH)}
@@ -99,9 +109,9 @@ def config(mode):
     bash.update({pattern: "deny" for pattern in DENIED_BASH})
     return {
         "$schema": "https://opencode.ai/config.json",
-        "model": MODEL,
-        "small_model": MODEL,
-        "enabled_providers": ["opencode"],
+        "model": MODELS[model]["id"],
+        "small_model": MODELS[model]["id"],
+        "enabled_providers": [MODELS[model]["provider"]],
         "share": "disabled",
         "autoupdate": False,
         "plugin": [],
@@ -149,7 +159,7 @@ def slot():
         time.sleep(5)
 
 
-def attempt(command, environment, workdir, out, timeout, result, texts):
+def attempt(command, environment, workdir, out, timeout, result, texts, free=True):
     """Run OpenCode once. False only when it never produced an event within STALL_SECONDS."""
     process = subprocess.Popen(
         command,
@@ -189,7 +199,8 @@ def attempt(command, environment, workdir, out, timeout, result, texts):
             elif event.get("type") == "step_finish":
                 result["steps"] += 1
                 result["tokens"] += (part.get("tokens") or {}).get("total", 0)
-                if part.get("cost", 0):
+                result["cost"] = result.get("cost", 0) + (part.get("cost") or 0)
+                if free and part.get("cost", 0):
                     result["error"] = (
                         "non-zero cost reported; stopped (free model only)"
                     )
@@ -214,13 +225,23 @@ def attempt(command, environment, workdir, out, timeout, result, texts):
             process.wait()
 
 
-def run_task(task, mode, base, timeout):
+def openai_profile():
+    """The logged-in OpenCode data directory for GPT-6.1 Sol, checked without reading it."""
+    profile = Path(os.environ.get("CLIPFORGE_OPENAI_PROFILE", "")).expanduser()
+    if not str(profile) or not (profile / "opencode" / "auth.json").is_file():
+        raise SystemExit(
+            "set CLIPFORGE_OPENAI_PROFILE to a logged-in OpenCode data directory"
+        )
+    return profile
+
+
+def run_task(task, mode, base, timeout, model="deepseek"):
     name = f"{Path(task).stem}-{time.strftime('%H%M%S')}-{os.getpid()}"
     directory = STATE / "runs" / name
     directory.mkdir(parents=True, mode=0o700)
     workdir = worktree(base, name) if mode == "write" else ROOT
     settings = directory / "opencode.json"
-    settings.write_text(json.dumps(config(mode), indent=2))
+    settings.write_text(json.dumps(config(mode, model), indent=2))
     prompt = RULES.format(mode_rule=MODE_RULES[mode]) + Path(task).read_text(
         encoding="utf-8"
     )
@@ -246,12 +267,15 @@ def run_task(task, mode, base, timeout):
         XDG_DATA_HOME=str(home / ".local/share"),
         OPENCODE_CONFIG=str(settings),
     )
+    if not MODELS[model]["free"]:
+        # The subscription login stays where it was made; it is used in place, never copied.
+        environment["XDG_DATA_HOME"] = str(openai_profile())
     log = directory / "events.jsonl"
     started = time.monotonic()
     result = {
         "task": str(task),
         "mode": mode,
-        "model": MODEL,
+        "model": MODELS[model]["id"],
         "workdir": str(workdir),
         "log": str(log),
         "status": "failed",
@@ -262,7 +286,7 @@ def run_task(task, mode, base, timeout):
     }
     texts = []
     command = ["opencode", "run", "--format", "json", "--dir", str(workdir)]
-    command += ["-m", MODEL, prompt]
+    command += ["-m", MODELS[model]["id"], prompt]
     with slot(), log.open("w") as out:
         # A start that never answers is retried; one that has answered is never repeated.
         while result["attempts"] < START_ATTEMPTS:
@@ -271,7 +295,10 @@ def run_task(task, mode, base, timeout):
             if remaining <= 0:
                 result["error"] = "timeout"
                 break
-            if attempt(command, environment, workdir, out, remaining, result, texts):
+            free = MODELS[model]["free"]
+            if attempt(
+                command, environment, workdir, out, remaining, result, texts, free
+            ):
                 break
     result["seconds"] = round(time.monotonic() - started, 1)
     report = directory / "report.md"
@@ -299,11 +326,19 @@ def main(argv=None):
     parser.add_argument("--base", default="HEAD", help="commit for write worktrees")
     parser.add_argument("--timeout", type=int, default=900, help="seconds per task")
     parser.add_argument("--parallel", type=int, default=3)
+    parser.add_argument(
+        "--model",
+        choices=sorted(MODELS),
+        default="deepseek",
+        help="deepseek (free, default) or sol (GPT-6.1 Sol via one ChatGPT profile)",
+    )
     args = parser.parse_args(argv)
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
         results = list(
             pool.map(
-                lambda task: run_task(task, args.mode, args.base, args.timeout),
+                lambda task: run_task(
+                    task, args.mode, args.base, args.timeout, args.model
+                ),
                 args.task,
             )
         )
