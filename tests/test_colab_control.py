@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import inspect
 import io
 import json
@@ -696,3 +697,102 @@ class PoolTests(unittest.TestCase):
                 with self.assertRaises((control.ControlError, OSError)):
                     control.Controller(temporary).start("audio-stage")
                 authenticated.assert_not_called()
+
+
+class RenderedChecksumTests(unittest.TestCase):
+    CLIP = "delivery/clips/clip-001"
+    FILES = {
+        "video.mp4": b"video",
+        "captions.ass": b"ass",
+        "captions.srt": b"srt",
+        "ledger.json": b"{}",
+        "quality.json": b"{}",
+    }
+
+    @staticmethod
+    def _sha(files):
+        return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+
+    def _collect(self, temporary, files, sha256):
+        output = Path(temporary) / "output"
+        directory = output / self.CLIP
+        directory.mkdir(parents=True)
+        for name, data in files.items():
+            (directory / name).write_bytes(data)
+        (output / "request-receipt.json").write_text(
+            json.dumps(
+                {
+                    "request_id": "a" * 32,
+                    "source_ref": "b" * 40,
+                    "status": "complete",
+                    "sha256": {},
+                }
+            )
+        )
+        (output / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "status": "complete",
+                    "rendered": [{"directory": self.CLIP, "sha256": sha256}],
+                }
+            )
+        )
+        record = {
+            "mode": "audio-stage",
+            "request_id": "a" * 32,
+            "source_ref": "b" * 40,
+            "input_tag": "clipforge-input-" + "a" * 32,
+            "stage": {"clip_index": None},
+        }
+        controller = control.Controller(Path(temporary) / "state")
+        with patch.object(control, "ReleaseBundles") as bundles:
+            bundles.return_value.restore.return_value = True
+            with contextlib.redirect_stdout(io.StringIO()):
+                controller.collect(record, output, False, "test-only", None)
+
+    def test_extra_ledger_and_quality_checksums_are_accepted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self._collect(temporary, self.FILES, self._sha(self.FILES))
+
+    def test_missing_required_file_checksum_is_rejected(self):
+        files = dict(self.FILES)
+        sha256 = self._sha(files)
+        del sha256["captions.srt"]
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(
+                control.ControlError, "Missing result checksums"
+            ):
+                self._collect(temporary, files, sha256)
+
+    def test_parent_directory_name_is_rejected(self):
+        sha256 = self._sha(self.FILES)
+        sha256["../escape.json"] = "0" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(
+                control.ControlError, "Unexpected result file name"
+            ):
+                self._collect(temporary, self.FILES, sha256)
+
+    def test_slash_in_name_is_rejected(self):
+        sha256 = self._sha(self.FILES)
+        sha256["sub/extra.json"] = "0" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(
+                control.ControlError, "Unexpected result file name"
+            ):
+                self._collect(temporary, self.FILES, sha256)
+
+    def test_digest_mismatch_on_extra_file_is_rejected(self):
+        sha256 = self._sha(self.FILES)
+        sha256["ledger.json"] = "0" * 64
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(control.ControlError, "checksum mismatch"):
+                self._collect(temporary, self.FILES, sha256)
+
+    def test_listed_file_missing_on_disk_is_rejected(self):
+        files = {
+            name: data for name, data in self.FILES.items() if name != "quality.json"
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(control.ControlError, "Missing result file"):
+                self._collect(temporary, files, self._sha(self.FILES))

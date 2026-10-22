@@ -15,6 +15,8 @@ from colab_bundle import ReleaseBundles, digest
 
 EXPECTED_ACCOUNT = "n.yu17919191@gmail.com"
 SOURCE_REPO = "https://github.com/nyu1791-collab/ClipForge.git"
+# Every rendered clip must list these; audio-first rows may list more (ledger.json, quality.json).
+REQUIRED_CLIP_FILES = frozenset({"video.mp4", "captions.ass", "captions.srt"})
 
 
 class ControlError(RuntimeError):
@@ -453,10 +455,17 @@ del _clipforge_bootstrap
                 ):
                     raise ControlError("Unexpected result directory")
                 checksums = clip.get("sha256", {})
-                if set(checksums) != {"video.mp4", "captions.ass", "captions.srt"}:
+                if not isinstance(checksums, dict) or not REQUIRED_CLIP_FILES <= set(
+                    checksums
+                ):
                     raise ControlError("Missing result checksums")
                 for name, checksum in checksums.items():
-                    if digest(Path(output) / clip["directory"] / name) != checksum:
+                    if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
+                        raise ControlError("Unexpected result file name")
+                    path = Path(output) / clip["directory"] / name
+                    if not path.is_file():
+                        raise ControlError("Missing result file")
+                    if digest(path) != checksum:
                         raise ControlError("GPU result checksum mismatch")
             print(
                 "GPU pipeline outputs retrieved and checksums matched; human review is not performed."
