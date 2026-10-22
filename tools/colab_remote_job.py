@@ -248,23 +248,30 @@ def main():
             bundles, payload, output, report, timings
         ):
             failed = True
-        try:
-            with timed(timings, "cache_save"):
-                command(
-                    ["python3", "tools/colab_cache.py", "save"],
-                    environment,
-                    "save-cache",
-                    timeout=1200,
-                )
-            with (
-                timed(timings, "cache_publish"),
-                tempfile.TemporaryDirectory(prefix="clipforge-cache-upload-") as work,
-            ):
-                bundles.publish(cache_tag, PERSISTENT, work, "assets", key)
-            report["public_cache_saved"] = True
-        except Exception as error:
-            report["public_cache_saved"] = False
-            report["cache_error_type"] = type(error).__name__
+        # A job that restored the cache does not rebuild it: the key already names its lock and
+        # setup, and parallel jobs would otherwise each upload about 3 GB to the same release.
+        if mode == "pipeline" and cached:
+            report["public_cache_saved"] = "skipped_restored"
+        else:
+            try:
+                with timed(timings, "cache_save"):
+                    command(
+                        ["python3", "tools/colab_cache.py", "save"],
+                        environment,
+                        "save-cache",
+                        timeout=1200,
+                    )
+                with (
+                    timed(timings, "cache_publish"),
+                    tempfile.TemporaryDirectory(
+                        prefix="clipforge-cache-upload-"
+                    ) as work,
+                ):
+                    bundles.publish(cache_tag, PERSISTENT, work, "assets", key)
+                report["public_cache_saved"] = True
+            except Exception as error:
+                report["public_cache_saved"] = False
+                report["cache_error_type"] = type(error).__name__
         Path("/content/clipforge-report.json").write_text(json.dumps(report))
         (output / "gpu-receipt.json").write_text(json.dumps(report))
     if failed:

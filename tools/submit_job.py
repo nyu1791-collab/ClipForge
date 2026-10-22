@@ -16,6 +16,9 @@ import uuid
 REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
 WORKFLOW = "clipforge.yml"
+# Each Colab job owns its own T4, so up to four may run at once; hosted and self-hosted
+# runners keep one job at a time.
+MAX_ACTIVE = {"colab-auto": 4}
 SETTINGS_FIELDS = {
     "gemini_model",
     "clips",
@@ -729,13 +732,16 @@ def dispatch(args, state_root):
             "list",
             "--repo",
             REPO,
+            "--workflow",
+            WORKFLOW,
             "--limit",
             "100",
             "--json",
             "status",
         )
     )
-    if any(run["status"] != "completed" for run in runs):
+    active = sum(run["status"] != "completed" for run in runs)
+    if active >= MAX_ACTIVE.get(args.worker, 1):
         raise RuntimeError(
             "another video job is active; wait before submitting a new input"
         )

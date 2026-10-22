@@ -51,12 +51,19 @@ def submitter(tmp_path, monkeypatch):
             control["posts"].append(json.loads(body))
             return ""
         if args[:2] == ("run", "list"):
-            if control["active"]:
-                return json.dumps([{"status": "in_progress"}])
+            others = [
+                {
+                    "databaseId": 1,
+                    "displayTitle": "ClipForge other",
+                    "event": "workflow_dispatch",
+                    "status": "in_progress",
+                }
+            ] * int(control["active"])
             if not control["posts"]:
-                return "[]"
+                return json.dumps(others)
             return json.dumps(
-                [
+                others
+                + [
                     {
                         "databaseId": 99,
                         "displayTitle": "ClipForge " + control["request"]["request_id"],
@@ -157,8 +164,21 @@ def test_rejects_public_repository_and_active_jobs(submitter, condition):
     _, _, control, invoke = submitter
     control[condition] = condition != "private"
     with pytest.raises(RuntimeError):
-        invoke()
+        invoke("--worker", "cpu")
     assert not control["posts"] and not control["releases"]
+
+
+@pytest.mark.parametrize("active, allowed", [(3, True), (4, False)])
+def test_colab_jobs_run_up_to_four_at_once(submitter, active, allowed):
+    _, _, control, invoke = submitter
+    control["active"] = active
+    if allowed:
+        invoke("--worker", "colab-auto")
+        assert len(control["posts"]) == 1
+    else:
+        with pytest.raises(RuntimeError, match="another video job"):
+            invoke("--worker", "colab-auto")
+        assert not control["posts"] and not control["releases"]
 
 
 @pytest.mark.parametrize("model", ["bad/model", "with space", "line\nbreak"])
