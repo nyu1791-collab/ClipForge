@@ -168,8 +168,8 @@ class Settings(Record):
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
-    horizontal_target_cps: float = Field(default=4, ge=1, le=20)
-    horizontal_warn_cps: float = Field(default=4, ge=1, le=20)
+    horizontal_target_cps: float = Field(default=7, ge=1, le=20)
+    horizontal_warn_cps: float = Field(default=7, ge=1, le=20)
     horizontal_line_chars: int = Field(default=13, ge=8, le=40)
     # blur fills the frame with a softened copy of the picture; fit leaves black bars.
     layout: Literal["fit", "blur", "panels"] = "blur"

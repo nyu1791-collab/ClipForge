@@ -24,7 +24,7 @@ uv run --no-sync python tools/kick_audio_first.py \
 
 `audio`で止まり、ASR・高画質取得・描画は開始しません。音声専用のHLSがない配信では最軽量のHLSを一時受信し、映像を除いた音声を保存します。
 重いASR・描画は制御VMで行わず、非公開CPU workerを使います。
-横用設定は `config.landscape.example.json`（1920×1080、3本、各20〜180秒、CPU/int8/2スレッド、読み速度4字/秒）です。
+横用設定は `config.landscape.example.json`（1920×1080、3本、各20〜180秒、CPU/int8/2スレッド、読み速度7字/秒。2026-10-22、利用者の判断で4字/秒から変更）です。
 
 既にローカル動画と有効なASRキャッシュがある場合、以下は事前検査だけで止まります。
 `--execute`を付けた場合だけ、十分なCPUのある環境で手動選定3〜5本を生成・検証します。
@@ -165,4 +165,4 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
 顔追跡、音源分離、自動SNS投稿は含みません。URL取得は音声先行の公開Kick VODに限定しています。
 
-詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。
+詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)／[品質の決定事項](docs/QUALITY_DECISIONS.md)。

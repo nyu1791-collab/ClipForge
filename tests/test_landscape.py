@@ -38,7 +38,7 @@ def test_landscape_defaults_and_invalid_reading_settings(landscape_settings):
     assert (
         landscape_settings.horizontal_target_cps
         == landscape_settings.horizontal_warn_cps
-        == 4
+        == 7
     )
     assert landscape_settings.horizontal_line_chars == 13
     assert landscape_settings.gemini_model == "manual-no-api"

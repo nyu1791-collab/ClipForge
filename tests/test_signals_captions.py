@@ -461,9 +461,9 @@ def test_landscape_captions_keep_to_thirteen_full_width_characters_a_line(
             assert len(line) <= Settings.model_fields["horizontal_line_chars"].default
 
 
-def test_landscape_captions_are_held_to_four_characters_a_second():
+def test_landscape_captions_are_held_to_seven_characters_a_second():
     spans = [[0, 1000]]
     cps = Settings.model_fields["horizontal_target_cps"].default
     captions.hold_for_reading(spans, ["あ" * 10], 9000, cps)
-    # Ten characters at 4 a second need 2.5 s, so the caption is held to 2.5 s.
-    assert spans == [[0, 2500]]
+    # Ten characters at 7 a second need 1.43 s, so the caption is held to 1429 ms.
+    assert spans == [[0, 1429]]

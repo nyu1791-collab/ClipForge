@@ -371,15 +371,15 @@ def test_a_caption_that_starts_with_a_sentence_final_particle_is_a_counted_warni
     assert any("sentence-final particle" in text for text in report["warnings"])
 
 
-def test_landscape_frames_are_checked_against_four_characters_a_second(
+def test_landscape_frames_are_checked_against_seven_characters_a_second(
     tmp_path, on_target_loudness
 ):
-    # Ten characters over two seconds read at 5 a second: fine for a portrait frame, too fast here.
-    folder = write_ass(tmp_path, [(0, 2000, "あ" * 10)])
+    # Twenty characters over two seconds read at 10 a second: fine for a portrait frame, too fast here.
+    folder = write_ass(tmp_path, [(0, 2000, "あ" * 20)])
     landscape = {**RENDERED, "width": 1920, "height": 1080}
     report = quality.check_clip(folder, landscape, [], [])
-    assert report["metrics"]["reading_limit_cps"] == 4
-    assert any("faster than 4 characters" in text for text in report["warnings"])
+    assert report["metrics"]["reading_limit_cps"] == 7
+    assert any("faster than 7 characters" in text for text in report["warnings"])
     portrait = quality.check_clip(folder, RENDERED, [], [])
     assert portrait["metrics"]["reading_limit_cps"] == 15
     assert not any("faster than" in text for text in portrait["warnings"])
@@ -393,7 +393,7 @@ def test_landscape_reading_and_real_font_width_are_independent(
     landscape = {**RENDERED, "width": 1920, "height": 1080}
     report = quality.check_clip(folder, landscape, [], [], settings)
     metrics = report["metrics"]
-    assert metrics["reading_target_cps"] == 4
+    assert metrics["reading_target_cps"] == 7
     assert metrics["reading_limit_cps"] == 7
     assert metrics["captions_over_cps"] == {"4": 2, "7": 1, "10": 0}
     assert metrics["reading_count_method"] == "non_whitespace_codepoints"
