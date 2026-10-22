@@ -103,6 +103,45 @@ class ControlTests(unittest.TestCase):
                 self.assertNotIn("token", controller.state())
                 self.assertFalse(controller.credentials_path.exists())
 
+    def test_compute_units_are_recorded_around_the_job_without_failing_it(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(
+                os.environ, {**REQUEST, "COLAB_ADC_JSON": '{"type":"authorized_user"}'}
+            ),
+            patch("builtins.print") as printed,
+        ):
+            client = Mock()
+            client.list_assignments.return_value = []
+            client.get_consumption_user_info.side_effect = [
+                SimpleNamespace(
+                    paid_compute_units_balance=180.0,
+                    consumption_rate_hourly=0.0,
+                    assignments_count=0,
+                ),
+                SimpleNamespace(
+                    paid_compute_units_balance=179.6,
+                    consumption_rate_hourly=0.0,
+                    assignments_count=0,
+                ),
+            ]
+            client.assign.return_value = SimpleNamespace(
+                endpoint="owned-session",
+                runtime_proxy_info=SimpleNamespace(
+                    url="https://test.invalid", token="t"
+                ),
+            )
+            with patch.object(control, "authenticated_client", return_value=client):
+                controller = control.Controller(temporary)
+                controller.start()
+                self.assertEqual(controller.state()["units_before"]["balance"], 180.0)
+                controller.stop()
+            self.assertEqual(controller.state()["units_after"]["balance"], 179.6)
+            lines = " ".join(str(call.args[0]) for call in printed.call_args_list)
+            self.assertIn("Compute units used by this job: 0.40", lines)
+        client.get_consumption_user_info.side_effect = RuntimeError("not reported")
+        self.assertIsNone(control.compute_units(client))
+
     def test_explicit_allocation_refusal_does_not_retry_or_leave_credentials(self):
         from colab_cli.client import TooManyAssignmentsError
 

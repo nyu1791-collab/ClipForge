@@ -84,6 +84,30 @@ def checked_execute(runtime, code, timeout):
     return outputs
 
 
+def compute_units(client):
+    """Account balance, hourly rate and active runtimes; None if Colab does not report them."""
+    try:
+        info = client.get_consumption_user_info()
+        return {
+            "balance": round(float(info.paid_compute_units_balance), 2),
+            "hourly_rate": round(float(info.consumption_rate_hourly), 2),
+            "assignments": int(info.assignments_count),
+        }
+    except Exception:
+        return None
+
+
+def print_units(label, units):
+    if units is None:
+        print(f"Compute units ({label}): not reported", flush=True)
+    else:
+        print(
+            f"Compute units ({label}): balance {units['balance']:.2f}, "
+            f"rate {units['hourly_rate']:.2f}/h, active runtimes {units['assignments']}",
+            flush=True,
+        )
+
+
 class Controller:
     def __init__(self, root):
         self.root = Path(root)
@@ -121,12 +145,15 @@ class Controller:
         client = authenticated_client(info)
         # A read-only permission check comes before allocation; never use another account.
         client.list_assignments()
+        units = compute_units(client)
+        print_units("before allocation", units)
         write_private(self.credentials_path, info)
         record = {
             **request,
             "mode": mode,
             "status": "creating",
             "account": EXPECTED_ACCOUNT,
+            "units_before": units,
         }
         write_private(self.state_path, record)
         from colab_cli.client import Accelerator, Variant
@@ -387,9 +414,18 @@ del _clipforge_bootstrap
             key: value for key, value in record.items() if key not in {"url", "token"}
         }
         record["status"] = "stopped"
+        # The balance may lag the release by a moment; the difference is a lower bound.
+        record["units_after"] = after = compute_units(client)
         write_private(self.state_path, record)
         self.credentials_path.unlink(missing_ok=True)
         print("Owned Colab runtime released; no owned assignment remains.")
+        print_units("after release", after)
+        before = record.get("units_before")
+        if before and after:
+            print(
+                f"Compute units used by this job: {before['balance'] - after['balance']:.2f}",
+                flush=True,
+            )
 
 
 def main():
@@ -430,6 +466,7 @@ def main():
         client = authenticated_client(json.loads(raw))
         print("Verified Google account:", EXPECTED_ACCOUNT)
         print("Visible Colab assignments:", len(client.list_assignments()))
+        print_units("now", compute_units(client))
         print("Read-only authentication check completed; no GPU allocated.")
 
 
