@@ -82,6 +82,18 @@ classic PATは通常`repo`が必要で、workflowファイル自体を変更す�
 復旧後は、そのreleaseの添付状態と同じIDのworkflowの有無を確認してから、不足した添付とdispatchだけを進める。
 一から新しい依頼を作る、音声を再取得する、ローカルASRへ切り替える操作は行わない。
 
+```bash
+uv run --no-sync python tools/submit_job.py --status SAVED_REQUEST_ID
+uv run --no-sync python tools/submit_job.py \
+  --resume-audio SAVED_REQUEST_ID --input /private/original-audio.m4a
+```
+
+`--resume-audio`は、認証復旧後に同じ音声依頼を再開する実行コマンド。保存済みの設定・元コミットSHA・依頼IDを維持する。
+元音声のSHA-256・サイズを照合し、添付済みのファイルはGitHub側のSHA-256・サイズが一致するときだけ再利用する。
+不一致・重複添付・別の稼働中ジョブがあれば停止し、`--clobber`等で上書きしない。
+すでに同じIDのworkflowがあれば新規dispatchせず、HTTP応答を失った等の不確かなdispatch状態も自動再送しない。
+workflow起動前に`DISPATCHING`、応答不明なら`DISPATCH_UNCONFIRMED`を記録する。
+
 ## 候補映像の判定と採用
 
 `--stage previews`で音声の話題候補（既定最大8件）の区間だけ低解像度映像を取得する。
@@ -116,7 +128,7 @@ uv run --no-sync python tools/kick_audio_first.py \
 ```
 
 採用区間だけ最大1080pを取得し、全編ASRの単語時刻を区間内へ移す。区間ごとのASRは実行しない。
-単語時刻のない発話の途中切断は推測で補わず拒否する。
+ASR単語や単語時刻のない発話の途中切断は推測で補わず拒否する。全採用区間の字幕境界を確認してから、高画質取得を開始する。
 48kHz、全復号、音量・真ピーク、ASS/SRT一致等は既存strictゲートを使う。
 strict通過は警告0件や人の読みやすさの承認を意味しない。
 読み速度は目標4字/秒・警告4字/秒のまま。4/7/10字超過数、実フォントでの行幅等を記録する。

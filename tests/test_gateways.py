@@ -286,6 +286,187 @@ def test_staging_failure_records_no_job_and_never_dispatches(
     assert not control["posts"]
 
 
+@pytest.fixture
+def audio_recovery(submitter, tmp_path, monkeypatch):
+    module, source, _, _ = submitter
+    identity = "c" * 32
+    state = tmp_path / ".local/state/clipforge" / identity
+    state.mkdir(parents=True)
+    request = {
+        "request_id": identity,
+        "source_ref": "a" * 40,
+        "video_sha256": module.digest(source),
+        "video_bytes": source.stat().st_size,
+        "settings": {"gemini_model": "manual-no-api"},
+        "chat_sha256": None,
+        "audio_source_url": "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5",
+    }
+    module.save(state / "request.json", request)
+    module.save(
+        state / "receipt.json",
+        {
+            "repository": module.REPO,
+            "request_id": identity,
+            "source_ref": "a" * 40,
+            "input_tag": "clipforge-input-" + identity,
+            "status": "UPLOAD_FAILED_AUTH",
+        },
+    )
+    control = {
+        "assets": [],
+        "uploads": [],
+        "posts": [],
+        "existing": False,
+        "active": False,
+        "upload_error": False,
+        "dispatch_timeout": False,
+        "missing_release": False,
+    }
+
+    def asset(name):
+        path = source if name == "input-video.bin" else state / "request.json"
+        return {
+            "name": name,
+            "size": path.stat().st_size,
+            "digest": "sha256:" + module.digest(path),
+        }
+
+    def gh(*args, body=None, timeout=None):
+        if args[:2] == ("api", "user"):
+            return "nyu1791-collab"
+        if args[:2] == ("repo", "view"):
+            return '{"isPrivate":true}'
+        if args[:2] == ("run", "list"):
+            if args[-1] == "status":
+                return json.dumps(
+                    [{"status": "in_progress"}] if control["active"] else []
+                )
+            return json.dumps(
+                [
+                    {
+                        "databaseId": 99,
+                        "displayTitle": "ClipForge " + identity,
+                        "event": "workflow_dispatch",
+                    }
+                ]
+                if control["existing"]
+                else []
+            )
+        if args[0] == "api" and "/releases/tags/" in args[1]:
+            if control["missing_release"]:
+                raise RuntimeError("GitHub operation failed: api (HTTP 404)")
+            return json.dumps({"id": 123, "assets": control["assets"]})
+        if args[:3] == ("api", "--method", "POST"):
+            if args[3].endswith("/releases"):
+                control["missing_release"] = False
+                return json.dumps({"id": 123, "assets": []})
+            control["posts"].append(json.loads(body))
+            if control["dispatch_timeout"]:
+                raise TimeoutError("response lost")
+            return ""
+        if args[:2] == ("release", "upload"):
+            if control["upload_error"]:
+                raise RuntimeError("GitHub operation failed: release (HTTP 401)")
+            for path in args[3 : args.index("--repo")]:
+                name = Path(path).name
+                control["uploads"].append(name)
+                control["assets"].append(asset(name))
+            return ""
+        raise AssertionError(args)
+
+    monkeypatch.setattr(module, "gh", gh)
+
+    def invoke():
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            ["submit_job", "--resume-audio", identity, "--input", str(source)],
+        )
+        module.main()
+
+    return module, source, state, control, asset, invoke
+
+
+def test_audio_recovery_uploads_only_missing_asset_and_preserves_request(
+    audio_recovery,
+):
+    module, _, state, control, asset, invoke = audio_recovery
+    control["assets"] = [asset("input-video.bin")]
+    before = (state / "request.json").read_bytes()
+    invoke()
+    assert control["uploads"] == ["request.json"]
+    assert len(control["posts"]) == 1
+    assert control["posts"][0]["inputs"]["request_id"] == "c" * 32
+    assert (state / "request.json").read_bytes() == before
+    assert json.loads((state / "receipt.json").read_text())["status"] == "DISPATCHED"
+    control["existing"] = True
+    invoke()
+    assert len(control["posts"]) == 1 and control["uploads"] == ["request.json"]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["input", "asset", "active", "unknown_state", "existing", "upload", "identity"],
+)
+def test_audio_recovery_refuses_duplicate_or_mismatched_work(audio_recovery, fault):
+    module, source, state, control, asset, invoke = audio_recovery
+    if fault == "input":
+        source.write_bytes(b"changed")
+    elif fault == "asset":
+        control["assets"] = [{**asset("input-video.bin"), "digest": "sha256:wrong"}]
+    elif fault == "active":
+        control["active"] = True
+    elif fault in {"unknown_state", "identity"}:
+        receipt = json.loads((state / "receipt.json").read_text())
+        receipt["status" if fault == "unknown_state" else "repository"] = "unknown"
+        module.save(state / "receipt.json", receipt)
+    elif fault == "existing":
+        control["existing"] = True
+        invoke()
+        assert not control["uploads"] and not control["posts"]
+        return
+    else:
+        control["upload_error"] = True
+    with pytest.raises(RuntimeError):
+        invoke()
+    assert not control["posts"]
+
+
+def test_audio_recovery_lost_dispatch_response_is_not_resubmitted(audio_recovery):
+    _, _, state, control, _, invoke = audio_recovery
+    control["dispatch_timeout"] = True
+    with pytest.raises(TimeoutError):
+        invoke()
+    assert (
+        json.loads((state / "receipt.json").read_text())["status"]
+        == "DISPATCH_UNCONFIRMED"
+    )
+    with pytest.raises(RuntimeError, match="uncertain"):
+        invoke()
+    assert len(control["posts"]) == 1
+
+
+def test_audio_recovery_can_recreate_missing_empty_release(audio_recovery):
+    _, _, _, control, _, invoke = audio_recovery
+    control["missing_release"] = True
+    invoke()
+    assert sorted(control["uploads"]) == ["input-video.bin", "request.json"]
+    assert len(control["posts"]) == 1
+
+
+def test_staging_status_does_not_require_a_workflow(
+    audio_recovery, monkeypatch, capsys
+):
+    module, _, _, control, _, _ = audio_recovery
+    monkeypatch.setattr(sys, "argv", ["submit_job", "--status", "c" * 32])
+    module.main()
+    result = json.loads(capsys.readouterr().out)
+    assert (
+        result["status"] == "UPLOAD_FAILED_AUTH" and result["workflow_found"] is False
+    )
+    assert not control["uploads"] and not control["posts"]
+
+
 def test_recover_download_does_not_submit_again(submitter, tmp_path, monkeypatch):
     module, _, control, invoke = submitter
     invoke()

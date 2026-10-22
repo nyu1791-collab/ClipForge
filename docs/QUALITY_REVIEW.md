@@ -339,3 +339,12 @@ CLIは設定済みの`GH_TOKEN`を使用し、`GITHUB_TOKEN`は未設定。値�
 Git設定には流用可能なcredential helperがなく、Git pushと添付APIの認証を同一とみなしていない。
 音声・依頼ID・空の私有releaseを保全し、状態は`UPLOAD_FAILED_AUTH`、dispatchなし、ASR未起動。
 復旧手順と最小権限は [AUDIO_FIRST.md](AUDIO_FIRST.md#転送元github認証の診断) に記録した。認証を設定する場所は転送元の作業環境であり、ActionsのSecretとは区別する。
+
+### 認証待ちの間に追加した再開と字幕境界の検証
+
+- `--resume-audio`で同じ依頼ID・設定・コミットSHA・音声を維持し、GitHubの添付SHA-256/サイズと照合して不足分だけを転送する。
+- 同じIDのworkflowがあれば再投入しない。dispatch前の状態を保存し、応答が失われた場合は`DISPATCH_UNCONFIRMED`として自動再送を拒否する。
+- ASR単語の途中に選定境界がある場合、単語全体の字幕を推測で残さず停止する。全区間を先に検査し、失敗時は高画質取得を開始しない。
+- Python 3.12で455件通過（integration/asr 11件除外、カバレッジ96.34%）。Python 3.11は変更したgatewayと音声先行処理65件通過。Ruffと差分検査も通過。
+
+これらは合成入力とAPIモックによる検証。認証更新の完了連絡前に実アップロードやworkerの再投入を行っていない。

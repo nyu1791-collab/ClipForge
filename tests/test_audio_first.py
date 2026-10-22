@@ -155,7 +155,10 @@ def test_render_fetches_only_reviewed_intervals_without_second_asr(
     af.previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     review = root / "review.json"
-    write_json(review, make_review(analysis))
+    value = make_review(analysis)
+    for clip, (start, end) in zip(value["clips"], [(0, 85), (120, 175), (210, 295)]):
+        clip.update(start=start, end=end)
+    write_json(review, value)
 
     def render(source, output, index, clip, transcript, settings, key):
         events.append(("render", clip.start, clip.end))
@@ -169,14 +172,14 @@ def test_render_fetches_only_reviewed_intervals_without_second_asr(
     assert af.render(vod, root, settings, review)["status"] == "complete"
     assert [e[0] for e in events].count("asr") == 1
     assert [e for e in events if e[0] == "1080p"] == [
-        ("1080p", 0, 100),
-        ("1080p", 100, 200),
-        ("1080p", 200, 300),
+        ("1080p", 0, 85),
+        ("1080p", 120, 175),
+        ("1080p", 210, 295),
     ]
     manifest = json.loads((root / "delivery/manifest.json").read_text())
     assert manifest["rendered"][1]["source_interval"] == {
-        "start": 100,
-        "end": 200,
+        "start": 120,
+        "end": 175,
         "topic_id": "topic-002",
     }
 
@@ -213,11 +216,26 @@ def test_word_clock_and_text_shift_without_inventing_boundary_text():
     shifted = af.shifted_transcript(transcript, 12, 14)
     assert shifted.segments[0].text == "後半"
     assert shifted.segments[0].start == 0 and shifted.segments[0].end == 2
+    with pytest.raises(PipelineError, match="ASR word"):
+        af.shifted_transcript(transcript, 12.5, 14)
     transcript.segments[0].words = []
     with pytest.raises(PipelineError, match="wordless"):
         af.shifted_transcript(transcript, 12, 14)
     assert af.shifted_transcript(transcript, 0, 5).segments == []
     assert af.shifted_transcript(transcript, 10, 14).segments[0].text == "前半後半"
+
+
+def test_mid_word_review_is_rejected_before_any_high_quality_fetch(audio_job):
+    vod, root, settings, events, _ = audio_job
+    af.previews(vod, root, settings)
+    analysis = json.loads((root / "topics.json").read_text())
+    review = root / "review.json"
+    write_json(review, make_review(analysis))
+    # The synthetic word at 90..115 crosses the review boundary at 100 seconds.
+    with pytest.raises(PipelineError, match="ASR word"):
+        af.render(vod, root, settings, review)
+    assert not any(event[0] == "1080p" for event in events)
+    assert not (root / "delivery").exists()
 
 
 def test_lock_prevents_duplicate_analysis(tmp_path):

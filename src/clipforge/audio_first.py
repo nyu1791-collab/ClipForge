@@ -258,6 +258,10 @@ def shifted_transcript(transcript, start, end):
     for segment in transcript.segments:
         if segment.start >= end or segment.end <= start:
             continue
+        if any(w.start < start < w.end or w.start < end < w.end for w in segment.words):
+            raise PipelineError(
+                "selected interval cuts through an ASR word; adjust review boundaries"
+            )
         words = [
             dict(
                 start=max(w.start, start) - start,
@@ -292,6 +296,9 @@ def render(vod, root, settings, review_file):
         target = root / "previews" / (topic["id"] + ".mp4")
         if not target.is_file() or row["receipt"].get("sha256") != digest(target):
             raise PipelineError("reviewed preview changed")
+    local_transcripts = [
+        shifted_transcript(transcript, clip.start, clip.end) for clip in clips
+    ]
     output = root / "delivery"
     output.mkdir(exist_ok=True)
     (output / "clips").mkdir(exist_ok=True)
@@ -313,7 +320,7 @@ def render(vod, root, settings, review_file):
         }
     )
     rows = []
-    for index, clip in enumerate(clips, 1):
+    for index, (clip, local_transcript) in enumerate(zip(clips, local_transcripts), 1):
         target = (
             root
             / "ranges"
@@ -328,7 +335,7 @@ def render(vod, root, settings, review_file):
             output / "clips",
             index,
             local,
-            shifted_transcript(transcript, clip.start, clip.end),
+            local_transcript,
             settings,
             fingerprint({"job": key, "source": receipt["sha256"]}),
         )

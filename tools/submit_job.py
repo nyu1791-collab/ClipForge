@@ -242,6 +242,168 @@ def find_run(identity):
     )
 
 
+def send_dispatch(state, receipt):
+    """Record the uncertain interval before POST, so a lost reply cannot cause a retry."""
+    receipt["status"] = "DISPATCHING"
+    save(state / "receipt.json", receipt)
+    payload = json.dumps(
+        {
+            "ref": "main",
+            "inputs": {
+                "request_id": receipt["request_id"],
+                "input_tag": receipt["input_tag"],
+                "source_ref": receipt["source_ref"],
+            },
+        }
+    )
+    try:
+        gh(
+            "api",
+            "--method",
+            "POST",
+            f"repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches",
+            "--input",
+            "-",
+            body=payload,
+        )
+    except Exception as error:
+        rejected = re.search(r"HTTP (400|401|403|404|422)\b", str(error))
+        receipt["status"] = "DISPATCH_REJECTED" if rejected else "DISPATCH_UNCONFIRMED"
+        save(state / "receipt.json", receipt)
+        raise
+    receipt["status"] = "DISPATCHED"
+    save(state / "receipt.json", receipt)
+
+
+def resume_audio_staging(args):
+    """Resume one saved audio request; never create another request ID or redo ASR."""
+    identity = args.resume_audio
+    if not re.fullmatch(r"[a-f0-9]{32}", identity) or args.input is None:
+        raise RuntimeError(
+            "resume requires a valid request ID and the original --input audio"
+        )
+    state_root = Path.home() / ".local/state/clipforge"
+    with (state_root / ".submit.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("another VM submission is active") from None
+        state = state_root / identity
+        receipt = json.loads((state / "receipt.json").read_text())
+        request_path = state / "request.json"
+        request = json.loads(request_path.read_text())
+        if (
+            receipt.get("repository") != REPO
+            or receipt.get("request_id") != identity
+            or request.get("request_id") != identity
+            or receipt.get("input_tag") != "clipforge-input-" + identity
+            or receipt.get("source_ref") != request.get("source_ref")
+            or not re.fullmatch(r"[a-f0-9]{40}", str(receipt.get("source_ref")))
+            or not request.get("audio_source_url")
+            or request.get("chat_sha256")
+            or request.get("settings", {}).get("gemini_model") != "manual-no-api"
+        ):
+            raise RuntimeError("saved audio request identity mismatch")
+        run_id = receipt.get("run_id") or find_run(identity)
+        if run_id:
+            receipt.update(
+                run_id=run_id, url=f"https://github.com/{REPO}/actions/runs/{run_id}"
+            )
+            save(state / "receipt.json", receipt)
+            print("Existing request already has a workflow; no new job was submitted.")
+            return
+        if receipt.get("status") not in {
+            "STAGING_FAILED",
+            "UPLOAD_FAILED_AUTH",
+            "STAGING_PARTIAL",
+            "DISPATCH_REJECTED",
+        }:
+            raise RuntimeError(
+                "dispatch state is uncertain or not resumable; inspect the existing request"
+            )
+        source = args.input.resolve(strict=True)
+        if (
+            digest(source) != request["video_sha256"]
+            or source.stat().st_size != request["video_bytes"]
+        ):
+            raise RuntimeError("original audio checksum or size mismatch")
+        active = json.loads(
+            gh("run", "list", "--repo", REPO, "--limit", "100", "--json", "status")
+        )
+        if any(row["status"] != "completed" for row in active):
+            raise RuntimeError("another video job is active; wait before resuming")
+        endpoint = f"repos/{REPO}/releases/tags/{receipt['input_tag']}"
+        try:
+            release = json.loads(gh("api", endpoint))
+        except RuntimeError as error:
+            if "HTTP 404" not in str(error):
+                raise
+            release = json.loads(
+                gh(
+                    "api",
+                    "--method",
+                    "POST",
+                    f"repos/{REPO}/releases",
+                    "--input",
+                    "-",
+                    body=json.dumps(
+                        {
+                            "tag_name": receipt["input_tag"],
+                            "target_commitish": "main",
+                            "name": receipt["input_tag"],
+                            "make_latest": "false",
+                        }
+                    ),
+                )
+            )
+
+        def verify_assets(value):
+            expected = {"input-video.bin": source, "request.json": request_path}
+            present = {}
+            for row in value["assets"]:
+                name = row["name"]
+                if name not in expected or name in present:
+                    raise RuntimeError("unexpected or duplicate staged asset")
+                path = expected[name]
+                if (
+                    row.get("digest") != "sha256:" + digest(path)
+                    or row["size"] != path.stat().st_size
+                ):
+                    raise RuntimeError("existing staged asset checksum mismatch")
+                present[name] = path
+            return {
+                name: path for name, path in expected.items() if name not in present
+            }
+
+        missing = verify_assets(release)
+        if missing:
+            with tempfile.TemporaryDirectory(prefix="clipforge-resume-") as temporary:
+                files = []
+                for name, source_path in missing.items():
+                    target = Path(temporary) / name
+                    target.symlink_to(source_path)
+                    files.append(str(target))
+                try:
+                    gh(
+                        "release",
+                        "upload",
+                        receipt["input_tag"],
+                        *files,
+                        "--repo",
+                        REPO,
+                        timeout=1800,
+                    )
+                except Exception:
+                    receipt["status"] = "UPLOAD_FAILED_AUTH"
+                    save(state / "receipt.json", receipt)
+                    raise
+            if verify_assets(json.loads(gh("api", endpoint))):
+                raise RuntimeError("staged input upload is incomplete")
+        # No dispatch is attempted until every staged file matches its saved request.
+        send_dispatch(state, receipt)
+        print("Resumed private audio request " + identity + "; one workflow submitted.")
+
+
 def recover(args):
     identity = args.collect or args.status
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
@@ -252,6 +414,9 @@ def recover(args):
         raise RuntimeError("saved request identity mismatch")
     run_id = receipt.get("run_id") or find_run(identity)
     if not run_id:
+        if args.status:
+            print(json.dumps({**receipt, "workflow_found": False}, indent=2))
+            return
         raise RuntimeError(
             "no matching workflow run found; inspect the staged input before resubmitting"
         )
@@ -299,6 +464,9 @@ def main():
         "--status", help="Show one existing request and GitHub run status"
     )
     modes.add_argument(
+        "--resume-audio", help="Resume a failed audio upload using its saved request ID"
+    )
+    modes.add_argument(
         "--cleanup-tag",
         help="Delete one temporary private input release after inspecting its job",
     )
@@ -323,6 +491,9 @@ def main():
         return
     if args.collect or args.status:
         recover(args)
+        return
+    if args.resume_audio:
+        resume_audio_staging(args)
         return
     if args.audio_analysis_url:
         from clipforge.kick_media import canonical
@@ -449,7 +620,7 @@ def dispatch(args, state_root):
         video = directory / "input-video.bin"
         video.symlink_to(source)
         manifest = directory / "request.json"
-        manifest.write_text(json.dumps(request))
+        manifest.write_bytes((state / "request.json").read_bytes())
         files = [str(video), str(manifest)]
         if args.chat_file:
             chat = directory / "chat.json"
@@ -478,23 +649,7 @@ def dispatch(args, state_root):
             raise
     receipt["status"] = "STAGED"
     save(receipt_path, receipt)
-    payload = json.dumps(
-        {
-            "ref": "main",
-            "inputs": {"request_id": identity, "input_tag": tag, "source_ref": sha},
-        }
-    )
-    gh(
-        "api",
-        "--method",
-        "POST",
-        f"repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches",
-        "--input",
-        "-",
-        body=payload,
-    )
-    receipt["status"] = "DISPATCHED"
-    save(receipt_path, receipt)
+    send_dispatch(state, receipt)
     print("Submitted private ClipForge job " + identity, flush=True)
     deadline = time.monotonic() + 6000
     run_id = None
