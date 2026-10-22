@@ -175,3 +175,21 @@ Geminiの無料tier・割当・APIの稼働状況は、テスト結果とは別�
 - 句読点は増えたが、文の区切りはほとんど増えなかった。確からしさや用語の綴りも変わらない。このため取り入れない。設定項目も追加しなかった（効果のない変更は残さない）。
 - 文の区切りを改善するには、別の手段が必要。候補は、句読点を復元する仕組み、語尾（です・ます）と間による区切り、Geminiによる文字起こし（動画全体を送るため、利用者の判断が必要）。いずれも未実施。
 - 確からしさが0.5未満の単語は全体の1.4%（61件）で、誤りの多くはここに集中すると考えられる。これは計測しただけで、正解との比較は行っていない。
+
+## 字幕ツールの探索結果（2026-10-22）
+
+取得済みのリモートブランチと、手元のリポジトリ（MoneyPrinterTurbo、voiceBox、非公開の制作用バックアップ）を、字幕の処理で確認した。
+
+| 対象 | 内容 | 判断 |
+|---|---|---|
+| `feat/file-review`、`feat/url-agent`、`fix/quality-review`、`feat/streaming-integrations`、`main` の `captions.py` | 古い版（`wrap_tokens`・`width`・`required_lines`）。当方の版に含まれる | 取り入れない（当方の版が上位） |
+| `feat/shorts-production-quality` の `captions.py` | 段階表示（`progressive_events`）、`ass_text`、`group_tokens` | 段階表示は既に見送り（設計の判断）。他は当方の規則に含まれる |
+| MoneyPrinterTurbo の `subtitle.py` | Whisperの句読点で文を区切る、VAD、`beam_size=5`、`initial_prompt` の設定 | `initial_prompt` は実験で効果がなく不採用。区切りは句読点が少ないため使えない |
+| MoneyPrinterTurbo の `wrap_text` | Pillowの `getbbox` で幅を測り、行の高さはフォントの ascent＋descent | 当方は `getlength` で幅を測り、描画はlibassが行うため行高の計算は不要 |
+| MoneyPrinterTurbo のテスト群 | 長い語の後の折り返し、結合記号、SRTのミリ秒の丸め、Unicodeの正規化 | 結合記号と正規化は取り入れ済み。ほかは当方の検査と重なる |
+| voiceBox の `subtitle_tools.py` | 保護する語（数字・英数字・URL）、句の境界、日本語の折り返し | 取り入れ済み |
+| 制作用バックアップの字幕規則 | 改行規則、`measure_caption.py`（保留） | 改行規則は取り入れ済み。字幕の大きさの計測は保留 |
+| 音声波形による時刻の微調整 | 探索した範囲に実装はない | 未実施。`stable-ts` は未評価（重い依存の可能性） |
+| 文字起こしのGemini化 | 技術的には可能 | 動画全体を送ることになるため、利用者の判断が必要。未実施 |
+
+結論：字幕ツールとして新たに取り入れるものは、今回の探索では見つからなかった。残る候補は `stable-ts`（時刻の微調整）と、句読点の復元（文の区切り）の2つで、どちらも効果の計測が必要。
