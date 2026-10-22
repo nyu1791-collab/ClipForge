@@ -362,3 +362,29 @@ def test_break_ranks_follow_japanese_word_boundaries(prev, nxt, rank):
 )
 def test_inside_word_marks_only_breaks_that_split_a_word(prev, nxt, inside):
     assert captions.inside_word(prev, nxt) is inside
+
+
+def test_common_terms_are_written_in_their_usual_spelling():
+    assert (
+        captions.normalize_terms("chatgpt と openai、gpu と api、youtube")
+        == "ChatGPT と OpenAI、GPU と API、YouTube"
+    )
+
+
+def test_a_term_written_as_two_tokens_is_joined_with_its_timing():
+    tokens = [
+        (0.0, 0.5, "の"),
+        (0.5, 1.0, " LM"),
+        (1.0, 1.4, " Studio"),
+        (1.4, 2.0, "を"),
+    ]
+    assert captions.join_phrases(tokens) == [
+        (0.0, 0.5, "の"),
+        (0.5, 1.4, " LM Studio"),
+        (1.4, 2.0, "を"),
+    ]
+
+
+def test_a_phrase_is_not_joined_across_punctuation_or_a_partial_match():
+    tokens = [(0.0, 0.5, "LM"), (0.5, 1.0, " Studio,"), (1.0, 1.5, " Open")]
+    assert captions.join_phrases(tokens) == tokens

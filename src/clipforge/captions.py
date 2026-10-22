@@ -41,8 +41,35 @@ JOIN_PAUSE_SECONDS = (
     0.7  # longest silence across which a short caption may join its neighbour
 )
 MIN_CAPTION_SECONDS = 1.0
-# Latin terms that speech recognition often writes in lower case.
-TERMS = {"ai": "AI", "agi": "AGI", "asi": "ASI"}
+# Latin terms that speech recognition often writes in lower case, with their usual spelling.
+TERMS = {
+    "ai": "AI",
+    "agi": "AGI",
+    "asi": "ASI",
+    "api": "API",
+    "chatgpt": "ChatGPT",
+    "claude": "Claude",
+    "cpu": "CPU",
+    "gemini": "Gemini",
+    "github": "GitHub",
+    "gpt": "GPT",
+    "gpu": "GPU",
+    "llm": "LLM",
+    "ollama": "Ollama",
+    "openai": "OpenAI",
+    "twitch": "Twitch",
+    "youtube": "YouTube",
+}
+# Terms written as two or more words by recognition, joined into one caption token. A word
+# must match exactly, with no punctuation, so the join never changes a sentence's end.
+PHRASES = {
+    ("chat", "gpt"): "ChatGPT",
+    ("hugging", "face"): "Hugging Face",
+    ("lm", "studio"): "LM Studio",
+    ("open", "ai"): "OpenAI",
+    ("stable", "diffusion"): "Stable Diffusion",
+    ("you", "tube"): "YouTube",
+}
 YELLOW = (255, 210, 40)
 _PARSER = None
 
@@ -120,7 +147,30 @@ def collect_tokens(transcript, clip, keep):
                 s, e, _ = spans[0]
                 tokens.append((s, e, text))
     tokens.sort(key=lambda token: (token[0], token[1]))
-    return tokens, approximate
+    return join_phrases(tokens), approximate
+
+
+def join_phrases(tokens):
+    """Join adjacent tokens that spell a term in PHRASES into one token.
+
+    The joined token starts with the first token's start and ends with the last token's end,
+    so the timing is kept. The leading space of the first token is kept too.
+    """
+    joined, index = [], 0
+    while index < len(tokens):
+        for words, term in PHRASES.items():
+            run = tokens[index : index + len(words)]
+            if len(run) == len(words) and all(
+                token[2].strip().lower() == word for token, word in zip(run, words)
+            ):
+                lead = re.match(r"\s*", run[0][2]).group(0)
+                joined.append((run[0][0], run[-1][1], lead + term))
+                index += len(words)
+                break
+        else:
+            joined.append(tokens[index])
+            index += 1
+    return joined
 
 
 def split_long(tokens, measure, limit):
