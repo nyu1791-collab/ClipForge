@@ -771,3 +771,26 @@ def test_api_diagnostic_never_generates(tmp_path, monkeypatch, upload_fails):
     assert counts["count_tokens"] == (0 if upload_fails else 1)
     assert counts["deleted"] == (0 if upload_fails else 1)
     assert "synthetic-only-not-a-secret" not in (tmp_path / "report.json").read_text()
+
+
+@pytest.mark.parametrize("status, submitted", [("403", True), ("500", False)])
+def test_unreadable_secret_names_defer_to_the_worker_only_on_403(
+    submitter, monkeypatch, status, submitted
+):
+    module, _, control, invoke = submitter
+    original = module.gh
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("secret", "list"):
+            raise RuntimeError(f"GitHub operation failed: secret (HTTP {status})")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "gh", gh)
+    url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
+    if submitted:
+        invoke("--audio-analysis-url", url, "--worker", "colab-auto")
+        assert control["posts"][0]["inputs"]["worker"] == "colab-auto"
+    else:
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            invoke("--audio-analysis-url", url, "--worker", "colab-auto")
+        assert not control["posts"]

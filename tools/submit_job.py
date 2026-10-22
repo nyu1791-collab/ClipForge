@@ -741,21 +741,31 @@ def dispatch(args, state_root):
         )
     # Audio analysis on the hosted CPU runner needs neither the Colab nor the Gemini secret.
     needs_secrets = args.worker == "colab-auto" or not args.audio_analysis_url
-    names = (
-        json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
-        if needs_secrets
-        else []
-    )
-    if args.worker == "colab-auto" and not any(
-        secret["name"] == "COLAB_ADC_JSON" for secret in names
-    ):
-        raise RuntimeError(
-            "COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup"
-        )
-    if not args.audio_analysis_url and not any(
-        secret["name"] == "GEMINI_API_KEY" for secret in names
-    ):
-        raise RuntimeError("private worker GEMINI_API_KEY is not registered")
+    names = None
+    if needs_secrets:
+        try:
+            names = [
+                secret["name"]
+                for secret in json.loads(
+                    gh("secret", "list", "--repo", REPO, "--json", "name")
+                )
+            ]
+        except RuntimeError as error:
+            # A token without secrets:read gets 403. The worker checks COLAB_ADC_JSON before
+            # any GPU is allocated, so the request may go ahead and fail there instead.
+            if "(HTTP 403)" not in str(error):
+                raise
+            print(
+                "Secret names are not readable with this token; the worker checks them.",
+                flush=True,
+            )
+    if names is not None:
+        if args.worker == "colab-auto" and "COLAB_ADC_JSON" not in names:
+            raise RuntimeError(
+                "COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup"
+            )
+        if not args.audio_analysis_url and "GEMINI_API_KEY" not in names:
+            raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True)
     settings = json.loads(args.config.read_text()) if args.config else {}
     if (
