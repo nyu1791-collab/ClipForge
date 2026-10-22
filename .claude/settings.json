@@ -18,8 +18,6 @@
       "mcp__Google_Drive"
     ],
     "deny": [
-      "Read(./uv.lock)",
-      "Read(./tools/colab-control-requirements.txt)",
       "Read(./.venv/**)",
       "Read(./**/__pycache__/**)",
       "Read(./outputs/**)",

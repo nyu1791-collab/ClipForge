@@ -25,4 +25,4 @@ Kick URL → runner で音声取得（`tools/acquire_audio_url.py`）→ Colab G
 `tests/test_<モジュール名>.py` が基本。共通の fixture は `tests/conftest.py`。
 
 ## 読まないもの
-`uv.lock`・`.venv/`・生成物（`outputs/`・`artifacts/`・キャッシュ）・動画・音声・画像。`.claude/settings.json` の `permissions.deny` で Read を禁止している。
+`.venv/`・生成物（`outputs/`・`artifacts/`・キャッシュ）・動画・音声・画像は `.claude/settings.json` の `permissions.deny` で Read を禁止している。`uv.lock` は `grep` で該当行だけ見る。
