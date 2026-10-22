@@ -12,7 +12,16 @@ from pathlib import Path
 
 import pysubs2
 
-from .captions import MAX_CAPTION_CPS, inside_word, spoken_length
+from . import fonts
+from .captions import (
+    HORIZONTAL_CAPTION_CPS,
+    MAX_CAPTION_CPS,
+    OUTLINE_ALLOWANCE,
+    inside_word,
+    orphan_start,
+    scale,
+    spoken_length,
+)
 from .media import AUDIO_RATE
 from .storage import PipelineError, write_json
 
@@ -143,6 +152,36 @@ def word_splits(events):
     return found
 
 
+def overflowing_lines(path):
+    """Caption lines wider than the frame allows, measured again with the caption font.
+
+    The frame width, margins and outline allowance are read from the file, so this checks the
+    rendered output rather than the layout that produced it.
+    """
+    subtitles = pysubs2.load(str(path))
+    if not any(event.style in TEXT_STYLES for event in subtitles):
+        return []
+    style = subtitles.styles["Default"]
+    frame_width, height = (
+        int(subtitles.info["PlayResX"]),
+        int(subtitles.info["PlayResY"]),
+    )
+    limit = (
+        frame_width
+        - int(style.marginl)
+        - int(style.marginr)
+        - round(OUTLINE_ALLOWANCE * scale(height))
+    )
+    measure = fonts.Measure(fonts.resolve(style.fontname), int(style.fontsize))
+    return [
+        line
+        for event in subtitles
+        if event.style in TEXT_STYLES
+        for line in event.plaintext.split("\n")
+        if measure.width(line) > limit
+    ]
+
+
 def loudness_warnings(loudness):
     lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
     found = []
@@ -156,6 +195,12 @@ def loudness_warnings(loudness):
     if math.isfinite(peak) and peak > MAX_TRUE_PEAK:
         found.append(f"true peak {peak:.1f} dBTP is above {MAX_TRUE_PEAK:g}")
     return found
+
+
+def reading_limit(rendered):
+    """Characters a second a caption may read at: stricter for landscape frames."""
+    landscape = rendered["width"] > rendered["height"]
+    return HORIZONTAL_CAPTION_CPS if landscape else MAX_CAPTION_CPS
 
 
 def _finite(value):
@@ -176,11 +221,11 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
         failures.append(f"a caption has more than {MAX_CAPTION_LINES} lines")
     if missing_glyphs:
         failures.append("the caption font lacks: " + "".join(missing_glyphs)[:40])
-    too_fast = sum(rate > MAX_CAPTION_CPS for rate in rates)
+    limit = reading_limit(rendered)
+    too_fast = sum(rate > limit for rate in rates)
     if too_fast:
         warnings.append(
-            f"{too_fast} caption(s) read faster than "
-            f"{MAX_CAPTION_CPS:g} characters a second"
+            f"{too_fast} caption(s) read faster than {limit:g} characters a second"
         )
     short = sum(end - start < SHORT_CAPTION_MS for start, end, _ in events)
     if short:
@@ -188,6 +233,20 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
     long = sum(end - start > LONG_CAPTION_MS for start, end, _ in events)
     if long:
         warnings.append(f"{long} caption(s) are shown for more than 4 seconds")
+    overflow = overflowing_lines(directory / "captions.ass")
+    if overflow:
+        failures.append(
+            f"{len(overflow)} caption line(s) are wider than the frame, for example "
+            + overflow[0][:20]
+        )
+    starts = [orphan_start(text) for _, _, text in events]
+    if "punctuation" in starts:
+        failures.append("a caption starts with a punctuation mark")
+    orphans = starts.count("particle")
+    if orphans:
+        warnings.append(
+            f"{orphans} caption(s) start with a sentence-final particle, a stray word"
+        )
     splits = word_splits(events)
     if splits:
         warnings.append(
@@ -224,6 +283,9 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
             "captions_under_1s": short,
             "captions_over_4s": long,
             "word_splits": len(splits),
+            "orphan_particles": orphans,
+            "reading_limit_cps": reading_limit(rendered),
+            "line_overflows": len(overflow),
             "integrated_lufs": _finite(loudness["integrated_lufs"]),
             "true_peak_dbtp": _finite(loudness["true_peak_dbtp"]),
             "duration": rendered["duration"],

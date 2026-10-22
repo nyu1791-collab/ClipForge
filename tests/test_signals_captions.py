@@ -190,7 +190,8 @@ def test_a_caption_within_the_target_keeps_its_timing():
 def test_fast_speech_stays_on_screen_until_the_next_caption_needs_the_room(
     tmp_path, settings
 ):
-    settings.aspect = "16:9"
+    # Portrait frames read at 10 characters a second; landscape frames read at 4 (see the next test).
+    settings.aspect = "9:16"
     words = [Word(start=0.1 * i, end=0.1 * i + 0.1, text="あい") for i in range(10)]
     transcript = Transcript(
         language="ja",
@@ -436,3 +437,32 @@ def test_a_two_line_caption_is_balanced_at_a_word_edge(monkeypatch):
     # gives two lines of 7 characters, and both are word edges.
     text = "東京都ケーキが漢字ハンバーグ"
     assert captions.wrap_breaks(text, FixedWidth(), 100) == [7]
+
+
+def test_landscape_captions_keep_to_thirteen_full_width_characters_a_line(
+    tmp_path, settings
+):
+    settings.aspect, settings.height = "16:9", 1080
+    text = (
+        "これは横画面の字幕の行の長さを確かめるための、少し長い日本語の文章です。" * 2
+    )
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=0, end=6, text=text, words=[Word(start=0, end=6, text=text)])
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    captions.create(transcript, clip, tmp_path, settings)
+    for event in pysubs2.load(str(tmp_path / "captions.ass")):
+        for line in event.plaintext.splitlines():
+            assert len(line) <= captions.HORIZONTAL_LINE_CHARS
+
+
+def test_landscape_captions_are_held_to_four_characters_a_second():
+    spans = [[0, 1000]]
+    captions.hold_for_reading(spans, ["あ" * 10], 9000, captions.HORIZONTAL_CAPTION_CPS)
+    # Ten characters at 4 a second need 2.5 s, so the caption is held to 2.5 s.
+    assert spans == [[0, 2500]]

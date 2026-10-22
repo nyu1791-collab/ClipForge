@@ -20,6 +20,10 @@ MIN_EVENT_MS = 100
 TARGET_CAPTION_CPS = 10
 MAX_CAPTION_CPS = 15
 OUTLINE_ALLOWANCE = 8
+# Horizontal (landscape) subtitles follow the Netflix Japanese guide for standard subtitles:
+# at most 13 full-width characters a line, and at most 4 characters a second.
+HORIZONTAL_LINE_CHARS = 13
+HORIZONTAL_CAPTION_CPS = 4
 # Characters that may not start a line: closing marks, small kana, long vowel, spaces.
 NO_LINE_START = set(
     "、。，．・：；！？!?」』）〕］｝ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶー 　"
@@ -453,6 +457,20 @@ def sentence_ends(tokens):
     return found
 
 
+def orphan_start(text):
+    """Why a caption opens badly: "punctuation" or "particle" (a sentence-final particle), or None."""
+    if text[:1] in ("。", "、", "！", "？"):
+        return "punctuation"
+    morphemes = [m for m in _tagger()(text) if m.feature.pos1 != "補助記号"]
+    if (
+        morphemes
+        and morphemes[0].feature.pos1 == "助詞"
+        and morphemes[0].feature.pos2 == "終助詞"
+    ):
+        return "particle"
+    return None
+
+
 def _lasts_a_caption(members):
     """True when members have lasted MIN_CAPTION_SECONDS, so they may close as a caption."""
     return members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS
@@ -565,7 +583,7 @@ def spoken_length(text):
     return len(re.sub(r"\s", "", text))
 
 
-def hold_for_reading(spans, texts, limit):
+def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS):
     """Extend captions read faster than the target into the silence after them.
 
     spans holds [start, end] in milliseconds, in order, and is changed in place. Only
@@ -574,7 +592,7 @@ def hold_for_reading(spans, texts, limit):
     """
     for index, (span, text) in enumerate(zip(spans, texts)):
         ceiling = spans[index + 1][0] if index + 1 < len(spans) else max(limit, span[1])
-        wanted = span[0] + math.ceil(spoken_length(text) * 1000 / TARGET_CAPTION_CPS)
+        wanted = span[0] + math.ceil(spoken_length(text) * 1000 / cps)
         span[1] = max(span[1], min(wanted, ceiling))
     return spans
 
@@ -607,6 +625,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     font_path = fonts.resolve(settings.font)
     measure = fonts.Measure(font_path, font_size)
     line_px = frame_width - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
+    landscape = frame_width > height
+    if landscape:
+        line_px = min(line_px, round(measure.width("あ" * HORIZONTAL_LINE_CHARS)))
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
 
     tokens, approximate = collect_tokens(transcript, clip, keep)
@@ -705,7 +726,12 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
         spans.append([start, end])
         previous_end = end
-    hold_for_reading(spans, plain_lines, round(duration * 1000))
+    hold_for_reading(
+        spans,
+        plain_lines,
+        round(duration * 1000),
+        HORIZONTAL_CAPTION_CPS if landscape else TARGET_CAPTION_CPS,
+    )
     for items, (start, end) in zip(groups, spans):
         text = group_text(items, measure, line_px, settings.caption)
         subtitles.append(pysubs2.SSAEvent(start=start, end=end, style=style, text=text))

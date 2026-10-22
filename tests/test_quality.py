@@ -39,6 +39,10 @@ LEDGER = [{"file": "visuals/visual-01.png", "source_credit": "作者", "license"
 def write_ass(folder, events):
     """Writes captions.ass in folder; events are (start, end, text[, style]) in ms."""
     subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1080", PlayResY="1920")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=20, marginl=25, marginr=25
+    )
     for start, end, text, *rest in events:
         style = rest[0] if rest else "Default"
         subtitles.append(pysubs2.SSAEvent(start=start, end=end, text=text, style=style))
@@ -307,3 +311,73 @@ def test_breaks_between_words_and_particles_are_not_flagged(
     report = quality.check_clip(folder, RENDERED, [], [])
     assert report["metrics"]["word_splits"] == 0
     assert not any("inside a word" in text for text in report["warnings"])
+
+
+def write_framed_ass(folder, events):
+    """Like write_ass, with the caption size the pipeline uses at 1080x1920."""
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1080", PlayResY="1920")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=92, marginl=25, marginr=25
+    )
+    for start, end, text in events:
+        subtitles.append(pysubs2.SSAEvent(start=start, end=end, text=text))
+    subtitles.save(str(folder / "captions.ass"))
+    spoken = pysubs2.SSAFile()
+    for event in subtitles:
+        spoken.append(
+            pysubs2.SSAEvent(start=event.start, end=event.end, text=event.plaintext)
+        )
+    spoken.save(str(folder / "captions.srt"))
+    return folder
+
+
+def test_a_line_wider_than_the_frame_fails_when_measured_again(
+    tmp_path, on_target_loudness
+):
+    # 40 characters at 92 px are 3680 px, far wider than the 1080 px frame.
+    folder = write_framed_ass(tmp_path, [(0, 2000, "あ" * 40)])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is False
+    assert any("wider than the frame" in text for text in report["failures"])
+    assert report["metrics"]["line_overflows"] == 1
+
+
+def test_a_line_that_fits_the_frame_passes(tmp_path, on_target_loudness):
+    folder = write_framed_ass(tmp_path, [(0, 2000, "あ" * 10)])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["metrics"]["line_overflows"] == 0
+    assert not any("wider than the frame" in text for text in report["failures"])
+
+
+def test_a_caption_that_starts_with_a_punctuation_mark_fails(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(tmp_path, [(0, 2000, "。次の話")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is False
+    assert any("starts with a punctuation mark" in text for text in report["failures"])
+
+
+def test_a_caption_that_starts_with_a_sentence_final_particle_is_a_counted_warning(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(tmp_path, [(0, 2000, "ね、そうです"), (2000, 4000, "次の話")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is True
+    assert report["metrics"]["orphan_particles"] == 1
+    assert any("sentence-final particle" in text for text in report["warnings"])
+
+
+def test_landscape_frames_are_checked_against_four_characters_a_second(
+    tmp_path, on_target_loudness
+):
+    # Ten characters over two seconds read at 5 a second: fine for a portrait frame, too fast here.
+    folder = write_ass(tmp_path, [(0, 2000, "あ" * 10)])
+    landscape = {**RENDERED, "width": 1920, "height": 1080}
+    report = quality.check_clip(folder, landscape, [], [])
+    assert report["metrics"]["reading_limit_cps"] == 4
+    assert any("faster than 4 characters" in text for text in report["warnings"])
+    portrait = quality.check_clip(folder, RENDERED, [], [])
+    assert portrait["metrics"]["reading_limit_cps"] == 15
+    assert not any("faster than" in text for text in portrait["warnings"])
