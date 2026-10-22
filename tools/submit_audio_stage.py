@@ -15,6 +15,8 @@ import tempfile
 REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "ccr-12fe9485-ugaszt"
 WORKFLOW = "clipforge.yml"
+# Each clip render on Colab owns its own runtime; the pool grants four or more at once.
+MAX_ACTIVE = {"colab-auto": 4}
 RESULT_STATUS = {"previews": "awaiting_video_review", "render": "complete"}
 REQUIRED_FILES = {
     "audio.m4a",
@@ -30,6 +32,10 @@ SUBMIT_OPTIONS = (
     "previous_request",
     "source_ref",
     "review_file",
+    "worker",
+    "clips",
+    "clip_index",
+    "part_runs",
 )
 
 
@@ -268,9 +274,89 @@ def collect(identity, destination):
     return 0
 
 
+def clip_indices(args, worker):
+    """The clip numbers to request: one request per clip when rendering in parallel."""
+    if args.clips is not None and args.clip_index is not None:
+        raise RuntimeError("use either --clips or --clip-index")
+    if args.stage != "render" and (args.clips or args.clip_index):
+        raise RuntimeError("clip numbers apply to rendering only")
+    if args.clip_index is not None:
+        if not 1 <= args.clip_index <= 20:
+            raise RuntimeError("clip index must be 1 to 20")
+        return [args.clip_index]
+    if args.clips is not None:
+        if not 1 <= args.clips <= MAX_ACTIVE["colab-auto"] or worker != "colab-auto":
+            raise RuntimeError(
+                "parallel clips need --worker colab-auto and 1 to 4 clips"
+            )
+        return list(range(1, args.clips + 1))
+    return [None]
+
+
+def dispatch(root, inputs, args):
+    identity = inputs["request_id"]
+    state = root / identity
+    state.mkdir(mode=0o700)
+    (state / "request.json").write_text(
+        json.dumps(inputs, ensure_ascii=False, indent=2)
+    )
+    receipt = {
+        "request_id": identity,
+        "repository": REPO,
+        "source_ref": args.source_ref,
+        "worker_ref": BRANCH,
+        "status": "DISPATCHING",
+        "audio_stage": args.stage,
+        "previous_run_id": args.previous_run,
+        "worker": inputs["worker"],
+        "clip_index": inputs["clip_index"] or None,
+        "job_submitted": None,
+    }
+    path = state / "receipt.json"
+    path.write_text(json.dumps(receipt, indent=2))
+    try:
+        gh(
+            "api",
+            "--method",
+            "POST",
+            f"repos/{REPO}/actions/workflows/clipforge.yml/dispatches",
+            "--input",
+            "-",
+            body=json.dumps({"ref": BRANCH, "inputs": inputs}),
+        )
+    except Exception:
+        receipt["status"] = "DISPATCH_UNCONFIRMED"
+        path.write_text(json.dumps(receipt, indent=2))
+        raise
+    receipt.update(status="DISPATCHED", job_submitted=True)
+    path.write_text(json.dumps(receipt, indent=2))
+    print(
+        json.dumps(
+            {
+                "request_id": identity,
+                "stage": args.stage,
+                "clip_index": receipt["clip_index"],
+                "status": "DISPATCHED",
+            }
+        )
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--stage", choices=("previews", "render"))
+    parser.add_argument("--stage", choices=("previews", "render", "merge"))
+    parser.add_argument(
+        "--worker",
+        choices=("cpu", "colab-auto"),
+        help="render on the hosted runner (default) or on Colab runtimes",
+    )
+    parser.add_argument(
+        "--clips", type=int, help="render clips 1..N as separate parallel requests"
+    )
+    parser.add_argument("--clip-index", type=int, help="render only this clip")
+    parser.add_argument(
+        "--part-runs", help="merge: comma-separated RUN_ID:REQUEST_ID of clip renders"
+    )
     parser.add_argument("--previous-run")
     parser.add_argument("--previous-request")
     parser.add_argument("--source-ref")
@@ -307,7 +393,21 @@ def main(argv=None):
     review = json.loads(args.review_file.read_text()) if args.review_file else None
     if args.stage == "render" and review is None:
         raise RuntimeError("render requires reviewed topic intervals")
-    inputs = {
+    worker = args.worker or "cpu"
+    indices = clip_indices(args, worker)
+    part_runs = args.part_runs or ""
+    if (args.stage == "merge") != bool(part_runs) or (
+        part_runs
+        and not re.fullmatch(
+            r"[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}", part_runs
+        )
+    ):
+        raise RuntimeError(
+            "merge needs --part-runs RUN_ID:REQUEST_ID,... and only merge"
+        )
+    if args.stage != "render" and worker != "cpu":
+        raise RuntimeError("only clip rendering runs on Colab")
+    base = {
         "source_ref": args.source_ref,
         "audio_stage": args.stage,
         "previous_run_id": args.previous_run,
@@ -315,13 +415,19 @@ def main(argv=None):
         "review_json": json.dumps(review, ensure_ascii=False)
         if review is not None
         else "",
+        "worker": worker,
+        "part_runs": part_runs,
     }
-    if len(inputs["review_json"].encode()) > 32768:
+    if len(base["review_json"].encode()) > 32768:
         raise RuntimeError("review metadata is oversized")
-    identity = hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()[
-        :32
-    ]
-    inputs.update(request_id=identity, input_tag="clipforge-input-" + identity)
+    requests = []
+    for index in indices:
+        inputs = {**base, "clip_index": str(index) if index else ""}
+        identity = hashlib.sha256(
+            json.dumps(inputs, sort_keys=True).encode()
+        ).hexdigest()[:32]
+        inputs.update(request_id=identity, input_tag="clipforge-input-" + identity)
+        requests.append(inputs)
     root = Path.home() / ".local/state/clipforge"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (root / ".submit.lock").open("a") as lock:
@@ -329,11 +435,11 @@ def main(argv=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("another ClipForge submission is active") from None
-        state = root / identity
-        if state.exists():
-            raise RuntimeError(
-                "this exact stage already has a request; inspect it before retrying"
-            )
+        for inputs in requests:
+            if (root / inputs["request_id"]).exists():
+                raise RuntimeError(
+                    "this exact stage already has a request; inspect it before retrying"
+                )
         if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
             raise RuntimeError("the approved owner connection is required")
         if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
@@ -352,47 +458,13 @@ def main(argv=None):
                 "status",
             )
         )
-        if any(row["status"] != "completed" for row in runs):
+        active = sum(row["status"] != "completed" for row in runs)
+        if active + len(requests) > MAX_ACTIVE.get(worker, 1):
             raise RuntimeError(
                 "another worker is active; no duplicate stage was submitted"
             )
-        state.mkdir(mode=0o700)
-        (state / "request.json").write_text(
-            json.dumps(inputs, ensure_ascii=False, indent=2)
-        )
-        receipt = {
-            "request_id": identity,
-            "repository": REPO,
-            "source_ref": args.source_ref,
-            "worker_ref": BRANCH,
-            "status": "DISPATCHING",
-            "audio_stage": args.stage,
-            "previous_run_id": args.previous_run,
-            "job_submitted": None,
-        }
-        path = state / "receipt.json"
-        path.write_text(json.dumps(receipt, indent=2))
-        try:
-            gh(
-                "api",
-                "--method",
-                "POST",
-                f"repos/{REPO}/actions/workflows/clipforge.yml/dispatches",
-                "--input",
-                "-",
-                body=json.dumps({"ref": BRANCH, "inputs": inputs}),
-            )
-        except Exception:
-            receipt["status"] = "DISPATCH_UNCONFIRMED"
-            path.write_text(json.dumps(receipt, indent=2))
-            raise
-        receipt.update(status="DISPATCHED", job_submitted=True)
-        path.write_text(json.dumps(receipt, indent=2))
-        print(
-            json.dumps(
-                {"request_id": identity, "stage": args.stage, "status": "DISPATCHED"}
-            )
-        )
+        for inputs in requests:
+            dispatch(root, inputs, args)
     return 0
 
 

@@ -373,3 +373,55 @@ def test_collect_requires_a_successful_stage_run(collector, tmp_path):
     with pytest.raises(RuntimeError, match="did not complete successfully"):
         module.main(collect_args(destination))
     assert control["downloads"] == 0 and not destination.exists()
+
+
+def render_args(args, tmp_path, *extra):
+    review = tmp_path / "review.json"
+    review.write_text('{"clips": []}')
+    return [
+        *(["--stage", "render"] + args[2:]),
+        "--review-file",
+        str(review),
+        *extra,
+    ]
+
+
+def test_parallel_clips_dispatch_one_colab_request_per_clip(stage_submitter, tmp_path):
+    module, control, args = stage_submitter
+    control["runs"] = [{"workflow": module.WORKFLOW, "status": "completed"}]
+    argv = render_args(args, tmp_path, "--worker", "colab-auto", "--clips", "3")
+    assert module.main(argv) == 0
+    inputs = [post["inputs"] for post in control["posts"]]
+    assert [i["clip_index"] for i in inputs] == ["1", "2", "3"]
+    assert {i["worker"] for i in inputs} == {"colab-auto"}
+    assert len({i["request_id"] for i in inputs}) == 3
+
+
+@pytest.mark.parametrize(
+    "extra, active",
+    [
+        (("--worker", "colab-auto", "--clips", "3"), 2),
+        (("--worker", "colab-auto", "--clips", "5"), 0),
+        (("--clips", "2"), 0),
+        (("--clips", "2", "--clip-index", "1"), 0),
+    ],
+)
+def test_parallel_clips_respect_runtime_limits(
+    stage_submitter, tmp_path, extra, active
+):
+    module, control, args = stage_submitter
+    control["runs"] = [{"workflow": module.WORKFLOW, "status": "in_progress"}] * active
+    with pytest.raises(RuntimeError):
+        module.main(render_args(args, tmp_path, *extra))
+    assert not control["posts"]
+
+
+def test_merge_needs_clip_runs_and_runs_on_the_hosted_runner(stage_submitter):
+    module, control, args = stage_submitter
+    merge = ["--stage", "merge"] + args[2:]
+    with pytest.raises(RuntimeError, match="part-runs"):
+        module.main(merge)
+    parts = "11:" + "c" * 32 + ",12:" + "d" * 32
+    assert module.main(merge + ["--part-runs", parts]) == 0
+    assert control["posts"][0]["inputs"]["part_runs"] == parts
+    assert control["posts"][0]["inputs"]["worker"] == "cpu"

@@ -14,7 +14,7 @@ on:
         required: true
       audio_stage:
         type: choice
-        options: [previews, render]
+        options: [previews, render, merge]
         required: true
       previous_run_id:
         type: string
@@ -25,15 +25,29 @@ on:
       review_json:
         type: string
         default: ''
+      worker:
+        description: Hosted CPU runner, or a Colab runtime from the cheapest-first pool (render only)
+        type: choice
+        options: [cpu, colab-auto]
+        default: cpu
+      clip_index:
+        description: Render only this reviewed clip (1-20); empty renders every clip
+        type: string
+        default: ''
+      part_runs:
+        description: For merge, comma-separated RUN_ID:REQUEST_ID of the clip renders
+        type: string
+        default: ''
 permissions:
-  contents: read
+  contents: write
   actions: read
+# Colab clip renders each own a runtime, so they run side by side; hosted stages run in turn.
 concurrency:
-  group: clipforge-video
+  group: ${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}
   cancel-in-progress: false
 jobs:
   audio-stage:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'cpu' 
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -105,3 +119,91 @@ jobs:
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+  colab-render:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto' && inputs.audio_stage == 'render'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      INPUT_TAG: ${{ inputs.input_tag }}
+      AUDIO_STAGE: ${{ inputs.audio_stage }}
+      PREVIOUS_RUN: ${{ inputs.previous_run_id }}
+      PREVIOUS_REQUEST: ${{ inputs.previous_request_id }}
+      CLIP_INDEX: ${{ inputs.clip_index }}
+      REVIEW_JSON: ${{ inputs.review_json }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Validate the clip render request
+        run: |
+          python3 - <<'PY'
+          import os,re,json,pathlib
+          for key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:
+              assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])
+          assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']
+          assert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])
+          assert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])
+          text=os.environ['REVIEW_JSON']
+          assert text and len(text.encode())<=32768
+          json.loads(text)
+          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'
+          path.write_text(text)
+          path.chmod(0o600)
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          path: clipforge-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: true
+          cache-dependency-glob: clipforge-source/tools/colab-control-requirements.txt
+      - name: Install the locked Google Colab control SDK
+        id: control
+        run: |
+          uv venv "$RUNNER_TEMP/colab-control" --python 3.12
+          uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
+            -r clipforge-source/tools/colab-control-requirements.txt
+      - name: Create the private transfer release for this clip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
+            --title "$INPUT_TAG" --latest=false \
+            --notes 'Temporary private ClipForge clip transfer. Deleted after collection.'
+      - name: Allocate the cheapest runtime the account grants
+        env:
+          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+        run: |
+          REVIEW_FILE="$RUNNER_TEMP/review.json" "$RUNNER_TEMP/colab-control/bin/python" \
+            clipforge-source/tools/colab_actions.py start --mode audio-stage
+      - name: Render on Colab and retrieve verified private outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
+      - name: Release and verify removal of the runtime
+        if: always() && steps.control.outcome == 'success'
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipforge-result-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-out/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Delete the private transfer release
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 clipforge-source/tools/run_request.py cleanup --tag "$INPUT_TAG"
