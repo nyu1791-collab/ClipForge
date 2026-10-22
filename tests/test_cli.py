@@ -54,3 +54,42 @@ def test_cli_interrupt_is_not_success(monkeypatch, capsys):
     )
     assert cli.main() == 130
     assert "Interrupted" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("command", ["analyze", "run"])
+def test_offline_cli_needs_no_model_selection(monkeypatch, command):
+    args = [command, "input.mp4", "--output", "out"]
+    if command == "run":
+        args += ["--selection-file", "selection.json"]
+    monkeypatch.setattr(sys, "argv", ["clipforge", *args])
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {
+            "status": "analyzed" if command == "analyze" else "complete",
+            "rendered": [],
+        }
+
+    monkeypatch.setattr(pipeline, "run", run)
+    assert cli.main() == 0
+    assert calls[0][0][2].gemini_model == "manual-no-api"
+    assert calls[0][1].get("analyze_only", False) is (command == "analyze")
+
+
+def test_manual_marker_without_selection_fails_before_pipeline(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "clipforge",
+            "run",
+            "input.mp4",
+            "--output",
+            "out",
+            "--gemini-model",
+            "manual-no-api",
+        ],
+    )
+    monkeypatch.setattr(pipeline, "run", lambda *a: pytest.fail("pipeline started"))
+    assert cli.main() == 1

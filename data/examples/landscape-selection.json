@@ -1,0 +1,7 @@
+{
+  "clips": [
+    {"candidate_id": "manual-01", "start": 0, "end": 60, "title": "話題A", "reason": "合成の区間例。実動画での選定結果ではない。", "confidence": 0},
+    {"candidate_id": "manual-02", "start": 90, "end": 150, "title": "話題B", "reason": "合成の区間例。実動画での選定結果ではない。", "confidence": 0},
+    {"candidate_id": "manual-03", "start": 180, "end": 240, "title": "話題C", "reason": "合成の区間例。実動画での選定結果ではない。", "confidence": 0}
+  ]
+}

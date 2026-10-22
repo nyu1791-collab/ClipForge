@@ -15,6 +15,7 @@ import pysubs2
 from . import fonts
 from .captions import (
     HORIZONTAL_CAPTION_CPS,
+    HORIZONTAL_LINE_CHARS,
     MAX_CAPTION_CPS,
     OUTLINE_ALLOWANCE,
     inside_word,
@@ -197,10 +198,37 @@ def loudness_warnings(loudness):
     return found
 
 
-def reading_limit(rendered):
+def reading_limit(rendered, settings=None):
     """Characters a second a caption may read at: stricter for landscape frames."""
     landscape = rendered["width"] > rendered["height"]
-    return HORIZONTAL_CAPTION_CPS if landscape else MAX_CAPTION_CPS
+    if landscape:
+        return settings.horizontal_warn_cps if settings else HORIZONTAL_CAPTION_CPS
+    return MAX_CAPTION_CPS
+
+
+def horizontal_width_metrics(path, line_chars):
+    """Measure the horizontal layout limit independently; never return caption text."""
+    subtitles = pysubs2.load(str(path))
+    measures, equivalents, over = {}, [], 0
+    for event in subtitles:
+        if event.style not in TEXT_STYLES:
+            continue
+        style = subtitles.styles[event.style]
+        key = (style.fontname, int(style.fontsize))
+        if key not in measures:
+            measures[key] = fonts.Measure(fonts.resolve(key[0]), key[1])
+        measure = measures[key]
+        full_width = measure.width("あ")
+        limit = round(measure.width("あ" * line_chars))
+        for line in event.plaintext.splitlines():
+            width = measure.width(line)
+            equivalents.append(width / full_width if full_width else 0)
+            over += width > limit
+    return {
+        "horizontal_line_chars": line_chars,
+        "line_max_fullwidth_equivalents": round(max(equivalents, default=0), 3),
+        "lines_over_horizontal_limit": over,
+    }
 
 
 def _finite(value):
@@ -208,7 +236,7 @@ def _finite(value):
     return value if value is not None and math.isfinite(value) else None
 
 
-def check_clip(directory, rendered, missing_glyphs, ledger):
+def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
     """Quality report for a rendered clip folder; the caller decides what to do with it."""
     failures, warnings = [], []
     events = caption_events(directory / "captions.ass")
@@ -221,7 +249,7 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
         failures.append(f"a caption has more than {MAX_CAPTION_LINES} lines")
     if missing_glyphs:
         failures.append("the caption font lacks: " + "".join(missing_glyphs)[:40])
-    limit = reading_limit(rendered)
+    limit = reading_limit(rendered, settings)
     too_fast = sum(rate > limit for rate in rates)
     if too_fast:
         warnings.append(
@@ -284,7 +312,26 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
             "captions_over_4s": long,
             "word_splits": len(splits),
             "orphan_particles": orphans,
-            "reading_limit_cps": reading_limit(rendered),
+            "reading_limit_cps": limit,
+            "reading_target_cps": (
+                settings.horizontal_target_cps if settings else HORIZONTAL_CAPTION_CPS
+            )
+            if rendered["width"] > rendered["height"]
+            else 10,
+            "reading_count_method": "non_whitespace_codepoints",
+            "captions_over_cps": {
+                str(cps): sum(rate > cps for rate in rates) for cps in (4, 7, 10)
+            },
+            **(
+                horizontal_width_metrics(
+                    directory / "captions.ass",
+                    settings.horizontal_line_chars
+                    if settings
+                    else HORIZONTAL_LINE_CHARS,
+                )
+                if rendered["width"] > rendered["height"]
+                else {}
+            ),
             "line_overflows": len(overflow),
             "integrated_lufs": _finite(loudness["integrated_lufs"]),
             "true_peak_dbtp": _finite(loudness["true_peak_dbtp"]),

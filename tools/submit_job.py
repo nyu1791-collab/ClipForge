@@ -33,6 +33,9 @@ SETTINGS_FIELDS = {
     "encode_preset",
     "caption",
     "font",
+    "horizontal_target_cps",
+    "horizontal_warn_cps",
+    "horizontal_line_chars",
     "layout",
     "heading",
     "face_box",
@@ -64,7 +67,13 @@ SETTINGS_FIELDS = {
     "chat_offset_seconds",
 }
 # These name files on the submitting machine; the remote worker cannot read them.
-LOCAL_FILE_FIELDS = {"visuals", "bgm", "sound_effects", "transcript_cache"}
+LOCAL_FILE_FIELDS = {
+    "visuals",
+    "bgm",
+    "sound_effects",
+    "transcript_cache",
+    "require_transcript_cache",
+}
 
 
 def gh(*args, body=None, timeout=120):
@@ -97,10 +106,44 @@ def verify_download(directory, receipt, request):
     if (
         returned.get("request_id") != receipt["request_id"]
         or returned.get("source_ref") != receipt["source_ref"]
-        or returned.get("status") != "complete"
+        or returned.get("status")
+        != ("topics_allocated" if request.get("audio_source_url") else "complete")
     ):
         raise RuntimeError("result identity or completion state mismatch")
     manifest = json.loads((directory / "manifest.json").read_text())
+    if request.get("audio_source_url"):
+        from clipforge.models import Transcript
+
+        if (
+            manifest.get("status") != "topics_allocated"
+            or manifest.get("source_url") != request["audio_source_url"]
+            or manifest.get("source_sha256") != request["video_sha256"]
+            or manifest.get("rendered")
+            or returned.get("audio_source_url") != request["audio_source_url"]
+            or manifest.get("model_generation_requests") != 0
+            or digest(directory / "audio.m4a") != request["video_sha256"]
+        ):
+            raise RuntimeError("audio analysis identity mismatch")
+        cache = json.loads((directory / "asr-receipt.json").read_text())
+        key = cache.get("key", "")
+        if not re.fullmatch(r"[a-f0-9]{64}", key):
+            raise RuntimeError("audio analysis cache identity missing")
+        names = {
+            "audio.m4a",
+            "manifest.json",
+            "topics.json",
+            "asr-receipt.json",
+            "transcripts/" + key + ".json",
+        }
+        hashes = returned.get("sha256", {})
+        if set(hashes) != names or any(
+            digest(directory / name) != hashes[name] for name in names
+        ):
+            raise RuntimeError("audio analysis output checksum mismatch")
+        Transcript.model_validate_json(
+            (directory / "transcripts" / (key + ".json")).read_text()
+        )
+        return
     if (
         manifest.get("status") != "complete"
         or manifest.get("source_sha256") != request["video_sha256"]
@@ -235,6 +278,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path)
     parser.add_argument("--gemini-model")
+    parser.add_argument(
+        "--audio-analysis-url", help="allocate topics from local audio; no Gemini calls"
+    )
     parser.add_argument("--ref", default="main")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
@@ -276,6 +322,11 @@ def main():
     if args.collect or args.status:
         recover(args)
         return
+    if args.audio_analysis_url:
+        from clipforge.kick_media import canonical
+
+        canonical(args.audio_analysis_url)
+        args.gemini_model = "manual-no-api"
     if not args.input or not args.gemini_model:
         parser.error("--input and --gemini-model are required to submit a video")
     if args.output:
@@ -308,8 +359,6 @@ def dispatch(args, state_root):
             "list",
             "--repo",
             REPO,
-            "--workflow",
-            WORKFLOW,
             "--limit",
             "100",
             "--json",
@@ -320,9 +369,10 @@ def dispatch(args, state_root):
         raise RuntimeError(
             "another video job is active; wait before submitting a new input"
         )
-    names = json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
-    if not any(secret["name"] == "GEMINI_API_KEY" for secret in names):
-        raise RuntimeError("private worker GEMINI_API_KEY is not registered")
+    if not args.audio_analysis_url:
+        names = json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
+        if not any(secret["name"] == "GEMINI_API_KEY" for secret in names):
+            raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True)
     settings = json.loads(args.config.read_text()) if args.config else {}
     if (
@@ -337,6 +387,14 @@ def dispatch(args, state_root):
             "visuals, bgm, sound_effects and transcript_cache name local files; render those clips locally"
         )
     settings["gemini_model"] = args.gemini_model
+    if args.audio_analysis_url and (
+        settings.get("image_search")
+        or settings.get("table_query")
+        or settings.get("chat_url")
+        or args.chat_url
+        or args.chat_file
+    ):
+        raise RuntimeError("audio analysis cannot include external lookups or chat")
     if args.clips is not None:
         settings["clips"] = args.clips
     clips = settings.get("clips", 3)
@@ -381,6 +439,8 @@ def dispatch(args, state_root):
         "settings": settings,
         "chat_sha256": digest(args.chat_file) if args.chat_file else None,
     }
+    if args.audio_analysis_url:
+        request["audio_source_url"] = args.audio_analysis_url
     save(state / "request.json", request)
     with tempfile.TemporaryDirectory(prefix="clipforge-submit-") as temporary:
         directory = Path(temporary)

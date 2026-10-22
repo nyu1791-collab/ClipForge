@@ -81,6 +81,7 @@ def main():
         "video_bytes",
         "settings",
         "chat_sha256",
+        "audio_source_url",
     }:
         raise RuntimeError("unknown request fields")
     if args.tag != "clipforge-input-" + request["request_id"]:
@@ -103,6 +104,17 @@ def main():
     from clipforge.storage import digest, fingerprint, write_json
 
     settings = Settings.model_validate(request["settings"])
+    if request.get("audio_source_url"):
+        from clipforge.kick_media import canonical
+
+        canonical(request["audio_source_url"])
+        if (
+            settings.image_search
+            or settings.table_query
+            or settings.chat_url
+            or request.get("chat_sha256")
+        ):
+            raise RuntimeError("audio analysis cannot include external lookups or chat")
     if (
         type(request["video_bytes"]) is not int
         or not 0 < request["video_bytes"] <= settings.max_input_bytes
@@ -159,9 +171,41 @@ def main():
     chat_file = args.directory / "chat.json" if request.get("chat_sha256") else None
     if chat_file and digest(chat_file) != request["chat_sha256"]:
         raise RuntimeError("chat checksum mismatch")
-    from clipforge.pipeline import run
+    if request.get("audio_source_url"):
+        import shutil
+        from clipforge.audio_first import allocate_audio, exclusive
 
-    result = run(source, args.output, settings, resume=True, chat_file=chat_file)
+        args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with exclusive(args.output):
+            audio = args.output / "audio.m4a"
+            if audio.exists() and digest(audio) != request["video_sha256"]:
+                raise RuntimeError("saved audio checksum mismatch")
+            if not audio.exists():
+                shutil.copyfile(source, audio)
+            analysis, _ = allocate_audio(
+                audio, args.output, settings, request["audio_source_url"]
+            )
+            result = {
+                **analysis,
+                "rendered": [],
+                "source_sha256": request["video_sha256"],
+            }
+            write_json(args.output / "manifest.json", result)
+    else:
+        from clipforge.pipeline import run
+
+        result = run(source, args.output, settings, resume=True, chat_file=chat_file)
+    result_hashes = {}
+    if request.get("audio_source_url"):
+        cache = json.loads((args.output / "asr-receipt.json").read_text())
+        names = [
+            "audio.m4a",
+            "manifest.json",
+            "topics.json",
+            "asr-receipt.json",
+            "transcripts/" + cache["key"] + ".json",
+        ]
+        result_hashes = {name: digest(args.output / name) for name in names}
     write_json(
         args.output / "request-receipt.json",
         {
@@ -170,6 +214,8 @@ def main():
             "workflow_run": os.environ["GITHUB_RUN_ID"],
             "status": result["status"],
             "rendered_clips": len(result["rendered"]),
+            "audio_source_url": request.get("audio_source_url"),
+            "sha256": result_hashes,
         },
     )
     print(json.dumps({"status": result["status"], "clips": len(result["rendered"])}))

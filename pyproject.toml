@@ -24,6 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 chat = ["chat-downloader==0.2.8"]
+media-fetch = [
+    "curl-cffi==0.13.0",
+]
 
 [project.scripts]
 clipforge = "clipforge.cli:main"

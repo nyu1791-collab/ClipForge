@@ -627,7 +627,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     line_px = frame_width - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
     landscape = frame_width > height
     if landscape:
-        line_px = min(line_px, round(measure.width("あ" * HORIZONTAL_LINE_CHARS)))
+        line_px = min(
+            line_px, round(measure.width("あ" * settings.horizontal_line_chars))
+        )
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
 
     tokens, approximate = collect_tokens(transcript, clip, keep)
@@ -730,7 +732,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         spans,
         plain_lines,
         round(duration * 1000),
-        HORIZONTAL_CAPTION_CPS if landscape else TARGET_CAPTION_CPS,
+        settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
     )
     for items, (start, end) in zip(groups, spans):
         text = group_text(items, measure, line_px, settings.caption)

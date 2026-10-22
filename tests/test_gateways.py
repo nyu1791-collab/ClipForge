@@ -215,6 +215,39 @@ def test_configuration_cannot_upload_credentials(submitter, tmp_path):
     assert not control["releases"] and not control["posts"]
 
 
+def test_audio_analysis_dispatch_has_no_model_or_secret_requirement(
+    submitter, monkeypatch
+):
+    module, _, control, invoke = submitter
+    original = module.gh
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("secret", "list"):
+            pytest.fail("audio-only analysis checked Gemini credentials")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "gh", gh)
+    url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
+    invoke("--audio-analysis-url", url, "--ref", "ccr-12fe9485-ugaszt")
+    assert control["request"]["audio_source_url"] == url
+    assert control["request"]["settings"]["gemini_model"] == "manual-no-api"
+    assert len(control["posts"]) == 1
+
+
+def test_audio_analysis_rejects_network_enrichment(submitter, tmp_path):
+    _, _, control, invoke = submitter
+    config = tmp_path / "config.json"
+    config.write_text('{"image_search": true}')
+    with pytest.raises(RuntimeError, match="external lookups"):
+        invoke(
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5",
+            "--config",
+            str(config),
+        )
+    assert not control["releases"]
+
+
 def test_recover_download_does_not_submit_again(submitter, tmp_path, monkeypatch):
     module, _, control, invoke = submitter
     invoke()
@@ -347,6 +380,52 @@ def test_runner_validates_input_and_writes_receipt(runner, tmp_path, monkeypatch
     invoke("run")
     result = json.loads((tmp_path / "output/request-receipt.json").read_text())
     assert result["request_id"] == "b" * 32 and result["workflow_run"] == "123"
+
+
+def test_private_runner_audio_analysis_cannot_enter_video_or_model_path(
+    runner, tmp_path, monkeypatch
+):
+    from clipforge import audio_first
+    from clipforge.storage import write_json
+
+    _, control, invoke = runner
+    url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
+    control["request"]["audio_source_url"] = url
+    invoke("prepare")
+    monkeypatch.setattr(
+        pipeline,
+        "run",
+        lambda *a, **k: pytest.fail("audio analysis entered video/model pipeline"),
+    )
+
+    def allocate(source, root, settings, source_url):
+        assert source_url == url
+        write_json(root / "asr-receipt.json", {"key": "e" * 64})
+        write_json(
+            root / "transcripts" / ("e" * 64 + ".json"),
+            {"language": "ja", "segments": []},
+        )
+        result = {
+            "status": "topics_allocated",
+            "source_url": url,
+            "topics": [],
+            "model_generation_requests": 0,
+        }
+        write_json(root / "topics.json", result)
+        return result, None
+
+    monkeypatch.setattr(audio_first, "allocate_audio", allocate)
+    invoke("run")
+    output = tmp_path / "output"
+    result = json.loads((output / "request-receipt.json").read_text())
+    assert result["status"] == "topics_allocated" and result["rendered_clips"] == 0
+    submit = load_tool("submit_job")
+    submit.verify_download(output, control["request"], control["request"])
+    (output / "transcripts" / ("e" * 64 + ".json")).write_text(
+        '{"language":"ja", "segments":[]}'
+    )
+    with pytest.raises(RuntimeError, match="checksum"):
+        submit.verify_download(output, control["request"], control["request"])
 
 
 def test_runner_wrong_checksum_stops_before_pipeline(runner, monkeypatch):

@@ -381,3 +381,24 @@ def test_landscape_frames_are_checked_against_four_characters_a_second(
     portrait = quality.check_clip(folder, RENDERED, [], [])
     assert portrait["metrics"]["reading_limit_cps"] == 15
     assert not any("faster than" in text for text in portrait["warnings"])
+
+
+def test_landscape_reading_and_real_font_width_are_independent(
+    tmp_path, on_target_loudness, settings
+):
+    folder = write_ass(tmp_path, [(0, 2000, "あ" * 10), (2000, 4000, "i" * 20)])
+    settings.horizontal_warn_cps = 7
+    landscape = {**RENDERED, "width": 1920, "height": 1080}
+    report = quality.check_clip(folder, landscape, [], [], settings)
+    metrics = report["metrics"]
+    assert metrics["reading_target_cps"] == 4
+    assert metrics["reading_limit_cps"] == 7
+    assert metrics["captions_over_cps"] == {"4": 2, "7": 1, "10": 0}
+    assert metrics["reading_count_method"] == "non_whitespace_codepoints"
+    assert metrics["lines_over_horizontal_limit"] == 0
+    assert metrics["line_max_fullwidth_equivalents"] == 10
+    settings.horizontal_line_chars = 8
+    narrower = quality.check_clip(folder, landscape, [], [], settings)
+    assert narrower["metrics"]["lines_over_horizontal_limit"] == 1
+    # Independent 13-equivalent measurement does not silently strengthen the quality gate.
+    assert narrower["passed"] == report["passed"]

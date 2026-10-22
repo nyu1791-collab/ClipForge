@@ -1,12 +1,43 @@
 # ClipForge
 
-Faster-Whisper → チャット／場面転換から候補抽出 → **映像と音声をGeminiに渡して選定** → FFmpegで切り抜き・ASS字幕、というCPU向けパイプラインです。
+現在の横動画経路は、**全編の軽量音声取得 → CPU文字起こし → 話題の割り振り → 候補映像だけ取得・確認 → 採用区間の高画質取得 → 横動画・ASS字幕**です。
+全編の高画質映像を先に取得・走査しません。既存のローカル動画＋Gemini選定経路も残っています。
 
 実装と実行基盤を用意しました。CIと同じ条件のローカル実行で、単体・合成動画・音声認識のテストが通ることを確認しています。**Geminiの応答、字幕の見た目と文字起こし精度は、実際の動画で確認してください。**
 
 現在の開発対象は、同じ配信から話題別の**横動画（16:9）を3〜5本**作る運用です。
 現状の確認、外部APIなしの最小経路、読み速度と実素材の受入条件は[横動画の実装提案](docs/LANDSCAPE_PLAN.md)を参照してください。
 この計画ではShortsの開発・生成は行いません。
+
+## 話題別の横動画：音声を先に取得する
+
+[音声先行の運用手順](docs/AUDIO_FIRST.md)を参照してください。モデルAPIは呼びません。
+音声取得、話題分割、候補映像、レビュー済み区間の生成は別の段階です。
+話題分割は発話の間と語彙変化による候補作成であり、意味的な完結・面白さの確認とは区別します。
+
+```bash
+uv sync --locked --extra media-fetch --extra chat
+uv run --no-sync python tools/kick_audio_first.py \
+  --url 'https://kick.com/CHANNEL/videos/VOD_ID' \
+  --workspace inputs/private-vod --stage audio
+```
+
+`audio`で止まり、ASR・高画質取得・描画は開始しません。音声専用のHLSがない配信では最軽量のHLSを一時受信し、映像を除いた音声を保存します。
+重いASR・描画は制御VMで行わず、非公開CPU workerを使います。
+横用設定は `config.landscape.example.json`（1920×1080、3本、各20〜180秒、CPU/int8/2スレッド、読み速度4字/秒）です。
+
+既にローカル動画と有効なASRキャッシュがある場合、以下は事前検査だけで止まります。
+`--execute`を付けた場合だけ、十分なCPUのある環境で手動選定3〜5本を生成・検証します。
+
+```bash
+uv run --no-sync python tools/e2e_landscape.py \
+  --input /private/source.mp4 --selection-file /private/selection.json \
+  --transcript-cache /private/transcript-cache --output outputs/landscape
+```
+
+合成の区間例は `data/examples/landscape-selection.json`。実配信へそのまま適用しないでください。
+解析のみは `clipforge analyze INPUT --config config.landscape.example.json --output outputs/analysis`。
+これはASR・場面検出を行う既存ローカル動画経路なので、音声先行のKick経路とは入口を分けています。
 
 ## できること
 
@@ -132,6 +163,6 @@ clips/clip-001/render.json  長さ・画面サイズ・各ファイルのSHA-256
 
 `manifest.json` の `timings` には、各段階の実時間（秒）が入ります。
 出力の `complete` は処理とファイル検査の完了です。人による内容・画面確認や、公開の完了を意味しません。
-顔追跡、音源分離、自動SNS投稿、URLからの動画取得は含みません。
+顔追跡、音源分離、自動SNS投稿は含みません。URL取得は音声先行の公開Kick VODに限定しています。
 
 詳細：[構成](docs/ARCHITECTURE.md)／[運用・データの扱い](docs/OPERATIONS.md)／[採用ライブラリ](docs/THIRD_PARTY.md)。

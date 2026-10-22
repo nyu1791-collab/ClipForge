@@ -11,7 +11,7 @@ def main():
         description="CPU video clipping and visual Gemini selection"
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ["run", "cut"]:
+    for name in ["run", "analyze", "cut"]:
         p = sub.add_parser(name)
         p.add_argument("input", type=Path)
         p.add_argument("--output", type=Path, required=True)
@@ -20,7 +20,7 @@ def main():
         p.add_argument("--aspect", choices=["9:16", "16:9", "1:1"])
         p.add_argument("--framing", choices=["fit", "center-crop"])
         p.add_argument("--height", type=int, choices=[720, 1080, 1920])
-        if name == "run":
+        if name in {"run", "analyze"}:
             p.add_argument("--gemini-model")
             p.add_argument("--clips", type=int)
             p.add_argument("--candidates", type=int)
@@ -29,7 +29,11 @@ def main():
             p.add_argument("--chat-url")
             p.add_argument("--chat-offset-seconds", type=float)
             p.add_argument("--chat-file", type=Path)
-            p.add_argument("--selection-file", type=Path)
+            if name == "run":
+                p.add_argument("--selection-file", type=Path)
+            p.add_argument(
+                "--require-transcript-cache", action="store_true", default=None
+            )
             p.add_argument(
                 "--transcript-cache",
                 type=str,
@@ -64,12 +68,19 @@ def main():
             "chat_url",
             "chat_offset_seconds",
             "transcript_cache",
+            "require_transcript_cache",
         ]:
             value = getattr(args, key, None)
             if value is not None:
                 config[key] = value
-        if args.command == "cut":
+        if args.command in {"cut", "analyze"} or getattr(args, "selection_file", None):
             config.setdefault("gemini_model", "manual-no-api")
+        if (
+            args.command == "run"
+            and not args.selection_file
+            and config.get("gemini_model") == "manual-no-api"
+        ):
+            raise ValueError("manual-no-api requires --selection-file")
         if not config.get("gemini_model"):
             raise ValueError(
                 "Specify an explicit --gemini-model or config.gemini_model"
@@ -93,7 +104,16 @@ def main():
                 )
             )
             return 1 if failed else 0
-        if args.command == "run":
+        if args.command == "analyze":
+            result = run(
+                args.input,
+                args.output,
+                settings,
+                args.resume,
+                args.chat_file,
+                analyze_only=True,
+            )
+        elif args.command == "run":
             result = run(
                 args.input,
                 args.output,

@@ -186,13 +186,24 @@ def test_a_saved_transcript_is_reused_only_when_its_identity_matches(
 
     monkeypatch.setattr(signals, "transcribe", recognise)
     settings.transcript_cache = str(tmp_path / "cache")
-    first = pipeline.transcribe_once(source, info, settings)
-    assert pipeline.transcribe_once(source, info, settings) == first
+    fresh = {}
+    first = pipeline.transcribe_once(source, info, settings, fresh)
+    reused = {}
+    settings.horizontal_target_cps = 3
+    assert pipeline.transcribe_once(source, info, settings, reused) == first
+    assert fresh["source"] == "asr" and fresh["reused"] is False
+    assert reused["source"] == "transcript_cache" and reused["reused"] is True
+    assert fresh["key"] == reused["key"]
+    assert pipeline.saved_transcript(source, info, settings) == first
     assert calls == [2]
+    source.write_bytes(b"different video")
+    pipeline.transcribe_once(source, info, settings, reused)
+    assert reused["key"] != fresh["key"] and reused["reused"] is False
+    assert calls == [2, 2]
     # Threads change the segment boundaries, so the saved transcript must not stand in.
     settings.threads = 4
     pipeline.transcribe_once(source, info, settings)
-    assert calls == [2, 4]
+    assert calls == [2, 2, 4]
 
 
 def test_a_damaged_saved_transcript_is_recognised_again(
@@ -222,3 +233,28 @@ def test_a_damaged_saved_transcript_is_recognised_again(
         Transcript.model_validate_json(saved.read_text(encoding="utf-8")).language
         == "ja"
     )
+
+
+def test_required_damaged_cache_preserved_without_asr(tmp_path, monkeypatch, settings):
+    from clipforge import pipeline
+    from clipforge.storage import PipelineError
+
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"video")
+    info = {"audio": True, "duration": 1.0}
+    settings.transcript_cache = str(tmp_path / "cache")
+    settings.require_transcript_cache = True
+    saved = Path(settings.transcript_cache) / (
+        pipeline.transcript_identity(source, info, settings) + ".json"
+    )
+    saved.parent.mkdir()
+    saved.write_text("{damaged")
+
+    def forbidden(*args):
+        pytest.fail("cache-only mode started ASR")
+
+    monkeypatch.setattr(signals, "transcribe", forbidden)
+    assert pipeline.saved_transcript(source, info, settings) is None
+    with pytest.raises(PipelineError, match="ASR was not started"):
+        pipeline.transcribe_once(source, info, settings)
+    assert saved.read_text() == "{damaged"

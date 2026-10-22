@@ -355,7 +355,9 @@ def render_clip(source, root, index, clip, transcript, settings, key):
         # Checked before the thumbnail, so a strict refusal costs no extra work.
         report = quality.record(
             directory,
-            quality.check_clip(directory, info, caption["missing_glyphs"], ledger),
+            quality.check_clip(
+                directory, info, caption["missing_glyphs"], ledger, settings
+            ),
         )
         quality.enforce(report, settings.quality_gate)
         if settings.thumbnail:
@@ -464,10 +466,10 @@ def transcript_identity(source, info, settings):
     )
 
 
-def transcribe_once(source, info, settings):
-    """Recognised transcript, reused from settings.transcript_cache when its identity matches."""
+def saved_transcript(source, info, settings):
+    """Read a validated persistent cache only; never invoke ASR or print its text."""
     if not settings.transcript_cache:
-        return signals.transcribe(source, info, settings)
+        return None
     path = Path(settings.transcript_cache) / (
         transcript_identity(source, info, settings) + ".json"
     )
@@ -477,20 +479,72 @@ def transcribe_once(source, info, settings):
                 path.read_text(encoding="utf-8")
             ).model_dump()
         except (ValueError, UnicodeDecodeError):
+            pass
+    return None
+
+
+def transcribe_once(source, info, settings, receipt=None):
+    """Recognised transcript, reused from settings.transcript_cache when its identity matches."""
+    receipt = receipt if receipt is not None else {}
+    receipt.update(enabled=bool(settings.transcript_cache), reused=False, source="asr")
+    if not settings.transcript_cache:
+        receipt["key"] = None
+        return signals.transcribe(source, info, settings)
+    # The receipt is output metadata, never authority to select another input's cache.
+    key = transcript_identity(source, info, settings)
+    receipt["key"] = key
+    path = Path(settings.transcript_cache) / (key + ".json")
+    if path.is_file():
+        try:
+            value = Transcript.model_validate_json(
+                path.read_text(encoding="utf-8")
+            ).model_dump()
+            receipt.update(reused=True, source="transcript_cache")
+            return value
+        except (ValueError, UnicodeDecodeError):
             # A damaged saved transcript is recognised again rather than used.
             pass
+    if settings.require_transcript_cache:
+        raise PipelineError(
+            "a matching valid transcript cache is required; ASR was not started"
+        )
     value = signals.transcribe(source, info, settings)
     write_json(path, value)
     return value
 
 
-def run(source, output, settings, resume=False, chat_file=None, selection_file=None):
+def run(
+    source,
+    output,
+    settings,
+    resume=False,
+    chat_file=None,
+    selection_file=None,
+    analyze_only=False,
+):
     os.umask(0o077)
+    if analyze_only and (Path(output) / "clips").exists():
+        raise PipelineError("analysis needs an output directory without rendered clips")
     source, output, info, key, lock = prepare(source, output, resume, settings)
     timings = {}
     current_stage = "initialization"
     try:
         start_job(source, output)
+        cache_receipt = {
+            "enabled": bool(settings.transcript_cache),
+            "key": transcript_identity(source, info, settings)
+            if settings.transcript_cache
+            else None,
+            "reused": True,
+            "source": "output_stage",
+        }
+        if (
+            settings.require_transcript_cache
+            and saved_transcript(source, info, settings) is None
+        ):
+            raise PipelineError(
+                "a matching valid transcript cache is required; ASR was not started"
+            )
         current_stage = "transcription"
         print("Transcribing on CPU…", flush=True)
         print("Detecting scene boundaries…", flush=True)
@@ -513,7 +567,7 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                 output,
                 "transcript",
                 key,
-                lambda: transcribe_once(source, info, settings),
+                lambda: transcribe_once(source, info, settings, cache_receipt),
             )
             transcript = Transcript.model_validate(raw)
             current_stage = "scene_detection"
@@ -563,6 +617,25 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                 "fit without overlapping; the video is short or mostly silent.",
                 flush=True,
             )
+
+        if analyze_only:
+            manifest = {
+                "status": "analyzed",
+                "source_sha256": verify_source(source, output),
+                "version": __version__,
+                "settings": settings.model_dump(),
+                "clips": [],
+                "rendered": [],
+                "selection_receipt": {"provider": "none", "generation_requests": 0},
+                "topics": topic_spans,
+                "candidates": raw_candidates,
+                "transcript_cache": cache_receipt,
+                "timings": timings,
+                "human_review_performed": False,
+            }
+            write_json(output / "manifest.json", manifest)
+            (output / "failure.json").unlink(missing_ok=True)
+            return manifest
 
         def selection():
             if selection_file:
@@ -625,6 +698,9 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                 "clips": [c.model_dump() for c in clips],
                 "rendered": [],
                 "selection_receipt": selected["receipt"],
+                "topics": topic_spans,
+                "transcript_cache": cache_receipt,
+                "human_review_performed": False,
             },
         )
         verify_source(source, output)
@@ -657,6 +733,7 @@ def run(source, output, settings, resume=False, chat_file=None, selection_file=N
                 "built": len(candidates),
             },
             "timings": timings,
+            "transcript_cache": cache_receipt,
             "human_review_performed": False,
         }
         write_json(output / "manifest.json", manifest)

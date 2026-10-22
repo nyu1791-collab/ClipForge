@@ -23,6 +23,8 @@ artifacts/
 out/
 job-input/
 .analysis/
+transcript-cache/
+.transcript-cache/
 *.log
 .claude/settings.local.json
 .codex/auth.json

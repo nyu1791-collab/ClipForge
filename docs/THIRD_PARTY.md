@@ -10,6 +10,7 @@
 | 映像を含むGemini API呼び出し | [googleapis/python-genai](https://github.com/googleapis/python-genai) | 2.32.0 / Apache-2.0 |
 | ASS/SRT編集 | [tkarabela/pysubs2](https://github.com/tkarabela/pysubs2) | 1.8.1 / MIT。Python 3.11対応版 |
 | 任意の配信チャット取得 | [xenova/chat-downloader](https://github.com/xenova/chat-downloader) | 0.2.8 / MIT |
+| 公開Kick VODのHTTP/HLS取得（media-fetch extra） | [lexiforest/curl_cffi](https://github.com/lexiforest/curl_cffi) | 0.13.0 / MIT。libcurl等の同梱依存の条件も適用 |
 | 切り抜き・画面調整・エンコード | [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg) | runner配布版。主にLGPL、libx264等を有効にした構成はGPL |
 | ASS描画 | [libass/libass](https://github.com/libass/libass) | FFmpeg側で使用 / ISC |
 | 日本語字幕フォント | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) | runnerの `fonts-noto-cjk` / SIL OFL 1.1 |

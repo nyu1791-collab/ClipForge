@@ -154,6 +154,7 @@ class Settings(Record):
     asr_batch_size: int = Field(default=0, ge=0, le=16)
     # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.
     transcript_cache: str | None = Field(default=None, max_length=1024)
+    require_transcript_cache: bool = False
     language: str | None = None
     # CPU threads for transcription and encoding (2 is the setting every reported run used).
     threads: int = Field(default=2, ge=1, le=8)
@@ -167,6 +168,9 @@ class Settings(Record):
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
+    horizontal_target_cps: float = Field(default=4, ge=1, le=20)
+    horizontal_warn_cps: float = Field(default=4, ge=1, le=20)
+    horizontal_line_chars: int = Field(default=13, ge=8, le=40)
     # blur fills the frame with a softened copy of the picture; fit leaves black bars.
     layout: Literal["fit", "blur", "panels"] = "blur"
     heading: bool = False
@@ -234,6 +238,10 @@ class Settings(Record):
 
     @model_validator(mode="after")
     def limits(self):
+        if self.horizontal_target_cps > self.horizontal_warn_cps:
+            raise ValueError("horizontal reading target must not exceed warning limit")
+        if self.require_transcript_cache and not self.transcript_cache:
+            raise ValueError("requiring a saved transcript needs transcript_cache")
         if self.height == 1920 and self.aspect != "9:16":
             raise ValueError("height 1920 is only for the 9:16 aspect")
         if self.min_seconds >= self.max_seconds:
