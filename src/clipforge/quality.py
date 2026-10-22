@@ -14,8 +14,6 @@ import pysubs2
 
 from . import fonts
 from .captions import (
-    HORIZONTAL_CAPTION_CPS,
-    HORIZONTAL_LINE_CHARS,
     MAX_CAPTION_CPS,
     OUTLINE_ALLOWANCE,
     inside_word,
@@ -24,6 +22,7 @@ from .captions import (
     spoken_length,
 )
 from .media import AUDIO_RATE
+from .models import Settings
 from .storage import PipelineError, write_json
 
 LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
@@ -202,7 +201,9 @@ def reading_limit(rendered, settings=None):
     """Characters a second a caption may read at: stricter for landscape frames."""
     landscape = rendered["width"] > rendered["height"]
     if landscape:
-        return settings.horizontal_warn_cps if settings else HORIZONTAL_CAPTION_CPS
+        if settings:
+            return settings.horizontal_warn_cps
+        return Settings.model_fields["horizontal_warn_cps"].default
     return MAX_CAPTION_CPS
 
 
@@ -314,7 +315,9 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             "orphan_particles": orphans,
             "reading_limit_cps": limit,
             "reading_target_cps": (
-                settings.horizontal_target_cps if settings else HORIZONTAL_CAPTION_CPS
+                settings.horizontal_target_cps
+                if settings
+                else Settings.model_fields["horizontal_target_cps"].default
             )
             if rendered["width"] > rendered["height"]
             else 10,
@@ -327,7 +330,7 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
                     directory / "captions.ass",
                     settings.horizontal_line_chars
                     if settings
-                    else HORIZONTAL_LINE_CHARS,
+                    else Settings.model_fields["horizontal_line_chars"].default,
                 )
                 if rendered["width"] > rendered["height"]
                 else {}

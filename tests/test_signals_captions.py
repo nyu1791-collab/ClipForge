@@ -2,7 +2,7 @@ import pysubs2
 import pytest
 
 from clipforge import captions, fonts, signals
-from clipforge.models import Segment, SelectedClip, Transcript, Word
+from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
 from clipforge.storage import PipelineError
 
 
@@ -458,11 +458,12 @@ def test_landscape_captions_keep_to_thirteen_full_width_characters_a_line(
     captions.create(transcript, clip, tmp_path, settings)
     for event in pysubs2.load(str(tmp_path / "captions.ass")):
         for line in event.plaintext.splitlines():
-            assert len(line) <= captions.HORIZONTAL_LINE_CHARS
+            assert len(line) <= Settings.model_fields["horizontal_line_chars"].default
 
 
 def test_landscape_captions_are_held_to_four_characters_a_second():
     spans = [[0, 1000]]
-    captions.hold_for_reading(spans, ["あ" * 10], 9000, captions.HORIZONTAL_CAPTION_CPS)
+    cps = Settings.model_fields["horizontal_target_cps"].default
+    captions.hold_for_reading(spans, ["あ" * 10], 9000, cps)
     # Ten characters at 4 a second need 2.5 s, so the caption is held to 2.5 s.
     assert spans == [[0, 2500]]

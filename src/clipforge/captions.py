@@ -20,10 +20,8 @@ MIN_EVENT_MS = 100
 TARGET_CAPTION_CPS = 10
 MAX_CAPTION_CPS = 15
 OUTLINE_ALLOWANCE = 8
-# Horizontal (landscape) subtitles follow the Netflix Japanese guide for standard subtitles:
-# at most 13 full-width characters a line, and at most 4 characters a second.
-HORIZONTAL_LINE_CHARS = 13
-HORIZONTAL_CAPTION_CPS = 4
+# Horizontal (landscape) line length and reading speed are defined only in Settings
+# (horizontal_line_chars, horizontal_target_cps); this module reads them from the settings.
 # Characters that may not start a line: closing marks, small kana, long vowel, spaces.
 NO_LINE_START = set(
     "、。，．・：；！？!?」』）〕］｝ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶー 　"
