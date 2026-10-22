@@ -18,6 +18,9 @@ from .storage import PipelineError, digest, process, within, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
 PART_RUN = re.compile(r"([0-9]{1,20}):([a-f0-9]{32})")
+RUN_FIELDS = "status,conclusion,displayTitle,event,workflowName,headBranch"
+STAGE_WORKFLOWS = {"ClipForge audio-first stages", "ClipForge"}
+STAGE_BRANCHES = {"main", "ccr-12fe9485-ugaszt"}
 
 
 def gh(*args):
@@ -26,6 +29,17 @@ def gh(*args):
         timeout=300,
         error_type=PipelineError,
         message="private analysis artifact operation failed",
+    )
+
+
+def successful_stage_run(run, request):
+    return (
+        run.get("status") == "completed"
+        and run.get("conclusion") == "success"
+        and run.get("displayTitle") == "ClipForge " + request
+        and run.get("event") == "workflow_dispatch"
+        and run.get("workflowName") in STAGE_WORKFLOWS
+        and run.get("headBranch") in STAGE_BRANCHES
     )
 
 
@@ -440,14 +454,10 @@ def download_parts(text, directory):
                 "--repo",
                 REPO,
                 "--json",
-                "status,conclusion,displayTitle",
+                RUN_FIELDS,
             )
         )
-        if (
-            run["status"] != "completed"
-            or run["conclusion"] != "success"
-            or run["displayTitle"] != "ClipForge " + request
-        ):
+        if not successful_stage_run(run, request):
             raise PipelineError("clip render did not complete successfully")
         destination = directory / request
         gh(
@@ -556,14 +566,10 @@ def main(argv=None):
                     "--repo",
                     REPO,
                     "--json",
-                    "status,conclusion,displayTitle",
+                    RUN_FIELDS,
                 )
             )
-            if (
-                run["status"] != "completed"
-                or run["conclusion"] != "success"
-                or run["displayTitle"] != "ClipForge " + args.previous_request
-            ):
+            if not successful_stage_run(run, args.previous_request):
                 raise PipelineError("previous analysis did not complete successfully")
             with tempfile.TemporaryDirectory(prefix="clipforge-previous-") as temporary:
                 previous = Path(temporary) / "analysis"

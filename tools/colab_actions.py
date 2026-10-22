@@ -208,13 +208,18 @@ class Controller:
         record["status"] = "uncertain"
         write_private(self.state_path, record)
         accelerator = Accelerator(record["accelerator"])
-        assignment = lookup_assignment(
-            client,
-            uuid.UUID(record["notebook_hash"]),
-            Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU,
-            accelerator,
-            Shape[record["shape"]],
-        )
+        for attempt in range(3):
+            assignment = lookup_assignment(
+                client,
+                uuid.UUID(record["notebook_hash"]),
+                Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU,
+                accelerator,
+                Shape[record["shape"]],
+            )
+            if assignment is not None:
+                break
+            if attempt < 2:
+                time.sleep(10)
         if assignment is not None:
             record.update(
                 status="allocated",

@@ -172,8 +172,15 @@ def test_missing_recorded_transcript_stops_before_network_or_recognition(
         worker.execute(previous, output, IDENTITY, settings, "previews")
 
 
+@pytest.mark.parametrize(
+    "workflow, branch",
+    [
+        ("ClipForge audio-first stages", "main"),
+        ("ClipForge", "ccr-12fe9485-ugaszt"),
+    ],
+)
 def test_worker_main_downloads_only_a_completed_private_analysis(
-    previous_analysis, monkeypatch, capsys
+    previous_analysis, monkeypatch, capsys, workflow, branch
 ):
     import shutil
 
@@ -182,11 +189,15 @@ def test_worker_main_downloads_only_a_completed_private_analysis(
 
     def gh(*args):
         if args[:2] == ("run", "view"):
+            assert args[-2:] == ("--json", worker.RUN_FIELDS)
             return json.dumps(
                 {
                     "status": "completed",
                     "conclusion": "success",
                     "displayTitle": "ClipForge " + IDENTITY,
+                    "event": "workflow_dispatch",
+                    "workflowName": workflow,
+                    "headBranch": branch,
                 }
             )
         destination = Path(args[args.index("--dir") + 1])
@@ -278,6 +289,9 @@ def test_worker_summary_passes_manifest_timings_when_present(
                     "status": "completed",
                     "conclusion": "success",
                     "displayTitle": "ClipForge " + IDENTITY,
+                    "event": "workflow_dispatch",
+                    "workflowName": "ClipForge audio-first stages",
+                    "headBranch": "main",
                 }
             )
         shutil.copytree(previous, Path(args[args.index("--dir") + 1]))
@@ -556,6 +570,9 @@ def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
                     "status": "completed",
                     "conclusion": "success",
                     "displayTitle": "ClipForge " + request,
+                    "event": "workflow_dispatch",
+                    "workflowName": "ClipForge audio-first stages",
+                    "headBranch": "main",
                 }
             )
         request = args[args.index("--name") + 1].removeprefix("clipforge-result-")
@@ -603,6 +620,12 @@ def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
         ("status", "in_progress"),
         ("conclusion", "failure"),
         ("displayTitle", "ClipForge x"),
+        ("event", "push"),
+        ("event", None),
+        ("workflowName", "Unrelated workflow"),
+        ("workflowName", None),
+        ("headBranch", "unreviewed"),
+        ("headBranch", None),
     ],
 )
 def test_merge_main_refuses_a_clip_run_that_is_not_its_successful_render(
@@ -613,6 +636,9 @@ def test_merge_main_refuses_a_clip_run_that_is_not_its_successful_render(
         "status": "completed",
         "conclusion": "success",
         "displayTitle": "ClipForge " + CLIP_REQUESTS[1],
+        "event": "workflow_dispatch",
+        "workflowName": "ClipForge audio-first stages",
+        "headBranch": "main",
     }
     run[field] = value
     downloads = []
@@ -654,6 +680,9 @@ def test_render_stage_passes_one_clip_index_and_records_it(
                     "status": "completed",
                     "conclusion": "success",
                     "displayTitle": "ClipForge " + IDENTITY,
+                    "event": "workflow_dispatch",
+                    "workflowName": "ClipForge audio-first stages",
+                    "headBranch": "main",
                 }
             )
         import shutil
@@ -781,6 +810,9 @@ def _previous_gh(previous):
                     "status": "completed",
                     "conclusion": "success",
                     "displayTitle": "ClipForge " + IDENTITY,
+                    "event": "workflow_dispatch",
+                    "workflowName": "ClipForge audio-first stages",
+                    "headBranch": "main",
                 }
             )
         shutil.copytree(previous, Path(args[args.index("--dir") + 1]))
@@ -804,6 +836,79 @@ def _previews_args(output):
         "--output",
         str(output),
     ]
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("event", "push"),
+        ("event", None),
+        ("workflowName", "Unrelated workflow"),
+        ("workflowName", None),
+        ("headBranch", "unreviewed"),
+        ("headBranch", None),
+    ],
+)
+def test_previous_run_provenance_is_checked_before_downloading(
+    tmp_path, monkeypatch, field, value
+):
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    calls = []
+    run = {
+        "status": "completed",
+        "conclusion": "success",
+        "displayTitle": "ClipForge " + IDENTITY,
+        "event": "workflow_dispatch",
+        "workflowName": "ClipForge audio-first stages",
+        "headBranch": "main",
+        field: value,
+    }
+
+    def gh(*args):
+        calls.append(args)
+        assert args[:2] == ("run", "view"), "unverified run was downloaded"
+        assert args[-2:] == ("--json", worker.RUN_FIELDS)
+        return json.dumps(run)
+
+    monkeypatch.setattr(worker, "gh", gh)
+    assert worker.main(_previews_args(tmp_path / "out")) == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "workflow, branch",
+    [
+        ("ClipForge audio-first stages", "main"),
+        ("ClipForge", "ccr-12fe9485-ugaszt"),
+    ],
+)
+def test_download_parts_accepts_only_confirmed_stage_metadata(
+    tmp_path, monkeypatch, workflow, branch
+):
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        if args[:2] == ("run", "view"):
+            assert args[-2:] == ("--json", worker.RUN_FIELDS)
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "displayTitle": "ClipForge " + IDENTITY,
+                    "event": "workflow_dispatch",
+                    "workflowName": workflow,
+                    "headBranch": branch,
+                }
+            )
+        assert args[:2] == ("run", "download")
+        return ""
+
+    monkeypatch.setattr(worker, "gh", gh)
+    assert worker.download_parts(f"123:{IDENTITY}", tmp_path) == [
+        (tmp_path / IDENTITY, IDENTITY)
+    ]
+    assert len(calls) == 2
 
 
 def test_pipeline_error_is_recorded_with_its_own_fixed_text(

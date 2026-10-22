@@ -313,10 +313,36 @@ def local_merge(part_runs, destination, source_ref=None):
         identity = hashlib.sha256(
             json.dumps(request, sort_keys=True).encode()
         ).hexdigest()[:32]
-        config = Path(__file__).resolve().parents[1] / "config.landscape.example.json"
-        settings = Settings.model_validate_json(config.read_text()).model_copy(
-            update={"clips": first["identity"]["clip_count"]}
+        repository = Path(__file__).resolve().parents[1]
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        config = (
+            (repository / "config.landscape.example.json").read_text()
+            if head == source_ref
+            else subprocess.run(
+                ["git", "show", source_ref + ":config.landscape.example.json"],
+                cwd=repository,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout
         )
+        settings = Settings.model_validate_json(config)
+        # A source config alone cannot make different executing code reproducible.
+        if (
+            head != source_ref
+            or worker_audio.landscape.code_identity().get("git_head") != source_ref
+        ):
+            raise RuntimeError("local merge code differs from source_ref")
+        # Parts retain no reviewed selection or previous request settings. Check the
+        # source configuration's plan; never derive the expected count from the parts.
         staging = root / "result"
         result, lineage = worker_audio.merge_parts(parts, staging, settings, source_ref)
         worker_audio.write_receipt(

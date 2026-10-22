@@ -822,6 +822,9 @@ def local_merge_env(collector, tmp_path, monkeypatch):
                     "status": "completed",
                     "conclusion": "success",
                     "displayTitle": "ClipForge " + runs[args[2]],
+                    "event": "workflow_dispatch",
+                    "workflowName": "ClipForge audio-first stages",
+                    "headBranch": "main",
                     **control["run_fault"],
                 }
             )
@@ -843,6 +846,8 @@ def local_merge_env(collector, tmp_path, monkeypatch):
 
     def only_git(command, *args, **kwargs):
         assert command[0] == "git", "merge invoked an external media tool"
+        if command == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(command, 0, stdout=SOURCE_REF + "\n")
         return original_run(command, *args, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", only_git)
@@ -859,6 +864,8 @@ def test_local_merge_matches_hosted_merge_and_collect_verification(
     assert module.main([*args, "--output", str(output)]) == 0
     assert len([c for c in control["calls"] if c[:2] == ("run", "download")]) == 3
     assert (output / "delivery/e2e-summary.json").is_file()
+    summary = json.loads((output / "delivery/e2e-summary.json").read_text())
+    assert summary["reproducibility"]["git_head"] == SOURCE_REF
     receipt = json.loads((output / "request-receipt.json").read_text())
     assert receipt["workflow_run"] == "local"
     request = {
@@ -924,6 +931,64 @@ def test_local_merge_does_not_publish_output_that_fails_collect_verification(
     monkeypatch.setattr(worker, "write_receipt", tamper)
     output = tmp_path / "local"
     with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        module.main([*args, "--output", str(output)])
+    assert not output.exists()
+
+
+def test_local_merge_reads_source_config_and_rejects_different_checkout(
+    local_merge_env, tmp_path, monkeypatch
+):
+    module, worker, _, _, args = local_merge_env
+    calls = []
+
+    def git(command, **kwargs):
+        calls.append(command)
+        if command == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(command, 0, stdout="9" * 40)
+        assert command == ["git", "show", SOURCE_REF + ":config.landscape.example.json"]
+        return subprocess.CompletedProcess(
+            command, 0, stdout=Path("config.landscape.example.json").read_text()
+        )
+
+    monkeypatch.setattr(subprocess, "run", git)
+    monkeypatch.setattr(
+        worker, "merge_parts", lambda *a: pytest.fail("merged with different code")
+    )
+    output = tmp_path / "local"
+    with pytest.raises(RuntimeError, match="code differs from source_ref"):
+        module.main([*args, "--output", str(output)])
+    assert len(calls) == 2
+    assert not output.exists()
+
+
+def test_local_merge_rejects_imported_code_from_different_revision(
+    local_merge_env, tmp_path, monkeypatch
+):
+    module, worker, _, _, args = local_merge_env
+    monkeypatch.setattr(
+        worker.landscape, "code_identity", lambda: {"git_head": "9" * 40}
+    )
+    output = tmp_path / "local"
+    with pytest.raises(RuntimeError, match="code differs from source_ref"):
+        module.main([*args, "--output", str(output)])
+    assert not output.exists()
+
+
+def test_local_merge_compares_part_count_with_configuration_plan(
+    local_merge_env, tmp_path
+):
+    module, worker, _, sources, args = local_merge_env
+    for root in sources.values():
+        path = root / "manifest.json"
+        manifest = json.loads(path.read_text())
+        manifest["clip_count"] = 4
+        path.write_text(json.dumps(manifest))
+        receipt_path = root / "request-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["sha256"]["manifest.json"] = worker.digest(path)
+        receipt_path.write_text(json.dumps(receipt))
+    output = tmp_path / "local"
+    with pytest.raises(RuntimeError, match="clip count does not match the plan"):
         module.main([*args, "--output", str(output)])
     assert not output.exists()
 

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -211,10 +212,6 @@ def main():
     cache_tag = release_tag(key)
     parts = release_parts()
     timings = {}
-    with timed(timings, "cache_restore"):
-        cached = bundles.restore(cache_tag, cache_root, "assets", key, parts=parts)
-        if cached:
-            mark_restored(key, cache_root)
     environment = os.environ.copy()
     for name in ("GH_TOKEN", "GITHUB_TOKEN", "GEMINI_API_KEY", "COLAB_ADC_JSON"):
         environment.pop(name, None)
@@ -247,13 +244,36 @@ def main():
         "mode": mode,
         "status": "failed",
         "source_ref": payload["source_ref"],
-        "public_cache_restored": cached,
+        "public_cache_restored": False,
         "gemini_requests_in_verification": 0,
         "human_review_performed": False,
         "timings": timings,
     }
     failed = False
+    cached = False
+    setup_complete = False
     try:
+        report["stage"] = "cache-restore"
+        with timed(timings, "cache_restore"):
+            try:
+                cached = bundles.restore(
+                    cache_tag, cache_root, "assets", key, parts=parts
+                )
+                if cached:
+                    mark_restored(key, cache_root)
+            except Exception as error:
+                report["cache_restore_error"] = type(error).__name__
+                cached = False
+                # Direct extraction can leave partial assets; setup must fetch them afresh.
+                for name in parts:
+                    path = cache_root / name
+                    if path.is_symlink() or path.is_file():
+                        path.unlink()
+                    elif path.exists():
+                        shutil.rmtree(path)
+                for name in (".restored", ".saved-inventory"):
+                    (cache_root / name).unlink(missing_ok=True)
+            report["public_cache_restored"] = cached
         report["stage"] = "hardware-check"
         if not cpu_only:
             report["gpu"] = gpu_info(accelerator)
@@ -262,6 +282,7 @@ def main():
         with timed(timings, "setup"):
             try:
                 command(["bash", "tools/colab_setup.sh"], environment, "setup")
+                setup_complete = True
             finally:
                 timings.update(read_setup_timings(WORK / "setup-timings.tsv"))
         if mode == "pipeline":
@@ -369,7 +390,9 @@ def main():
         fetched = (WORK / "setup-fetched").is_file()
         report["setup_fetched"] = fetched
         first = (payload.get("stage") or {}).get("clip_index") in (None, "1")
-        if mode == "audio-stage" and not first:
+        if not setup_complete:
+            report["public_cache_saved"] = "skipped_setup_failed"
+        elif mode == "audio-stage" and not first:
             report["public_cache_saved"] = "skipped_parallel"
         elif mode in {"pipeline", "audio-stage"} and cached and not (fetched and first):
             report["public_cache_saved"] = "skipped_restored"

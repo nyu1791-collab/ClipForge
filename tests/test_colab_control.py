@@ -825,6 +825,9 @@ class ProbeTests(unittest.TestCase):
 
 
 class LostAllocationReplyTests(unittest.TestCase):
+    def setUp(self):
+        self.sleep = self.enterContext(patch.object(control.time, "sleep"))
+
     def start_with_failed_assign(self, lookup, error=None):
         client = Mock()
         client.list_assignments.side_effect = [
@@ -835,7 +838,7 @@ class LostAllocationReplyTests(unittest.TestCase):
             ],
         ]
         error = error or RuntimeError("synthetic reply loss")
-        if isinstance(lookup, Exception):
+        if isinstance(lookup, (Exception, list)):
             client._get_assignment.side_effect = lookup
         else:
             client._get_assignment.return_value = lookup
@@ -872,10 +875,47 @@ class LostAllocationReplyTests(unittest.TestCase):
         return controller, client
 
     def test_nothing_assigned_is_recorded_as_stopped_without_credentials(self):
-        controller, _ = self.start_with_failed_assign(unassigned_response())
+        controller, client = self.start_with_failed_assign(unassigned_response())
+        self.assertEqual(client._get_assignment.call_count, 3)
+        self.assertEqual(
+            [call.args for call in self.sleep.call_args_list], [(10,), (10,)]
+        )
         self.assertEqual(controller.state()["status"], "stopped")
         self.assertNotIn("token", controller.state())
         self.assertFalse(controller.credentials_path.exists())
+
+    def test_delayed_assignment_is_recorded_before_absence_is_confirmed(self):
+        controller, client = self.start_with_failed_assign(
+            [unassigned_response(), unassigned_response(), granted_assignment("ours")]
+        )
+        self.assertEqual(controller.state()["status"], "allocated")
+        self.assertEqual(controller.state()["endpoint"], "ours")
+        self.assertTrue(controller.credentials_path.exists())
+        self.assertEqual(client._get_assignment.call_count, 3)
+        self.assertEqual(
+            [call.args for call in self.sleep.call_args_list], [(10,), (10,)]
+        )
+
+    def test_exception_after_absence_keeps_uncertain_and_credentials(self):
+        controller, client = self.start_with_failed_assign(
+            [unassigned_response(), RuntimeError("synthetic lookup failure")]
+        )
+        self.assertEqual(controller.state()["status"], "uncertain")
+        self.assertTrue(controller.credentials_path.exists())
+        self.assertEqual(client._get_assignment.call_count, 2)
+
+    def test_stop_waits_for_delayed_assignment_and_releases_it(self):
+        controller, client = self.start_with_failed_assign(
+            RuntimeError("lookup failed")
+        )
+        client._get_assignment.side_effect = [
+            unassigned_response(),
+            granted_assignment("ours"),
+        ]
+        with patch.object(controller, "client", return_value=client):
+            controller.stop()
+        client.unassign.assert_called_once_with("ours")
+        self.assertEqual(controller.state()["status"], "stopped")
 
     def test_notebook_assignment_is_kept_with_proxy_details_for_release(self):
         controller, client = self.start_with_failed_assign(granted_assignment("ours"))

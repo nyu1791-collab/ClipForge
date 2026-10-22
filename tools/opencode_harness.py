@@ -262,17 +262,26 @@ def run_task(task, mode, base, timeout, model="deepseek"):
     check_disk_space(directory.parent)
     directory.mkdir(parents=True, mode=0o700)
     home = directory / "home"
+    result = None
     try:
-        return _run_task(task, mode, base, timeout, model, name, directory)
+        result = _run_task(task, mode, base, timeout, model, name, directory)
+        return result
     finally:
         # Only disposable data owned by this run; never the profile or write worktree.
         root = directory.resolve()
         target = home.resolve()
         if target == root or not target.is_relative_to(root):
-            raise ValueError(
-                f"refusing to remove home outside the run directory: {home}"
-            )
-        if home.is_symlink():
+            warning = "refusing to remove home outside the run directory"
+            if result is not None:
+                result["cleanup_warning"] = warning
+                (directory / "result.json").write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False)
+                )
+            else:
+                (directory / "result.json").write_text(
+                    json.dumps({"cleanup_warning": warning}, indent=2)
+                )
+        elif home.is_symlink():
             home.unlink()
         elif home.exists():
             shutil.rmtree(home)

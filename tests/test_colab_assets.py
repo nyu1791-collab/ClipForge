@@ -887,6 +887,121 @@ class RemotePipelineTests(unittest.TestCase):
                 self.assertEqual(report["public_cache_saved"], "skipped_restored")
 
 
+class RemoteCacheRecoveryTests(unittest.TestCase):
+    def run_job(self, *, restore_fails=False, failure=None, cached=False):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        work = root / "job"
+        cache_root = root / "cache"
+        cache_root.mkdir()
+        keep = cache_root / "keep.txt"
+        keep.write_text("synthetic unrelated data")
+        payload_path = root / "payload.json"
+        report_path = root / "report.json"
+        payload = {
+            "mode": "audio-stage",
+            "request_id": "a" * 32,
+            "source_ref": "b" * 40,
+            "workflow_run": "123",
+            "github_token": "test-only-github",
+            "accelerator": "T4",
+            "stage": {
+                "previous_run": "122",
+                "previous_request": "c" * 32,
+                "review": '{"clips": []}',
+                "clip_index": "1",
+            },
+        }
+        payload_path.write_text(json.dumps(payload))
+        parts = (*cache.PARTS, "models/hub")
+        bundles = Mock()
+
+        def restore(*args, **kwargs):
+            if not restore_fails:
+                return cached
+            for name in parts:
+                path = cache_root / name
+                path.mkdir(parents=True)
+                (path / "partial").write_bytes(b"synthetic partial cache")
+            shutil.rmtree(cache_root / "pip")
+            (cache_root / "pip").symlink_to(keep)
+            (cache_root / ".restored").write_text("synthetic stale marker")
+            (cache_root / ".saved-inventory").write_text("synthetic stale inventory")
+            raise BundleError("synthetic private detail must not be reported")
+
+        bundles.restore.side_effect = restore
+        commands = []
+
+        def command(arguments, environment, name):
+            commands.append(name)
+            if name == "setup" and restore_fails:
+                self.assertTrue(all(not (cache_root / name).exists() for name in parts))
+                self.assertFalse((cache_root / "pip").is_symlink())
+                self.assertFalse((cache_root / ".restored").exists())
+                self.assertFalse((cache_root / ".saved-inventory").exists())
+                self.assertEqual(keep.read_text(), "synthetic unrelated data")
+            if name == failure:
+                raise RuntimeError("synthetic stage failure")
+            if name == "render":
+                (work / "out/manifest.json").write_text('{"status": "clip_rendered"}')
+
+        def path(value):
+            return {
+                "/content/.clipforge-job.json": payload_path,
+                "/content/clipforge-report.json": report_path,
+            }.get(str(value), Path(value))
+
+        with (
+            patch.object(remote_job, "ROOT", root),
+            patch.object(remote_job, "WORK", work),
+            patch.object(remote_job, "Path", side_effect=path),
+            patch.dict(os.environ, {}),
+            patch.object(
+                remote_job, "configuration", return_value=("key", cache_root, None)
+            ),
+            patch.object(remote_job, "ReleaseBundles", return_value=bundles),
+            patch.object(remote_job, "gpu_info", return_value={}),
+            patch.object(remote_job, "host_info", return_value={}),
+            patch.object(remote_job, "mark_restored"),
+            patch.object(
+                remote_job, "publish_result", return_value=True
+            ) as publish_result,
+            patch.object(remote_job.os, "umask"),
+            patch.object(remote_job, "command", side_effect=command),
+        ):
+            if failure is None:
+                remote_job.main()
+            else:
+                with self.assertRaisesRegex(RuntimeError, "Colab job failed"):
+                    remote_job.main()
+        publish_result.assert_called_once()
+        return json.loads(report_path.read_text()), bundles, commands
+
+    def test_partial_restore_is_removed_and_setup_continues_as_a_cache_miss(self):
+        report, bundles, commands = self.run_job(restore_fails=True)
+        self.assertEqual(report["cache_restore_error"], "BundleError")
+        self.assertFalse(report["public_cache_restored"])
+        self.assertEqual(report["status"], "clip_rendered")
+        self.assertEqual(commands, ["setup", "render"])
+        bundles.publish.assert_called_once()
+        self.assertNotIn("synthetic private detail", json.dumps(report))
+
+    def test_setup_failure_never_publishes_cache_but_later_failure_can(self):
+        for cached in (False, True):
+            with self.subTest(cached=cached):
+                report, bundles, commands = self.run_job(failure="setup", cached=cached)
+                self.assertEqual(report["public_cache_saved"], "skipped_setup_failed")
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(commands, ["setup"])
+                bundles.publish.assert_not_called()
+        report, bundles, commands = self.run_job(failure="render")
+        self.assertTrue(report["public_cache_saved"])
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(commands, ["setup", "render"])
+        bundles.publish.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
 

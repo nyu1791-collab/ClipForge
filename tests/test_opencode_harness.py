@@ -144,7 +144,7 @@ def test_run_keeps_write_worktree(harness, task, tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("link_target", ["profile", "run"])
-def test_cleanup_rejects_home_resolving_outside_run_or_to_run(
+def test_cleanup_warns_and_preserves_success_when_home_resolves_outside_run_or_to_run(
     harness, task, tmp_path, monkeypatch, link_target
 ):
     profile = tmp_path / "synthetic-profile"
@@ -155,13 +155,20 @@ def test_cleanup_rejects_home_resolving_outside_run_or_to_run(
     def run(task, mode, base, timeout, model, name, directory):
         target = profile if link_target == "profile" else directory
         (directory / "home").symlink_to(target, target_is_directory=True)
+        result = {"status": "complete", "report": "synthetic report"}
+        (directory / "result.json").write_text(json.dumps(result))
+        return result
 
     monkeypatch.setattr(harness, "_run_task", run)
-    with pytest.raises(ValueError, match="refusing to remove home"):
-        harness.run_task(task, "read", "HEAD", 30)
+    result = harness.run_task(task, "read", "HEAD", 30)
 
     assert marker.read_text() == "synthetic profile data"
-    assert next((harness.STATE / "runs").iterdir()).is_dir()
+    directory = next((harness.STATE / "runs").iterdir())
+    assert (directory / "home").is_symlink()
+    assert result["status"] == "complete"
+    assert result["report"] == "synthetic report"
+    assert "refusing to remove home" in result["cleanup_warning"]
+    assert json.loads((directory / "result.json").read_text()) == result
 
 
 @pytest.mark.parametrize("after_slot", [False, True])
