@@ -103,49 +103,134 @@ def save(path, receipt):
     temporary.replace(path)
 
 
+def plain_tree(directory):
+    """List regular files and directories; refuse symlinks and special entries."""
+    files, dirs = set(), set()
+    for current, dirnames, filenames in os.walk(directory):
+        for name in dirnames + filenames:
+            if Path(current, name).is_symlink():
+                raise RuntimeError("result contains a symlink")
+        for name in dirnames:
+            dirs.add(Path(current, name).relative_to(directory).as_posix())
+        for name in filenames:
+            path = Path(current, name)
+            if not path.is_file():
+                raise RuntimeError("result contains a non-regular entry")
+            files.add(path.relative_to(directory).as_posix())
+    return files, dirs
+
+
+def verify_audio_analysis(
+    directory, identity, source_ref, source_sha256, source_url=None
+):
+    """Verify a topics_allocated artifact. Without a local record, source_url is the artifact's own canonical VOD URL."""
+    from clipforge.kick_media import canonical
+    from clipforge.models import Transcript
+
+    files, dirs = plain_tree(directory)
+    if not {"transcripts"} <= dirs <= {"transcripts", ".state"}:
+        raise RuntimeError("result contains unexpected directories")
+    returned = json.loads((directory / "request-receipt.json").read_text())
+    if source_url is None:
+        source_url = canonical(str(returned.get("audio_source_url")))
+    if (
+        returned.get("request_id") != identity
+        or returned.get("source_ref") != source_ref
+        or returned.get("status") != "topics_allocated"
+        or returned.get("audio_source_url") != source_url
+    ):
+        raise RuntimeError("result identity or completion state mismatch")
+    cache = json.loads((directory / "asr-receipt.json").read_text())
+    key = cache.get("key", "") if isinstance(cache, dict) else ""
+    if not isinstance(key, str) or not re.fullmatch(r"[a-f0-9]{64}", key):
+        raise RuntimeError("audio analysis cache identity missing")
+    names = {
+        "audio.m4a",
+        "manifest.json",
+        "topics.json",
+        "asr-receipt.json",
+        "transcripts/" + key + ".json",
+    }
+    # Internal bookkeeping written by the analysis itself (lock file, stage receipt) is not hashed.
+    internal = {".audio-first.lock", ".state/topics.json"}
+    required = names | {"request-receipt.json"}
+    if not required <= files or files - required - internal:
+        raise RuntimeError("result contains unexpected files")
+    hashes = returned.get("sha256", {})
+    if (
+        not isinstance(hashes, dict)
+        or set(hashes) != names
+        or any(digest(directory / name) != hashes[name] for name in names)
+    ):
+        raise RuntimeError("audio analysis output checksum mismatch")
+    manifest = json.loads((directory / "manifest.json").read_text())
+    if (
+        manifest.get("status") != "topics_allocated"
+        or manifest.get("source_url") != source_url
+        or manifest.get("source_sha256") != source_sha256
+        or manifest.get("rendered")
+        or manifest.get("model_generation_requests") != 0
+        or digest(directory / "audio.m4a") != source_sha256
+    ):
+        raise RuntimeError("audio analysis identity mismatch")
+    Transcript.model_validate_json(
+        (directory / "transcripts" / (key + ".json")).read_text()
+    )
+    topics = json.loads((directory / "topics.json").read_text())
+    rows = topics.get("topics") if isinstance(topics, dict) else None
+    if (
+        not isinstance(topics, dict)
+        or topics.get("status") != "topics_allocated"
+        or topics.get("source_url") != source_url
+        or topics.get("model_generation_requests") != 0
+        or not isinstance(rows, list)
+    ):
+        raise RuntimeError("topics file identity or format mismatch")
+    duration = topics.get("duration")
+    seen = set()
+    for row in rows:
+        numbers = (
+            [row.get(field) for field in ("start", "end")]
+            if isinstance(row, dict)
+            else []
+        )
+        if (
+            not isinstance(row, dict)
+            or not re.fullmatch(r"topic-[0-9]{3}", str(row.get("id")))
+            or row["id"] in seen
+            or not all(
+                isinstance(value, (int, float)) and not isinstance(value, bool)
+                for value in numbers
+            )
+            or not 0 <= row["start"] < row["end"]
+            or (
+                isinstance(duration, (int, float))
+                and not isinstance(duration, bool)
+                and row["end"] > duration
+            )
+        ):
+            raise RuntimeError("topics file row format mismatch")
+        seen.add(row["id"])
+
+
 def verify_download(directory, receipt, request):
+    if request.get("audio_source_url"):
+        verify_audio_analysis(
+            directory,
+            receipt["request_id"],
+            receipt["source_ref"],
+            request["video_sha256"],
+            request["audio_source_url"],
+        )
+        return
     returned = json.loads((directory / "request-receipt.json").read_text())
     if (
         returned.get("request_id") != receipt["request_id"]
         or returned.get("source_ref") != receipt["source_ref"]
-        or returned.get("status")
-        != ("topics_allocated" if request.get("audio_source_url") else "complete")
+        or returned.get("status") != "complete"
     ):
         raise RuntimeError("result identity or completion state mismatch")
     manifest = json.loads((directory / "manifest.json").read_text())
-    if request.get("audio_source_url"):
-        from clipforge.models import Transcript
-
-        if (
-            manifest.get("status") != "topics_allocated"
-            or manifest.get("source_url") != request["audio_source_url"]
-            or manifest.get("source_sha256") != request["video_sha256"]
-            or manifest.get("rendered")
-            or returned.get("audio_source_url") != request["audio_source_url"]
-            or manifest.get("model_generation_requests") != 0
-            or digest(directory / "audio.m4a") != request["video_sha256"]
-        ):
-            raise RuntimeError("audio analysis identity mismatch")
-        cache = json.loads((directory / "asr-receipt.json").read_text())
-        key = cache.get("key", "")
-        if not re.fullmatch(r"[a-f0-9]{64}", key):
-            raise RuntimeError("audio analysis cache identity missing")
-        names = {
-            "audio.m4a",
-            "manifest.json",
-            "topics.json",
-            "asr-receipt.json",
-            "transcripts/" + key + ".json",
-        }
-        hashes = returned.get("sha256", {})
-        if set(hashes) != names or any(
-            digest(directory / name) != hashes[name] for name in names
-        ):
-            raise RuntimeError("audio analysis output checksum mismatch")
-        Transcript.model_validate_json(
-            (directory / "transcripts" / (key + ".json")).read_text()
-        )
-        return
     if (
         manifest.get("status") != "complete"
         or manifest.get("source_sha256") != request["video_sha256"]
@@ -174,7 +259,7 @@ def verify_download(directory, receipt, request):
                 raise RuntimeError("downloaded output checksum mismatch")
 
 
-def collect_result(state, receipt, destination):
+def prepare_destination(destination):
     destination = Path(destination).absolute()
     if destination.exists() or any(
         part.is_symlink() for part in [destination, *destination.parents]
@@ -183,36 +268,99 @@ def collect_result(state, receipt, destination):
             "download destination already exists or uses a symlink; choose a new directory"
         )
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return destination
+
+
+def download_verified(run_id, identity, destination, verify):
+    """Download into a private staging directory, verify it, then move it into place."""
+    with tempfile.TemporaryDirectory(
+        prefix=".clipforge-download-", dir=destination.parent
+    ) as temporary:
+        staging = Path(temporary) / "result"
+        gh(
+            "run",
+            "download",
+            str(run_id),
+            "--repo",
+            REPO,
+            "--name",
+            "clipforge-result-" + identity,
+            "--dir",
+            str(staging),
+            timeout=300,
+        )
+        verify(staging)
+        if destination.exists() or destination.is_symlink():
+            raise RuntimeError("download destination was created by another operation")
+        staging.rename(destination)
+
+
+def collect_result(state, receipt, destination):
+    destination = prepare_destination(destination)
     request = json.loads((state / "request.json").read_text())
     try:
-        with tempfile.TemporaryDirectory(
-            prefix=".clipforge-download-", dir=destination.parent
-        ) as temporary:
-            staging = Path(temporary) / "result"
-            gh(
-                "run",
-                "download",
-                str(receipt["run_id"]),
-                "--repo",
-                REPO,
-                "--name",
-                "clipforge-result-" + receipt["request_id"],
-                "--dir",
-                str(staging),
-                timeout=300,
-            )
-            verify_download(staging, receipt, request)
-            if destination.exists() or destination.is_symlink():
-                raise RuntimeError(
-                    "download destination was created by another operation"
-                )
-            staging.rename(destination)
+        download_verified(
+            receipt["run_id"],
+            receipt["request_id"],
+            destination,
+            lambda staging: verify_download(staging, receipt, request),
+        )
     except Exception:
         receipt["status"] = "DOWNLOAD_FAILED"
         save(state / "receipt.json", receipt)
         raise
     receipt.update(status="COMPLETE", output=str(destination.resolve()))
     save(state / "receipt.json", receipt)
+    print("Completed; private outputs verified and downloaded.")
+
+
+def local_record_exists(identity):
+    return (
+        bool(re.fullmatch(r"[a-f0-9]{32}", identity))
+        and (
+            Path.home() / ".local/state/clipforge" / identity / "receipt.json"
+        ).is_file()
+    )
+
+
+def collect_without_record(args):
+    """Collect a topics_allocated audio analysis on a machine with no local state record."""
+    identity = args.collect
+    if not re.fullmatch(r"[a-f0-9]{32}", identity):
+        raise RuntimeError("invalid request identifier")
+    if (
+        args.run_id is None
+        or args.source_ref is None
+        or args.audio_sha256 is None
+        or args.output is None
+    ):
+        raise RuntimeError(
+            "no local record: --run-id, --source-ref, --audio-sha256 and --output are required"
+        )
+    if (
+        args.run_id < 1
+        or not re.fullmatch(r"[a-f0-9]{40}", args.source_ref)
+        or not re.fullmatch(r"[a-f0-9]{64}", args.audio_sha256)
+    ):
+        raise RuntimeError("invalid run ID, source commit, or audio SHA-256")
+    run = json.loads(gh("api", f"repos/{REPO}/actions/runs/{args.run_id}"))
+    if (
+        run.get("id") != args.run_id
+        or run.get("display_title") != "ClipForge " + identity
+        or run.get("event") != "workflow_dispatch"
+        or run.get("status") != "completed"
+        or run.get("conclusion") != "success"
+    ):
+        raise RuntimeError("workflow run identity or completion state mismatch")
+    destination = prepare_destination(args.output)
+    download_verified(
+        args.run_id,
+        identity,
+        destination,
+        lambda staging: verify_audio_analysis(
+            staging, identity, args.source_ref, args.audio_sha256
+        ),
+    )
     print("Completed; private outputs verified and downloaded.")
 
 
@@ -466,6 +614,19 @@ def main():
     parser.add_argument("--chat-url")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        help="with --collect and no local record: the workflow run to verify",
+    )
+    parser.add_argument(
+        "--source-ref",
+        help="with --collect and no local record: the reviewed full commit SHA",
+    )
+    parser.add_argument(
+        "--audio-sha256",
+        help="with --collect and no local record: the expected audio SHA-256",
+    )
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument(
         "--collect",
@@ -499,6 +660,9 @@ def main():
             "--cleanup-tag",
         )
         print("Temporary private input deleted.")
+        return
+    if args.collect and not local_record_exists(args.collect):
+        collect_without_record(args)
         return
     if args.collect or args.status:
         recover(args)

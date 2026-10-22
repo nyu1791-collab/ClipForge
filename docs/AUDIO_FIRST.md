@@ -47,6 +47,14 @@ uv run --no-sync python tools/submit_job.py \
 転送で401等が返った場合は、登録済みGitHub接続の認証を利用者側で復旧してから進める。APIキーをチャットへ貼らず、別アカウント・別経路で拒否を回避しない。
 `STAGING_FAILED`はASRやworkflowが起動したことを意味しない。一時releaseや同じ依頼IDを確認してから再開を判断する。
 依頼IDから `tools/submit_job.py --status ID`、成功後に `--collect ID --output PRIVATE_NEW_DIRECTORY` で回収する。
+ローカル記録（`~/.local/state/clipforge/ID/`）がない別環境では、期待値を渡す状態なし回収を使う。runの成功完了・依頼ID・元コミットSHA・音声SHA-256・ASR・話題・manifestを検査し、新規の出力先だけへ保存する。記録は書き込まない。
+
+```bash
+uv run --no-sync python tools/submit_job.py --collect REQUEST_ID --run-id RUN_ID \
+  --source-ref REVIEWED_COMMIT_SHA --audio-sha256 AUDIO_SHA256 --output PRIVATE_NEW_DIRECTORY
+```
+
+ローカル記録がある場合は従来どおりで、これらの引数は使わない。
 音声・ASR・話題・manifestのハッシュと依頼元SHAを検査する。ASRはlarge-v3-turbo・CPU/int8・2スレッド。
 キャッシュが一致しない音声や別配信のASRを流用しない。長いASRは完了まで時間を要し、失敗後の途中チェックポイント再開はこの経路では未実装。
 
