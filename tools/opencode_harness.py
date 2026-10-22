@@ -12,6 +12,7 @@ tasks run side by side.
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,10 @@ import threading
 import time
 
 MODEL = "opencode/deepseek-v4.1-flash-free"
+# Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
+MAX_RUNNING = 3
+STALL_SECONDS = 120
+START_ATTEMPTS = 3
 ROOT = Path(__file__).resolve().parents[1]
 STATE = (
     Path(os.environ.get("CLIPFORGE_AGENT_STATE", tempfile.gettempdir()))
@@ -128,6 +133,87 @@ def worktree(base, name):
     return path
 
 
+def slot():
+    """Hold one of MAX_RUNNING machine-wide slots; the free endpoint stalls when crowded."""
+    directory = STATE / "slots"
+    directory.mkdir(parents=True, exist_ok=True)
+    while True:
+        for index in range(MAX_RUNNING):
+            handle = (directory / f"{index}.lock").open("a")
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                handle.close()
+                continue
+            return handle
+        time.sleep(5)
+
+
+def attempt(command, environment, workdir, out, timeout, result, texts):
+    """Run OpenCode once. False only when it never produced an event within STALL_SECONDS."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        env=environment,
+        cwd=workdir,
+    )
+    answered = threading.Event()
+    stalled = threading.Event()
+
+    def watch():
+        if not answered.wait(min(STALL_SECONDS, timeout)):
+            stalled.set()
+            process.kill()
+
+    # A silent hang produces no lines, so the limits are enforced by timers, not the loop.
+    timer = threading.Timer(timeout, process.kill)
+    timer.start()
+    threading.Thread(target=watch, daemon=True).start()
+    started = time.monotonic()
+    try:
+        for line in process.stdout:
+            answered.set()
+            out.write(line)
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            part = event.get("part") or {}
+            if event.get("type") == "text" and part.get("text"):
+                texts.append(part["text"])
+            elif event.get("type") == "tool_use":
+                result["tool_calls"] += 1
+            elif event.get("type") == "step_finish":
+                result["steps"] += 1
+                result["tokens"] += (part.get("tokens") or {}).get("total", 0)
+                if part.get("cost", 0):
+                    result["error"] = (
+                        "non-zero cost reported; stopped (free model only)"
+                    )
+                    return True
+        process.wait(timeout=30)
+        if stalled.is_set():
+            result["error"] = "stalled before the first event"
+            return False
+        if process.returncode == 0 and texts:
+            result["status"] = "complete"
+            result.pop("error", None)
+        elif time.monotonic() - started >= timeout:
+            result["error"] = "timeout"
+        else:
+            result["error"] = f"opencode exited {process.returncode}"
+        return True
+    finally:
+        answered.set()
+        timer.cancel()
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
 def run_task(task, mode, base, timeout):
     name = f"{Path(task).stem}-{time.strftime('%H%M%S')}-{os.getpid()}"
     directory = STATE / "runs" / name
@@ -172,64 +258,21 @@ def run_task(task, mode, base, timeout):
         "steps": 0,
         "tool_calls": 0,
         "tokens": 0,
+        "attempts": 0,
     }
     texts = []
-    with log.open("w") as out:
-        process = subprocess.Popen(
-            [
-                "opencode",
-                "run",
-                "--format",
-                "json",
-                "--dir",
-                str(workdir),
-                "-m",
-                MODEL,
-                prompt,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            env=environment,
-            cwd=workdir,
-        )
-        # A silent hang produces no lines, so the timeout is enforced by a timer, not the loop.
-        timer = threading.Timer(timeout, process.kill)
-        timer.start()
-        try:
-            for line in process.stdout:
-                out.write(line)
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    continue
-                part = event.get("part") or {}
-                if event.get("type") == "text" and part.get("text"):
-                    texts.append(part["text"])
-                elif event.get("type") == "tool_use":
-                    result["tool_calls"] += 1
-                elif event.get("type") == "step_finish":
-                    result["steps"] += 1
-                    result["tokens"] += (part.get("tokens") or {}).get("total", 0)
-                    if part.get("cost", 0):
-                        result["error"] = (
-                            "non-zero cost reported; stopped (free model only)"
-                        )
-                        break
-            else:
-                process.wait(timeout=30)
-                if process.returncode == 0 and texts:
-                    result["status"] = "complete"
-                elif time.monotonic() - started >= timeout:
-                    result["error"] = "timeout"
-                else:
-                    result["error"] = f"opencode exited {process.returncode}"
-        finally:
-            timer.cancel()
-            if process.poll() is None:
-                process.kill()
-                process.wait()
+    command = ["opencode", "run", "--format", "json", "--dir", str(workdir)]
+    command += ["-m", MODEL, prompt]
+    with slot(), log.open("w") as out:
+        # A start that never answers is retried; one that has answered is never repeated.
+        while result["attempts"] < START_ATTEMPTS:
+            result["attempts"] += 1
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                result["error"] = "timeout"
+                break
+            if attempt(command, environment, workdir, out, remaining, result, texts):
+                break
     result["seconds"] = round(time.monotonic() - started, 1)
     report = directory / "report.md"
     report.write_text(texts[-1] if texts else "", encoding="utf-8")
