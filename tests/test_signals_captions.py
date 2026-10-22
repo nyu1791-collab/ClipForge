@@ -388,3 +388,22 @@ def test_a_term_written_as_two_tokens_is_joined_with_its_timing():
 def test_a_phrase_is_not_joined_across_punctuation_or_a_partial_match():
     tokens = [(0.0, 0.5, "LM"), (0.5, 1.0, " Studio,"), (1.0, 1.5, " Open")]
     assert captions.join_phrases(tokens) == tokens
+
+
+def test_a_polite_ending_closes_a_caption_that_has_lasted_a_second():
+    tokens = [
+        (0.0, 0.6, "今日は"),
+        (0.6, 1.5, "晴れです"),
+        (1.5, 2.2, "明日は"),
+        (2.2, 3.0, "雨です"),
+    ]
+    groups = captions.group(tokens, FixedWidth(), 300)
+    assert [[token[2] for token in group] for group in groups] == [
+        ["今日は", "晴れです"],
+        ["明日は", "雨です"],
+    ]
+
+
+def test_a_polite_ending_does_not_close_a_caption_shorter_than_a_second():
+    tokens = [(0.0, 0.4, "はい"), (0.4, 0.8, "です"), (0.8, 2.0, "次")]
+    assert len(captions.group(tokens, FixedWidth(), 300)) == 1

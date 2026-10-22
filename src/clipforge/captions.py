@@ -365,6 +365,16 @@ def _word_cut(members):
     return best[1] if best else None
 
 
+# Polite sentence endings. Recognition writes no full stop, so one of these ends a sentence.
+POLITE_ENDING = re.compile(r"(です|ます|でした|ました|ません|ませんでした)$")
+
+
+def _sentence_done(members):
+    """True when members end a sentence and have lasted MIN_CAPTION_SECONDS, enough for one caption."""
+    long_enough = members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS
+    return bool(POLITE_ENDING.search(members[-1][2])) and long_enough
+
+
 def group(tokens, measure, line_px, max_lines=2):
     """Caption groups that fit in max_lines.
 
@@ -380,6 +390,9 @@ def group(tokens, measure, line_px, max_lines=2):
     groups, current = [], []
     for token in tokens:
         if current and token[0] - current[-1][1] > PAUSE_SECONDS:
+            groups.append(current)
+            current = []
+        elif current and _sentence_done(current):
             groups.append(current)
             current = []
         while current and overflows(current, token):
