@@ -404,6 +404,67 @@ class ControlTests(unittest.TestCase):
                 stdout.getvalue(),
             )
 
+    def test_report_stages_prints_the_worker_error_on_its_own_line(self):
+        message = "clip failed the quality gate: captions.srt and captions.ass differ"
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "gpu-receipt.json").write_text(
+                json.dumps(
+                    {
+                        "stage": "render",
+                        "error_type": "RuntimeError",
+                        "timings": {"render": 3.0},
+                        "worker_error": {
+                            "error_type": "PipelineError",
+                            "message": message,
+                        },
+                    }
+                )
+            )
+            controller = control.Controller(temporary)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                controller.report_stages(temporary)
+        self.assertEqual(
+            stdout.getvalue().splitlines()[1],
+            "Worker error: PipelineError: " + message,
+        )
+
+    def test_report_stages_without_worker_error_prints_only_the_stage_line(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "gpu-receipt.json").write_text(
+                json.dumps({"stage": "complete", "error_type": None})
+            )
+            controller = control.Controller(temporary)
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                controller.report_stages(temporary)
+        self.assertEqual(len(stdout.getvalue().splitlines()), 1)
+        self.assertNotIn("Worker error", stdout.getvalue())
+
+    def test_worker_error_keeps_type_and_bounded_message_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "stage-error.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "stage": "render",
+                        "error_type": "PipelineError",
+                        "message": "x" * 500,
+                    }
+                )
+            )
+            error = remote_job.worker_error(path)
+            self.assertEqual(error["error_type"], "PipelineError")
+            self.assertEqual(len(error["message"]), 300)
+            path.write_text(json.dumps({"error_type": "OSError", "message": 3}))
+            self.assertEqual(
+                remote_job.worker_error(path),
+                {"error_type": "OSError", "message": ""},
+            )
+            path.write_text("[1, 2]")
+            self.assertIsNone(remote_job.worker_error(path))
+            self.assertIsNone(remote_job.worker_error(Path(temporary) / "missing.json"))
+
     def test_early_release_failure_still_retrieves_results_and_fails_run(self):
         with tempfile.TemporaryDirectory() as temporary:
             controller, events, patches = self._pipeline_controller(

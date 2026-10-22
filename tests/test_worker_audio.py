@@ -695,3 +695,84 @@ def test_render_stage_passes_one_clip_index_and_records_it(
 def test_clip_index_is_limited_to_one_to_twenty(clip_index):
     with pytest.raises(SystemExit):
         worker.main(["--stage", "render", "--clip-index", clip_index])
+
+
+def _previous_gh(previous):
+    import shutil
+
+    def gh(*args):
+        if args[:2] == ("run", "view"):
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "displayTitle": "ClipForge " + IDENTITY,
+                }
+            )
+        shutil.copytree(previous, Path(args[args.index("--dir") + 1]))
+        return ""
+
+    return gh
+
+
+def _previews_args(output):
+    return [
+        "--stage",
+        "previews",
+        "--previous-run",
+        "123",
+        "--previous-request",
+        IDENTITY,
+        "--request-id",
+        "c" * 32,
+        "--source-ref",
+        "a" * 40,
+        "--output",
+        str(output),
+    ]
+
+
+def test_pipeline_error_is_recorded_with_its_own_fixed_text(
+    previous_analysis, monkeypatch, capsys
+):
+    previous, output, _ = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    monkeypatch.setattr(worker, "gh", _previous_gh(previous))
+    text = "clip failed the quality gate: captions.srt and captions.ass differ in timing or text"
+
+    def execute(*args):
+        raise PipelineError(text)
+
+    monkeypatch.setattr(worker, "execute", execute)
+    assert worker.main(_previews_args(output)) == 1
+    record = json.loads((output / "stage-error.json").read_text())
+    assert record == {
+        "stage": "previews",
+        "error_type": "PipelineError",
+        "message": text,
+    }
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0] == "Private audio stage failed: PipelineError: " + text
+    assert "No ASR or model fallback" in lines[1]
+
+
+def test_non_pipeline_error_records_only_its_type(
+    previous_analysis, monkeypatch, capsys
+):
+    previous, output, _ = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    monkeypatch.setattr(worker, "gh", _previous_gh(previous))
+    leaked = "https://kick.com/example/videos/secret-token /home/user/private.m4a"
+
+    def execute(*args):
+        raise OSError(leaked)
+
+    monkeypatch.setattr(worker, "execute", execute)
+    assert worker.main(_previews_args(output)) == 1
+    record = json.loads((output / "stage-error.json").read_text())
+    assert record == {"stage": "previews", "error_type": "OSError", "message": ""}
+    err = capsys.readouterr().err
+    assert err.splitlines()[0] == "Private audio stage failed: OSError"
+    for private in ("secret-token", "kick.com", "/home/user", "private.m4a"):
+        assert private not in err
+        assert private not in (output / "stage-error.json").read_text()

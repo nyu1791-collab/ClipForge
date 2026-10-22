@@ -1,6 +1,7 @@
 """Private CPU worker stages reuse one verified ASR artifact; no model API calls."""
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -575,7 +576,20 @@ def main(argv=None):
             summary["timings"] = result["timings"]
         print(json.dumps(summary))
         return 0
-    except (OSError, ValueError, KeyError, TypeError, PipelineError):
+    except (OSError, ValueError, KeyError, TypeError, PipelineError) as error:
+        # Only PipelineError text is our own fixed wording; other exceptions keep just the type.
+        message = str(error) if isinstance(error, PipelineError) else ""
+        record = {
+            "stage": args.stage,
+            "error_type": type(error).__name__,
+            "message": message,
+        }
+        with contextlib.suppress(OSError):
+            write_json(args.output / "stage-error.json", record)
+        line = "Private audio stage failed: " + type(error).__name__
+        if message:
+            line += ": " + message
+        print(line, file=sys.stderr)
         print(
             "Private audio stage failed; inspect its private artifact. No ASR or model fallback was requested.",
             file=sys.stderr,

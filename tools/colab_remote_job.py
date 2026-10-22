@@ -112,6 +112,20 @@ def host_info():
     }
 
 
+def worker_error(path):
+    # Only the error type and the worker's own bounded message are kept; never logs or paths.
+    try:
+        record = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or not isinstance(record.get("error_type"), str):
+        return None
+    message = record.get("message")
+    if not isinstance(message, str):
+        message = ""
+    return {"error_type": record["error_type"], "message": message[:300]}
+
+
 def gpu_info(expected="T4"):
     result = subprocess.run(
         [
@@ -307,12 +321,18 @@ def main():
                 arguments += ["--clip-index", stage["clip_index"]]
             stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
             invocation = 'source tools/colab_cache_env.sh && exec "$@"'
-            with timed(timings, "render"):
-                command(
-                    ["bash", "-c", invocation, "clipforge-stage", *arguments],
-                    stage_env,
-                    "render",
-                )
+            try:
+                with timed(timings, "render"):
+                    command(
+                        ["bash", "-c", invocation, "clipforge-stage", *arguments],
+                        stage_env,
+                        "render",
+                    )
+            except RuntimeError:
+                error = worker_error(output / "stage-error.json")
+                if error is not None:
+                    report["worker_error"] = error
+                raise
             report["status"] = json.loads((output / "manifest.json").read_text())[
                 "status"
             ]

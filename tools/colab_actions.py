@@ -393,6 +393,12 @@ del _clipforge_bootstrap
                 + str(receipt.get("timings", {})),
                 flush=True,
             )
+            worker_error = receipt.get("worker_error")
+            if isinstance(worker_error, dict):
+                line = "Worker error: " + str(worker_error.get("error_type"))
+                if worker_error.get("message"):
+                    line += ": " + str(worker_error["message"])
+                print(line, flush=True)
             return
 
     def collect(self, record, output, execution_failed, token, remote_state):
