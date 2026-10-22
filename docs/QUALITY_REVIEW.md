@@ -322,9 +322,20 @@ strict通過は警告0件や内容承認を意味しない。数値共有用summ
 ### 非公開worker転送の結果
 
 実装コミット`55620283453b3d446094b7961ba90d8a0a871a64`を指定し、保存音声を既存の非公開workerへ渡す準備を実施した。
-一時releaseへの書き込みがGitHubの`HTTP 401: Bad credentials`で拒否され、workflowのdispatchには到達していない。
+一時releaseへ音声を添付するコマンドがGitHubの`HTTP 401: Bad credentials`で失敗し、workflowのdispatchには到達していない。
 実ASR、実配信の話題分割、候補映像の判定、横動画生成は未実施。別アカウント・別経路で拒否を回避せず、入力と私有依頼記録を保全した。
 OpenCodeやGeminiのモデルAPIも呼んでいない。音声取得成功とASR成功を混同しない。
 
 転送失敗時に`STAGING_FAILED`を記録し、認証値や署名付きURLを出さずHTTP番号だけを報告するよう改善した。
 追加回帰を含むPython 3.12の最終単体検証は443件通過（11件除外、カバレッジ96.34%）。Python 3.11では既存441件に加え、変更したgatewayの31件を確認した。
+
+### 利用者のプランB指定後の認証診断
+
+同じ接続の`gh auth status`、利用者・非公開repo・workflowのREST読取は成功。
+RESTによる一時release作成も201で成功したが、同じreleaseへの`gh release upload`は`uploads.github.com`の添付APIで401になった。
+前回の「releaseへの書き込み」という説明を、**添付アップロード先での認証失敗**に具体化した。トークン全体の失効や権限不足だけが原因とは確定していない。
+
+CLIは設定済みの`GH_TOKEN`を使用し、`GITHUB_TOKEN`は未設定。値や認証DBは読み出していない。
+Git設定には流用可能なcredential helperがなく、Git pushと添付APIの認証を同一とみなしていない。
+音声・依頼ID・空の私有releaseを保全し、状態は`UPLOAD_FAILED_AUTH`、dispatchなし、ASR未起動。
+復旧手順と最小権限は [AUDIO_FIRST.md](AUDIO_FIRST.md#転送元github認証の診断) に記録した。認証を設定する場所は転送元の作業環境であり、ActionsのSecretとは区別する。

@@ -54,6 +54,34 @@ uv run --no-sync python tools/submit_job.py \
 制御VMで `topics`・`previews`・`render`を実行しない。回収済み音声と `transcripts/` を対応付けて、十分なCPUのある私有環境へ渡す。
 workerから回収したファイルをworkspaceへ統合する際は、`audio.m4a`のSHAと `source_url` の一致を先に確認する。
 
+## 転送元GitHub認証の診断
+
+`tools/submit_job.py`の`dispatch()`は、`gh release create`で一時release作成とファイル添付を行い、完了後にだけworkflowをdispatchする。
+`gh()`は継承した環境でCLIを呼ぶ。この環境では`GH_TOKEN`が設定され、`GITHUB_TOKEN`は設定されていない。値は表示・取得しない。
+
+2026-10-22の再診断では、同じ接続で以下を確認した。
+
+| 操作 | 接続先 | 実測 |
+| --- | --- | --- |
+| 利用者・非公開repo・workflow読取 | `api.github.com` | 200 |
+| 一時release作成 | `POST https://api.github.com/repos/nyu1791-collab/ai-model-workers/releases` | 201 |
+| 同じreleaseへのファイル添付 | `POST https://uploads.github.com/repos/nyu1791-collab/ai-model-workers/releases/RELEASE_ID/assets` | 401 Bad credentials |
+
+失敗は添付のアップロード段階であり、workflowのdispatchには未到達。
+RESTの読み書きが成功しているため、全体のトークン失効や権限不足だけが原因とは断定できない。
+アップロード先ホストへ有効な認証が届いているか、既存接続側の対応も確認する必要がある。
+`gh auth status`は成功し、`GH_TOKEN`の使用を報告した。Git設定に流用可能なcredential helperは見つからず、Git push成功だけで添付APIの認証成功とは判断できない。
+プロキシを外したり、注入済みの認証を無断で置き換えたりして解決しない。
+
+復旧する場所は**転送元のこの作業環境のGitHub接続・シークレット設定**。workerリポジトリのActions SecretsにPATを追加するだけでは、転送元のCLIへは渡らない。
+PATを使う場合は、利用者が安全な設定画面で登録する。Fine-grained PATは指定の非公開repoを対象とし、Contents: Read and write（release/添付）とActions: Read and write（dispatch/回収）を設定する。
+classic PATは通常`repo`が必要で、workflowファイル自体を変更する場合は別途`workflow`の条件も確認する。
+トークン値はチャット・コマンド履歴・文書へ貼らない。
+
+診断で作成した私有releaseには添付がなく、ASRは未起動。同じ依頼IDの記録を`UPLOAD_FAILED_AUTH`として保全した。
+復旧後は、そのreleaseの添付状態と同じIDのworkflowの有無を確認してから、不足した添付とdispatchだけを進める。
+一から新しい依頼を作る、音声を再取得する、ローカルASRへ切り替える操作は行わない。
+
 ## 候補映像の判定と採用
 
 `--stage previews`で音声の話題候補（既定最大8件）の区間だけ低解像度映像を取得する。
