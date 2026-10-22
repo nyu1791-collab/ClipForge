@@ -207,7 +207,13 @@ def main():
         raise RuntimeError("Invalid cache profile: use cpu or gpu")
     # 2026-10-22 Colab CPU high-RAM, 3 parallel jobs: fresh setup took 28s;
     # restoring the 602 MB public cache plus setup took 30-72s, before publication.
-    use_public_cache = cache_profile != "cpu" or mode == "prepare-cache"
+    cache_wanted = cache_profile != "cpu" or mode == "prepare-cache"
+    # "off" measures setup without the public cache: nothing is restored or published.
+    public_cache = payload.get("public_cache", "on")
+    if public_cache not in {"on", "off"}:
+        raise RuntimeError("Invalid public cache setting: use on or off")
+    use_public_cache = cache_wanted and public_cache == "on"
+    skip_reason = "skipped_cpu_profile" if not cache_wanted else "skipped_disabled"
     os.environ["CLIPFORGE_CACHE_PROFILE"] = cache_profile
     # Releases contain the assets themselves; Drive's nested tar is not used here.
     os.environ["CLIPFORGE_PERSISTENT_CACHE"] = ""
@@ -253,8 +259,8 @@ def main():
         "timings": timings,
     }
     if not use_public_cache:
-        report["public_cache_restored"] = "skipped_cpu_profile"
-        report["public_cache_saved"] = "skipped_cpu_profile"
+        report["public_cache_restored"] = skip_reason
+        report["public_cache_saved"] = skip_reason
     failed = False
     cached = False
     setup_complete = False
@@ -398,7 +404,7 @@ def main():
         report["setup_fetched"] = fetched
         first = (payload.get("stage") or {}).get("clip_index") in (None, "1")
         if not use_public_cache:
-            report["public_cache_saved"] = "skipped_cpu_profile"
+            report["public_cache_saved"] = skip_reason
         elif not setup_complete:
             report["public_cache_saved"] = "skipped_setup_failed"
         elif mode == "audio-stage" and not first:

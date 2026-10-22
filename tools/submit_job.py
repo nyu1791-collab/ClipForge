@@ -198,6 +198,7 @@ def verify_audio_analysis(
     """Verify a topics_allocated artifact. Without a local record, source_url is the artifact's own canonical VOD URL."""
     from clipforge.kick_media import canonical
     from clipforge.models import Transcript
+    from clipforge.storage import TIME_TOLERANCE
 
     files, dirs = plain_tree(directory)
     if not {"transcripts"} <= dirs <= {"transcripts", ".state"}:
@@ -287,7 +288,7 @@ def verify_audio_analysis(
             or (
                 isinstance(duration, (int, float))
                 and not isinstance(duration, bool)
-                and row["end"] > duration
+                and row["end"] > duration + TIME_TOLERANCE
             )
         ):
             raise RuntimeError("topics file row format mismatch")
@@ -547,6 +548,7 @@ def send_dispatch(state, receipt):
                 "worker": receipt.get("worker", "cpu"),
                 "audio_url": receipt.get("audio_url", ""),
                 "settings_json": settings_json,
+                "public_cache": receipt.get("public_cache", "on"),
                 **({"auto_previews": True} if receipt.get("auto_previews") else {}),
             },
         }
@@ -808,6 +810,12 @@ def main():
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--auto-previews", action="store_true")
     parser.add_argument(
+        "--public-cache",
+        choices=("on", "off"),
+        default="on",
+        help="restore and publish the GPU public cache on Colab (default: on; for measurement)",
+    )
+    parser.add_argument(
         "--wait-timeout",
         type=int,
         default=18000,
@@ -1040,6 +1048,7 @@ def dispatch(args, state_root):
         "status": "STAGING",
         "worker": args.worker,
         "audio_url": args.audio_analysis_url if source is None else "",
+        "public_cache": args.public_cache,
         "input_staged": False,
     }
     if args.auto_previews:

@@ -3,6 +3,7 @@
 from .audio_first import shifted_transcript
 from .storage import PipelineError
 from .topic_hints import hint_topics
+from .storage import TIME_TOLERANCE
 
 
 def build_review_draft(analysis, previews, settings, *, transcript=None, count=None):
@@ -33,7 +34,7 @@ def build_review_draft(analysis, previews, settings, *, transcript=None, count=N
             reason = "preview_unavailable"
         elif topic_id in selected_ids:
             reason = "duplicate_id"
-        elif not 0 <= start < end <= analysis["duration"]:
+        elif not 0 <= start < end <= analysis["duration"] + TIME_TOLERANCE:
             reason = "invalid_interval"
         elif not settings.min_seconds <= end - start <= settings.max_seconds:
             reason = "duration_out_of_range"

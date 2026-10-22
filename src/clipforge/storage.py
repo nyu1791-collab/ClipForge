@@ -7,6 +7,10 @@ import subprocess
 import uuid
 
 
+# Interval ends may exceed a probed duration by millisecond rounding; accept up to this many seconds.
+TIME_TOLERANCE = 0.01
+
+
 class PipelineError(RuntimeError):
     pass
 

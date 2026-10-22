@@ -38,6 +38,11 @@ on:
         description: Continue URL-only analysis with CPU previews and an unapproved review draft
         type: boolean
         default: false
+      public_cache:
+        description: Restore and publish the GPU public cache on colab-auto (off measures setup without it)
+        type: choice
+        options: ['on', 'off']
+        default: 'on'
 
 permissions:
   contents: write
@@ -318,6 +323,7 @@ jobs:
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
+          CLIPFORGE_PUBLIC_CACHE: ${{ inputs.public_cache || 'on' }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
       - name: Run the pipeline on Colab and retrieve verified private outputs

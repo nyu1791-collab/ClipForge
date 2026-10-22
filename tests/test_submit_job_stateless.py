@@ -273,3 +273,55 @@ def test_stateless_collect_never_overwrites_existing_destination(collector):
     with pytest.raises(RuntimeError, match="already exists"):
         invoke(monkeypatch, module, *standard_args(output))
     assert (output / "keep.txt").read_text() == "preserved"
+
+
+def set_topic_end(artifact, end):
+    path = artifact / "topics.json"
+    data = json.loads(path.read_text())
+    data["topics"][0]["end"] = end
+    path.write_text(json.dumps(data))
+    # Keep the receipt's checksum current so the topic row check is what is exercised.
+    receipt_path = artifact / "request-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["sha256"]["topics.json"] = digest(path)
+    receipt_path.write_text(json.dumps(receipt))
+
+
+@pytest.mark.parametrize("excess", [0.0003, 0.01])
+def test_stateless_collect_accepts_end_within_time_tolerance(collector, excess):
+    module, artifact, _, _, _ = collector
+    set_topic_end(artifact, 600.0 + excess)
+    module.verify_audio_analysis(artifact, REQUEST, REF, AUDIO_SHA, URL)
+
+
+def test_stateless_collect_rejects_end_beyond_time_tolerance(collector):
+    module, artifact, _, _, _ = collector
+    set_topic_end(artifact, 600.02)
+    with pytest.raises(RuntimeError, match="topics file row format mismatch"):
+        module.verify_audio_analysis(artifact, REQUEST, REF, AUDIO_SHA, URL)
+
+
+def test_dispatch_sends_public_cache_input(tmp_path, monkeypatch):
+    module = load_tool("submit_job")
+    sent = []
+
+    def gh(*args, body=None, timeout=None):
+        sent.append(json.loads(body))
+        return ""
+
+    monkeypatch.setattr(module, "gh", gh)
+    for value in ("on", "off"):
+        receipt = {
+            "request_id": REQUEST,
+            "input_tag": "clipforge-input-" + REQUEST,
+            "source_ref": REF,
+            "worker": "colab-auto",
+            "public_cache": value,
+        }
+        module.send_dispatch(tmp_path, receipt)
+        assert sent[-1]["inputs"]["public_cache"] == value
+        assert receipt["status"] == "DISPATCHED"
+    # Receipts written before the option existed keep the default.
+    legacy = {"request_id": REQUEST, "input_tag": "t", "source_ref": REF}
+    module.send_dispatch(tmp_path, legacy)
+    assert sent[-1]["inputs"]["public_cache"] == "on"

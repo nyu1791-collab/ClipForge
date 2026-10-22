@@ -263,6 +263,10 @@ class Controller:
             if cache_profile not in {"cpu", "gpu"}:
                 raise ControlError("Invalid cache profile: use cpu or gpu")
             request["cache_profile"] = cache_profile
+        public_cache = os.environ.get("CLIPFORGE_PUBLIC_CACHE", "on")
+        if public_cache not in {"on", "off"}:
+            raise ControlError("Invalid public cache setting: use on or off")
+        request["public_cache"] = public_cache
         # The high-memory shape gives 8 CPU cores instead of 2 for the CPU-bound setup,
         # decompression and encoding around the GPU work, at a higher hourly rate.
         pool = colab_pool(mode)
@@ -396,6 +400,7 @@ class Controller:
             else os.environ.get("GEMINI_API_KEY", ""),
             "workflow_run": os.environ.get("GITHUB_RUN_ID", "manual"),
             "offline": os.environ.get("CLIPFORGE_OFFLINE") == "1",
+            "public_cache": record.get("public_cache", "on"),
         }
         # Google OAuth/Colab proxy credentials are NOT uploaded to the GPU worker.
         for name in ("url", "token", "endpoint", "status"):

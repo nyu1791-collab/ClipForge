@@ -17,7 +17,15 @@ import sys
 from . import landscape, pipeline, topics
 from .kick_media import RANGE_FORMAT, KickVOD, canonical
 from .models import Transcript
-from .storage import PipelineError, digest, fingerprint, process, stage, write_json
+from .storage import (
+    TIME_TOLERANCE,
+    PipelineError,
+    digest,
+    fingerprint,
+    process,
+    stage,
+    write_json,
+)
 
 
 @contextmanager
@@ -98,7 +106,7 @@ def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"
                     for v in (offset, covered)
                 )
                 or not 0 <= offset < covered
-                or offset + (receipt["source_end"] - start) > covered + 0.01
+                or offset + (receipt["source_end"] - start) > covered + TIME_TOLERANCE
             ):
                 raise PipelineError("invalid media cache coverage")
         return receipt
