@@ -1,3 +1,4 @@
+import json
 import wave
 from pathlib import Path
 from types import SimpleNamespace
@@ -180,7 +181,7 @@ def test_a_saved_transcript_is_reused_only_when_its_identity_matches(
     info = {"audio": True, "duration": 1.0, "audio_start": 0.0}
     calls = []
 
-    def recognise(source, info, settings):
+    def recognise(source, info, settings, journal=None):
         calls.append(settings.threads)
         return {"language": "ja", "segments": []}
 
@@ -223,7 +224,7 @@ def test_a_damaged_saved_transcript_is_recognised_again(
     monkeypatch.setattr(
         signals,
         "transcribe",
-        lambda source, info, settings: {"language": "ja", "segments": []},
+        lambda source, info, settings, journal=None: {"language": "ja", "segments": []},
     )
     assert pipeline.transcribe_once(source, info, settings) == {
         "language": "ja",
@@ -258,3 +259,40 @@ def test_required_damaged_cache_preserved_without_asr(tmp_path, monkeypatch, set
     with pytest.raises(PipelineError, match="ASR was not started"):
         pipeline.transcribe_once(source, info, settings)
     assert saved.read_text() == "{damaged"
+
+
+def test_segments_are_journaled_as_recognised_and_progress_is_printed(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(signals, "PROGRESS_SECONDS", 0)
+    segments = [
+        SimpleNamespace(start=0.0, end=2.0, text="あ", words=[]),
+        SimpleNamespace(start=2.0, end=4.0, text="い", words=[]),
+    ]
+    journal = tmp_path / "x.partial.jsonl"
+    seen = list(signals._journaled(iter(segments), 10, journal))
+    assert seen == segments  # the segments pass through unchanged
+    lines = journal.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["text"] for line in lines] == ["あ", "い"]
+    assert "ASR progress: 4 of 10 s" in capsys.readouterr().out
+
+
+def test_a_journal_is_removed_after_a_complete_recognition(
+    tmp_path, monkeypatch, settings
+):
+    from clipforge import pipeline
+
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"video")
+    info = {"audio": True, "duration": 1.0, "audio_start": 0.0}
+    settings.transcript_cache = str(tmp_path / "cache")
+    seen = {}
+
+    def recognise(source, info, settings, journal=None):
+        journal.write_text("{}\n")
+        seen["journal"] = journal
+        return {"language": "ja", "segments": []}
+
+    monkeypatch.setattr(signals, "transcribe", recognise)
+    pipeline.transcribe_once(source, info, settings)
+    assert not seen["journal"].exists()

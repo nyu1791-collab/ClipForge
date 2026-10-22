@@ -508,8 +508,14 @@ def transcribe_once(source, info, settings, receipt=None):
         raise PipelineError(
             "a matching valid transcript cache is required; ASR was not started"
         )
-    value = signals.transcribe(source, info, settings)
+    # Segments are noted here as they are recognised; a stopped run keeps them. A new run
+    # starts the journal afresh, since recognition is one pass and is not resumed mid-way.
+    journal = path.with_suffix(".partial.jsonl")
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    journal.unlink(missing_ok=True)
+    value = signals.transcribe(source, info, settings, journal=journal)
     write_json(path, value)
+    journal.unlink(missing_ok=True)
     return value
 
 

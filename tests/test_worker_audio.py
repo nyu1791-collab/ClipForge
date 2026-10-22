@@ -63,7 +63,9 @@ def previous_analysis(tmp_path, monkeypatch):
     write_json(previous / "request-receipt.json", receipt)
     monkeypatch.setattr(audio_first, "audio_info", lambda path: info)
     monkeypatch.setattr(
-        signals, "transcribe", lambda *a: pytest.fail("a downstream stage started ASR")
+        signals,
+        "transcribe",
+        lambda *a, **k: pytest.fail("a downstream stage started ASR"),
     )
     return previous, tmp_path / "output", settings
 

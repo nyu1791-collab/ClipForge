@@ -1,11 +1,13 @@
 """CPU transcription and optional chat signals share original-video seconds."""
 
 import bisect
+import json
 import math
 from pathlib import Path
 import re
 import tempfile
 import threading
+import time
 import wave
 
 from . import media
@@ -84,7 +86,49 @@ def _utterances(segments, info):
     return output
 
 
-def transcribe(source, info, settings):
+PROGRESS_SECONDS = 30
+
+
+def _journaled(segments, duration, journal):
+    """Yield recognised segments unchanged, noting each one and printing progress.
+
+    Recognition is one continuous pass, so the result does not depend on this. The journal keeps
+    what was recognised if the run is stopped (a timeout, a cancel), and the progress line says
+    how far the audio has been read. Journal lines hold speech text: keep them private.
+    """
+    last_report = time.monotonic()
+    with journal.open("a", encoding="utf-8") if journal else _no_journal() as out:
+        for segment in segments:
+            yield segment
+            if out is not None:
+                out.write(
+                    json.dumps(
+                        {
+                            "start": segment.start,
+                            "end": segment.end,
+                            "text": segment.text,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+                out.flush()
+            if time.monotonic() - last_report >= PROGRESS_SECONDS:
+                last_report = time.monotonic()
+                print(
+                    f"ASR progress: {segment.end:.0f} of {duration:.0f} s", flush=True
+                )
+
+
+class _no_journal:
+    def __enter__(self):
+        return None
+
+    def __exit__(self, *exc):
+        return False
+
+
+def transcribe(source, info, settings, journal=None):
     if not info["audio"]:
         return Transcript(language="und", segments=[]).model_dump()
     with tempfile.TemporaryDirectory(prefix="clipforge-asr-") as temporary:
@@ -113,7 +157,7 @@ def transcribe(source, info, settings):
                 )
             else:
                 segments, metadata = model.transcribe(audio, **options)
-            output = _utterances(segments, info)
+            output = _utterances(_journaled(segments, info["duration"], journal), info)
         return Transcript(
             language=metadata.language or "und", segments=output
         ).model_dump()

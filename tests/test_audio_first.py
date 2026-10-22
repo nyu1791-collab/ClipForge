@@ -56,7 +56,7 @@ def audio_job(tmp_path, monkeypatch):
         }
     )
 
-    def asr(*args):
+    def asr(*args, **kwargs):
         events.append(("asr",))
         return transcript.model_dump()
 
