@@ -37,11 +37,11 @@ MODELS = {
         "provider": "openai",
         "free": False,
         "variant": "high",
-        "slots": 2,
+        "slots": 4,
     },
 }
 # Fixes and implementation go to GPT-6.1 Sol at high reasoning; reading stays on the free model.
-DEFAULT_MODEL = {"write": "sol", "read": "deepseek"}
+DEFAULT_MODEL = {"write": "sol", "read": "sol"}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
 STALL_SECONDS = 120
