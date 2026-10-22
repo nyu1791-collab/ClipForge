@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -246,6 +247,43 @@ def test_audio_analysis_rejects_network_enrichment(submitter, tmp_path):
             str(config),
         )
     assert not control["releases"]
+
+
+def test_github_failure_exposes_only_http_status(monkeypatch):
+    module = load_tool("submit_job")
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=1,
+            stderr="HTTP 401: Bad credentials https://private.test/?signed=SECRET",
+            stdout="",
+        ),
+    )
+    with pytest.raises(RuntimeError, match=r"HTTP 401") as failure:
+        module.gh("release", "create", "synthetic-tag")
+    assert "SECRET" not in str(failure.value) and "https" not in str(failure.value)
+
+
+def test_staging_failure_records_no_job_and_never_dispatches(
+    submitter, monkeypatch, tmp_path
+):
+    module, _, control, invoke = submitter
+    original = module.gh
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("release", "create"):
+            raise RuntimeError("GitHub operation failed: release (HTTP 401)")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "gh", gh)
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        invoke()
+    receipts = list((tmp_path / ".local/state/clipforge").glob("*/receipt.json"))
+    assert len(receipts) == 1
+    receipt = json.loads(receipts[0].read_text())
+    assert receipt["status"] == "STAGING_FAILED" and "run_id" not in receipt
+    assert not control["posts"]
 
 
 def test_recover_download_does_not_submit_again(submitter, tmp_path, monkeypatch):

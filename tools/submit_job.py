@@ -82,7 +82,9 @@ def gh(*args, body=None, timeout=120):
     )
     if result.returncode:
         # Never print signed URLs that gh may include in raw stderr.
-        raise RuntimeError("GitHub operation failed: " + args[0])
+        status = re.search(r"HTTP ([0-9]{3})\b", result.stderr)
+        suffix = " (HTTP " + status[1] + ")" if status else ""
+        raise RuntimeError("GitHub operation failed: " + args[0] + suffix)
     return result.stdout
 
 
@@ -453,22 +455,27 @@ def dispatch(args, state_root):
             chat = directory / "chat.json"
             chat.symlink_to(args.chat_file.resolve())
             files.append(str(chat))
-        gh(
-            "release",
-            "create",
-            tag,
-            *files,
-            "--repo",
-            REPO,
-            "--target",
-            "main",
-            "--title",
-            tag,
-            "--latest=false",
-            "--notes",
-            "Temporary private ClipForge job input. Automatically cleaned after execution.",
-            timeout=1800,
-        )
+        try:
+            gh(
+                "release",
+                "create",
+                tag,
+                *files,
+                "--repo",
+                REPO,
+                "--target",
+                "main",
+                "--title",
+                tag,
+                "--latest=false",
+                "--notes",
+                "Temporary private ClipForge job input. Automatically cleaned after execution.",
+                timeout=1800,
+            )
+        except Exception:
+            receipt["status"] = "STAGING_FAILED"
+            save(receipt_path, receipt)
+            raise
     receipt["status"] = "STAGED"
     save(receipt_path, receipt)
     payload = json.dumps(
