@@ -12,7 +12,7 @@ clipforge_should_save() {
   [[ ${1:-0} == 1 || ${2:-0} == 1 ]]
 }
 fetched=0
-if [[ ${CLIPFORGE_PREPARE_ONLY:-0} != 1 ]]; then nvidia-smi; fi
+if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then nvidia-smi; fi
 source tools/colab_cache_env.sh
 cache_restore_started=$(date +%s.%N)
 python3 tools/colab_cache.py restore
@@ -36,19 +36,19 @@ if [[ $(uv --version 2>/dev/null || true) != 'uv 0.12.23'* ]]; then
 fi
 clipforge_record_timing uv_bootstrap "$uv_bootstrap_started"
 uv_sync_started=$(date +%s.%N)
-if uv sync --offline --locked --python 3.11 --extra chat --extra cuda --no-dev; then
+if uv sync --offline --locked --python 3.11 --extra chat --extra cuda --extra media-fetch --no-dev; then
   echo 'Python dependencies installed from the local cache; no package download required.'
 else
   if [[ ${CLIPFORGE_OFFLINE:-0} == 1 ]]; then
     echo 'Python dependencies are not fully cached; offline mode forbids downloading.' >&2
     exit 1
   fi
-  uv sync --locked --python 3.11 --extra chat --extra cuda --no-dev
+  uv sync --locked --python 3.11 --extra chat --extra cuda --extra media-fetch --no-dev
   fetched=1
 fi
 clipforge_record_timing uv_sync "$uv_sync_started"
 cuda_check_started=$(date +%s.%N)
-if [[ ${CLIPFORGE_PREPARE_ONLY:-0} != 1 ]]; then
+if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then
   source tools/colab_cuda_env.sh
   .venv/bin/python - <<'PY'
 import ctypes

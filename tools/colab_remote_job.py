@@ -103,7 +103,7 @@ def host_info():
     }
 
 
-def gpu_info():
+def gpu_info(expected="T4"):
     result = subprocess.run(
         [
             "nvidia-smi",
@@ -119,8 +119,8 @@ def gpu_info():
     devices = []
     for line in result.stdout.splitlines():
         name, driver, memory = [v.strip() for v in line.split(",")]
-        if not name.endswith("T4"):
-            raise RuntimeError("Requested T4 was not assigned; no fallback is allowed")
+        if not name.endswith(expected):
+            raise RuntimeError("Requested GPU was not assigned; no fallback is allowed")
         devices.append({"name": name, "driver": driver, "memory_mib": int(memory)})
     if not devices or ctypes.CDLL("libcuda.so.1").cuInit(0) != 0:
         raise RuntimeError("CUDA driver initialization failed")
@@ -167,7 +167,7 @@ def main():
     payload = json.loads(payload_path.read_text())
     payload_path.unlink()
     mode = payload["mode"]
-    if mode not in {"pipeline", "verify-gpu", "prepare-cache"}:
+    if mode not in {"pipeline", "audio-stage", "verify-gpu", "prepare-cache"}:
         raise RuntimeError("Invalid job mode")
     if not re.fullmatch(r"[a-f0-9]{40}", payload["source_ref"]):
         raise RuntimeError("Invalid source revision")
@@ -183,12 +183,18 @@ def main():
     environment = os.environ.copy()
     for name in ("GH_TOKEN", "GITHUB_TOKEN", "GEMINI_API_KEY", "COLAB_ADC_JSON"):
         environment.pop(name, None)
+    # Clip rendering may run on a CPU runtime; it needs no CUDA and no Whisper model.
+    accelerator = payload.get("accelerator", "T4")
+    cpu_only = mode == "prepare-cache" or accelerator == "NONE"
     environment.update(
         {
             "CLIPFORGE_PERSISTENT_CACHE": str(PERSISTENT),
-            "CLIPFORGE_REQUIRE_CUDA": "0" if mode == "prepare-cache" else "1",
+            "CLIPFORGE_REQUIRE_CUDA": "0" if cpu_only or mode == "audio-stage" else "1",
+            "CLIPFORGE_CPU_ONLY": "1" if cpu_only else "0",
             "CLIPFORGE_SKIP_RUNNER_ASSET": "1",
-            "CLIPFORGE_SKIP_MODEL_PREPARE": "1" if mode == "pipeline" else "0",
+            "CLIPFORGE_SKIP_MODEL_PREPARE": "1"
+            if mode in {"pipeline", "audio-stage"}
+            else "0",
             "CLIPFORGE_PREPARE_ONLY": "1" if mode == "prepare-cache" else "0",
             "CLIPFORGE_OFFLINE": "1" if payload.get("offline") else "0",
             "CLIPFORGE_SETUP_TIMINGS": str(WORK / "setup-timings.tsv"),
@@ -215,8 +221,8 @@ def main():
     failed = False
     try:
         report["stage"] = "hardware-check"
-        if mode != "prepare-cache":
-            report["gpu"] = gpu_info()
+        if not cpu_only:
+            report["gpu"] = gpu_info(accelerator)
         report["host"] = host_info()
         report["stage"] = "asset-setup"
         with timed(timings, "setup"):
@@ -262,6 +268,44 @@ def main():
             report["status"] = json.loads((output / "manifest.json").read_text())[
                 "status"
             ]
+        elif mode == "audio-stage":
+            # One reviewed clip (or every clip) is rendered from the verified analysis
+            # artifact; the worker itself checks the previous run and its identity.
+            report["stage"] = "render"
+            stage = payload["stage"]
+            review = WORK / "review.json"
+            review.write_text(stage["review"], encoding="utf-8")
+            arguments = [
+                str(ROOT / ".venv/bin/python"),
+                "tools/run_audio_stage.py",
+                "--stage",
+                "render",
+                "--previous-run",
+                stage["previous_run"],
+                "--previous-request",
+                stage["previous_request"],
+                "--request-id",
+                payload["request_id"],
+                "--source-ref",
+                payload["source_ref"],
+                "--review-file",
+                str(review),
+                "--output",
+                str(output),
+            ]
+            if stage.get("clip_index"):
+                arguments += ["--clip-index", stage["clip_index"]]
+            stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
+            invocation = 'source tools/colab_cache_env.sh && exec "$@"'
+            with timed(timings, "render"):
+                command(
+                    ["bash", "-c", invocation, "clipforge-stage", *arguments],
+                    stage_env,
+                    "render",
+                )
+            report["status"] = json.loads((output / "manifest.json").read_text())[
+                "status"
+            ]
         elif mode == "verify-gpu":
             # The child verification needs the same cache/library paths as the worker.
             report["stage"] = "cuda-asr-verification"
@@ -275,13 +319,13 @@ def main():
         report["error_type"] = type(error).__name__
     finally:
         # Results first (partial results included), then the dependency cache.
-        if mode == "pipeline" and not publish_result(
+        if mode in {"pipeline", "audio-stage"} and not publish_result(
             bundles, payload, output, report, timings
         ):
             failed = True
         # A job that restored the cache does not rebuild it: the key already names its lock and
         # setup, and parallel jobs would otherwise each upload about 3 GB to the same release.
-        if mode == "pipeline" and cached:
+        if mode in {"pipeline", "audio-stage"} and cached:
             report["public_cache_saved"] = "skipped_restored"
         else:
             try:

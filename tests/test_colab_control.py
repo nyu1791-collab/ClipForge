@@ -541,3 +541,97 @@ class LostAllocationReplyTests(unittest.TestCase):
         self.assertEqual(controller.state()["status"], "allocated")
         self.assertEqual(controller.state()["endpoint"], "ours")
         self.assertTrue(controller.credentials_path.exists())
+
+
+class PoolTests(unittest.TestCase):
+    def start_stage(self, refusals, pool=None):
+        from colab_cli.client import Accelerator, TooManyAssignmentsError
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        review = Path(temporary.name) / "review.json"
+        review.write_text('{"clips": []}')
+        client = Mock()
+        client.list_assignments.return_value = []
+        client.get_consumption_user_info.side_effect = RuntimeError("not reported")
+        granted = SimpleNamespace(
+            endpoint="stage-session",
+            runtime_proxy_info=SimpleNamespace(url="https://t.invalid", token="t"),
+        )
+        calls = []
+
+        def assign(*args, **kwargs):
+            calls.append((kwargs["accelerator"], kwargs["shape"].name))
+            if len(calls) <= refusals:
+                raise TooManyAssignmentsError()
+            return granted
+
+        client.assign.side_effect = assign
+        environment = {
+            **REQUEST,
+            "COLAB_ADC_JSON": '{"type":"authorized_user"}',
+            "AUDIO_STAGE": "render",
+            "PREVIOUS_RUN": "123",
+            "PREVIOUS_REQUEST": "c" * 32,
+            "CLIP_INDEX": "2",
+            "REVIEW_FILE": str(review),
+        }
+        if pool:
+            environment["CLIPFORGE_COLAB_POOL"] = pool
+        with (
+            patch.dict(os.environ, environment),
+            patch.object(control, "authenticated_client", return_value=client),
+        ):
+            controller = control.Controller(Path(temporary.name) / "control")
+            try:
+                controller.start("audio-stage")
+            except control.ControlError:
+                pass
+        return controller, calls, Accelerator
+
+    def test_clip_rendering_tries_the_cheapest_runtime_first(self):
+        controller, calls, Accelerator = self.start_stage(refusals=0)
+        self.assertEqual(calls, [(Accelerator.NONE, "HIGH_RAM")])
+        state = controller.state()
+        self.assertEqual((state["accelerator"], state["shape"]), ("NONE", "HIGH_RAM"))
+        self.assertEqual(state["stage"]["clip_index"], "2")
+
+    def test_a_refusal_moves_to_the_next_runtime_in_the_pool(self):
+        controller, calls, Accelerator = self.start_stage(refusals=2)
+        self.assertEqual(
+            calls,
+            [
+                (Accelerator.NONE, "HIGH_RAM"),
+                (Accelerator.NONE, "STANDARD"),
+                (Accelerator.T4, "HIGH_RAM"),
+            ],
+        )
+        self.assertEqual(controller.state()["status"], "allocated")
+
+    def test_a_pool_refused_everywhere_holds_nothing(self):
+        controller, calls, _ = self.start_stage(refusals=9, pool="CPU:high-ram,L4")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(controller.state()["status"], "stopped")
+        self.assertFalse(controller.credentials_path.exists())
+
+    def test_invalid_pools_and_stage_requests_stop_before_access(self):
+        for environment in ({"CLIPFORGE_COLAB_POOL": "A100"}, {"CLIP_INDEX": "0"}):
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        **REQUEST,
+                        "COLAB_ADC_JSON": "{}",
+                        "AUDIO_STAGE": "render",
+                        "PREVIOUS_RUN": "1",
+                        "PREVIOUS_REQUEST": "c" * 32,
+                        "REVIEW_FILE": "/nonexistent",
+                        **environment,
+                    },
+                ),
+                patch.object(control, "authenticated_client") as authenticated,
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                with self.assertRaises((control.ControlError, OSError)):
+                    control.Controller(temporary).start("audio-stage")
+                authenticated.assert_not_called()

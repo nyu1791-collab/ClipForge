@@ -119,6 +119,61 @@ def colab_shape():
     return shapes[name]
 
 
+# Clip rendering is CPU work (x264), so it tries the cheapest runtime first and moves on only
+# when the account refuses one more of that kind (measured 2026-10-22: two T4 at once; L4 and
+# CPU runtimes are granted alongside). Rates measured then: CPU high-ram 0.26, T4 1.07,
+# T4 high-ram 1.27, L4 1.54 compute units an hour.
+DEFAULT_POOLS = {"audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4"}
+
+
+def colab_pool(mode):
+    """Ordered (accelerator, shape) candidates; CLIPFORGE_COLAB_POOL overrides the default."""
+    from colab_cli.client import Accelerator, Shape
+
+    raw = os.environ.get("CLIPFORGE_COLAB_POOL") or DEFAULT_POOLS.get(mode)
+    if not raw:
+        accelerator = Accelerator.NONE if mode == "prepare-cache" else Accelerator.T4
+        return [(accelerator, colab_shape())]
+    kinds = {"CPU": Accelerator.NONE, "T4": Accelerator.T4, "L4": Accelerator.L4}
+    shapes = {"standard": Shape.STANDARD, "high-ram": Shape.HIGH_RAM}
+    pool = []
+    for item in raw.split(","):
+        kind, _, shape = item.strip().partition(":")
+        if kind not in kinds or (shape or "standard") not in shapes or len(pool) >= 6:
+            raise ControlError(
+                "Invalid Colab pool; use entries like CPU:high-ram or L4"
+            )
+        # L4 exists only in one high-memory shape; Colab ignores the shape parameter for it.
+        pool.append((kinds[kind], shapes[shape or "standard"]))
+    return pool
+
+
+def stage_request():
+    """The reviewed render this job performs, from the workflow's validated inputs."""
+    stage = {
+        "audio_stage": os.environ.get("AUDIO_STAGE", ""),
+        "previous_run": os.environ.get("PREVIOUS_RUN", ""),
+        "previous_request": os.environ.get("PREVIOUS_REQUEST", ""),
+        "clip_index": os.environ.get("CLIP_INDEX") or None,
+    }
+    if (
+        stage["audio_stage"] != "render"
+        or not re.fullmatch(r"[0-9]{1,20}", stage["previous_run"])
+        or not re.fullmatch(r"[a-f0-9]{32}", stage["previous_request"])
+        or (
+            stage["clip_index"] is not None
+            and not re.fullmatch(r"[1-9][0-9]?", stage["clip_index"])
+        )
+    ):
+        raise ControlError("Invalid audio stage request")
+    review = Path(os.environ.get("REVIEW_FILE", "")).read_text(encoding="utf-8")
+    if len(review.encode()) > 32768:
+        raise ControlError("Review is too large")
+    json.loads(review)
+    stage["review"] = review
+    return stage
+
+
 class Controller:
     def __init__(self, root):
         self.root = Path(root)
@@ -134,7 +189,7 @@ class Controller:
     def start(self, mode="pipeline"):
         request = (
             identifiers()
-            if mode == "pipeline"
+            if mode in {"pipeline", "audio-stage"}
             else {
                 "request_id": uuid.uuid4().hex,
                 "source_ref": os.environ.get("CLIPFORGE_SOURCE_REF", ""),
@@ -145,7 +200,9 @@ class Controller:
             raise ControlError("Use an exact ClipForge source SHA")
         # The high-memory shape gives 8 CPU cores instead of 2 for the CPU-bound setup,
         # decompression and encoding around the GPU work, at a higher hourly rate.
-        shape = colab_shape()
+        pool = colab_pool(mode)
+        if mode == "audio-stage":
+            request["stage"] = stage_request()
         if self.state_path.is_file() and self.state().get("status") != "stopped":
             raise ControlError("This control directory already tracks a runtime")
         raw = os.environ.get("COLAB_ADC_JSON", "")
@@ -168,48 +225,56 @@ class Controller:
             "status": "creating",
             "account": EXPECTED_ACCOUNT,
             "units_before": units,
-            "shape": shape.name,
         }
         write_private(self.state_path, record)
         from colab_cli.client import Accelerator, Variant
 
-        accelerator = Accelerator.NONE if mode == "prepare-cache" else Accelerator.T4
-        variant = Variant.DEFAULT if mode == "prepare-cache" else Variant.GPU
-        try:
-            assignment = client.assign(
-                uuid.uuid4(), variant=variant, accelerator=accelerator, shape=shape
+        refused = []
+        for accelerator, shape in pool:
+            variant = (
+                Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU
             )
-        except Exception as error:
-            response = getattr(error, "response", None)
-            if type(error).__name__ == "TooManyAssignmentsError" or getattr(
-                response, "status_code", None
-            ) in {400, 401, 403, 412, 429}:
-                record["status"] = "stopped"
-                record["allocation_refused"] = True
-                write_private(self.state_path, record)
-                self.credentials_path.unlink(missing_ok=True)
-                raise ControlError(
-                    "Colab allocation was refused; no other account or accelerator was tried"
-                ) from None
-            # The reply may be lost after Colab assigned a runtime. A runtime that appeared
-            # meanwhile is recorded as this job's so the release step frees it.
+            record.update(accelerator=accelerator.value, shape=shape.name)
+            write_private(self.state_path, record)
             try:
-                appeared = [
-                    item.endpoint
-                    for item in client.list_assignments()
-                    if item.endpoint not in existing
-                ]
-            except Exception:
-                appeared = None
-            record["allocation_error"] = type(error).__name__
-            if appeared == []:
-                record["status"] = "stopped"
-                write_private(self.state_path, record)
-                self.credentials_path.unlink(missing_ok=True)
-            elif appeared and len(appeared) == 1:
-                record.update(status="allocated", endpoint=appeared[0])
-                write_private(self.state_path, record)
-            raise
+                assignment = client.assign(
+                    uuid.uuid4(), variant=variant, accelerator=accelerator, shape=shape
+                )
+                break
+            except Exception as error:
+                response = getattr(error, "response", None)
+                if type(error).__name__ == "TooManyAssignmentsError" or getattr(
+                    response, "status_code", None
+                ) in {400, 401, 403, 412, 429}:
+                    refused.append(f"{accelerator.value}/{shape.name}")
+                    print(f"Colab refused {refused[-1]}", flush=True)
+                    continue
+                # The reply may be lost after Colab assigned a runtime. A runtime that
+                # appeared meanwhile is recorded as this job's so the release step frees it.
+                try:
+                    appeared = [
+                        item.endpoint
+                        for item in client.list_assignments()
+                        if item.endpoint not in existing
+                    ]
+                except Exception:
+                    appeared = None
+                record["allocation_error"] = type(error).__name__
+                if appeared == []:
+                    record["status"] = "stopped"
+                    write_private(self.state_path, record)
+                    self.credentials_path.unlink(missing_ok=True)
+                elif appeared and len(appeared) == 1:
+                    record.update(status="allocated", endpoint=appeared[0])
+                    write_private(self.state_path, record)
+                raise
+        else:
+            record.update(status="stopped", allocation_refused=refused)
+            write_private(self.state_path, record)
+            self.credentials_path.unlink(missing_ok=True)
+            raise ControlError(
+                "Colab refused every runtime in the pool; no other account was tried"
+            )
         # Persist ownership immediately, before kernel setup or any job execution.
         record.update(
             status="allocated",
@@ -290,7 +355,7 @@ del _clipforge_bootstrap
             private_payload.unlink(missing_ok=True)
             runtime.stop()
         release_error = None
-        if record["mode"] == "pipeline":
+        if record["mode"] in {"pipeline", "audio-stage"}:
             # The results are already published in the Release, so the T4 is freed before
             # downloading them. stop() is idempotent; the workflow's final stop step retries
             # if this release is not confirmed.
@@ -332,7 +397,7 @@ del _clipforge_bootstrap
 
     def collect(self, record, output, execution_failed, token, remote_state):
         bundles = ReleaseBundles(token)
-        if record["mode"] == "pipeline":
+        if record["mode"] in {"pipeline", "audio-stage"}:
             bundles.restore(
                 record["input_tag"],
                 output,
@@ -349,10 +414,16 @@ del _clipforge_bootstrap
                     "Returned GPU result identity differs from the request"
                 )
             manifest = Path(output) / "manifest.json"
-            # Audio analysis ends once topics are allocated; video jobs end with rendered clips.
-            expected = (
-                "topics_allocated" if receipt.get("audio_source_url") else "complete"
-            )
+            # Audio analysis ends once topics are allocated, one reviewed clip at
+            # clip_rendered, and full video jobs with every clip rendered.
+            if record["mode"] == "audio-stage":
+                expected = (
+                    "clip_rendered" if record["stage"]["clip_index"] else "complete"
+                )
+            elif receipt.get("audio_source_url"):
+                expected = "topics_allocated"
+            else:
+                expected = "complete"
             complete = (
                 manifest.is_file()
                 and json.loads(manifest.read_text()).get("status") == expected
@@ -363,7 +434,7 @@ del _clipforge_bootstrap
                 )
             for name, checksum in receipt.get("sha256", {}).items():
                 if (
-                    not re.fullmatch(r"(transcripts/)?[A-Za-z0-9_.-]+", name)
+                    not re.fullmatch(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){0,3}", name)
                     or ".." in name
                 ):
                     raise ControlError("Unexpected result file name")
@@ -522,7 +593,7 @@ def main():
     parser.add_argument("command", choices=["start", "run", "stop", "doctor", "probe"])
     parser.add_argument(
         "--mode",
-        choices=["pipeline", "verify-gpu", "prepare-cache"],
+        choices=["pipeline", "audio-stage", "verify-gpu", "prepare-cache"],
         default="pipeline",
     )
     parser.add_argument(
