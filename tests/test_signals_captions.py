@@ -1,7 +1,7 @@
 import pysubs2
 import pytest
 
-from clipforge import captions, fonts, signals
+from clipforge import caption_breaks, captions, fonts, signals
 from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
 from clipforge.storage import PipelineError
 
@@ -223,13 +223,13 @@ class OnePhrase:
 
 
 def test_a_word_start_is_preferred_to_a_break_inside_a_word(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     # Six characters fit a line; the break goes before 奪 (a word start), not inside 奪われる.
     assert captions.wrap_breaks("ことは仕事が奪われる", FixedWidth(), 60) == [6]
 
 
 def test_a_line_never_starts_with_a_closing_mark_or_a_small_kana(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     text = "ああああ、いいい"
     # The first line would end before 、 at index 4, so it stops at 3 instead;
     # the second line then breaks after the 、, which is a preferred edge.
@@ -239,7 +239,7 @@ def test_a_line_never_starts_with_a_closing_mark_or_a_small_kana(monkeypatch):
 
 
 def test_captions_end_at_a_word_boundary_instead_of_inside_a_word(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     tokens = [
         (0.0, 0.2, "仕"),
         (0.2, 0.4, "事"),
@@ -295,20 +295,20 @@ def test_margins_scale_with_the_frame_height():
 
 
 def test_a_combining_mark_never_starts_a_line(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     # The mark at index 3 would start the second line; the break moves in front of 漢 instead.
     assert captions.wrap_breaks("漢字漢́字", FixedWidth(), 30) == [2]
 
 
 def test_an_english_term_is_not_split_across_lines(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     # ChatGPT fits a line whole. The break goes after it, where Latin meets kanji, so that 漢字
     # is not split: 漢|字 is inside a word.
     assert captions.wrap_breaks("漢字ChatGPT漢字", FixedWidth(), 80) == [2, 9]
 
 
 def test_a_url_is_not_split_across_lines(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     assert (
         captions.wrap_breaks("漢字https://example.com/a漢字", FixedWidth(), 60)[0] == 2
     )
@@ -432,7 +432,7 @@ def test_a_past_casual_ending_closes_a_caption():
 
 
 def test_a_two_line_caption_is_balanced_at_a_word_edge(monkeypatch):
-    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    monkeypatch.setattr(caption_breaks, "_PARSER", OnePhrase())
     # A greedy fill would break after 9 characters, leaving 5 on the second line. The break at 7
     # gives two lines of 7 characters, and both are word edges.
     text = "東京都ケーキが漢字ハンバーグ"

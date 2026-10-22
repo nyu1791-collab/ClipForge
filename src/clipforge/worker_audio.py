@@ -6,11 +6,11 @@ import os
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 
 from . import audio_first, media, pipeline
+from .github_cli import run as run_gh
 from .kick_media import KickVOD, canonical
 from .models import Settings, Transcript
 from .storage import PipelineError, digest, process, within, write_json
@@ -19,10 +19,12 @@ REPO = "nyu1791-collab/ai-model-workers"
 
 
 def gh(*args):
-    result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=300)
-    if result.returncode:
-        raise PipelineError("private analysis artifact operation failed")
-    return result.stdout
+    return run_gh(
+        *args,
+        timeout=300,
+        error_type=PipelineError,
+        message="private analysis artifact operation failed",
+    )
 
 
 def restore_analysis(previous, output, previous_id):
