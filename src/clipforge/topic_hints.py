@@ -94,7 +94,7 @@ def _hint(topic, duration, terms):
     text = topic["text"]
     start, end = topic["start"], topic["end"]
     length = end - start
-    edge = start <= EDGE_START_SECONDS or start >= duration - EDGE_END_SECONDS
+    edge = start <= EDGE_START_SECONDS or end >= duration - EDGE_END_SECONDS
     greeting_hits = sum(text.count(phrase) for phrase in GREETING_PHRASES)
     greeting = greeting_hits >= GREETING_MIN_HITS
     repeat_max = _repeat_max(text)

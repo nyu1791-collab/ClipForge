@@ -207,13 +207,22 @@ def test_record_writes_the_report_beside_the_clip(tmp_path):
 def test_captions_shown_under_a_second_or_over_four_seconds_are_warnings(
     tmp_path, on_target_loudness
 ):
-    folder = write_ass(tmp_path, [(0, 800, "あ"), (800, 5600, "いいいい")])
+    folder = write_ass(tmp_path, [(0, 400, "あ"), (400, 5400, "いいいい")])
     report = quality.check_clip(folder, RENDERED, [], [])
     assert report["passed"] is True
     assert report["metrics"]["captions_under_1s"] == 1
     assert report["metrics"]["captions_over_4s"] == 1
-    assert any("less than 1 second" in text for text in report["warnings"])
+    assert any("less than 0.5 second" in text for text in report["warnings"])
     assert any("more than 4 seconds" in text for text in report["warnings"])
+
+
+def test_a_caption_of_half_a_second_or_more_is_not_flicker(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(tmp_path, [(0, 500, "あ"), (500, 2000, "いいいい")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["metrics"]["captions_under_1s"] == 0
+    assert not any("less than 0.5 second" in text for text in report["warnings"])
 
 
 def test_a_caption_with_three_lines_fails(tmp_path, on_target_loudness):
@@ -313,6 +322,20 @@ def test_breaks_between_words_and_particles_are_not_flagged(
     report = quality.check_clip(folder, RENDERED, [], [])
     assert report["metrics"]["word_splits"] == 0
     assert not any("inside a word" in text for text in report["warnings"])
+
+
+def test_a_kanji_break_on_a_phrase_edge_is_not_a_split():
+    # BudouX reads 地方|自治体の as two phrases, so a break there is not inside a word.
+    assert quality.word_splits([(0, 2000, "地方\n自治体の")]) == []
+    split_captions = [(0, 1000, "地方"), (1000, 2000, "自治体の")]
+    assert quality.word_splits(split_captions) == []
+
+
+def test_a_kanji_break_inside_a_phrase_is_still_a_split():
+    # 国際連合安全保障 is one phrase, so a break inside it is still reported.
+    assert quality.word_splits([(0, 2000, "国際連\n合安全保障")]) == ["国際連|合安全"]
+    split_captions = [(0, 1000, "国際連"), (1000, 2000, "合安全保障")]
+    assert quality.word_splits(split_captions) == ["国際連|合安全"]
 
 
 def write_framed_ass(folder, events):

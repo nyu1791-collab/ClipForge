@@ -20,6 +20,9 @@ MAIN_PARTICLES = set("はがをにでとのへも")
 MIN_FILL = 0.3
 # No caption is shown for less than this when avoidable (see _word_cut and captions._join_short).
 MIN_CAPTION_SECONDS = 1.0
+# Shorter captions are reported as flicker (quality check). A caption is held to MIN_CAPTION_SECONDS
+# for reading when silence allows; this is only the warning threshold, not the hold length.
+MIN_DISPLAY_SECONDS = 0.5
 
 # Japanese phrase parser (BudouX), loaded on first use.
 _PARSER = None

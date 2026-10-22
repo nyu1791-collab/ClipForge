@@ -211,8 +211,9 @@ def test_fast_speech_stays_on_screen_until_the_next_caption_needs_the_room(
     captions.create(transcript, clip, tmp_path, settings)
     first, second = pysubs2.load(str(tmp_path / "captions.ass"))
     assert (first.start, first.end) == (0, 2000)
-    # Two characters at 10 per second need 0.2 s; the speech lasts 0.1 s, so it grows by that.
-    assert (second.start, second.end) == (2500, 2700)
+    # Two characters at 10 per second need 0.2 s, but no caption is held for less than 1 s
+    # when the room allows, so it ends at 3.5 s, before the clip ends.
+    assert (second.start, second.end) == (2500, 3500)
 
 
 class OnePhrase:
@@ -459,6 +460,19 @@ def test_landscape_captions_keep_to_thirteen_full_width_characters_a_line(
     for event in pysubs2.load(str(tmp_path / "captions.ass")):
         for line in event.plaintext.splitlines():
             assert len(line) <= Settings.model_fields["horizontal_line_chars"].default
+
+
+def test_a_short_caption_is_held_to_the_minimum_when_there_is_room():
+    # Three characters at 10 a second need only 0.3 s; the floor holds it to 1 s.
+    spans = [[0, 300]]
+    captions.hold_for_reading(spans, ["あいう"], 9000, floor_ms=1000)
+    assert spans == [[0, 1000]]
+
+
+def test_the_minimum_hold_stops_at_the_next_caption():
+    spans = [[0, 300], [600, 900]]
+    captions.hold_for_reading(spans, ["あいう", "えお"], 9000, floor_ms=1000)
+    assert spans == [[0, 600], [600, 1600]]
 
 
 def test_landscape_captions_are_held_to_seven_characters_a_second():

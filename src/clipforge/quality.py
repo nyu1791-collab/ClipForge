@@ -13,6 +13,7 @@ from pathlib import Path
 import pysubs2
 
 from . import fonts
+from .caption_breaks import MIN_DISPLAY_SECONDS, parser
 from .captions import (
     MAX_CAPTION_CPS,
     OUTLINE_ALLOWANCE,
@@ -29,7 +30,7 @@ LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
 MAX_TRUE_PEAK = -1.0  # dBTP; leaves room for lossy encoding overshoot
 TEXT_STYLES = {"Default", "Sequential"}
 MAX_CAPTION_LINES = 2
-SHORT_CAPTION_MS = 1000  # shorter captions flicker
+SHORT_CAPTION_MS = round(MIN_DISPLAY_SECONDS * 1000)  # shorter captions flicker
 LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
 
 
@@ -137,18 +138,31 @@ def caption_rates(path):
 def word_splits(events):
     """Places where a line or a caption starts inside a word, shown as text like 'ぐ奪|われ'.
 
-    Checked between the lines of each caption and between consecutive captions. The check
-    is a warning: it works from character scripts, so a rare legitimate break can be flagged.
+    Checked between the lines of each caption and between consecutive captions. A break on a
+    BudouX phrase edge of the whole clip is not a split. The check is a warning: it works from
+    character scripts, so a rare legitimate break can be flagged.
     """
-    found = []
+    full = "".join(text.replace("\n", "") for _, _, text in events)
+    phrase_ends, position = set(), 0
+    for phrase in parser().parse(full):
+        position += len(phrase)
+        phrase_ends.add(position)
+    found, offset = [], 0
     for index, (_, _, text) in enumerate(events):
         lines = text.split("\n")
-        pairs = list(zip(lines, lines[1:]))
+        # Each cut is (text before it, text after it, absolute position in the clip text).
+        cuts, position = [], offset
+        for before, after in zip(lines, lines[1:]):
+            position += len(before)
+            cuts.append((before, after, position))
+        offset += len(text.replace("\n", ""))
         if index + 1 < len(events):
-            pairs.append((lines[-1], events[index + 1][2].split("\n")[0]))
-        for before, after in pairs:
+            following = events[index + 1][2].split("\n")[0]
+            cuts.append((lines[-1], following, offset))
+        for before, after, cut in cuts:
             if before and after and inside_word(before[-1], after[0]):
-                found.append(f"{before[-3:]}|{after[:3]}")
+                if cut not in phrase_ends:
+                    found.append(f"{before[-3:]}|{after[:3]}")
     return found
 
 
@@ -258,7 +272,9 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
         )
     short = sum(end - start < SHORT_CAPTION_MS for start, end, _ in events)
     if short:
-        warnings.append(f"{short} caption(s) are shown for less than 1 second")
+        warnings.append(
+            f"{short} caption(s) are shown for less than {MIN_DISPLAY_SECONDS:g} second"
+        )
     long = sum(end - start > LONG_CAPTION_MS for start, end, _ in events)
     if long:
         warnings.append(f"{long} caption(s) are shown for more than 4 seconds")

@@ -348,16 +348,18 @@ def spoken_length(text):
     return len(re.sub(r"\s", "", text))
 
 
-def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS):
+def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0):
     """Extend captions read faster than the target into the silence after them.
 
     spans holds [start, end] in milliseconds, in order, and is changed in place. Only
     ends move, and never past the next caption's start or the clip's end, so no caption
-    starts later than its speech or overlaps another.
+    starts later than its speech or overlaps another. A caption is held for at least
+    floor_ms, when the room allows.
     """
     for index, (span, text) in enumerate(zip(spans, texts)):
         ceiling = spans[index + 1][0] if index + 1 < len(spans) else max(limit, span[1])
-        wanted = span[0] + math.ceil(spoken_length(text) * 1000 / cps)
+        reading = math.ceil(spoken_length(text) * 1000 / cps)
+        wanted = span[0] + max(reading, floor_ms)
         span[1] = max(span[1], min(wanted, ceiling))
     return spans
 
@@ -498,6 +500,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         plain_lines,
         round(duration * 1000),
         settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
+        floor_ms=round(MIN_CAPTION_SECONDS * 1000),
     )
     for items, (start, end) in zip(groups, spans):
         text = group_text(items, measure, line_px, settings.caption)

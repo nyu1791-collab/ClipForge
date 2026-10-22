@@ -31,7 +31,13 @@ def test_edge_start_and_end_positive_and_negative():
     assert hint_for(topic("a", 120, 180, 30))["edge"] is True
     assert hint_for(topic("a", 300, 360, 30))["edge"] is False
     assert hint_for(topic("a", 820, 880, 30))["edge"] is True
-    assert hint_for(topic("a", 819, 880, 30))["edge"] is False
+    assert hint_for(topic("a", 700, 819, 30))["edge"] is False
+
+
+def test_a_topic_that_starts_before_the_tail_and_ends_in_it_is_an_edge():
+    # Duration 1000 s: the tail starts at 820 s. The topic starts at 700 s but ends at 850 s.
+    assert hint_for(topic("a", 700, 850, 30))["edge"] is True
+    assert hint_for(topic("a", 700, 760, 30))["edge"] is False
 
 
 def test_edge_uses_max_end_when_duration_missing():
