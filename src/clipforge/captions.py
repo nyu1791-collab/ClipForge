@@ -343,7 +343,38 @@ def wrap_breaks(text, measure, line_px):
                 r: (c if c is not None and c > cut else None) for r, c in best.items()
             }
         used += size
+    if len(breaks) == 1:
+        breaks = [
+            _balanced_break(text, measure, line_px, blocked, phrase_starts) or breaks[0]
+        ]
     return breaks
+
+
+def _balanced_break(text, measure, line_px, blocked, phrase_starts):
+    """The two-line break whose lines are closest in width, at a word edge.
+
+    A greedy fill leaves the second line short; a balanced pair reads better. Phrase edges from
+    BudouX are preferred; a rank-2 edge is used only when no phrase edge fits. Both lines must
+    still fit, and a line never starts with a particle. None when no such break exists.
+    """
+    for phrases_only in (True, False):
+        best = None
+        for index in range(1, len(text)):
+            if index in blocked or text[index] in PARTICLES:
+                continue
+            rank = _boundary_rank(text[index - 1], text[index])
+            if phrases_only and (index not in phrase_starts or not rank):
+                continue
+            if not phrases_only and rank < 2:
+                continue
+            first, second = measure.width(text[:index]), measure.width(text[index:])
+            if first > line_px or second > line_px:
+                continue
+            if best is None or abs(first - second) < best[0]:
+                best = (abs(first - second), index)
+        if best is not None:
+            return best[1]
+    return None
 
 
 def _word_cut(members):

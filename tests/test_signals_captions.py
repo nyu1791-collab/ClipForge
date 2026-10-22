@@ -428,3 +428,11 @@ def test_a_past_casual_ending_closes_a_caption():
         ["そして"],
     ]
     assert captions.sentence_ends(tokens) == {0}
+
+
+def test_a_two_line_caption_is_balanced_at_a_word_edge(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    # A greedy fill would break after 9 characters, leaving 5 on the second line. The break at 7
+    # gives two lines of 7 characters, and both are word edges.
+    text = "東京都ケーキが漢字ハンバーグ"
+    assert captions.wrap_breaks(text, FixedWidth(), 100) == [7]
