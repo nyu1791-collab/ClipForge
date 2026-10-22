@@ -26,6 +26,10 @@ on:
         type: choice
         options: [high-ram, standard]
         default: high-ram
+      audio_url:
+        description: Canonical Kick VOD URL for URL-only audio analysis on colab-auto
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -202,12 +206,15 @@ jobs:
       - name: Validate request and one-time Colab OAuth setup
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+          AUDIO_URL: ${{ inputs.audio_url }}
         run: |
           python3 - <<'PY'
           import os, re
           assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
           assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
           assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
+          if os.environ['AUDIO_URL']:
+              assert re.fullmatch(r'https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', os.environ['AUDIO_URL'])
           if not os.environ.get('COLAB_ADC_JSON'):
               raise SystemExit('COLAB_ADC_JSON is missing. Authorize n.yu17919191@gmail.com once; no GPU was allocated.')
           PY
@@ -231,11 +238,18 @@ jobs:
           uv venv "$RUNNER_TEMP/colab-control" --python 3.12
           uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
             -r clipforge-source/tools/colab-control-requirements.txt
+      - name: Create temporary private transfer release for URL-only audio analysis
+        if: inputs.audio_url != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main --title "$INPUT_TAG" --latest=false --notes 'Temporary private ClipForge transfer. Deleted after collection.'
       - name: Allocate a dedicated T4 for the verified Google account
         id: allocate
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
+          AUDIO_URL: ${{ inputs.audio_url }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
       - name: Run the pipeline on Colab and retrieve verified private outputs

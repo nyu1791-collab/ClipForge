@@ -34,7 +34,16 @@ uv run --no-sync python tools/kick_audio_first.py \
   --workspace inputs/private-vod --stage audio
 ```
 
-音声取得の完了後、重いASRは既存の非公開 `clipforge.yml` workerに渡せる。workerのworkflow変更は不要。
+URLだけでColab GPUの音声取得・ASR・話題分割を投入できる。URL対応の `deploy/clipforge.yml` とColab側実装を非公開workerへ配置して使う。
+投入側では音声のアップロードやrelease作成をせず、`--output` で完了待機と検証付き回収を行う。
+
+```bash
+uv run --no-sync python tools/submit_job.py \
+  --audio-analysis-url 'https://kick.com/example/videos/00000000-0000-0000-0000-000000000001' \
+  --worker colab-auto --ref REVIEWED_COMMIT_SHA --output /private/audio-analysis-NEW
+```
+
+音声取得済みなら、重いASRだけを非公開 `clipforge.yml` workerに渡す従来の方法も使える。
 `--ref`はレビュー済みの完全なコミットSHAを指定する。
 
 ```bash
@@ -73,7 +82,7 @@ workerから回収したファイルをworkspaceへ統合する際は、`audio.m
 
 ## 転送元GitHub認証の診断
 
-`tools/submit_job.py`の`dispatch()`は、`gh release create`で一時release作成とファイル添付を行い、完了後にだけworkflowをdispatchする。
+`tools/submit_job.py`の`dispatch()`は、`--input` がある場合、`gh release create`で一時release作成とファイル添付を行い、完了後にだけworkflowをdispatchする。
 `gh()`は継承した環境でCLIを呼ぶ。この環境では`GH_TOKEN`が設定され、`GITHUB_TOKEN`は設定されていない。値は表示・取得しない。
 
 2026-10-22の再診断では、同じ接続で以下を確認した。

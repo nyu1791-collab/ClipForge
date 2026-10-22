@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 import unittest
 import urllib.request
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import colab_cache as cache
@@ -292,6 +292,101 @@ class SetupScriptTests(unittest.TestCase):
                 ]
             )
             self.assertEqual(result.returncode, expected)
+
+
+class RemotePipelineTests(unittest.TestCase):
+    def test_audio_url_uses_cuda_job_and_preserves_result_publication(self):
+        url = (
+            "https://kick.com/test-channel/videos/01234567-89ab-cdef-0123-456789abcdef"
+        )
+        for audio_url in (url, ""):
+            with (
+                self.subTest(audio_url=bool(audio_url)),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                work = root / "job"
+                output = work / "out"
+                payload = {
+                    "mode": "pipeline",
+                    "request_id": "a" * 32,
+                    "source_ref": "b" * 40,
+                    "input_tag": "clipforge-input-" + "a" * 32,
+                    "workflow_run": "123",
+                    "github_token": "test-only-github",
+                }
+                if audio_url:
+                    payload["audio_url"] = audio_url
+                else:
+                    payload["gemini_api_key"] = "test-only-gemini"
+                status = "topics_allocated" if audio_url else "complete"
+
+                def command(arguments, environment, name, **kwargs):
+                    if name == "pipeline":
+                        (output / "manifest.json").write_text(
+                            json.dumps({"status": status})
+                        )
+                        (output / "request-receipt.json").write_text("{}")
+
+                bundles = Mock()
+                bundles.restore.return_value = True
+                with (
+                    patch.object(remote_job, "ROOT", root),
+                    patch.object(remote_job, "WORK", work),
+                    patch.object(remote_job, "PERSISTENT", root / "cache"),
+                    patch.object(remote_job, "Path") as paths,
+                    patch.object(
+                        remote_job,
+                        "configuration",
+                        return_value=("cache-key", root, root),
+                    ),
+                    patch.object(remote_job, "ReleaseBundles", return_value=bundles),
+                    patch.object(remote_job, "gpu_info", return_value={}),
+                    patch.object(remote_job, "host_info", return_value={}),
+                    patch.object(remote_job, "read_setup_timings", return_value={}),
+                    patch.object(remote_job.os, "umask"),
+                    patch.dict(os.environ, {"GEMINI_API_KEY": "test-only-inherited"}),
+                    patch.object(remote_job, "command", side_effect=command) as run,
+                ):
+                    paths.return_value.read_text.return_value = json.dumps(payload)
+                    remote_job.main()
+                calls = {call.args[2]: call for call in run.call_args_list}
+                invocation, environment, _ = calls["pipeline"].args
+                self.assertIn("source tools/colab_cuda_env.sh", invocation[2])
+                self.assertIn("source tools/colab_cache_env.sh", invocation[2])
+                self.assertIn(str(root / ".venv/bin/python"), invocation)
+                self.assertEqual(invocation[-2:], ["--output", str(output)])
+                if audio_url:
+                    self.assertEqual(set(calls), {"setup", "pipeline"})
+                    self.assertIn("tools/audio_url_job.py", invocation)
+                    self.assertNotIn("tools/run_request.py", invocation)
+                    for option, value in (
+                        ("--url", url),
+                        ("--request-id", payload["request_id"]),
+                        ("--source-ref", payload["source_ref"]),
+                        ("--workflow-run", "123"),
+                    ):
+                        self.assertEqual(
+                            invocation[invocation.index(option) + 1], value
+                        )
+                    self.assertNotIn("GEMINI_API_KEY", environment)
+                    self.assertNotIn("GH_TOKEN", environment)
+                    self.assertNotIn("GITHUB_TOKEN", environment)
+                else:
+                    self.assertEqual(set(calls), {"setup", "prepare", "pipeline"})
+                    self.assertIn("tools/run_request.py", invocation)
+                    self.assertIn("run", invocation)
+                    self.assertEqual(environment["GEMINI_API_KEY"], "test-only-gemini")
+                    self.assertIn("prepare", calls["prepare"].args[0])
+                self.assertEqual(environment["CLIPFORGE_REQUIRE_CUDA"], "1")
+                bundles.publish.assert_called_once()
+                published = bundles.publish.call_args.args
+                self.assertEqual(published[:2], (payload["input_tag"], output))
+                self.assertEqual(published[3:], ("result", payload["request_id"]))
+                report = json.loads((output / "gpu-receipt.json").read_text())
+                self.assertEqual(report["status"], status)
+                self.assertIn("pipeline", report["timings"])
+                self.assertEqual(report["public_cache_saved"], "skipped_restored")
 
 
 if __name__ == "__main__":

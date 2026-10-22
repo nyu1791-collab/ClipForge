@@ -259,18 +259,33 @@ def main():
             tag = payload["input_tag"]
             if tag != "clipforge-input-" + payload["request_id"]:
                 raise RuntimeError("Input identity mismatch")
-            prepare_env = {**environment, "GH_TOKEN": payload["github_token"]}
             python = str(ROOT / ".venv/bin/python")
-            arguments = ["--tag", tag, "--directory", str(WORK / "input")]
-            with timed(timings, "prepare"):
-                command(
-                    [python, "tools/run_request.py", "prepare", *arguments],
-                    prepare_env,
-                    "prepare",
-                )
-            # API secrets are withheld from dependency setup and cache handling.
+            if payload.get("audio_url"):
+                arguments = [
+                    "tools/audio_url_job.py",
+                    "--url",
+                    payload["audio_url"],
+                    "--request-id",
+                    payload["request_id"],
+                    "--source-ref",
+                    payload["source_ref"],
+                    "--workflow-run",
+                    payload["workflow_run"],
+                ]
+                run_env = environment
+            else:
+                prepare_env = {**environment, "GH_TOKEN": payload["github_token"]}
+                arguments = ["--tag", tag, "--directory", str(WORK / "input")]
+                with timed(timings, "prepare"):
+                    command(
+                        [python, "tools/run_request.py", "prepare", *arguments],
+                        prepare_env,
+                        "prepare",
+                    )
+                arguments = ["tools/run_request.py", "run", *arguments]
+                # API secrets are withheld from dependency setup and cache handling.
+                run_env = {**environment, "GEMINI_API_KEY": payload["gemini_api_key"]}
             report["stage"] = "pipeline"
-            run_env = {**environment, "GEMINI_API_KEY": payload["gemini_api_key"]}
             invocation = 'source tools/colab_cache_env.sh && source tools/colab_cuda_env.sh && exec "$@"'
             with timed(timings, "pipeline"):
                 command(
@@ -280,8 +295,6 @@ def main():
                         invocation,
                         "clipforge-run",
                         python,
-                        "tools/run_request.py",
-                        "run",
                         *arguments,
                         "--output",
                         str(output),

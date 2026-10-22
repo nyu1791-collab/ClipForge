@@ -32,9 +32,11 @@ def submitter(tmp_path, monkeypatch):
         "posts": [],
         "releases": [],
         "tamper": False,
+        "calls": [],
     }
 
     def gh(*args, body=None, timeout=None):
+        control["calls"].append(args)
         if args[:2] == ("api", "user"):
             return "nyu1791-collab"
         if args[:1] == ("api",) and args[1].count("/") == 2 and "--jq" in args:
@@ -66,7 +68,8 @@ def submitter(tmp_path, monkeypatch):
                 + [
                     {
                         "databaseId": 99,
-                        "displayTitle": "ClipForge " + control["request"]["request_id"],
+                        "displayTitle": "ClipForge "
+                        + control["posts"][0]["inputs"]["request_id"],
                         "event": "workflow_dispatch",
                         "status": "completed",
                     }
@@ -86,6 +89,47 @@ def submitter(tmp_path, monkeypatch):
         if args[:2] == ("run", "download"):
             destination = Path(args[args.index("--dir") + 1])
             destination.mkdir(parents=True)
+            inputs = control["posts"][0]["inputs"]
+            if inputs["audio_url"]:
+                (destination / "transcripts").mkdir()
+                key = "e" * 64
+                audio = destination / "audio.m4a"
+                audio.write_bytes(b"synthetic-audio")
+                values = {
+                    "manifest.json": {
+                        "status": "topics_allocated",
+                        "source_url": inputs["audio_url"],
+                        "source_sha256": module.digest(audio),
+                        "model_generation_requests": 0,
+                    },
+                    "topics.json": {
+                        "status": "topics_allocated",
+                        "source_url": inputs["audio_url"],
+                        "model_generation_requests": 0,
+                        "topics": [],
+                    },
+                    "asr-receipt.json": {"key": key},
+                    "transcripts/" + key + ".json": {"language": "ja", "segments": []},
+                }
+                for name, value in values.items():
+                    (destination / name).write_text(json.dumps(value))
+                (destination / "request-receipt.json").write_text(
+                    json.dumps(
+                        {
+                            "request_id": inputs["request_id"],
+                            "source_ref": inputs["source_ref"],
+                            "status": "topics_allocated",
+                            "audio_source_url": inputs["audio_url"],
+                            "sha256": {
+                                name: module.digest(destination / name)
+                                for name in ["audio.m4a", *values]
+                            },
+                        }
+                    )
+                )
+                if control["tamper"]:
+                    audio.write_bytes(b"corrupted")
+                return ""
             directory = destination / "clips/clip-001"
             directory.mkdir(parents=True)
             hashes = {}
@@ -238,25 +282,165 @@ def test_configuration_cannot_upload_credentials(submitter, tmp_path):
     assert not control["releases"] and not control["posts"]
 
 
+@pytest.mark.parametrize("worker", ["cpu", "colab-auto"])
 def test_audio_analysis_dispatch_has_no_model_or_secret_requirement(
-    submitter, monkeypatch
+    submitter, monkeypatch, tmp_path, worker
 ):
     module, _, control, invoke = submitter
     original = module.gh
 
     def gh(*args, **kwargs):
-        if args[:2] == ("secret", "list"):
+        if args[:2] == ("secret", "list") and worker == "cpu":
             pytest.fail("audio-only analysis checked Gemini credentials")
         return original(*args, **kwargs)
 
     monkeypatch.setattr(module, "gh", gh)
     url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
     invoke(
-        "--audio-analysis-url", url, "--ref", "ccr-12fe9485-ugaszt", "--worker", "cpu"
+        "--audio-analysis-url", url, "--ref", "ccr-12fe9485-ugaszt", "--worker", worker
     )
     assert control["request"]["audio_source_url"] == url
     assert control["request"]["settings"]["gemini_model"] == "manual-no-api"
     assert len(control["posts"]) == 1
+    assert len(control["releases"]) == 1
+    assert control["posts"][0]["inputs"]["audio_url"] == ""
+    state = tmp_path / ".local/state/clipforge" / control["request"]["request_id"]
+    receipt = json.loads((state / "receipt.json").read_text())
+    assert receipt["audio_url"] == "" and receipt["input_staged"] is True
+
+
+def test_url_only_audio_dispatch_skips_all_staging(submitter, monkeypatch, tmp_path):
+    module, _, control, _ = submitter
+    url = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["submit_job", "--audio-analysis-url", url, "--worker", "colab-auto"],
+    )
+    monkeypatch.setattr(
+        module, "digest", lambda *a: pytest.fail("URL-only submission read local media")
+    )
+    monkeypatch.setattr(
+        module.tempfile,
+        "TemporaryDirectory",
+        lambda **k: pytest.fail("URL-only submission staged input"),
+    )
+    module.main()
+    inputs = control["posts"][0]["inputs"]
+    assert inputs == {
+        "request_id": inputs["request_id"],
+        "input_tag": "clipforge-input-" + inputs["request_id"],
+        "source_ref": "a" * 40,
+        "worker": "colab-auto",
+        "audio_url": url,
+    }
+    assert not any(call[0] == "release" for call in control["calls"])
+    state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
+    receipt = json.loads((state / "receipt.json").read_text())
+    assert receipt["audio_url"] == url and receipt["input_staged"] is False
+    request = json.loads((state / "request.json").read_text())
+    assert request["audio_source_url"] == url
+    assert request["video_sha256"] is None and request["video_bytes"] is None
+
+
+@pytest.mark.parametrize("worker", ["cpu", "colab-gpu"])
+def test_url_only_audio_requires_colab_auto(submitter, monkeypatch, worker):
+    module, _, control, _ = submitter
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--worker",
+            worker,
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 2
+    assert not control["posts"] and not control["releases"]
+
+
+@pytest.mark.parametrize("local_input", [False, True])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+        "https://example.invalid/example/videos/00000000-0000-0000-0000-000000000001",
+        "https://kick.com/example/videos/not-a-uuid",
+        "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001?extra=1",
+    ],
+)
+def test_audio_dispatch_rejects_noncanonical_url(
+    submitter, monkeypatch, local_input, url
+):
+    from clipforge.storage import PipelineError
+
+    module, source, control, _ = submitter
+    argv = ["submit_job", "--audio-analysis-url", url]
+    if local_input:
+        argv.extend(["--input", str(source)])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(PipelineError, match="canonical Kick VOD URL"):
+        module.main()
+    assert not control["posts"] and not control["releases"]
+
+
+@pytest.mark.parametrize("explicit_output", [False, True])
+def test_url_only_audio_wait_collects_verified_analysis(
+    submitter, monkeypatch, tmp_path, explicit_output
+):
+    module, _, control, _ = submitter
+    argv = [
+        "submit_job",
+        "--audio-analysis-url",
+        "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+    ]
+    argv.extend(
+        ["--output", str(tmp_path / "result")] if explicit_output else ["--wait"]
+    )
+    monkeypatch.setattr(sys, "argv", argv)
+    module.main()
+    identity = control["posts"][0]["inputs"]["request_id"]
+    state = tmp_path / ".local/state/clipforge" / identity
+    receipt = json.loads((state / "receipt.json").read_text())
+    destination = tmp_path / "result" if explicit_output else state / "result"
+    assert receipt["status"] == "COMPLETE" and receipt["input_staged"] is False
+    assert (destination / "audio.m4a").read_bytes() == b"synthetic-audio"
+    assert (destination / "topics.json").is_file()
+    assert not control["releases"]
+
+
+def test_url_only_audio_corruption_can_be_collected_again(
+    submitter, monkeypatch, tmp_path
+):
+    module, _, control, _ = submitter
+    destination = tmp_path / "result"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--output",
+            str(destination),
+        ],
+    )
+    control["tamper"] = True
+    with pytest.raises(RuntimeError, match="checksum"):
+        module.main()
+    assert not destination.exists()
+    identity = control["posts"][0]["inputs"]["request_id"]
+    control["tamper"] = False
+    monkeypatch.setattr(
+        sys, "argv", ["submit_job", "--collect", identity, "--output", str(destination)]
+    )
+    module.main()
+    assert (destination / "audio.m4a").is_file()
+    assert len(control["posts"]) == 1 and not control["releases"]
 
 
 def test_audio_analysis_rejects_network_enrichment(submitter, tmp_path):

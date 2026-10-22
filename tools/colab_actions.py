@@ -200,6 +200,14 @@ class Controller:
         )
         if not re.fullmatch(r"[a-f0-9]{40}", request["source_ref"]):
             raise ControlError("Use an exact ClipForge source SHA")
+        audio_url = os.environ.get("AUDIO_URL", "") if mode == "pipeline" else ""
+        if audio_url:
+            if not re.fullmatch(
+                r"https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}",
+                audio_url,
+            ):
+                raise ControlError("Invalid canonical Kick audio URL")
+            request["audio_url"] = audio_url
         # The high-memory shape gives 8 CPU cores instead of 2 for the CPU-bound setup,
         # decompression and encoding around the GPU work, at a higher hourly rate.
         pool = colab_pool(mode)
@@ -299,12 +307,18 @@ class Controller:
         token = os.environ.get("GH_TOKEN", "")
         if not token:
             raise ControlError("Private GitHub input authentication is missing")
-        if record["mode"] == "pipeline" and not os.environ.get("GEMINI_API_KEY"):
+        if (
+            record["mode"] == "pipeline"
+            and not record.get("audio_url")
+            and not os.environ.get("GEMINI_API_KEY")
+        ):
             raise ControlError("GEMINI_API_KEY is missing")
         payload = {
             **record,
             "github_token": token,
-            "gemini_api_key": os.environ.get("GEMINI_API_KEY", ""),
+            "gemini_api_key": ""
+            if record.get("audio_url")
+            else os.environ.get("GEMINI_API_KEY", ""),
             "workflow_run": os.environ.get("GITHUB_RUN_ID", "manual"),
             "offline": os.environ.get("CLIPFORGE_OFFLINE") == "1",
         }

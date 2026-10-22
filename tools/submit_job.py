@@ -227,7 +227,7 @@ def verify_download(directory, receipt, request):
             directory,
             receipt["request_id"],
             receipt["source_ref"],
-            request["video_sha256"],
+            request["video_sha256"] or digest(directory / "audio.m4a"),
             request["audio_source_url"],
         )
         return
@@ -413,6 +413,7 @@ def send_dispatch(state, receipt):
                 "source_ref": receipt["source_ref"],
                 # Receipts written before worker selection ran on the hosted CPU runner.
                 "worker": receipt.get("worker", "cpu"),
+                "audio_url": receipt.get("audio_url", ""),
             },
         }
     )
@@ -615,7 +616,8 @@ def main():
     parser.add_argument("--input", type=Path)
     parser.add_argument("--gemini-model")
     parser.add_argument(
-        "--audio-analysis-url", help="allocate topics from local audio; no Gemini calls"
+        "--audio-analysis-url",
+        help="allocate topics from a Kick VOD or local audio; no Gemini calls",
     )
     parser.add_argument("--ref", default="main")
     parser.add_argument(
@@ -688,7 +690,9 @@ def main():
 
         canonical(args.audio_analysis_url)
         args.gemini_model = "manual-no-api"
-    if not args.input or not args.gemini_model:
+    if args.audio_analysis_url and args.input is None and args.worker != "colab-auto":
+        parser.error("URL-only audio analysis requires --worker colab-auto")
+    if (args.input is None and not args.audio_analysis_url) or not args.gemini_model:
         parser.error("--input and --gemini-model are required to submit a video")
     if args.output:
         args.wait = True
@@ -774,7 +778,7 @@ def dispatch(args, state_root):
             )
         if not args.audio_analysis_url and "GEMINI_API_KEY" not in names:
             raise RuntimeError("private worker GEMINI_API_KEY is not registered")
-    source = args.input.resolve(strict=True)
+    source = args.input.resolve(strict=True) if args.input else None
     settings = json.loads(args.config.read_text()) if args.config else {}
     if (
         not isinstance(settings, dict)
@@ -806,7 +810,7 @@ def dispatch(args, state_root):
     if type(clips) is not int or not 1 <= clips <= 10:
         raise RuntimeError("clip count must be between 1 and 10")
     maximum = settings.get("max_input_bytes", 1073741824)
-    if (
+    if source is not None and (
         not source.is_file()
         or type(maximum) is not int
         or not 0 < source.stat().st_size <= min(maximum, 2147483648)
@@ -829,6 +833,8 @@ def dispatch(args, state_root):
         "input_tag": tag,
         "status": "STAGING",
         "worker": args.worker,
+        "audio_url": args.audio_analysis_url if source is None else "",
+        "input_staged": False,
     }
     receipt_path = state / "receipt.json"
     save(receipt_path, receipt)
@@ -836,48 +842,49 @@ def dispatch(args, state_root):
     request = {
         "request_id": identity,
         "source_ref": sha,
-        "video_sha256": digest(source),
-        "video_bytes": source.stat().st_size,
+        "video_sha256": digest(source) if source is not None else None,
+        "video_bytes": source.stat().st_size if source is not None else None,
         "settings": settings,
         "chat_sha256": digest(args.chat_file) if args.chat_file else None,
     }
     if args.audio_analysis_url:
         request["audio_source_url"] = args.audio_analysis_url
     save(state / "request.json", request)
-    with tempfile.TemporaryDirectory(prefix="clipforge-submit-") as temporary:
-        directory = Path(temporary)
-        video = directory / "input-video.bin"
-        video.symlink_to(source)
-        manifest = directory / "request.json"
-        manifest.write_bytes((state / "request.json").read_bytes())
-        files = [str(video), str(manifest)]
-        if args.chat_file:
-            chat = directory / "chat.json"
-            chat.symlink_to(args.chat_file.resolve())
-            files.append(str(chat))
-        try:
-            gh(
-                "release",
-                "create",
-                tag,
-                *files,
-                "--repo",
-                REPO,
-                "--target",
-                "main",
-                "--title",
-                tag,
-                "--latest=false",
-                "--notes",
-                "Temporary private ClipForge job input. Automatically cleaned after execution.",
-                timeout=1800,
-            )
-        except Exception:
-            receipt["status"] = "STAGING_FAILED"
-            save(receipt_path, receipt)
-            raise
-    receipt["status"] = "STAGED"
-    save(receipt_path, receipt)
+    if source is not None:
+        with tempfile.TemporaryDirectory(prefix="clipforge-submit-") as temporary:
+            directory = Path(temporary)
+            video = directory / "input-video.bin"
+            video.symlink_to(source)
+            manifest = directory / "request.json"
+            manifest.write_bytes((state / "request.json").read_bytes())
+            files = [str(video), str(manifest)]
+            if args.chat_file:
+                chat = directory / "chat.json"
+                chat.symlink_to(args.chat_file.resolve())
+                files.append(str(chat))
+            try:
+                gh(
+                    "release",
+                    "create",
+                    tag,
+                    *files,
+                    "--repo",
+                    REPO,
+                    "--target",
+                    "main",
+                    "--title",
+                    tag,
+                    "--latest=false",
+                    "--notes",
+                    "Temporary private ClipForge job input. Automatically cleaned after execution.",
+                    timeout=1800,
+                )
+            except Exception:
+                receipt["status"] = "STAGING_FAILED"
+                save(receipt_path, receipt)
+                raise
+        receipt.update(status="STAGED", input_staged=True)
+        save(receipt_path, receipt)
     send_dispatch(state, receipt)
     print("Submitted private ClipForge job " + identity, flush=True)
     deadline = time.monotonic() + 6000
