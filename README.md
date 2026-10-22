@@ -15,6 +15,10 @@ Faster-Whisper → チャット／場面転換から候補抽出 → **映像と
 
 初期値は候補8件、各最大75秒、最大3本出力、Whisper `small`、720px高。Geminiが見るのは候補動画だけです。動画全体の全場面を視聴・評価する設計ではありません。
 
+## ActionsからColab Pro GPUを自動起動
+
+Google公式Colab CLIのSDKで、動画ジョブに合わせてT4を起動し、処理後に解放する経路を用意しました。初回だけ指定GoogleユーザーのOAuthを非公開workerの `COLAB_ADC_JSON` に登録します。依存・モデルは非公開キャッシュから再利用します。**OAuth未登録の状態では実GPU起動は未確認です。** 詳細は [Colab設定・検証手順](docs/COLAB.md)。
+
 ## 推奨：制御VMから非公開Actionsへ依頼
 
 公開のこのリポジトリにはコードを置き、動画・文字起こし・成果物は非公開の

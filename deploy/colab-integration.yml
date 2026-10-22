@@ -1,0 +1,71 @@
+name: Verify ClipForge Colab integration without GPU allocation
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Exact ClipForge commit SHA to verify
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.repository == 'nyu1791-collab/ai-model-workers'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+    steps:
+      - name: Validate source identifier
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: true
+          cache-dependency-glob: |
+            tools/colab-control-requirements.txt
+            uv.lock
+      - name: Install locked control and CPU package dependencies
+        run: |
+          uv venv "$RUNNER_TEMP/colab-control" --python 3.12
+          uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
+            -r tools/colab-control-requirements.txt
+          uv sync --locked --extra chat
+      - name: Verify lifecycle guards, cache integrity, transfers, and model selection
+        env:
+          PYTHONPATH: src:tools
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" -m unittest discover -s tests -v
+      - name: Verify real private GitHub upload/download and exact fixture cleanup
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/verify_colab_storage.py
+      - name: Verify real CPU clipping with synthetic media and no model calls
+        run: |
+          ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=320x180:rate=15 \
+            -f lavfi -i sine=frequency=440:sample_rate=16000 -t 3 \
+            -c:v libx264 -preset ultrafast -c:a aac "$RUNNER_TEMP/synthetic.mp4"
+          .venv/bin/clipforge cut "$RUNNER_TEMP/synthetic.mp4" --start 0.25 --end 2.25 \
+            --threads 2 --video-encoder libx264 --output "$RUNNER_TEMP/synthetic-result"
+          python3 - <<'PY'
+          import json, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'synthetic-result'
+          data = json.loads((root / 'manifest.json').read_text())
+          assert data['status'] == 'complete' and len(data['rendered']) == 1
+          assert data['selection_receipt']['generation_requests'] == 0
+          PY

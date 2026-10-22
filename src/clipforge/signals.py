@@ -10,6 +10,7 @@ from . import media
 from .hardware import asr_options
 from .models import Candidate, Segment, Transcript, Word
 from .storage import PipelineError
+from .whisper_cache import model_path
 
 
 def transcribe(source, info, settings):
@@ -26,7 +27,7 @@ def transcribe(source, info, settings):
         path = Path(temporary) / "audio.wav"
         media.audio(source, path, info["duration"])
         model = WhisperModel(
-            settings.whisper_model,
+            model_path(settings.whisper_model, settings.whisper_revision),
             **options,
             num_workers=1,
             revision=settings.whisper_revision,

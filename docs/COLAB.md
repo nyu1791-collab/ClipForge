@@ -1,56 +1,93 @@
-# Colab GPU
+# ActionsからColab Pro T4を自動起動
 
-対象は `n.yu17919191@gmail.com`。ColabでこのアカウントとPro表示を確認し、GPUランタイムを選びます。Pro契約、計算ユニット残高、GPU割り当ては別です。T4の割り当て・処理時間は保証しません。
+対象アカウントは **n.yu17919191@gmail.com** です。Google公式 [google-colab-cli](https://github.com/googlecolab/google-colab-cli) 0.7.5のSDKを使い、Actions実行時に専用T4を作り、処理・結果回収後に解放します。Colab Enterpriseや別のGPUクラウドは作成しません。
 
-## 起動
+## 通常の動画ジョブ
 
-`notebooks/colab_gpu.ipynb` をColabで開き、GPUをT4にしてセットアップセルを実行します。`nvidia-smi`、cuBLAS/cuDNNのロード、CTranslate2のCUDA/float16を確認してから進みます。Colab用ツールはGPUがなければ停止します。
+既定の `worker=colab-auto` は次の順で動きます。
 
-### Self-hosted Runner
+1. ActionsのCPU制御ジョブがGoogle OAuthのメールアドレスを照合。指定ユーザー以外・サービスアカウントはGPUを起動する前に拒否します。
+2. 指定ユーザーのColabにT4を割り当て、公開ClipForgeを指定SHAで取得します。別GPUや別アカウントへは切り替えません。
+3. 非公開GitHubから依存・モデルのキャッシュを復元し、ASR/CUDAとレンダリングをColabで実行します。制御ジョブにASRやCUDAパッケージは導入しません。
+4. 結果をチェックサム付きで回収し、従来と同じ非公開Artifactsへ7日間保存します。動画・字幕の人による確認は別です。
+5. 成功・失敗にかかわらず所有するColabを解放し、一覧から消えたことを確認します。他のノートブックのセッションは停止しません。
 
-登録先は**非公開の `nyu1791-collab/ai-model-workers`**。公開ClipForgeには登録しません。登録トークンは非公開workerの Settings → Actions → Runners → New self-hosted runner から取得し、ノートブックの非表示入力へ渡します。通常のGitHub PATは使いません。短時間で失効するので起動直前に取得し、Git・保存セル・チャットに貼らないでください。
-
-```bash
-bash tools/colab_setup.sh
-bash tools/colab_runner.sh  # トークンは非表示入力
-```
-
-公式Runnerの最新リリースを公式SHA-256で照合し、`colab-gpu` ラベル、固有名、`--ephemeral` で登録します。既存ランナーは置換しません。`Listening for Jobs` と非公開GitHub側の `Idle` が揃うと接続完了です。それ以前は接続完了ではありません。
-
-`deploy/clipforge.yml` を非公開workerへ配置すると `worker=colab-gpu` の依頼をGPUへ振り分けられます。VM入口では次を指定します。
+Googleへの認証を済ませた後は、ノートブックを開いたままにする必要はありません。Pro契約でもT4の空き・計算ユニット残高・利用制限は別で、割り当てや処理時間を保証するものではありません。GPUが拒否された場合は停止し、有料プラン購入やA100等への切替を行いません。
 
 ```bash
 python tools/submit_job.py --input /path/to/source.mp4 \
-  --gemini-model YOUR_VIDEO_MODEL_ID --ref REVIEWED_GPU_COMMIT_SHA \
-  --worker colab-gpu --wait --output /path/to/new-result
+  --gemini-model YOUR_VIDEO_MODEL_ID --wait --output /path/to/new-result
 ```
 
-GPUジョブはCUDA/float16を必須とし、GPU不在でCPUへ切り替えません。依頼前にIdleを確認します。オフラインならジョブは待機します。1ジョブ後は自動登録解除され、次の依頼には新規登録が必要です。待機中に切断した場合はGitHub側のOfflineランナーを削除します。Colabのセッション維持や制限回避は行いません。
+CPUで実行する場合は `--worker cpu` を明示します。公開側の `Build package` はwheel作成だけなのでCPUのままです。
 
-[公式FAQ](https://research.google.com/colaboratory/faq.html)では、正の計算ユニット残高がない無料ランタイムで分散計算ワーカーなどを制限しています。Self-hosted方式は利用が認められる契約・残高で使ってください。無料枠ではノートブック内の直接実行を使います。
+## 最初の1回だけ必要なGoogle OAuth
 
-### ノートブック内の直接実行
+**スマホのブラウザでColabにログインしても、Actions用OAuthは登録されません。** 自動起動には、指定Googleユーザーで承認したADCを非公開workerのSecret **`COLAB_ADC_JSON`** に登録する必要があります。Google本人の認証・同意は、AIへの包括的な許可では代替できません。
 
-Driveをマウントし、動画と明示的なGeminiモデルIDを指定します。
+認証したい端末で、Python 3.12以上と `gcloud`、所有者でログイン済みの `gh` を用意します。
 
 ```bash
-source tools/colab_cuda_env.sh
-.venv/bin/python tools/colab_run.py --input /content/source.mp4 \
-  --gemini-model YOUR_VIDEO_MODEL_ID --config config.example.json \
-  --output /content/clipforge-output/job-001 \
-  --drive-output /content/drive/MyDrive/ClipForge_Output/job-001
+uv venv /tmp/clipforge-colab-control --python 3.12
+uv pip install --python /tmp/clipforge-colab-control/bin/python --require-hashes \
+  -r tools/colab-control-requirements.txt
+/tmp/clipforge-colab-control/bin/python tools/configure_colab_oauth.py --login
 ```
 
-`--input` の代わりに `--url` で直接動画ファイルのHTTPS URLを取得できます。YouTube視聴ページ・HLSには非対応です。署名付きURLやAPIキーを保存セルへ残さないでください。GeminiキーはColab Secretsの `GEMINI_API_KEY` から読みます。指定Geminiモデルへ候補動画・音声・ASRを送る点は従来と同じです。
+このコマンドはGoogleの本人用ログイン・同意を行い、メールアドレスを検査してからSecretを標準入力で登録します。トークンの値は表示せず、チャットやGitへ貼る必要はありません。既に正しいADCがある場合は `--login` を外します。必要スコープは公式CLIの案内に従い、`openid`、`cloud-platform`、`userinfo.email`、`colaboratory` です。サービスアカウントを使ってProユーザーになりすます方式ではありません。
 
-処理はローカルディスクで行い、完了後DriveへコピーしてSHA-256を照合します。マウントしても転送・同期時間は発生し、アップロード時間はゼロではありません。コピー失敗時もローカル出力は保持します。再開には同じ入力・設定・コードとローカル出力が必要です。
+環境変数で安全に渡した認証を調べるには次を使います。GPUは作成しません。GitHub Secretの値を読み戻すコマンドではありません。
 
-## 選択設定
+```bash
+/tmp/clipforge-colab-control/bin/python tools/colab_actions.py doctor
+```
 
-- `whisper_device=auto`: CTranslate2のCUDA/float16とcuBLAS/cuDNNが利用できればGPU、なければCPU/int8。PyTorchは不要です。
-- `--device cuda --compute-type float16`: GPU必須。モデルロード・推論途中の失敗ではCPUや別モデルで再試行しません。
-- `threads=0`: 使用可能なCPUコア数を自動取得。正の値ならその数を使用します。
-- `video_encoder=auto`: 短いNVENCエンコードが成功すれば `h264_nvenc/p1/VBR/CQ`、利用不可なら `libx264/veryfast/CRF`。
-- `--video-encoder h264_nvenc`: NVENC必須。スケーリング、libass字幕、場面検出などは引き続きCPU処理です。
+`COLAB_ADC_JSON` を実行環境へ安全に渡して使用します。未登録・期限切れ・同意取り消し時に、CIが対話ログインへ進むことはありません。
 
-構文・依存ロック・wheel作成と、GPU実接続・推論・実動画の速度や品質は別の確認状態です。元の「92分を2分」などは実測していません。
+## 起動時のダウンロードを減らす
+
+| アセット | 保存と再利用 |
+| --- | --- |
+| 制御用Google SDK | ハッシュ付き独立依存ロックとActionsのuvキャッシュ |
+| Python 3.11、uv、CUDA/Python・OSパッケージ | ColabのOS・アーキテクチャ・依存ロックに合わせたアーカイブ |
+| Whisperモデル | モデル専用キャッシュをローカル優先で参照し、存在すればHubへの取得要求を省略 |
+| 同一セッションのツール | 導入済みツールを再利用。apt updateや重複するPython/uv導入を省略 |
+
+自動起動ではキャッシュを非公開workerの `clipforge-cache-<互換性キー>` Releaseへ保存します。512MiB以下のチャンクに分割し、転送・復元時にSHA-256を照合します。既存キャッシュと同じ内容なら再アップロードしません。更新後の不要チャンクは、そのキャッシュRelease内だけで整理します。
+
+Google OAuth情報、Colabのプロキシトークン、Runnerの登録情報、元動画、ASR、成果物を公開アセット用キャッシュへ含めません。Googleの認証情報は制御ジョブに保持し、GPUには渡しません。GPUへはジョブに必要なGitHubの短期トークンとGeminiキーだけを非公開ファイルで渡し、読み込み後にファイルを削除します。依存導入プロセスにはこれらのキーを渡しません。
+
+初回・依存変更・未保存モデルには取得が必要です。キャッシュからの転送やモデル読み込みは残るため、通信量・待ち時間が完全にゼロになる構成ではありません。自動実行ワーカーではSelf-hosted Runnerのアーカイブ自体が不要です。
+
+### GPUを起動する前にCPUで準備する
+
+非公開workerへ `deploy/colab-maintenance.yml` を配置し、**Colab GPU verification and asset preparation** の `mode=prepare-cache` を実行できます。CPUのColabで公開アセットと既定のWhisper `small` をキャッシュし、GPU・推論・Geminiを使わず終了します。次のT4ジョブは互換性が合うキャッシュを復元します。CPU/GPUランタイムのOS等が違う場合は、互換性を優先して別のキーにします。
+
+`CLIPFORGE_OFFLINE=1` は、セットアップの依存・モデル・Runnerアーカイブが不足しても自動取得せず停止する設定です。GitHub/Colabの制御通信・入力や結果の転送を止める設定ではありません。
+
+## GPUでの実機検証
+
+同じmaintenance workflowで `mode=verify-gpu` を選ぶと、専用T4を作成し、次を実行してから解放します。
+
+- `nvidia-smi` で実際のGPU名・ドライバ・VRAMを取得。T4以外なら停止。
+- CUDAドライバを初期化。
+- Whisper `small` をCUDA/float16でロードし、VADを切って2秒の合成音声を実際に処理。
+- NVENCの短い実行を試し、利用可否を記録。
+
+Geminiを呼ばず、実ユーザーの動画も使いません。結果は非公開の `colab-verification-report` に保存します。この検証はASRの文字起こし品質や実動画での所要時間の保証ではありません。
+
+`deploy/colab-integration.yml` はGPUを作らず、キャッシュ・転送・認証ガードのテスト、非公開GitHubへの実アップロード/ダウンロードと一時データ削除、合成動画のCPU切り抜きを確認します。
+
+## 手動ノートブックと既存ランナーも利用可能
+
+`notebooks/colab_gpu.ipynb` は手動実行用です。Driveをマウントして `MyDrive/ClipForge_Cache` を使えます。`PREPARE_ONLY=True` はCPUでのアセット事前準備、`STRICT_OFFLINE=True` は不足アセットの取得停止です。Driveマウントの転送・本人認証は発生します。
+
+`--worker colab-gpu` は接続済みSelf-hosted Runnerを使う従来方式です。`COLAB_RUNNER_MODE=session` なら同じColabセッションで複数ジョブを受け付け、`ephemeral` なら1件で登録解除します。セルの `Listening for Jobs` とGitHubの `Idle` が揃って接続完了です。既存ランナー方式では停止したColabを自動作成しません。待機中のGPU枠消費と、切断後のOfflineランナー削除に注意してください。
+
+直接処理する場合は `tools/colab_run.py` を使います。ローカル動画または直接動画ファイルのHTTPS URLに対応し、YouTube視聴ページ・HLSには対応しません。完了後Driveへコピーし、チェックサムを照合します。
+
+## 根拠と確認状態
+
+[調査した公式資料・ツール](COLAB_RESEARCH.md)。公式REST APIも存在しますが、2026-10-22時点でベータの許可制です。本構成は公開REST APIの許可制を迂回するコードを実装せず、Google公式CLIが提供する認証・割り当て・実行機能を使用します。
+
+Google OAuthが未登録なら実GPUの接続・起動・推論は未確認です。コードテスト・CPU合成動画の成功を、GPU成功や実動画の品質確認と混同しません。

@@ -138,5 +138,9 @@ clipforge-submit --cleanup-tag clipforge-input-REQUEST_ID
 ## 今回の確認範囲
 
 依存解決、ソースの構文・静的検査、wheel作成とGitHub/VMへの配置を確認します。
-ユーザーからテスト実行の依頼がないため、テストの追加・実行はしません。
+2026-10-22にユーザーから確認・検証の明示依頼を受け、Colabのライフサイクル、キャッシュ、転送、モデル選択のテストと合成動画のCPU切り抜きを追加・実行します。実GPUの確認はOAuth認証後のmaintenance workflowで別に行います。
 動画未提供のため、モデル呼び出し・文字起こし・実動画レンダリングも未実施です。
+
+## Colabの自動起動
+
+動画ジョブの既定は `colab-auto`。Google公式SDKでT4を作成し、処理後に解放します。初回のGoogle OAuthと `COLAB_ADC_JSON` の登録は [Colab設定手順](COLAB.md) を参照してください。ブラウザのログインだけでは登録されません。明示CPUは `--worker cpu`、既存ランナーは `--worker colab-gpu` です。

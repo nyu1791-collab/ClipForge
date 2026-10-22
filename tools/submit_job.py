@@ -49,7 +49,7 @@ def main():
     parser.add_argument("--input", type=Path)
     parser.add_argument("--gemini-model")
     parser.add_argument("--ref", default="main")
-    parser.add_argument("--worker", choices=["cpu", "colab-gpu"], default="cpu")
+    parser.add_argument("--worker", choices=["colab-auto", "colab-gpu", "cpu"], default="colab-auto")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
     parser.add_argument("--clips", type=int)
@@ -119,6 +119,8 @@ def main():
             "another video job is active; wait before submitting a new input"
         )
     names = json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
+    if args.worker == "colab-auto" and not any(secret["name"] == "COLAB_ADC_JSON" for secret in names):
+        raise RuntimeError("COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup")
     if not any(secret["name"] == "GEMINI_API_KEY" for secret in names):
         raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True)
@@ -196,9 +198,9 @@ def main():
         )
     receipt["status"] = "STAGED"
     save(receipt_path, receipt)
-    dispatch_inputs = {"request_id": identity, "input_tag": tag, "source_ref": sha}
-    if args.worker == "colab-gpu":
-        dispatch_inputs["worker"] = args.worker
+    dispatch_inputs = {
+        "request_id": identity, "input_tag": tag, "source_ref": sha, "worker": args.worker,
+    }
     payload = json.dumps(
         {
             "ref": "main",
