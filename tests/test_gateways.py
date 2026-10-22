@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -204,6 +205,56 @@ def test_dispatch_is_private_pinned_and_correlated(submitter, tmp_path):
     )
     assert json.loads(receipt.read_text())["run_id"] == 99
     assert receipt.stat().st_mode & 0o777 == 0o600
+
+
+def assert_submission_lock(path, locked):
+    with path.open("a") as probe:
+        if locked:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.mark.parametrize("wait", [False, True])
+def test_submission_releases_lock_before_polling_and_download(
+    submitter, tmp_path, monkeypatch, wait
+):
+    module, _, control, invoke = submitter
+    original = module.gh
+    lock = tmp_path / ".local/state/clipforge/.submit.lock"
+    phases = []
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("run", "list"):
+            submitted = bool(control["posts"])
+            assert_submission_lock(lock, locked=not submitted)
+            phases.append("poll" if submitted else "check")
+            if submitted:
+                identity = control["posts"][0]["inputs"]["request_id"]
+                receipt = json.loads(
+                    (lock.parent / identity / "receipt.json").read_text()
+                )
+                assert receipt["status"] == "DISPATCHED"
+                assert receipt["job_submitted"] is True
+        elif args[:2] == ("release", "create") or args[:3] == (
+            "api",
+            "--method",
+            "POST",
+        ):
+            assert_submission_lock(lock, locked=True)
+            phases.append("submit")
+        elif args[:2] in {("run", "view"), ("run", "download")}:
+            assert_submission_lock(lock, locked=False)
+            phases.append(args[1])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(module, "gh", gh)
+    invoke(*(["--wait", "--output", str(tmp_path / "result")] if wait else []))
+    assert phases == ["check", "submit", "submit", "poll"] + (
+        ["view", "download"] if wait else []
+    )
+    assert_submission_lock(lock, locked=False)
 
 
 @pytest.mark.parametrize("condition", ["private", "active"])
@@ -734,6 +785,37 @@ def test_audio_recovery_uploads_only_missing_asset_and_preserves_request(
     control["existing"] = True
     invoke()
     assert len(control["posts"]) == 1 and control["uploads"] == ["request.json"]
+
+
+def test_audio_recovery_releases_lock_after_dispatch_and_refuses_duplicate(
+    audio_recovery, monkeypatch
+):
+    module, _, state, control, _, invoke = audio_recovery
+    original = module.gh
+    lock = state.parent / ".submit.lock"
+
+    def gh(*args, **kwargs):
+        if args[:2] in {("run", "list"), ("release", "upload")} or args[:3] == (
+            "api",
+            "--method",
+            "POST",
+        ):
+            assert_submission_lock(lock, locked=True)
+        return original(*args, **kwargs)
+
+    def print_resumed(message):
+        assert message.startswith("Resumed private audio request")
+        assert_submission_lock(lock, locked=False)
+        assert (
+            json.loads((state / "receipt.json").read_text())["status"] == "DISPATCHED"
+        )
+
+    monkeypatch.setattr(module, "gh", gh)
+    monkeypatch.setattr(module, "print", print_resumed, raising=False)
+    invoke()
+    with pytest.raises(RuntimeError, match="uncertain or not resumable"):
+        invoke()
+    assert len(control["posts"]) == 1
 
 
 @pytest.mark.parametrize(

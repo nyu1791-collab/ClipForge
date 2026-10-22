@@ -1,7 +1,9 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 import yaml
@@ -184,7 +186,113 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     install = next(
         step["run"] for step in steps if "--no-download" in step.get("run", "")
     )
-    cached, uncached = install.split("\nelse\n")
-    assert "command -v ffmpeg" in cached and "command -v ffprobe" in cached
-    assert "--no-download" in cached and "apt-get update" not in cached
-    assert "apt-get update" in uncached
+    assert "command -v ffmpeg" in install and "command -v ffprobe" in install
+    assert "if ! sudo apt-get install --no-download" in install
+    assert "apt-get update -qq" in install
+    assert "APT::Keep-Downloaded-Packages=true" in install
+    key = next(step for step in steps if step.get("id") == "ffmpeg-debs")
+    assert '"$ImageVersion"' in key["run"]
+    assert cache["with"]["key"] == "${{ steps.ffmpeg-debs.outputs.key }}"
+    request = next(i for i, step in enumerate(steps) if step.get("id") == "request")
+    assert acquire < request < allocate
+    run = next(step for step in steps if "colab_actions.py run" in step.get("run", ""))
+    assert (
+        run["env"]["CLIPFORGE_NO_MODEL_API"]
+        == "${{ steps.request.outputs.no_model_api }}"
+    )
+    assert run["env"]["GEMINI_API_KEY"] == (
+        "${{ steps.request.outputs.no_model_api == '0' && secrets.GEMINI_API_KEY || '' }}"
+    )
+
+
+@pytest.mark.parametrize(
+    "installed, cached_status, expected_calls", [(0, 0, 0), (1, 0, 1), (1, 1, 3)]
+)
+def test_ffmpeg_install_falls_back_when_cached_packages_fail(
+    tmp_path, installed, cached_status, expected_calls
+):
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    script = next(
+        step["run"]
+        for step in workflow["jobs"]["colab-auto"]["steps"]
+        if step.get("name") == "Install ffmpeg only when missing"
+    )
+    archives = tmp_path / "clipforge-ffmpeg-debs"
+    archives.mkdir()
+    (archives / "synthetic.deb").touch()
+    log = tmp_path / "apt.log"
+    stubs = """
+    command() { return "$TOOLS_MISSING"; }
+    sudo() {
+      printf '%s\\n' "$*" >> "$APT_LOG"
+      if [[ "$*" == *--no-download* ]]; then return "$CACHED_STATUS"; fi
+    }
+    """
+    subprocess.run(
+        ["bash", "-e", "-c", stubs + script],
+        check=True,
+        env={
+            **os.environ,
+            "RUNNER_TEMP": str(tmp_path),
+            "APT_LOG": str(log),
+            "TOOLS_MISSING": str(installed),
+            "CACHED_STATUS": str(cached_status),
+        },
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    assert len(calls) == expected_calls
+    if calls:
+        assert "--no-download" in calls[0]
+    if expected_calls == 3:
+        assert calls[1] == "apt-get update -qq"
+        assert "--no-download" not in calls[2]
+        assert "APT::Keep-Downloaded-Packages=true" in calls[2]
+
+
+@pytest.mark.parametrize(
+    "audio_url, local_audio", [(None, True), (URL, False), (URL, True)]
+)
+def test_workflow_detects_model_requirements_from_request(
+    tmp_path, monkeypatch, audio_url, local_audio
+):
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    step = next(
+        step
+        for step in workflow["jobs"]["colab-auto"]["steps"]
+        if step.get("id") == "request"
+    )
+    directory = tmp_path / "clipforge-model-request"
+    directory.mkdir()
+    request = {
+        "request_id": "a" * 32,
+        "source_ref": "b" * 40,
+        "video_sha256": "c" * 64 if local_audio else None,
+    }
+    if audio_url:
+        request["audio_source_url"] = audio_url
+    (directory / "request.json").write_text(json.dumps(request))
+    output = tmp_path / "output"
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("REQUEST_ID", request["request_id"])
+    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", request["source_ref"])
+    code = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    exec(compile(code, "workflow-request", "exec"), {})
+    assert output.read_text() == f"no_model_api={int(bool(audio_url))}\n"
+
+
+def test_maintenance_workflow_passes_cache_profile_to_allocation():
+    workflow = yaml.safe_load((ROOT / "deploy/colab-maintenance.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["cache_profile"] == {
+        "description": "Public asset cache profile for prepare-cache",
+        "type": "choice",
+        "options": ["gpu", "cpu"],
+        "default": "gpu",
+    }
+    allocate = next(
+        step
+        for step in workflow["jobs"]["colab"]["steps"]
+        if "colab_actions.py start" in step.get("run", "")
+    )
+    assert allocate["env"]["CLIPFORGE_CACHE_PROFILE"] == "${{ inputs.cache_profile }}"

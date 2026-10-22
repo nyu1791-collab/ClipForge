@@ -24,7 +24,6 @@ REQUEST = {
     "REQUEST_ID": "a" * 32,
     "CLIPFORGE_SOURCE_REF": "b" * 40,
     "INPUT_TAG": "clipforge-input-" + "a" * 32,
-    "AUDIO_URL": "",
 }
 AUDIO_URL = (
     "https://kick.com/test_channel-1/videos/01234567-89ab-cdef-0123-456789abcdef"
@@ -120,66 +119,6 @@ class ControlTests(unittest.TestCase):
                     control.ControlError, "Invalid cache profile"
                 ):
                     controller.start(mode="prepare-cache")
-                authenticate.assert_not_called()
-                pool.assert_not_called()
-                self.assertFalse(controller.state_path.exists())
-                self.assertFalse(controller.credentials_path.exists())
-
-    def test_audio_url_is_recorded_without_changing_empty_url_requests(self):
-        for url in (AUDIO_URL, ""):
-            with (
-                self.subTest(url=url),
-                tempfile.TemporaryDirectory() as temporary,
-                patch.dict(
-                    os.environ,
-                    {**REQUEST, "AUDIO_URL": url, "COLAB_ADC_JSON": "{}"},
-                ),
-                patch.object(control, "authenticated_client") as authenticate,
-            ):
-                client = authenticate.return_value
-                client.list_assignments.return_value = []
-                client.get_consumption_user_info.side_effect = RuntimeError()
-                client.assign.return_value = SimpleNamespace(
-                    endpoint="owned-session",
-                    runtime_proxy_info=SimpleNamespace(
-                        url="https://test.invalid", token="test-only"
-                    ),
-                )
-                controller = control.Controller(temporary)
-                controller.start(mode="pipeline")
-                if url:
-                    self.assertEqual(controller.state()["audio_url"], url)
-                else:
-                    self.assertNotIn("audio_url", controller.state())
-
-    def test_invalid_audio_urls_stop_before_authentication(self):
-        for url in (
-            AUDIO_URL.replace("https:", "http:"),
-            AUDIO_URL.replace("kick.com/", "kick.com.evil.invalid/"),
-            AUDIO_URL.replace("kick.com/", "user@kick.com/"),
-            AUDIO_URL.replace("kick.com/", "kick.com:443/"),
-            AUDIO_URL.replace("test_channel-1", ".."),
-            AUDIO_URL.replace("01234567-89ab", "not-uuid"),
-            AUDIO_URL + "/",
-            AUDIO_URL + "?query=1",
-            AUDIO_URL + "#fragment",
-            AUDIO_URL + "\n",
-            " " + AUDIO_URL,
-            " ",
-        ):
-            with (
-                self.subTest(url=url),
-                tempfile.TemporaryDirectory() as temporary,
-                patch.dict(
-                    os.environ,
-                    {**REQUEST, "AUDIO_URL": url, "COLAB_ADC_JSON": "invalid-json"},
-                ),
-                patch.object(control, "authenticated_client") as authenticate,
-                patch.object(control, "colab_pool") as pool,
-            ):
-                controller = control.Controller(temporary)
-                with self.assertRaisesRegex(control.ControlError, "Kick audio URL"):
-                    controller.start(mode="pipeline")
                 authenticate.assert_not_called()
                 pool.assert_not_called()
                 self.assertFalse(controller.state_path.exists())
@@ -571,7 +510,7 @@ class ControlTests(unittest.TestCase):
                 )
                 self.assertFalse((controller.root / "job-payload.json").exists())
 
-    def test_audio_url_payload_needs_no_gemini_key_and_collects_topics(self):
+    def test_audio_analysis_needs_no_gemini_key_and_collects_topics(self):
         for key in ("", "test-only"):
             with (
                 self.subTest(key_present=bool(key)),
@@ -589,9 +528,6 @@ class ControlTests(unittest.TestCase):
                 controller, events, patches = self._pipeline_controller(
                     temporary, restore
                 )
-                record = controller.state()
-                record["audio_url"] = AUDIO_URL
-                control.write_private(controller.state_path, record)
                 uploaded = []
 
                 def upload(local, remote):
@@ -600,15 +536,35 @@ class ControlTests(unittest.TestCase):
                 with contextlib.ExitStack() as stack:
                     for item in patches:
                         stack.enter_context(item)
-                    stack.enter_context(patch.dict(os.environ, {"GEMINI_API_KEY": key}))
+                    stack.enter_context(
+                        patch.dict(
+                            os.environ,
+                            {"GEMINI_API_KEY": key, "CLIPFORGE_NO_MODEL_API": "1"},
+                        )
+                    )
                     contents = stack.enter_context(
                         patch("colab_cli.contents.ContentsClient")
                     )
                     contents.return_value.upload.side_effect = upload
                     controller.run(Path(temporary) / "output")
-                self.assertEqual(uploaded[0]["audio_url"], AUDIO_URL)
+                self.assertNotIn("audio_url", uploaded[0])
                 self.assertEqual(uploaded[0]["gemini_api_key"], "")
                 self.assertEqual(events, ["stop", "restore"])
+
+    def test_video_pipeline_still_requires_gemini_key(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            controller, _, patches = self._pipeline_controller(temporary, Mock())
+            with contextlib.ExitStack() as stack:
+                for item in patches:
+                    stack.enter_context(item)
+                stack.enter_context(
+                    patch.dict(
+                        os.environ,
+                        {"GEMINI_API_KEY": "", "CLIPFORGE_NO_MODEL_API": "0"},
+                    )
+                )
+                with self.assertRaisesRegex(control.ControlError, "GEMINI_API_KEY"):
+                    controller.run(Path(temporary) / "output")
 
     def test_stage_timings_are_printed_from_the_returned_receipt(self):
         timings = {"cache_restore": 0.25, "setup": 12.5, "pipeline": 300.75}

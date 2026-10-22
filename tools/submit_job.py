@@ -160,8 +160,14 @@ def verify_audio_analysis(
         "asr-receipt.json",
         "transcripts/" + key + ".json",
     }
-    # Internal bookkeeping written by the analysis itself (lock file, stage receipt) is not hashed.
-    internal = {".audio-first.lock", ".state/topics.json"}
+    # Internal bookkeeping and top-level diagnostic files are not hashed.
+    internal = {
+        ".audio-first.lock",
+        ".state/topics.json",
+        "gpu-receipt.json",
+        "acquisition.json",
+        "audio.m4a.receipt.json",
+    }
     required = names | {"request-receipt.json"}
     if not required <= files or files - required - internal:
         raise RuntimeError("result contains unexpected files")
@@ -574,7 +580,7 @@ def resume_audio_staging(args):
                 raise RuntimeError("staged input upload is incomplete")
         # No dispatch is attempted until every staged file matches its saved request.
         send_dispatch(state, receipt)
-        print("Resumed private audio request " + identity + "; one workflow submitted.")
+    print("Resumed private audio request " + identity + "; one workflow submitted.")
 
 
 def recover(args):
@@ -715,7 +721,8 @@ def submit(args):
             fcntl.flock(submit_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("another VM submission is active") from None
-        dispatch(args, state_root)
+        state, receipt = dispatch(args, state_root)
+    wait_for_result(args, state, receipt)
 
 
 def dispatch(args, state_root):
@@ -913,6 +920,12 @@ def dispatch(args, state_root):
             save(receipt_path, receipt)
             raise
     send_dispatch(state, receipt)
+    return state, receipt
+
+
+def wait_for_result(args, state, receipt):
+    identity = receipt["request_id"]
+    receipt_path = state / "receipt.json"
     print("Submitted private ClipForge job " + identity, flush=True)
     deadline = time.monotonic() + 6000
     run_id = None

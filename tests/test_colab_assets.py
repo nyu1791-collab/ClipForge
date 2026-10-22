@@ -807,13 +807,10 @@ class RemotePipelineTests(unittest.TestCase):
                             )
                             self.assertEqual(published.kwargs["parts"], cache.PARTS)
 
-    def test_audio_url_uses_cuda_job_and_preserves_result_publication(self):
-        url = (
-            "https://kick.com/test-channel/videos/01234567-89ab-cdef-0123-456789abcdef"
-        )
-        for audio_url in (url, ""):
+    def test_pipeline_uses_staged_input_and_preserves_result_publication(self):
+        for audio_analysis in (True, False):
             with (
-                self.subTest(audio_url=bool(audio_url)),
+                self.subTest(audio_analysis=audio_analysis),
                 tempfile.TemporaryDirectory() as temporary,
             ):
                 root = Path(temporary)
@@ -826,12 +823,9 @@ class RemotePipelineTests(unittest.TestCase):
                     "input_tag": "clipforge-input-" + "a" * 32,
                     "workflow_run": "123",
                     "github_token": "test-only-github",
+                    "gemini_api_key": "" if audio_analysis else "test-only-gemini",
                 }
-                if audio_url:
-                    payload["audio_url"] = audio_url
-                else:
-                    payload["gemini_api_key"] = "test-only-gemini"
-                status = "topics_allocated" if audio_url else "complete"
+                status = "topics_allocated" if audio_analysis else "complete"
 
                 def command(arguments, environment, name, **kwargs):
                     if name == "pipeline":
@@ -869,28 +863,18 @@ class RemotePipelineTests(unittest.TestCase):
                 self.assertIn("source tools/colab_cache_env.sh", invocation[2])
                 self.assertIn(str(root / ".venv/bin/python"), invocation)
                 self.assertEqual(invocation[-2:], ["--output", str(output)])
-                if audio_url:
-                    self.assertEqual(set(calls), {"setup", "pipeline"})
-                    self.assertIn("tools/audio_url_job.py", invocation)
-                    self.assertNotIn("tools/run_request.py", invocation)
-                    for option, value in (
-                        ("--url", url),
-                        ("--request-id", payload["request_id"]),
-                        ("--source-ref", payload["source_ref"]),
-                        ("--workflow-run", "123"),
-                    ):
-                        self.assertEqual(
-                            invocation[invocation.index(option) + 1], value
-                        )
+                self.assertEqual(set(calls), {"setup", "prepare", "pipeline"})
+                self.assertIn("tools/run_request.py", invocation)
+                self.assertIn("run", invocation)
+                self.assertIn("prepare", calls["prepare"].args[0])
+                self.assertNotIn("GEMINI_API_KEY", calls["setup"].args[1])
+                self.assertNotIn("GEMINI_API_KEY", calls["prepare"].args[1])
+                self.assertNotIn("GH_TOKEN", environment)
+                self.assertNotIn("GITHUB_TOKEN", environment)
+                if audio_analysis:
                     self.assertNotIn("GEMINI_API_KEY", environment)
-                    self.assertNotIn("GH_TOKEN", environment)
-                    self.assertNotIn("GITHUB_TOKEN", environment)
                 else:
-                    self.assertEqual(set(calls), {"setup", "prepare", "pipeline"})
-                    self.assertIn("tools/run_request.py", invocation)
-                    self.assertIn("run", invocation)
                     self.assertEqual(environment["GEMINI_API_KEY"], "test-only-gemini")
-                    self.assertIn("prepare", calls["prepare"].args[0])
                 self.assertEqual(environment["CLIPFORGE_REQUIRE_CUDA"], "1")
                 self.assertEqual(environment["CLIPFORGE_CACHE_PROFILE"], "gpu")
                 bundles.publish.assert_called_once()

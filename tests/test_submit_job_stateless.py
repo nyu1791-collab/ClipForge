@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -219,6 +220,39 @@ def test_stateless_collect_rejects_extra_file(collector):
     (artifact / "extra.txt").write_text("unexpected")
     with pytest.raises(RuntimeError, match="unexpected files"):
         invoke(monkeypatch, module, *standard_args(tmp_path / "recovered"))
+
+
+DIAGNOSTICS = ["gpu-receipt.json", "acquisition.json", "audio.m4a.receipt.json"]
+
+
+@pytest.mark.parametrize("names", [[name] for name in DIAGNOSTICS] + [DIAGNOSTICS])
+def test_stateless_collect_accepts_unhashed_top_level_diagnostics(collector, names):
+    module, artifact, _, tmp_path, monkeypatch = collector
+    for name in names:
+        (artifact / name).write_text('{"synthetic": true}')
+    output = tmp_path / "recovered"
+    invoke(monkeypatch, module, *standard_args(output))
+    assert all((output / name).is_file() for name in names)
+
+
+@pytest.mark.parametrize("name", DIAGNOSTICS)
+@pytest.mark.parametrize("kind", ["nested", "directory", "symlink", "fifo", "suffix"])
+def test_stateless_collect_limits_diagnostic_exceptions(collector, name, kind):
+    module, artifact, _, tmp_path, monkeypatch = collector
+    target = artifact / name
+    if kind == "nested":
+        (artifact / "transcripts" / name).write_text("{}")
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "symlink":
+        target.symlink_to(artifact / "audio.m4a")
+    elif kind == "fifo":
+        os.mkfifo(target)
+    else:
+        target.with_suffix(".json.extra").write_text("{}")
+    # Verify in place: copying a FIFO would fail before the verifier sees it.
+    with pytest.raises(RuntimeError, match="unexpected|symlink|non-regular"):
+        module.verify_audio_analysis(artifact, REQUEST, REF, AUDIO_SHA, URL)
 
 
 def test_stateless_collect_rejects_symlink(collector):

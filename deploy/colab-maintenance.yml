@@ -12,6 +12,11 @@ on:
         description: Require cached runtime packages and models without new downloads
         type: boolean
         default: false
+      cache_profile:
+        description: Public asset cache profile for prepare-cache
+        type: choice
+        options: [gpu, cpu]
+        default: gpu
 
 permissions:
   contents: write
@@ -63,6 +68,7 @@ jobs:
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           COLAB_JOB_MODE: ${{ inputs.mode }}
+          CLIPFORGE_CACHE_PROFILE: ${{ inputs.cache_profile }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start --mode "$COLAB_JOB_MODE"
       - name: Verify CUDA inference or prepare the next runtime's cache

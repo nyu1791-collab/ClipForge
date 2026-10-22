@@ -291,17 +291,17 @@ def test_reservations_bound_parallel_downloads_and_settle_actual_bytes(make_vod)
     observed = []
 
     def download(index):
-        if index < 2:
+        with value._lock:
+            observed.append((value.used, value._reserved))
+            first_pair = len(observed) <= 2
+        if first_pair:
             barrier.wait(timeout=5)
-            with value._lock:
-                observed.append((value.used, value._reserved))
-                assert value.used + value._reserved <= value.max_bytes
         return b"Gsynthetic"
 
     state.download = download
     value.prefetch(0, 3)
-    assert len(observed) == 2
-    assert (0, 128 * MIB) in observed
+    assert len(observed) == 3
+    assert all(0 < reserved <= value.max_bytes - used for used, reserved in observed)
     assert sorted(state.calls) == [0, 1, 2]
     assert value.used == 3 * len(b"Gsynthetic")
     assert value._reserved == 0
