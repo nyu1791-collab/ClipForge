@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 import json
 import os
 from pathlib import Path
@@ -295,6 +296,84 @@ class SetupScriptTests(unittest.TestCase):
 
 
 class RemotePipelineTests(unittest.TestCase):
+    def test_parallel_audio_cache_is_saved_only_by_first_clip_even_on_a_miss(self):
+        for cached in (False, True):
+            for fetched in (False, True):
+                for clip_index in (None, "1", "2"):
+                    with (
+                        self.subTest(
+                            cached=cached, fetched=fetched, clip_index=clip_index
+                        ),
+                        tempfile.TemporaryDirectory() as temporary,
+                    ):
+                        root = Path(temporary)
+                        work = root / "job"
+                        payload = {
+                            "mode": "audio-stage",
+                            "request_id": "a" * 32,
+                            "source_ref": "b" * 40,
+                            "workflow_run": "123",
+                            "github_token": "test-only-github",
+                            "accelerator": "NONE",
+                            "stage": {
+                                "previous_run": "122",
+                                "previous_request": "c" * 32,
+                                "review": '{"clips": []}',
+                                "clip_index": clip_index,
+                            },
+                        }
+
+                        def command(arguments, environment, name, **kwargs):
+                            if name == "setup" and fetched:
+                                (work / "setup-fetched").touch()
+                            if name == "render":
+                                (work / "out/manifest.json").write_text(
+                                    '{"status": "clip_rendered"}'
+                                )
+
+                        bundles = Mock()
+                        bundles.restore.return_value = cached
+                        with (
+                            patch.object(remote_job, "ROOT", root),
+                            patch.object(remote_job, "WORK", work),
+                            patch.object(remote_job, "PERSISTENT", root / "cache"),
+                            patch.object(remote_job, "Path") as paths,
+                            patch.object(
+                                remote_job,
+                                "configuration",
+                                return_value=("cache-key", root, root),
+                            ),
+                            patch.object(
+                                remote_job, "ReleaseBundles", return_value=bundles
+                            ),
+                            patch.object(remote_job, "host_info", return_value={}),
+                            patch.object(
+                                remote_job, "read_setup_timings", return_value={}
+                            ),
+                            patch.object(
+                                remote_job, "publish_result", return_value=True
+                            ),
+                            patch.object(remote_job.os, "umask"),
+                            patch.object(
+                                remote_job, "command", side_effect=command
+                            ) as run,
+                        ):
+                            paths.return_value.read_text.return_value = json.dumps(
+                                payload
+                            )
+                            remote_job.main()
+                        should_save = clip_index in (None, "1") and (
+                            not cached or fetched
+                        )
+                        self.assertEqual(bundles.publish.call_count, int(should_save))
+                        self.assertEqual(
+                            any(
+                                call.args[2] == "save-cache"
+                                for call in run.call_args_list
+                            ),
+                            should_save,
+                        )
+
     def test_audio_url_uses_cuda_job_and_preserves_result_publication(self):
         url = (
             "https://kick.com/test-channel/videos/01234567-89ab-cdef-0123-456789abcdef"
@@ -439,3 +518,44 @@ class StreamedRestoreTests(unittest.TestCase):
             with self.assertRaisesRegex(BundleError, "checksum"):
                 bundles.restore(tag, root / "out", "result", "request", required=True)
             self.assertFalse((root / "out").exists())
+
+    def test_download_window_refills_only_after_a_chunk_is_deleted(self):
+        import colab_bundle
+
+        for kind, tag, identity in (
+            ("assets", "clipforge-cache-" + "a" * 24, "key"),
+            ("result", "clipforge-input-" + "a" * 32, "request"),
+        ):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                bundles, source = self.publish_many_chunks(root, kind, tag, identity)
+                paths = []
+                outstanding = []
+
+                def submit(function, asset, path, chunk):
+                    # Downloads finish immediately while extraction makes no progress.
+                    # A new submission must wait until an earlier file has been deleted.
+                    self.assertLess(
+                        sum(p.exists() for p in paths),
+                        colab_bundle.DOWNLOAD_WORKERS + 1,
+                    )
+                    future = Future()
+                    future.set_result(function(asset, path, chunk))
+                    paths.append(path)
+                    outstanding.append(sum(p.exists() for p in paths))
+                    return future
+
+                with patch.object(colab_bundle, "ThreadPoolExecutor") as executor:
+                    executor.return_value.__enter__.return_value.submit.side_effect = (
+                        submit
+                    )
+                    bundles.restore(
+                        tag, root / "restored", kind, identity, required=True
+                    )
+                self.assertGreater(len(paths), colab_bundle.DOWNLOAD_WORKERS + 1)
+                self.assertEqual(max(outstanding), colab_bundle.DOWNLOAD_WORKERS + 1)
+                self.assertFalse(any(p.exists() for p in paths))
+                self.assertEqual(
+                    (root / "restored/blob.bin").read_bytes(),
+                    (source / "blob.bin").read_bytes(),
+                )

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Stream private release bundles in bounded chunks, verifying every chunk."""
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import io
@@ -165,9 +166,9 @@ class ChunkStream(io.RawIOBase):
     is read before its whole chunk is verified.
     """
 
-    def __init__(self, futures):
-        self.futures = list(futures)
-        self.index = 0
+    def __init__(self, futures, on_consumed):
+        self.futures = futures
+        self.on_consumed = on_consumed
         self.current = None
 
     def readable(self):
@@ -176,9 +177,9 @@ class ChunkStream(io.RawIOBase):
     def readinto(self, buffer):
         while True:
             if self.current is None:
-                if self.index >= len(self.futures):
+                if not self.futures:
                     return 0
-                path = self.futures[self.index].result()
+                path = self.futures[0].result()
                 self.current = (path, path.open("rb"))
             count = self.current[1].readinto(buffer)
             if count:
@@ -187,7 +188,8 @@ class ChunkStream(io.RawIOBase):
             handle.close()
             path.unlink()
             self.current = None
-            self.index += 1
+            self.futures.popleft()
+            self.on_consumed()
 
     def finish(self):
         """Read past tar's end padding so every chunk is verified and removed."""
@@ -380,18 +382,29 @@ class ReleaseBundles:
             unpacked.mkdir()
             # Chunks download side by side and are extracted in order as each one is
             # verified, streamed straight into tar: no joined copy of the bundle is written.
+            # Refill only after consumption deletes a chunk, bounding disk use even on slow tar.
             with ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS) as pool:
-                pending = [
-                    pool.submit(
-                        self.download_chunk,
-                        assets[chunk["name"]],
-                        temporary / f"{i}.part",
-                        chunk,
+                pending = deque()
+                chunks = iter(enumerate(data["chunks"]))
+
+                def submit_next():
+                    item = next(chunks, None)
+                    if item is None:
+                        return
+                    i, chunk = item
+                    pending.append(
+                        pool.submit(
+                            self.download_chunk,
+                            assets[chunk["name"]],
+                            temporary / f"{i}.part",
+                            chunk,
+                        )
                     )
-                    for i, chunk in enumerate(data["chunks"])
-                ]
+
                 try:
-                    stream = ChunkStream(pending)
+                    for _ in range(DOWNLOAD_WORKERS + 1):
+                        submit_next()
+                    stream = ChunkStream(pending, submit_next)
                     mode = "r|gz" if kind == "assets" else "r|"
                     with tarfile.open(fileobj=stream, mode=mode) as bundle:
                         count = total = 0

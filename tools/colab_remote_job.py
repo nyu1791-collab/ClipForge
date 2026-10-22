@@ -366,12 +366,14 @@ def main():
             bundles, payload, output, report, timings
         ):
             failed = True
-        # A job that restored the cache rebuilds it only when its setup fetched something new,
-        # and among parallel clip renders only clip 1 does, so they do not race on one release.
+        # Only clip 1 (or an unsplit render) may save the audio-stage cache, even on a miss.
+        # A restored pipeline/audio-stage cache is rebuilt only when setup fetched new assets.
         fetched = (WORK / "setup-fetched").is_file()
         report["setup_fetched"] = fetched
         first = (payload.get("stage") or {}).get("clip_index") in (None, "1")
-        if mode in {"pipeline", "audio-stage"} and cached and not (fetched and first):
+        if mode == "audio-stage" and not first:
+            report["public_cache_saved"] = "skipped_parallel"
+        elif mode in {"pipeline", "audio-stage"} and cached and not (fetched and first):
             report["public_cache_saved"] = "skipped_restored"
         else:
             try:

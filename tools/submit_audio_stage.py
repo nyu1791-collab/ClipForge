@@ -225,6 +225,13 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     rendered = manifest.get("rendered", [])
     if delivery_only and (not isinstance(rendered, list) or not rendered):
         raise RuntimeError("stage artifact omits required rendered clips")
+    if status == "clip_rendered":
+        expected = "clips/clip-%03d" % int(request["clip_index"])
+        if len(rendered) != 1 or rendered[0].get("directory") not in {
+            expected,
+            "delivery/" + expected,
+        }:
+            raise RuntimeError("stage artifact clip index mismatch")
     for name in sorted(listed):
         if name.endswith(".receipt.json"):
             media = name[: -len(".receipt.json")]
@@ -238,7 +245,9 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     for row in rendered:
         directory = safe_relative(row.get("directory"))
         if delivery_only:
-            if not re.fullmatch(r"delivery/clips/clip-[0-9]{3}", directory):
+            if status != "clip_rendered" and not re.fullmatch(
+                r"delivery/clips/clip-[0-9]{3}", directory
+            ):
                 raise RuntimeError("stage manifest has an invalid clip directory")
             required = {
                 directory + "/" + name
@@ -517,7 +526,14 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RuntimeError,
+        subprocess.SubprocessError,
+    ):
         print(
             "Audio stage command failed; inspect its private receipt. No retry or fallback was started.",
             file=sys.stderr,

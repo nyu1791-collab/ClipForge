@@ -231,6 +231,7 @@ def verify_download(directory, receipt, request):
             request["audio_source_url"],
         )
         return
+    files, dirs = plain_tree(directory)
     returned = json.loads((directory / "request-receipt.json").read_text())
     if (
         returned.get("request_id") != receipt["request_id"]
@@ -250,6 +251,7 @@ def verify_download(directory, receipt, request):
     ) != returned.get("rendered_clips"):
         raise RuntimeError("result clip count mismatch")
     seen = set()
+    expected_files = {"request-receipt.json", "manifest.json"}
     for clip in rendered:
         relative = clip["directory"]
         if not re.fullmatch(r"clips/clip-[0-9]{3}", relative) or relative in seen:
@@ -259,12 +261,17 @@ def verify_download(directory, receipt, request):
         if set(checksums) != {"video.mp4", "captions.ass", "captions.srt"}:
             raise RuntimeError("missing output checksums")
         for name, checksum in checksums.items():
+            expected_files.add(relative + "/" + name)
             target = directory / relative / name
             if (
                 any(part.is_symlink() for part in [target, *target.parents])
                 or digest(target) != checksum
             ):
                 raise RuntimeError("downloaded output checksum mismatch")
+    if files != expected_files:
+        raise RuntimeError("result contains unexpected files")
+    if dirs != {"clips", *seen}:
+        raise RuntimeError("result contains unexpected directories")
 
 
 def prepare_destination(destination):

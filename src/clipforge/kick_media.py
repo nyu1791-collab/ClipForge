@@ -8,6 +8,7 @@ import re
 import ssl
 import tempfile
 import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -111,14 +112,23 @@ def parse_media(text, base, root):
 
 
 class KickVOD:
-    def __init__(self, url, cache, max_bytes=2 * 1024**3, max_seconds=14400):
+    def __init__(self, url, cache, max_bytes=2 * 1024**3, max_seconds=14400, workers=6):
         self.url = canonical(url)
         if not 1024 <= max_bytes <= 16 * 1024**3 or not 1 <= max_seconds <= 86400:
             raise PipelineError("invalid byte/duration budget")
+        if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
+            raise PipelineError("invalid worker count")
         self.cache = Path(cache).resolve()
         self.cache.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.max_bytes, self.max_seconds, self.used = max_bytes, max_seconds, 0
         self._lock = threading.RLock()
+        self._budget = threading.Condition(self._lock)
+        self._session_lock = threading.Lock()
+        self._local = threading.local()
+        self._sessions, self._inflight = [], {}
+        self._reserved, self._closed = 0, False
+        self.workers = workers
+        self._executor = ThreadPoolExecutor(max_workers=workers)
         self.ca = (
             os.environ.get("SSL_CERT_FILE")
             or os.environ.get("REQUESTS_CA_BUNDLE")
@@ -126,11 +136,8 @@ class KickVOD:
         )
         from curl_cffi import requests
 
-        self.session = requests.Session(
-            impersonate="chrome",
-            headers={"Referer": "https://kick.com/"},
-            verify=self.ca or True,
-        )
+        self._session_factory = requests.Session
+        self.session = self._new_session()
         try:
             parser = VideoMetadata()
             parser.feed(self.fetch(self.url, 2 * 1024**2).decode("utf-8"))
@@ -179,28 +186,50 @@ class KickVOD:
             raise
 
     def close(self):
-        self.session.close()
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        with self._session_lock:
+            self.session.close()
+        for session in self._sessions:
+            session.close()
+
+    def _new_session(self):
+        return self._session_factory(
+            impersonate="chrome",
+            headers={"Referer": "https://kick.com/"},
+            verify=self.ca or True,
+        )
+
+    def _worker_session(self):
+        if not hasattr(self._local, "session"):
+            self._local.session = self._new_session()
+            with self._lock:
+                self._sessions.append(self._local.session)
+        return self._local.session
 
     def fetch(self, url, limit):
-        # The HTTP session is not shared across threads; prefetch and retrieve take turns.
-        with self._lock:
-            response = self.session.get(
-                url, allow_redirects=False, timeout=30, stream=True
-            )
-            try:
-                if response.status_code != 200:
-                    raise PipelineError(
-                        f"Kick media HTTP {response.status_code}; no automatic retry"
-                    )
-                chunks, size = [], 0
-                for chunk in response.iter_content():
-                    size += len(chunk)
-                    if size > limit:
-                        raise PipelineError("Kick response exceeds budget")
-                    chunks.append(chunk)
-                return b"".join(chunks)
-            finally:
-                response.close()
+        with self._session_lock:
+            return self._fetch(self.session, url, limit)
+
+    def _fetch(self, session, url, limit):
+        response = session.get(url, allow_redirects=False, timeout=30, stream=True)
+        try:
+            if response.status_code != 200:
+                raise PipelineError(
+                    f"Kick media HTTP {response.status_code}; no automatic retry"
+                )
+            chunks, size = [], 0
+            for chunk in response.iter_content():
+                size += len(chunk)
+                if size > limit:
+                    raise PipelineError("Kick response exceeds budget")
+                chunks.append(chunk)
+            return b"".join(chunks)
+        finally:
+            response.close()
 
     def playlist(self, quality):
         if quality not in {"lowest", "preview", "720p", "1080p", "best"}:
@@ -239,31 +268,107 @@ class KickVOD:
             or not 0 <= start < end <= duration + 0.01
         ):
             raise PipelineError("requested range is outside archive")
-        for s in segments:
-            if s["end"] > start and s["start"] < end:
-                self.segment(s["url"])
+        self._download_segments(
+            [s for s in segments if s["end"] > start and s["start"] < end]
+        )
 
     def segment(self, url):
-        # One lock covers the cache check, the download and the byte count, so a
-        # prefetch and a retrieve for the same URL never download it twice.
+        return self._segment_future(url).result()
+
+    def _segment_future(self, url):
         with self._lock:
-            return self._segment(url)
+            if self._closed:
+                raise PipelineError("Kick VOD is closed")
+            future = self._inflight.get(url)
+            if future is None:
+                future = self._executor.submit(self._segment, url)
+                self._inflight[url] = future
+
+                def finished(done):
+                    with self._lock:
+                        if self._inflight.get(url) is done:
+                            del self._inflight[url]
+
+                future.add_done_callback(finished)
+            return future
+
+    def _download_segments(self, segments):
+        # Keep only one worker-width window queued, and stop it on any failure,
+        # including failures later than the next segment in stream order.
+        pending, paths, failures = {}, {}, []
+
+        def completed(future):
+            with self._lock:
+                if not future.cancelled() and not failures:
+                    error = future.exception()
+                    if error is not None:
+                        failures.append(error)
+                        for other in pending:
+                            other.cancel()
+
+        index = 0
+        try:
+            while pending or index < len(segments):
+                with self._lock:
+                    if failures:
+                        raise failures[0]
+                    while len(pending) < self.workers and index < len(segments):
+                        url = segments[index]["url"]
+                        future = self._segment_future(url)
+                        pending[future] = url
+                        future.add_done_callback(completed)
+                        index += 1
+                        if failures:
+                            raise failures[0]
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                with self._lock:
+                    for future in done:
+                        completed(future)
+                    if failures:
+                        raise failures[0]
+                    for future in done:
+                        paths[pending.pop(future)] = future.result()
+        except BaseException:
+            with self._lock:
+                for future in pending:
+                    future.cancel()
+            raise
+        return [paths[s["url"]] for s in segments]
 
     def _segment(self, url):
         key = hashlib.sha256(url.encode()).hexdigest()
         path, receipt = self.cache / (key + ".ts"), self.cache / (key + ".json")
-        remaining = self.max_bytes - self.used
-        if path.is_symlink() or receipt.is_symlink():
-            raise PipelineError("cache symlinks are not allowed")
-        if path.is_file() and receipt.is_file() and path.stat().st_size <= remaining:
-            saved = json.loads(receipt.read_text())
-            if saved.get("sha256") == digest(path):
-                self.used += path.stat().st_size
-                return path
-        if remaining <= 0:
-            raise PipelineError("segment byte budget exhausted")
-        body = self.fetch(url, min(64 * 1024**2, remaining))
-        self.used += len(body)
+        with self._budget:
+            if path.is_symlink() or receipt.is_symlink():
+                raise PipelineError("cache symlinks are not allowed")
+            if path.is_file() and receipt.is_file():
+                size = path.stat().st_size
+                saved = json.loads(receipt.read_text())
+                if saved.get("sha256") == digest(path):
+                    while (
+                        size > self.max_bytes - self.used - self._reserved
+                        and self._reserved
+                    ):
+                        self._budget.wait()
+                    if size <= self.max_bytes - self.used:
+                        self.used += size
+                        return path
+            while self.max_bytes - self.used - self._reserved <= 0 and self._reserved:
+                self._budget.wait()
+            remaining = self.max_bytes - self.used - self._reserved
+            if remaining <= 0:
+                raise PipelineError("segment byte budget exhausted")
+            reserved = min(64 * 1024**2, remaining)
+            self._reserved += reserved
+        body = None
+        try:
+            body = self._fetch(self._worker_session(), url, reserved)
+        finally:
+            with self._budget:
+                if body is not None:
+                    self.used += len(body)
+                self._reserved -= reserved
+                self._budget.notify_all()
         if not body or body[0] != 0x47:
             raise PipelineError("expected MPEG-TS segment")
         with tempfile.NamedTemporaryFile(dir=self.cache, delete=False) as temp:
@@ -290,8 +395,8 @@ class KickVOD:
         with tempfile.TemporaryDirectory(dir=output.parent, prefix=".fetch-") as temp:
             ts = Path(temp) / "input.ts"
             with ts.open("wb") as dest:
-                for s in selected:
-                    with self.segment(s["url"]).open("rb") as source:
+                for path in self._download_segments(selected):
+                    with path.open("rb") as source:
                         import shutil
 
                         shutil.copyfileobj(source, dest)

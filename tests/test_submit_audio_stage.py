@@ -2,7 +2,10 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import runpy
 import shutil
+import subprocess
+import sys
 
 import pytest
 
@@ -113,6 +116,33 @@ def test_unconfirmed_dispatch_is_not_sent_again(stage_submitter):
     with pytest.raises(RuntimeError, match="already has a request"):
         module.main(args)
     assert len(control["posts"]) == 1
+
+
+def test_command_timeout_exits_with_short_failure_message(
+    collector, tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(
+        sys, "argv", ["submit_audio_stage", *collect_args(tmp_path / "collected")]
+    )
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            ["gh", "synthetic-command"],
+            60,
+            output="synthetic hidden output",
+            stderr="synthetic hidden error",
+        )
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(SystemExit) as exit_info:
+        runpy.run_path("tools/submit_audio_stage.py", run_name="__main__")
+    assert exit_info.value.code == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == (
+        "Audio stage command failed; inspect its private receipt. "
+        "No retry or fallback was started.\n"
+    )
 
 
 COLLECT_REQUEST = "d" * 32
@@ -333,6 +363,61 @@ def test_collect_delivery_without_analysis_files(delivery_collector, tmp_path):
     saved = json.loads((state / "receipt.json").read_text())
     assert saved["status"] == "COLLECTED" and saved["run_id"] == RUN_ID
     assert control["downloads"] == 1
+
+
+@pytest.mark.parametrize("clip_index", ["1", "3"])
+def test_collect_single_clip_rejects_requested_index_mismatch(
+    collector, tmp_path, clip_index
+):
+    module, _, state = build_delivery_collector(collector, "render")
+    path = state / "request.json"
+    saved = json.loads(path.read_text())
+    saved["clip_index"] = clip_index
+    path.write_text(json.dumps(saved))
+    destination = tmp_path / "collected"
+    with pytest.raises(RuntimeError, match="clip index mismatch"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
+
+
+def test_collect_single_clip_rejects_multiple_rendered_rows(collector, tmp_path):
+    module, control, _ = build_delivery_collector(collector, "render")
+    root = control["artifact"]
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["rendered"] *= 2
+    manifest_path.write_text(json.dumps(manifest))
+    receipt_path = root / "request-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["sha256"]["manifest.json"] = sha(manifest_path)
+    receipt_path.write_text(json.dumps(receipt))
+    destination = tmp_path / "collected"
+    with pytest.raises(RuntimeError, match="clip index mismatch"):
+        module.main(collect_args(destination))
+    assert not destination.exists()
+
+
+def test_collect_single_clip_accepts_directory_without_delivery_prefix(
+    collector, tmp_path
+):
+    module, control, _ = build_delivery_collector(collector, "render")
+    root = control["artifact"]
+    (root / "delivery/clips").rename(root / "clips")
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["rendered"][0]["directory"] = "clips/clip-002"
+    manifest_path.write_text(json.dumps(manifest))
+    receipt_path = root / "request-receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["sha256"] = {
+        path.relative_to(root).as_posix(): sha(path)
+        for path in root.rglob("*")
+        if path.is_file() and path != receipt_path
+    }
+    receipt_path.write_text(json.dumps(receipt))
+    destination = tmp_path / "collected"
+    assert module.main(collect_args(destination)) == 0
+    assert (destination / "clips/clip-002/video.mp4").is_file()
 
 
 @pytest.mark.parametrize(

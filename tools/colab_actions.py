@@ -15,6 +15,7 @@ from colab_bundle import ReleaseBundles, digest
 
 EXPECTED_ACCOUNT = "n.yu17919191@gmail.com"
 SOURCE_REPO = "https://github.com/nyu1791-collab/ClipForge.git"
+REMOTE_PAYLOAD_PATH = "/content/.clipforge-job.json"
 # Every rendered clip must list these; audio-first rows may list more (ledger.json, quality.json).
 REQUIRED_CLIP_FILES = frozenset({"video.mp4", "captions.ass", "captions.srt"})
 
@@ -122,7 +123,8 @@ def colab_shape():
 
 
 # Clip rendering is CPU work (x264), so it tries the cheapest runtime first and moves on only
-# when the account refuses one more of that kind. Measured 2026-10-22: at most two T4 and two
+# on TooManyAssignmentsError (412), never on permission or rate-limit errors.
+# Measured 2026-10-22: at most two T4 and two
 # L4 at once, counted per kind; three CPU high-ram and two CPU standard were granted together.
 # Rates then: CPU high-ram 0.26, T4 1.07, T4 high-ram 1.27, L4 1.54 compute units an hour.
 DEFAULT_POOLS = {"audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4"}
@@ -176,6 +178,18 @@ def stage_request():
     return stage
 
 
+def lookup_assignment(client, notebook_hash, variant, accelerator, shape):
+    """Reconcile only this notebook, never infer ownership from account-wide changes."""
+    from colab_cli.client import Assignment, GetAssignmentResponse
+
+    assignment = client._get_assignment(notebook_hash, variant, accelerator, shape)
+    if isinstance(assignment, Assignment):
+        return assignment
+    if isinstance(assignment, GetAssignmentResponse):
+        return None
+    raise ControlError("Unexpected Colab assignment response")
+
+
 class Controller:
     def __init__(self, root):
         self.root = Path(root)
@@ -187,6 +201,35 @@ class Controller:
 
     def client(self):
         return authenticated_client(json.loads(self.credentials_path.read_text()))
+
+    def reconcile_assignment(self, client, record):
+        from colab_cli.client import Accelerator, Shape, Variant
+
+        record["status"] = "uncertain"
+        write_private(self.state_path, record)
+        accelerator = Accelerator(record["accelerator"])
+        assignment = lookup_assignment(
+            client,
+            uuid.UUID(record["notebook_hash"]),
+            Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU,
+            accelerator,
+            Shape[record["shape"]],
+        )
+        if assignment is not None:
+            record.update(
+                status="allocated",
+                endpoint=assignment.endpoint,
+                url=assignment.runtime_proxy_info.url,
+                token=assignment.runtime_proxy_info.token,
+            )
+        else:
+            record["status"] = "stopped"
+            for key in ("endpoint", "url", "token"):
+                record.pop(key, None)
+        write_private(self.state_path, record)
+        if assignment is None:
+            self.credentials_path.unlink(missing_ok=True)
+        return assignment
 
     def start(self, mode="pipeline"):
         request = (
@@ -225,7 +268,7 @@ class Controller:
         info = json.loads(raw)
         client = authenticated_client(info)
         # A read-only permission check comes before allocation; never use another account.
-        existing = {item.endpoint for item in client.list_assignments()}
+        client.list_assignments()
         units = compute_units(client)
         print_units("before allocation", units)
         write_private(self.credentials_path, info)
@@ -237,46 +280,36 @@ class Controller:
             "units_before": units,
         }
         write_private(self.state_path, record)
-        from colab_cli.client import Accelerator, Variant
+        from colab_cli.client import Accelerator, TooManyAssignmentsError, Variant
 
         refused = []
         for accelerator, shape in pool:
             variant = (
                 Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU
             )
-            record.update(accelerator=accelerator.value, shape=shape.name)
+            notebook_hash = uuid.uuid4()
+            record.update(
+                accelerator=accelerator.value,
+                shape=shape.name,
+                notebook_hash=str(notebook_hash),
+            )
             write_private(self.state_path, record)
             try:
                 assignment = client.assign(
-                    uuid.uuid4(), variant=variant, accelerator=accelerator, shape=shape
+                    notebook_hash, variant=variant, accelerator=accelerator, shape=shape
                 )
                 break
+            except TooManyAssignmentsError:
+                refused.append(f"{accelerator.value}/{shape.name}")
+                print(f"Colab refused {refused[-1]}", flush=True)
+                continue
             except Exception as error:
-                response = getattr(error, "response", None)
-                if type(error).__name__ == "TooManyAssignmentsError" or getattr(
-                    response, "status_code", None
-                ) in {400, 401, 403, 412, 429}:
-                    refused.append(f"{accelerator.value}/{shape.name}")
-                    print(f"Colab refused {refused[-1]}", flush=True)
-                    continue
-                # The reply may be lost after Colab assigned a runtime. A runtime that
-                # appeared meanwhile is recorded as this job's so the release step frees it.
-                try:
-                    appeared = [
-                        item.endpoint
-                        for item in client.list_assignments()
-                        if item.endpoint not in existing
-                    ]
-                except Exception:
-                    appeared = None
                 record["allocation_error"] = type(error).__name__
-                if appeared == []:
-                    record["status"] = "stopped"
-                    write_private(self.state_path, record)
-                    self.credentials_path.unlink(missing_ok=True)
-                elif appeared and len(appeared) == 1:
-                    record.update(status="allocated", endpoint=appeared[0])
-                    write_private(self.state_path, record)
+                try:
+                    self.reconcile_assignment(client, record)
+                except Exception:
+                    # Keep the UUID and credentials so stop() can retry reconciliation.
+                    pass
                 raise
         else:
             record.update(status="stopped", allocation_refused=refused)
@@ -338,15 +371,15 @@ class Controller:
         )
         contents = ContentsClient(remote_state)
         runtime = runtime_from_state(record)
-        execution_failed = False
+        execution_error = None
         try:
-            contents.upload(str(private_payload), "/content/.clipforge-job.json")
+            contents.upload(str(private_payload), REMOTE_PAYLOAD_PATH)
             source = record["source_ref"]
             bootstrap = f"""
 import json, pathlib, runpy, subprocess, sys
 
 def _clipforge_bootstrap():
-    payload_path = pathlib.Path('/content/.clipforge-job.json')
+    payload_path = pathlib.Path({REMOTE_PAYLOAD_PATH!r})
     try:
         subprocess.run(['git','clone','--no-checkout','--filter=blob:none',{SOURCE_REPO!r},'/content/ClipForge'],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -365,11 +398,23 @@ del _clipforge_bootstrap
             )
             try:
                 checked_execute(runtime, bootstrap, 5100)
-            except Exception:
-                execution_failed = True
+            except Exception as error:
+                execution_error = error
+                try:
+                    checked_execute(
+                        runtime,
+                        f"from pathlib import Path; Path({REMOTE_PAYLOAD_PATH!r}).unlink(missing_ok=True)",
+                        30,
+                    )
+                except Exception:
+                    pass
         finally:
             private_payload.unlink(missing_ok=True)
-            runtime.stop()
+            try:
+                runtime.stop()
+            except Exception:
+                if execution_error is None:
+                    raise
         release_error = None
         if record["mode"] in {"pipeline", "audio-stage"}:
             # The results are already published in the Release, so the T4 is freed before
@@ -380,7 +425,13 @@ del _clipforge_bootstrap
             except Exception as error:
                 release_error = error
         try:
-            self.collect(record, output, execution_failed, token, remote_state)
+            self.collect(
+                record, output, execution_error is not None, token, remote_state
+            )
+        except Exception:
+            if execution_error is not None:
+                raise execution_error from None
+            raise
         finally:
             self.report_stages(output)
             if release_error is not None:
@@ -388,6 +439,8 @@ del _clipforge_bootstrap
                     "Early Colab release failed: " + type(release_error).__name__,
                     file=sys.stderr,
                 )
+        if execution_error is not None:
+            raise execution_error
         if release_error is not None:
             raise ControlError(
                 "Colab runtime release was not confirmed after results were retrieved"
@@ -462,7 +515,20 @@ del _clipforge_bootstrap
                     raise ControlError("Unexpected result file name")
                 if digest(Path(output) / name) != checksum:
                     raise ControlError("GPU result checksum mismatch")
-            for clip in json.loads(manifest.read_text()).get("rendered", []):
+            rendered = json.loads(manifest.read_text()).get("rendered", [])
+            if record["mode"] == "audio-stage" and record["stage"]["clip_index"]:
+                directory = "clips/clip-%03d" % int(record["stage"]["clip_index"])
+                if (
+                    not isinstance(rendered, list)
+                    or len(rendered) != 1
+                    or not isinstance(rendered[0], dict)
+                    or rendered[0].get("directory")
+                    not in {directory, "delivery/" + directory}
+                ):
+                    raise ControlError(
+                        "Returned clip differs from the requested clip_index"
+                    )
+            for clip in rendered:
                 # Video jobs write clips/ at the top; audio-first stages write delivery/clips/.
                 if not re.fullmatch(
                     r"(delivery/)?clips/clip-[0-9]{3}", clip.get("directory", "")
@@ -528,11 +594,25 @@ del _clipforge_bootstrap
         record = self.state()
         if record.get("status") == "stopped":
             return
+        client = None
+        if record.get("status") in {"uncertain", "creating"} and record.get(
+            "notebook_hash"
+        ):
+            try:
+                client = self.client()
+                if self.reconcile_assignment(client, record) is None:
+                    print("No owned Colab assignment remains.")
+                    return
+            except Exception:
+                raise ControlError(
+                    "Allocation outcome is uncertain; check the account's Colab sessions before retrying"
+                ) from None
         if not record.get("endpoint"):
             raise ControlError(
                 "Allocation outcome is uncertain; check the account's Colab sessions before retrying"
             )
-        client = self.client()
+        if client is None:
+            client = self.client()
         try:
             client.unassign(record["endpoint"])
         except Exception as error:
@@ -571,7 +651,7 @@ def probe(accelerator_name, hold_seconds=0):
     A refusal allocates nothing. A grant is released immediately and confirmed gone, so the
     check costs seconds of runtime. Used to measure how many runtimes of which kind run at once.
     """
-    from colab_cli.client import Accelerator, Variant
+    from colab_cli.client import Accelerator, TooManyAssignmentsError, Variant
 
     raw = os.environ.get("COLAB_ADC_JSON", "")
     if not raw:
@@ -585,19 +665,33 @@ def probe(accelerator_name, hold_seconds=0):
     before = compute_units(client)
     print_units("before probe", before)
     label = f"{accelerator.value}/{shape.name}"
+    notebook_hash = uuid.uuid4()
+    allocation_error = None
     try:
         assignment = client.assign(
-            uuid.uuid4(), variant=variant, accelerator=accelerator, shape=shape
+            notebook_hash, variant=variant, accelerator=accelerator, shape=shape
         )
-    except Exception as error:
-        print(f"Probe {label}: refused ({type(error).__name__})", flush=True)
+    except TooManyAssignmentsError:
+        print(f"Probe {label}: refused (TooManyAssignmentsError)", flush=True)
         return
+    except Exception as error:
+        try:
+            assignment = lookup_assignment(
+                client, notebook_hash, variant, accelerator, shape
+            )
+        except Exception:
+            raise ControlError(
+                "Probe allocation outcome is uncertain; check the account's Colab sessions before retrying"
+            ) from None
+        if assignment is None:
+            raise
+        allocation_error = error
     try:
         print(f"Probe {label}: granted", flush=True)
         # The account's hourly rate covers every active runtime; the rise over the rate
         # before the probe is this runtime's own rate.
         waited = 0
-        while waited < hold_seconds:
+        while allocation_error is None and waited < hold_seconds:
             time.sleep(min(20, hold_seconds - waited))
             waited += min(20, hold_seconds - waited)
             during = compute_units(client)
@@ -617,6 +711,8 @@ def probe(accelerator_name, hold_seconds=0):
             if attempt == 3:
                 raise ControlError("Probe runtime release has not been confirmed")
             time.sleep(1 + attempt)
+    if allocation_error is not None:
+        raise allocation_error
 
 
 def main():

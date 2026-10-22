@@ -31,6 +31,27 @@ AUDIO_URL = (
 )
 
 
+def granted_assignment(endpoint="owned-session"):
+    from colab_cli.client import Assignment
+
+    return Assignment(
+        endpoint=endpoint,
+        runtimeProxyInfo={
+            "url": "https://test.invalid",
+            "token": "test-only",
+            "tokenExpiresInSeconds": 3600,
+        },
+    )
+
+
+def unassigned_response():
+    from colab_cli.client import GetAssignmentResponse, Variant
+
+    return GetAssignmentResponse(
+        acc="NONE", nbh="synthetic-notebook", token="test-only", variant=Variant.DEFAULT
+    )
+
+
 class ControlTests(unittest.TestCase):
     def test_audio_url_is_recorded_without_changing_empty_url_requests(self):
         for url in (AUDIO_URL, ""):
@@ -337,7 +358,7 @@ class ControlTests(unittest.TestCase):
             ]
             output = Path(temporary) / "output"
             with patch.object(controller, "client", return_value=client):
-                with self.assertRaisesRegex(control.ControlError, "report was saved"):
+                with self.assertRaisesRegex(RuntimeError, "failed"):
                     controller.run(output)
             saved = output / "colab-report.json"
             self.assertEqual(json.loads(saved.read_text()), report)
@@ -427,6 +448,56 @@ class ControlTests(unittest.TestCase):
                 with contextlib.redirect_stdout(stdout):
                     controller.run(Path(temporary) / "output")
             self.assertEqual(events, ["stop", "restore"])
+
+    def test_failed_execution_deletes_remote_payload_once_before_stopping(self):
+        for cleanup_fails in (False, True):
+            with (
+                self.subTest(cleanup_fails=cleanup_fails),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                original = RuntimeError("synthetic kernel failure")
+                calls = []
+
+                def execute(runtime, code, timeout):
+                    calls.append(code)
+                    if len(calls) == 1:
+                        events.append("execute")
+                        raise original
+                    events.append("delete-payload")
+                    if cleanup_fails:
+                        raise RuntimeError("synthetic cleanup failure")
+                    return []
+
+                controller, events, patches = self._pipeline_controller(
+                    temporary, self._result_restore("failed", "render"), execute
+                )
+                runtime = Mock()
+                runtime.stop.side_effect = lambda: events.append("disconnect")
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.ExitStack() as stack:
+                    for item in patches:
+                        stack.enter_context(item)
+                    stack.enter_context(
+                        patch.object(
+                            control, "runtime_from_state", return_value=runtime
+                        )
+                    )
+                    stack.enter_context(contextlib.redirect_stdout(stdout))
+                    stack.enter_context(contextlib.redirect_stderr(stderr))
+                    with self.assertRaises(RuntimeError) as raised:
+                        controller.run(Path(temporary) / "output")
+                self.assertIs(raised.exception, original)
+                self.assertEqual(
+                    events,
+                    ["execute", "delete-payload", "disconnect", "stop", "restore"],
+                )
+                self.assertEqual(len(calls), 2)
+                self.assertIn(repr(control.REMOTE_PAYLOAD_PATH), calls[1])
+                self.assertIn("unlink(missing_ok=True)", calls[1])
+                self.assertNotIn(
+                    "test-only", calls[1] + stdout.getvalue() + stderr.getvalue()
+                )
+                self.assertFalse((controller.root / "job-payload.json").exists())
 
     def test_audio_url_payload_needs_no_gemini_key_and_collects_topics(self):
         for key in ("", "test-only"):
@@ -618,9 +689,13 @@ if __name__ == "__main__":
 
 
 class ProbeTests(unittest.TestCase):
-    def run_probe(self, assign):
+    def run_probe(self, assign, lookup=None, expected_error=None):
         client = Mock()
         client.assign.side_effect = assign
+        if isinstance(lookup, Exception):
+            client._get_assignment.side_effect = lookup
+        else:
+            client._get_assignment.return_value = lookup
         client.list_assignments.return_value = []
         client.get_consumption_user_info.side_effect = RuntimeError("not reported")
         with (
@@ -628,7 +703,11 @@ class ProbeTests(unittest.TestCase):
             patch.object(control, "authenticated_client", return_value=client),
             patch("builtins.print") as printed,
         ):
-            control.probe("L4")
+            if expected_error is None:
+                control.probe("L4")
+            else:
+                with self.assertRaises(expected_error):
+                    control.probe("L4")
         return client, " ".join(str(c.args[0]) for c in printed.call_args_list)
 
     def test_a_granted_runtime_is_released_at_once(self):
@@ -666,46 +745,197 @@ class ProbeTests(unittest.TestCase):
         client.unassign.assert_called_once_with("probe-session")
 
     def test_a_refusal_allocates_nothing(self):
+        from colab_cli.client import TooManyAssignmentsError
+
         def refuse(*args, **kwargs):
-            raise RuntimeError("412")
+            raise TooManyAssignmentsError()
 
         client, lines = self.run_probe(refuse)
         client.unassign.assert_not_called()
-        self.assertIn("refused (RuntimeError)", lines)
+        client._get_assignment.assert_not_called()
+        self.assertIn("refused (TooManyAssignmentsError)", lines)
+
+    def test_lost_reply_reconciles_and_releases_only_the_owned_probe(self):
+        client, lines = self.run_probe(
+            RuntimeError("synthetic reply loss"),
+            lookup=granted_assignment("probe-session"),
+            expected_error=RuntimeError,
+        )
+        client.unassign.assert_called_once_with("probe-session")
+        self.assertEqual(
+            client._get_assignment.call_args.args,
+            (client.assign.call_args.args[0], *client.assign.call_args.kwargs.values()),
+        )
+        self.assertIn("released", lines)
+        self.assertNotIn("refused", lines)
+
+    def test_http_errors_are_reconciled_and_never_reported_as_refusals(self):
+        from colab_cli.client import ColabRequestError
+
+        for status in (403, 429):
+            with self.subTest(status=status):
+                error = ColabRequestError(
+                    "synthetic HTTP failure", None, SimpleNamespace(status_code=status)
+                )
+                client, lines = self.run_probe(
+                    error,
+                    lookup=unassigned_response(),
+                    expected_error=ColabRequestError,
+                )
+                client._get_assignment.assert_called_once()
+                client.unassign.assert_not_called()
+                self.assertNotIn("refused", lines)
+
+    def test_failed_probe_reconciliation_requires_manual_confirmation(self):
+        client, lines = self.run_probe(
+            RuntimeError("synthetic reply loss"),
+            lookup=RuntimeError("synthetic lookup failure"),
+            expected_error=control.ControlError,
+        )
+        client.unassign.assert_not_called()
+        self.assertNotIn("refused", lines)
 
 
 class LostAllocationReplyTests(unittest.TestCase):
-    def start_with_failed_assign(self, after):
+    def start_with_failed_assign(self, lookup, error=None):
         client = Mock()
         client.list_assignments.side_effect = [
             [SimpleNamespace(endpoint="earlier")],
-            [SimpleNamespace(endpoint=e) for e in after],
+            [
+                SimpleNamespace(endpoint="earlier"),
+                SimpleNamespace(endpoint="other-job"),
+            ],
         ]
-        client.assign.side_effect = RuntimeError("reply lost")
+        error = error or RuntimeError("synthetic reply loss")
+        if isinstance(lookup, Exception):
+            client._get_assignment.side_effect = lookup
+        else:
+            client._get_assignment.return_value = lookup
         client.get_consumption_user_info.side_effect = RuntimeError("not reported")
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
+
+        def assign(notebook_hash, **kwargs):
+            self.assertEqual(controller.state()["notebook_hash"], str(notebook_hash))
+            self.assertEqual(controller.state()["status"], "creating")
+            raise error
+
+        client.assign.side_effect = assign
         with (
             patch.dict(
-                os.environ, {**REQUEST, "COLAB_ADC_JSON": '{"type":"authorized_user"}'}
+                os.environ,
+                {
+                    **REQUEST,
+                    "COLAB_ADC_JSON": '{"type":"authorized_user"}',
+                    "CLIPFORGE_COLAB_POOL": "CPU:high-ram,T4",
+                },
             ),
             patch.object(control, "authenticated_client", return_value=client),
         ):
             controller = control.Controller(temporary.name)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(type(error)) as raised:
                 controller.start()
-        return controller
+            self.assertIs(raised.exception, error)
+        self.assertEqual(client.assign.call_count, 1)
+        self.assertEqual(
+            client._get_assignment.call_args.args,
+            (client.assign.call_args.args[0], *client.assign.call_args.kwargs.values()),
+        )
+        return controller, client
 
     def test_nothing_assigned_is_recorded_as_stopped_without_credentials(self):
-        controller = self.start_with_failed_assign(["earlier"])
+        controller, _ = self.start_with_failed_assign(unassigned_response())
         self.assertEqual(controller.state()["status"], "stopped")
+        self.assertNotIn("token", controller.state())
         self.assertFalse(controller.credentials_path.exists())
 
-    def test_a_runtime_that_appeared_is_kept_for_release(self):
-        controller = self.start_with_failed_assign(["earlier", "ours"])
+    def test_notebook_assignment_is_kept_with_proxy_details_for_release(self):
+        controller, client = self.start_with_failed_assign(granted_assignment("ours"))
         self.assertEqual(controller.state()["status"], "allocated")
         self.assertEqual(controller.state()["endpoint"], "ours")
+        self.assertEqual(controller.state()["url"], "https://test.invalid")
+        self.assertEqual(controller.state()["token"], "test-only")
         self.assertTrue(controller.credentials_path.exists())
+        with patch.object(controller, "client", return_value=client):
+            controller.stop()
+        client.unassign.assert_called_once_with("ours")
+
+    def test_another_jobs_new_endpoint_is_never_claimed_or_released(self):
+        controller, client = self.start_with_failed_assign(unassigned_response())
+        controller.stop()
+        self.assertNotIn("endpoint", controller.state())
+        client.list_assignments.assert_called_once()
+        client.unassign.assert_not_called()
+
+    def test_failed_reconciliation_keeps_uuid_and_credentials_as_uncertain(self):
+        controller, client = self.start_with_failed_assign(
+            RuntimeError("lookup failed")
+        )
+        self.assertEqual(controller.state()["status"], "uncertain")
+        self.assertEqual(
+            controller.state()["notebook_hash"], str(client.assign.call_args.args[0])
+        )
+        self.assertTrue(controller.credentials_path.exists())
+        client.unassign.assert_not_called()
+
+    def test_http_failures_never_move_from_cpu_to_a_costlier_candidate(self):
+        from colab_cli.client import Accelerator, ColabRequestError
+
+        for status in (400, 401, 403, 429):
+            with self.subTest(status=status):
+                error = ColabRequestError(
+                    "synthetic HTTP failure", None, SimpleNamespace(status_code=status)
+                )
+                controller, client = self.start_with_failed_assign(
+                    unassigned_response(), error
+                )
+                self.assertEqual(
+                    client.assign.call_args.kwargs["accelerator"], Accelerator.NONE
+                )
+                self.assertEqual(controller.state()["status"], "stopped")
+
+    def test_stop_reconciles_uncertain_and_interrupted_creating_states(self):
+        for status in ("uncertain", "creating"):
+            for allocated in (False, True):
+                with self.subTest(status=status, allocated=allocated):
+                    controller, client = self.start_with_failed_assign(
+                        RuntimeError("lookup failed")
+                    )
+                    record = controller.state()
+                    record["status"] = status
+                    control.write_private(controller.state_path, record)
+                    client._get_assignment.side_effect = None
+                    client._get_assignment.return_value = (
+                        granted_assignment("ours")
+                        if allocated
+                        else unassigned_response()
+                    )
+                    with patch.object(controller, "client", return_value=client):
+                        controller.stop()
+                    self.assertEqual(
+                        client._get_assignment.call_args_list[0],
+                        client._get_assignment.call_args_list[1],
+                    )
+                    self.assertEqual(controller.state()["status"], "stopped")
+                    self.assertFalse(controller.credentials_path.exists())
+                    self.assertNotIn("token", controller.state())
+                    if allocated:
+                        client.unassign.assert_called_once_with("ours")
+                        self.assertEqual(client.list_assignments.call_count, 2)
+                    else:
+                        client.unassign.assert_not_called()
+
+    def test_stop_failed_reconciliation_keeps_uncertain_state_for_manual_check(self):
+        controller, client = self.start_with_failed_assign(
+            RuntimeError("lookup failed")
+        )
+        with patch.object(controller, "client", return_value=client):
+            with self.assertRaisesRegex(control.ControlError, "check the account"):
+                controller.stop()
+        self.assertEqual(controller.state()["status"], "uncertain")
+        self.assertIn("notebook_hash", controller.state())
+        self.assertTrue(controller.credentials_path.exists())
+        client.unassign.assert_not_called()
 
 
 class PoolTests(unittest.TestCase):
@@ -761,7 +991,7 @@ class PoolTests(unittest.TestCase):
         self.assertEqual((state["accelerator"], state["shape"]), ("NONE", "HIGH_RAM"))
         self.assertEqual(state["stage"]["clip_index"], "2")
 
-    def test_a_refusal_moves_to_the_next_runtime_in_the_pool(self):
+    def test_a_412_refusal_moves_to_the_next_runtime_in_the_pool(self):
         controller, calls, Accelerator = self.start_stage(refusals=2)
         self.assertEqual(
             calls,
@@ -816,18 +1046,22 @@ class RenderedChecksumTests(unittest.TestCase):
     def _sha(files):
         return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
 
-    def _collect(self, temporary, files, sha256):
+    def _collect(self, temporary, files, sha256, clip_index=None, directories=None):
         output = Path(temporary) / "output"
-        directory = output / self.CLIP
-        directory.mkdir(parents=True)
-        for name, data in files.items():
-            (directory / name).write_bytes(data)
+        output.mkdir(parents=True)
+        directories = [self.CLIP] if directories is None else directories
+        for name in directories:
+            directory = output / name
+            directory.mkdir(parents=True)
+            for name, data in files.items():
+                (directory / name).write_bytes(data)
+        status = "clip_rendered" if clip_index else "complete"
         (output / "request-receipt.json").write_text(
             json.dumps(
                 {
                     "request_id": "a" * 32,
                     "source_ref": "b" * 40,
-                    "status": "complete",
+                    "status": status,
                     "sha256": {},
                 }
             )
@@ -835,8 +1069,10 @@ class RenderedChecksumTests(unittest.TestCase):
         (output / "manifest.json").write_text(
             json.dumps(
                 {
-                    "status": "complete",
-                    "rendered": [{"directory": self.CLIP, "sha256": sha256}],
+                    "status": status,
+                    "rendered": [
+                        {"directory": name, "sha256": sha256} for name in directories
+                    ],
                 }
             )
         )
@@ -845,7 +1081,7 @@ class RenderedChecksumTests(unittest.TestCase):
             "request_id": "a" * 32,
             "source_ref": "b" * 40,
             "input_tag": "clipforge-input-" + "a" * 32,
-            "stage": {"clip_index": None},
+            "stage": {"clip_index": clip_index},
         }
         controller = control.Controller(Path(temporary) / "state")
         with patch.object(control, "ReleaseBundles") as bundles:
@@ -856,6 +1092,39 @@ class RenderedChecksumTests(unittest.TestCase):
     def test_extra_ledger_and_quality_checksums_are_accepted(self):
         with tempfile.TemporaryDirectory() as temporary:
             self._collect(temporary, self.FILES, self._sha(self.FILES))
+
+    def test_single_requested_clip_accepts_both_directory_prefixes(self):
+        for directory in ("clips/clip-001", "delivery/clips/clip-001"):
+            with (
+                self.subTest(directory=directory),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                self._collect(
+                    temporary,
+                    self.FILES,
+                    self._sha(self.FILES),
+                    clip_index="1",
+                    directories=[directory],
+                )
+
+    def test_single_requested_clip_rejects_mismatched_missing_or_multiple_results(self):
+        for directories in (
+            ["delivery/clips/clip-002"],
+            [],
+            ["delivery/clips/clip-001", "delivery/clips/clip-002"],
+        ):
+            with (
+                self.subTest(directories=directories),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                with self.assertRaisesRegex(control.ControlError, "clip_index"):
+                    self._collect(
+                        temporary,
+                        self.FILES,
+                        self._sha(self.FILES),
+                        clip_index="1",
+                        directories=directories,
+                    )
 
     def test_missing_required_file_checksum_is_rejected(self):
         files = dict(self.FILES)
