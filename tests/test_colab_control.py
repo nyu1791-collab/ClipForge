@@ -242,7 +242,11 @@ class ControlTests(unittest.TestCase):
     def test_high_ram_shape_is_requested_and_unknown_shapes_stop_before_access(self):
         from colab_cli.client import Shape
 
-        for name, expected in (("high-ram", Shape.HIGH_RAM), ("", Shape.STANDARD)):
+        for name, expected in (
+            ("high-ram", Shape.HIGH_RAM),
+            ("standard", Shape.STANDARD),
+            ("", Shape.HIGH_RAM),
+        ):
             with (
                 tempfile.TemporaryDirectory() as temporary,
                 patch.dict(
@@ -285,14 +289,21 @@ class ControlTests(unittest.TestCase):
             authenticated.assert_not_called()
             self.assertFalse(controller.credentials_path.exists())
 
-    def test_explicit_allocation_refusal_does_not_retry_or_leave_credentials(self):
+    def test_zero_allocation_wait_does_not_retry_or_leave_credentials(self):
         from colab_cli.client import TooManyAssignmentsError
 
         with (
             tempfile.TemporaryDirectory() as temporary,
             patch.dict(
-                os.environ, {**REQUEST, "COLAB_ADC_JSON": '{"type":"authorized_user"}'}
+                os.environ,
+                {
+                    **REQUEST,
+                    "COLAB_ADC_JSON": '{"type":"authorized_user"}',
+                    "CLIPFORGE_COLAB_POOL": "",
+                    "CLIPFORGE_ALLOCATION_WAIT_SECONDS": "0",
+                },
             ),
+            patch.object(control.time, "sleep") as sleep,
         ):
             client = Mock()
             client.list_assignments.return_value = []
@@ -301,7 +312,8 @@ class ControlTests(unittest.TestCase):
                 controller = control.Controller(temporary)
                 with self.assertRaisesRegex(control.ControlError, "refused"):
                     controller.start()
-                self.assertEqual(client.assign.call_count, 1)
+                self.assertEqual(client.assign.call_count, 3)
+                sleep.assert_not_called()
                 self.assertEqual(controller.state()["status"], "stopped")
                 self.assertFalse(controller.credentials_path.exists())
                 client.unassign.assert_not_called()
@@ -1007,6 +1019,26 @@ class LostAllocationReplyTests(unittest.TestCase):
 
 
 class PoolTests(unittest.TestCase):
+    def test_pipeline_default_pool_order(self):
+        from colab_cli.client import Accelerator, Shape
+
+        for shape in (None, "", "high-ram", "standard"):
+            with (
+                self.subTest(shape=shape),
+                patch.dict(os.environ, {"CLIPFORGE_COLAB_POOL": ""}),
+            ):
+                os.environ.pop("CLIPFORGE_COLAB_SHAPE", None)
+                if shape is not None:
+                    os.environ["CLIPFORGE_COLAB_SHAPE"] = shape
+                t4_shapes = [Shape.HIGH_RAM, Shape.STANDARD]
+                if shape == "standard":
+                    t4_shapes.reverse()
+                self.assertEqual(
+                    control.colab_pool("pipeline"),
+                    [(Accelerator.T4, item) for item in t4_shapes]
+                    + [(Accelerator.L4, Shape.STANDARD)],
+                )
+
     def start_stage(self, refusals, pool=None):
         from colab_cli.client import Accelerator, TooManyAssignmentsError
 
@@ -1038,6 +1070,7 @@ class PoolTests(unittest.TestCase):
             "PREVIOUS_REQUEST": "c" * 32,
             "CLIP_INDEX": "2",
             "REVIEW_FILE": str(review),
+            "CLIPFORGE_ALLOCATION_WAIT_SECONDS": "0",
         }
         if pool:
             environment["CLIPFORGE_COLAB_POOL"] = pool
@@ -1098,6 +1131,130 @@ class PoolTests(unittest.TestCase):
                 with self.assertRaises((control.ControlError, OSError)):
                     control.Controller(temporary).start("audio-stage")
                 authenticated.assert_not_called()
+
+
+class AllocationWaitTests(unittest.TestCase):
+    def setUp(self):
+        temporary = self.enterContext(tempfile.TemporaryDirectory())
+        self.controller = control.Controller(temporary)
+        self.elapsed = 0
+
+        def sleep(seconds):
+            self.elapsed += seconds
+
+        self.sleep = self.enterContext(
+            patch.object(control.time, "sleep", side_effect=sleep)
+        )
+        self.enterContext(
+            patch.object(control.time, "monotonic", side_effect=lambda: self.elapsed)
+        )
+        self.client = Mock()
+        self.client.list_assignments.return_value = []
+        self.client.get_consumption_user_info.side_effect = RuntimeError("not reported")
+        self.enterContext(
+            patch.object(control, "authenticated_client", return_value=self.client)
+        )
+        self.enterContext(patch.object(control, "stage_request", return_value={}))
+        self.enterContext(
+            patch.dict(
+                os.environ,
+                {
+                    **REQUEST,
+                    "COLAB_ADC_JSON": "{}",
+                    "CLIPFORGE_COLAB_POOL": "",
+                    "CLIPFORGE_COLAB_SHAPE": "high-ram",
+                },
+            )
+        )
+        os.environ.pop("CLIPFORGE_ALLOCATION_WAIT_SECONDS", None)
+        self.stdout = self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+
+    def test_all_refusals_wait_then_restart_each_mode_pool_from_the_first_candidate(
+        self,
+    ):
+        from colab_cli.client import TooManyAssignmentsError
+
+        for mode in ("pipeline", "audio-stage", "prepare-cache"):
+            with self.subTest(mode=mode):
+                pool = control.colab_pool(mode)
+                self.client.assign.side_effect = [
+                    *[TooManyAssignmentsError() for _ in pool],
+                    granted_assignment(),
+                ]
+                self.controller.start(mode)
+                attempts = self.client.assign.call_args_list
+                self.assertEqual(
+                    [
+                        (call.kwargs["accelerator"], call.kwargs["shape"])
+                        for call in attempts
+                    ],
+                    pool + [pool[0]],
+                )
+                self.assertEqual(self.controller.state()["status"], "allocated")
+                self.sleep.assert_called_once_with(60)
+                self.client.list_assignments.assert_called_once_with()
+                self.client.get_consumption_user_info.assert_called_once_with()
+                lines = self.stdout.getvalue().splitlines()
+                wait_lines = [
+                    line for line in lines if line.startswith("割り当て待ち:")
+                ]
+                kinds = ", ".join(f"{acc.value}/{shape.name}" for acc, shape in pool)
+                self.assertEqual(
+                    wait_lines,
+                    [f"割り当て待ち: 1回目、経過0秒、拒否された種類: {kinds}"],
+                )
+                self.assertEqual(sum("before allocation" in line for line in lines), 1)
+                control.write_private(self.controller.state_path, {"status": "stopped"})
+                self.client.reset_mock()
+                self.sleep.reset_mock()
+                self.stdout.seek(0)
+                self.stdout.truncate()
+                self.elapsed = 0
+
+    def test_wait_limit_stops_record_and_removes_credentials(self):
+        from colab_cli.client import TooManyAssignmentsError
+
+        os.environ["CLIPFORGE_ALLOCATION_WAIT_SECONDS"] = "125"
+        self.client.assign.side_effect = TooManyAssignmentsError()
+        with self.assertRaisesRegex(control.ControlError, "refused every runtime"):
+            self.controller.start()
+        self.assertEqual(
+            [call.args[0] for call in self.sleep.call_args_list], [60, 60, 5]
+        )
+        self.assertEqual(self.elapsed, 125)
+        self.assertEqual(self.client.assign.call_count, 12)
+        state = self.controller.state()
+        self.assertEqual(state["status"], "stopped")
+        self.assertEqual(
+            state["allocation_refused"], ["T4/HIGH_RAM", "T4/STANDARD", "L4/STANDARD"]
+        )
+        self.assertFalse(self.controller.credentials_path.exists())
+        self.client._get_assignment.assert_not_called()
+        self.client.list_assignments.assert_called_once_with()
+        self.client.get_consumption_user_info.assert_called_once_with()
+        wait_lines = [
+            line
+            for line in self.stdout.getvalue().splitlines()
+            if line.startswith("割り当て待ち:")
+        ]
+        self.assertEqual(len(wait_lines), 3)
+        self.assertIn("2回目、経過60秒", wait_lines[1])
+        self.assertIn("3回目、経過120秒", wait_lines[2])
+
+    def test_non_refusal_reconciles_and_raises_without_allocation_wait(self):
+        error = RuntimeError("synthetic allocation failure")
+        self.client.assign.side_effect = error
+        with patch.object(self.controller, "reconcile_assignment") as reconcile:
+            with self.assertRaises(RuntimeError) as raised:
+                self.controller.start()
+            self.assertIs(raised.exception, error)
+            reconcile.assert_called_once_with(
+                self.client,
+                {**self.controller.state(), "allocation_error": "RuntimeError"},
+            )
+        self.client.assign.assert_called_once()
+        self.sleep.assert_not_called()
+        self.assertNotIn("割り当て待ち:", self.stdout.getvalue())
 
 
 class RenderedChecksumTests(unittest.TestCase):

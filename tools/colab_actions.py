@@ -127,14 +127,24 @@ def colab_shape():
 # Measured 2026-10-22: at most two T4 and two
 # L4 at once, counted per kind; three CPU high-ram and two CPU standard were granted together.
 # Rates then: CPU high-ram 0.26, T4 1.07, T4 high-ram 1.27, L4 1.54 compute units an hour.
-DEFAULT_POOLS = {"audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4"}
+# Measured 2026-10-22: a second pipeline's T4 high-ram was refused; capacity varies.
+DEFAULT_POOLS = {
+    "pipeline": "T4:high-ram,T4:standard,L4",
+    "audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4",
+}
 
 
 def colab_pool(mode):
     """Ordered (accelerator, shape) candidates; CLIPFORGE_COLAB_POOL overrides the default."""
     from colab_cli.client import Accelerator, Shape
 
-    raw = os.environ.get("CLIPFORGE_COLAB_POOL") or DEFAULT_POOLS.get(mode)
+    raw = os.environ.get("CLIPFORGE_COLAB_POOL")
+    if not raw:
+        raw = DEFAULT_POOLS.get(mode)
+        if mode == "pipeline":
+            colab_shape()
+            if os.environ.get("CLIPFORGE_COLAB_SHAPE") == "standard":
+                raw = "T4:standard,T4:high-ram,L4"
     if not raw:
         accelerator = Accelerator.NONE if mode == "prepare-cache" else Accelerator.T4
         return [(accelerator, colab_shape())]
@@ -256,6 +266,16 @@ class Controller:
         # The high-memory shape gives 8 CPU cores instead of 2 for the CPU-bound setup,
         # decompression and encoding around the GPU work, at a higher hourly rate.
         pool = colab_pool(mode)
+        try:
+            allocation_wait = int(
+                os.environ.get("CLIPFORGE_ALLOCATION_WAIT_SECONDS", "900")
+            )
+        except ValueError:
+            raise ControlError(
+                "Allocation wait must be a non-negative integer"
+            ) from None
+        if allocation_wait < 0:
+            raise ControlError("Allocation wait must be a non-negative integer")
         if mode == "audio-stage":
             request["stage"] = stage_request()
         if self.state_path.is_file() and self.state().get("status") != "stopped":
@@ -284,42 +304,61 @@ class Controller:
         write_private(self.state_path, record)
         from colab_cli.client import Accelerator, TooManyAssignmentsError, Variant
 
-        refused = []
-        for accelerator, shape in pool:
-            variant = (
-                Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU
-            )
-            notebook_hash = uuid.uuid4()
-            record.update(
-                accelerator=accelerator.value,
-                shape=shape.name,
-                notebook_hash=str(notebook_hash),
-            )
-            write_private(self.state_path, record)
-            try:
-                assignment = client.assign(
-                    notebook_hash, variant=variant, accelerator=accelerator, shape=shape
+        allocation_started = time.monotonic()
+        wait_attempt = 0
+        while True:
+            refused = []
+            for accelerator, shape in pool:
+                variant = (
+                    Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU
                 )
-                break
-            except TooManyAssignmentsError:
-                refused.append(f"{accelerator.value}/{shape.name}")
-                print(f"Colab refused {refused[-1]}", flush=True)
-                continue
-            except Exception as error:
-                record["allocation_error"] = type(error).__name__
+                notebook_hash = uuid.uuid4()
+                record.update(
+                    accelerator=accelerator.value,
+                    shape=shape.name,
+                    notebook_hash=str(notebook_hash),
+                )
+                write_private(self.state_path, record)
                 try:
-                    self.reconcile_assignment(client, record)
-                except Exception:
-                    # Keep the UUID and credentials so stop() can retry reconciliation.
-                    pass
-                raise
-        else:
-            record.update(status="stopped", allocation_refused=refused)
-            write_private(self.state_path, record)
-            self.credentials_path.unlink(missing_ok=True)
-            raise ControlError(
-                "Colab refused every runtime in the pool; no other account was tried"
-            )
+                    assignment = client.assign(
+                        notebook_hash,
+                        variant=variant,
+                        accelerator=accelerator,
+                        shape=shape,
+                    )
+                    break
+                except TooManyAssignmentsError:
+                    refused.append(f"{accelerator.value}/{shape.name}")
+                    print(f"Colab refused {refused[-1]}", flush=True)
+                    continue
+                except Exception as error:
+                    record["allocation_error"] = type(error).__name__
+                    try:
+                        self.reconcile_assignment(client, record)
+                    except Exception:
+                        # Keep the UUID and credentials so stop() can retry reconciliation.
+                        pass
+                    raise
+            else:
+                elapsed = time.monotonic() - allocation_started
+                remaining = allocation_wait - elapsed
+                if remaining <= 0:
+                    record.update(status="stopped", allocation_refused=refused)
+                    write_private(self.state_path, record)
+                    self.credentials_path.unlink(missing_ok=True)
+                    raise ControlError(
+                        "Colab refused every runtime in the pool; no other account was tried"
+                    )
+                wait_attempt += 1
+                print(
+                    f"割り当て待ち: {wait_attempt}回目、経過{elapsed:.0f}秒、"
+                    f"拒否された種類: {', '.join(refused)}",
+                    flush=True,
+                )
+                # Explicit refusals allocate nothing, so waiting uses no Colab runtime.
+                time.sleep(min(60, remaining))
+                continue
+            break
         # Persist ownership immediately, before kernel setup or any job execution.
         record.update(
             status="allocated",

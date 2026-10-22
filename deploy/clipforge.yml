@@ -313,7 +313,7 @@ jobs:
               output.write(f'no_model_api={no_model_api}\n')
           PY
       - name: Allocate a dedicated T4 for the verified Google account
-        timeout-minutes: 10
+        timeout-minutes: 20
         id: allocate
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
