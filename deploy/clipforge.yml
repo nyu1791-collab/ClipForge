@@ -25,7 +25,7 @@ on:
 permissions:
   contents: write
 
-# Each colab-auto job owns its own T4, so those run side by side (the submitter allows four).
+# Each colab-auto job owns its own T4, so those run side by side (the account grants two).
 # Hosted and self-hosted runners share one group and run one at a time.
 concurrency:
   group: ${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}

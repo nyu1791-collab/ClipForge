@@ -16,9 +16,10 @@ import uuid
 REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
 WORKFLOW = "clipforge.yml"
-# Each Colab job owns its own T4, so up to four may run at once; hosted and self-hosted
-# runners keep one job at a time.
-MAX_ACTIVE = {"colab-auto": 4}
+# Each Colab job owns its own T4. The account was measured to grant two T4 runtimes at once
+# (a third was refused on 2026-10-22), so two jobs may run side by side; hosted and
+# self-hosted runners keep one job at a time.
+MAX_ACTIVE = {"colab-auto": 2}
 SETTINGS_FIELDS = {
     "gemini_model",
     "clips",

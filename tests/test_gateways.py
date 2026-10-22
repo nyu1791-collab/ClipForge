@@ -168,8 +168,8 @@ def test_rejects_public_repository_and_active_jobs(submitter, condition):
     assert not control["posts"] and not control["releases"]
 
 
-@pytest.mark.parametrize("active, allowed", [(3, True), (4, False)])
-def test_colab_jobs_run_up_to_four_at_once(submitter, active, allowed):
+@pytest.mark.parametrize("active, allowed", [(1, True), (2, False)])
+def test_colab_jobs_run_two_at_once(submitter, active, allowed):
     _, _, control, invoke = submitter
     control["active"] = active
     if allowed:
