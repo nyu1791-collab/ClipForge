@@ -26,8 +26,12 @@ NO_LINE_START = set(
 )
 # Characters that may not end a line: opening brackets.
 NO_LINE_END = set("「『（〔［｛")
-# Characters after which a line may break, preferred over any word boundary.
-BREAK_AFTER = set("、。，．！？!? 　")
+# Characters after which a line may break, preferred over any word boundary. A closing
+# mark may end a line, but never start one (see NO_LINE_START).
+BREAK_AFTER = set("、。，．！？!? 　」』】…")
+# Particles that may start a line after kana or Latin, and after kanji only when main.
+PARTICLES = set("はがをにでとのへもやかねよ")
+MAIN_PARTICLES = set("はがをにでとのへも")
 # A preferred break must leave a first line at least this share of the width.
 MIN_FILL = 0.3
 # A pause this long ends a caption. Shorter captions are joined to a neighbour across
@@ -182,11 +186,27 @@ def _is_katakana(char):
     return "゠" <= char <= "ヿ"
 
 
+def _kind(char):
+    """Script of one character: h hiragana, k katakana, K kanji, a Latin or digit, o other."""
+    if _is_hiragana(char):
+        return "h"
+    if _is_katakana(char):
+        return "k"
+    if _is_kanji(char):
+        return "K"
+    if char.isascii() and char.isalnum():
+        return "a"
+    return "o"
+
+
 def _boundary_rank(prev, nxt):
     """How well text may break between two characters.
 
-    3: after a space or sentence punctuation; 2: where a word starts (kana before kanji,
-    katakana or a Latin word); 1: between two kana; 0: inside a word, or not allowed.
+    3: after a space, sentence punctuation or a closing mark. 2: a word boundary: a particle
+    after kana or Latin, or after kanji only for the main particles; a change from hiragana to
+    katakana, kanji or Latin; a change between katakana, kanji and Latin.
+    1: between two hiragana that are not particles, used only when nothing better fits.
+    0: inside a word (kanji with kanji or okurigana, a katakana or Latin run), or not allowed.
     """
     if not prev or not nxt or nxt in NO_LINE_START or prev in NO_LINE_END:
         return 0
@@ -194,11 +214,16 @@ def _boundary_rank(prev, nxt):
         return 0
     if prev in BREAK_AFTER:
         return 3
-    if _is_hiragana(prev) and (
-        _is_kanji(nxt) or _is_katakana(nxt) or (nxt.isascii() and nxt.isalnum())
+    kind_prev, kind_next = _kind(prev), _kind(nxt)
+    if nxt in PARTICLES and (
+        kind_prev in "hka" or (kind_prev == "K" and nxt in MAIN_PARTICLES)
     ):
         return 2
-    if _is_hiragana(prev) and _is_hiragana(nxt):
+    if kind_prev == "h" and kind_next in "kKa":
+        return 2
+    if kind_prev != kind_next and kind_prev in "kaK" and kind_next in "kaK":
+        return 2
+    if kind_prev == "h" and kind_next == "h":
         return 1
     return 0
 

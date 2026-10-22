@@ -301,8 +301,9 @@ def test_a_combining_mark_never_starts_a_line(monkeypatch):
 
 def test_an_english_term_is_not_split_across_lines(monkeypatch):
     monkeypatch.setattr(captions, "_PARSER", OnePhrase())
-    # No word start is available, and ChatGPT fits a line, so the break goes before it.
-    assert captions.wrap_breaks("漢字ChatGPT漢字", FixedWidth(), 80) == [2, 10]
+    # ChatGPT fits a line whole. The break goes after it, where Latin meets kanji, so that 漢字
+    # is not split: 漢|字 is inside a word.
+    assert captions.wrap_breaks("漢字ChatGPT漢字", FixedWidth(), 80) == [2, 9]
 
 
 def test_a_url_is_not_split_across_lines(monkeypatch):
@@ -315,3 +316,31 @@ def test_a_url_is_not_split_across_lines(monkeypatch):
 def test_text_is_normalised_to_composed_characters():
     # か followed by a separate voiced mark is the single character が.
     assert captions.safe("が") == "が"
+
+
+@pytest.mark.parametrize(
+    ("prev", "nxt", "rank"),
+    [
+        ("攻", "撃", 0),  # a kanji compound is one word
+        ("本", "当", 0),
+        (
+            "書",
+            "か",
+            0,
+        ),  # kanji then か is okurigana or a sentence ending, not a particle
+        ("解", "い", 0),
+        ("。", "次", 3),  # after sentence punctuation
+        ("」", "次", 3),  # after a closing mark, which may end a line
+        ("次", "」", 0),  # a closing mark never starts a line
+        ("手", "が", 2),  # a main particle after kanji
+        ("ス", "は", 2),  # a particle after katakana
+        ("の", "次", 2),  # a change from hiragana to kanji
+        ("ス", "解", 2),  # a change from katakana to kanji
+        ("解", "ス", 2),  # a change from kanji to katakana
+        ("カ", "タ", 0),  # inside a katakana word
+        ("G", "P", 0),  # inside a Latin run
+        ("た", "い", 1),  # hiragana with hiragana, when nothing better fits
+    ],
+)
+def test_break_ranks_follow_japanese_word_boundaries(prev, nxt, rank):
+    assert captions._boundary_rank(prev, nxt) == rank
