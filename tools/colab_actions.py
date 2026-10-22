@@ -158,7 +158,7 @@ class Controller:
         info = json.loads(raw)
         client = authenticated_client(info)
         # A read-only permission check comes before allocation; never use another account.
-        client.list_assignments()
+        existing = {item.endpoint for item in client.list_assignments()}
         units = compute_units(client)
         print_units("before allocation", units)
         write_private(self.credentials_path, info)
@@ -191,6 +191,24 @@ class Controller:
                 raise ControlError(
                     "Colab allocation was refused; no other account or accelerator was tried"
                 ) from None
+            # The reply may be lost after Colab assigned a runtime. A runtime that appeared
+            # meanwhile is recorded as this job's so the release step frees it.
+            try:
+                appeared = [
+                    item.endpoint
+                    for item in client.list_assignments()
+                    if item.endpoint not in existing
+                ]
+            except Exception:
+                appeared = None
+            record["allocation_error"] = type(error).__name__
+            if appeared == []:
+                record["status"] = "stopped"
+                write_private(self.state_path, record)
+                self.credentials_path.unlink(missing_ok=True)
+            elif appeared and len(appeared) == 1:
+                record.update(status="allocated", endpoint=appeared[0])
+                write_private(self.state_path, record)
             raise
         # Persist ownership immediately, before kernel setup or any job execution.
         record.update(

@@ -480,3 +480,37 @@ class ProbeTests(unittest.TestCase):
         client, lines = self.run_probe(refuse)
         client.unassign.assert_not_called()
         self.assertIn("refused (RuntimeError)", lines)
+
+
+class LostAllocationReplyTests(unittest.TestCase):
+    def start_with_failed_assign(self, after):
+        client = Mock()
+        client.list_assignments.side_effect = [
+            [SimpleNamespace(endpoint="earlier")],
+            [SimpleNamespace(endpoint=e) for e in after],
+        ]
+        client.assign.side_effect = RuntimeError("reply lost")
+        client.get_consumption_user_info.side_effect = RuntimeError("not reported")
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        with (
+            patch.dict(
+                os.environ, {**REQUEST, "COLAB_ADC_JSON": '{"type":"authorized_user"}'}
+            ),
+            patch.object(control, "authenticated_client", return_value=client),
+        ):
+            controller = control.Controller(temporary.name)
+            with self.assertRaises(RuntimeError):
+                controller.start()
+        return controller
+
+    def test_nothing_assigned_is_recorded_as_stopped_without_credentials(self):
+        controller = self.start_with_failed_assign(["earlier"])
+        self.assertEqual(controller.state()["status"], "stopped")
+        self.assertFalse(controller.credentials_path.exists())
+
+    def test_a_runtime_that_appeared_is_kept_for_release(self):
+        controller = self.start_with_failed_assign(["earlier", "ours"])
+        self.assertEqual(controller.state()["status"], "allocated")
+        self.assertEqual(controller.state()["endpoint"], "ours")
+        self.assertTrue(controller.credentials_path.exists())
