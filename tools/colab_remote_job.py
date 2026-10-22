@@ -97,8 +97,17 @@ def command(arguments, environment, name, timeout=4800):
 def host_info():
     """CPU cores and memory of the assigned runtime (standard or high-memory shape)."""
     pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    model = ""
+    try:
+        for line in Path("/proc/cpuinfo").read_text().splitlines():
+            if line.startswith("model name"):
+                model = line.split(":", 1)[1].strip()
+                break
+    except OSError:
+        pass
     return {
         "cpu_count": len(os.sched_getaffinity(0)),
+        "cpu_model": model,
         "memory_gib": round(pages / 2**30, 1),
     }
 
