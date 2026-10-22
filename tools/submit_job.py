@@ -548,7 +548,7 @@ def send_dispatch(state, receipt):
                 "worker": receipt.get("worker", "cpu"),
                 "audio_url": receipt.get("audio_url", ""),
                 "settings_json": settings_json,
-                "public_cache": receipt.get("public_cache", "on"),
+                "public_cache": receipt.get("public_cache", "off"),
                 **({"auto_previews": True} if receipt.get("auto_previews") else {}),
             },
         }
@@ -812,8 +812,8 @@ def main():
     parser.add_argument(
         "--public-cache",
         choices=("on", "off"),
-        default="on",
-        help="restore and publish the GPU public cache on Colab (default: on; for measurement)",
+        default="off",
+        help="restore and publish the GPU public cache on Colab (default: off; fresh setup was faster, 40 s vs 104 s)",
     )
     parser.add_argument(
         "--wait-timeout",

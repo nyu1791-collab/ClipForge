@@ -324,4 +324,4 @@ def test_dispatch_sends_public_cache_input(tmp_path, monkeypatch):
     # Receipts written before the option existed keep the default.
     legacy = {"request_id": REQUEST, "input_tag": "t", "source_ref": REF}
     module.send_dispatch(tmp_path, legacy)
-    assert sent[-1]["inputs"]["public_cache"] == "on"
+    assert sent[-1]["inputs"]["public_cache"] == "off"

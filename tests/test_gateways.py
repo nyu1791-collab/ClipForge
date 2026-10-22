@@ -475,7 +475,7 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
         "worker": "colab-auto",
         "audio_url": url,
         "settings_json": inputs["settings_json"],
-        "public_cache": "on",
+        "public_cache": "off",
     }
     assert not control["releases"]
     assert not any(call[0] == "release" for call in control["calls"])
