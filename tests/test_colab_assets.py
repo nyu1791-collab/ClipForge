@@ -1,7 +1,9 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -11,6 +13,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import colab_cache as cache
+import colab_remote_job as remote_job
 from colab_bundle import BundleError, ReleaseBundles, SafeRedirect, check_manifest, pack
 
 
@@ -245,6 +248,50 @@ class DependencyCacheTests(unittest.TestCase):
                 ),
             ):
                 self.assertNotEqual(first, cache.configuration()[0])
+
+
+class SetupScriptTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(__file__).resolve().parents[1]
+        self.script = self.root / "tools/colab_setup.sh"
+
+    def test_setup_timings_are_read_and_namespaced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "setup-timings.tsv"
+            path.write_text(
+                "cache_restore\t0.5\nos_deps\t2.25\nbroken\tnot-a-number\nno-tab\n"
+            )
+            self.assertEqual(
+                remote_job.read_setup_timings(path),
+                {"setup.cache_restore": 0.5, "setup.os_deps": 2.25},
+            )
+            self.assertEqual(
+                remote_job.read_setup_timings(Path(temporary) / "missing.tsv"), {}
+            )
+
+    def test_setup_script_has_valid_bash_syntax(self):
+        subprocess.run(["bash", "-n", self.script], check=True)
+
+    def test_setup_save_is_skipped_only_when_nothing_new_was_fetched(self):
+        source = self.script.read_text()
+        match = re.search(
+            r"^clipforge_should_save\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL
+        )
+        self.assertIsNotNone(match)
+        for prepare_only, fetched, expected in (
+            ("0", "0", 1),
+            ("1", "0", 0),
+            ("0", "1", 0),
+            ("1", "1", 0),
+        ):
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    match.group(0) + f"clipforge_should_save {prepare_only} {fetched}",
+                ]
+            )
+            self.assertEqual(result.returncode, expected)
 
 
 if __name__ == "__main__":

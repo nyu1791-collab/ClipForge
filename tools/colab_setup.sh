@@ -2,10 +2,25 @@
 # First setup populates a Drive cache; subsequent setups try offline installation first.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+clipforge_timings=${CLIPFORGE_SETUP_TIMINGS:-}
+clipforge_record_timing() {
+  [[ -n $clipforge_timings ]] || return 0
+  awk -v name="$1" -v started="$2" -v finished="$(date +%s.%N)" \
+    'BEGIN { printf "%s\t%.3f\n", name, finished - started }' >> "$clipforge_timings"
+}
+clipforge_should_save() {
+  [[ ${1:-0} == 1 || ${2:-0} == 1 ]]
+}
+fetched=0
 if [[ ${CLIPFORGE_PREPARE_ONLY:-0} != 1 ]]; then nvidia-smi; fi
 source tools/colab_cache_env.sh
+cache_restore_started=$(date +%s.%N)
 python3 tools/colab_cache.py restore
+clipforge_record_timing cache_restore "$cache_restore_started"
+os_deps_started=$(date +%s.%N)
 bash tools/colab_os_deps.sh
+clipforge_record_timing os_deps "$os_deps_started"
+uv_bootstrap_started=$(date +%s.%N)
 if [[ $(uv --version 2>/dev/null || true) != 'uv 0.12.23'* ]]; then
   mkdir -p "$CLIPFORGE_CACHE_ROOT/bootstrap"
   uv_wheels=("$CLIPFORGE_CACHE_ROOT/bootstrap"/uv-0.12.23-*.whl)
@@ -15,9 +30,12 @@ if [[ $(uv --version 2>/dev/null || true) != 'uv 0.12.23'* ]]; then
       exit 1
     fi
     python3 -m pip download --only-binary=:all: --no-deps --dest "$CLIPFORGE_CACHE_ROOT/bootstrap" 'uv==0.12.23'
+    fetched=1
   fi
   python3 -m pip install --no-index --no-deps --find-links "$CLIPFORGE_CACHE_ROOT/bootstrap" 'uv==0.12.23'
 fi
+clipforge_record_timing uv_bootstrap "$uv_bootstrap_started"
+uv_sync_started=$(date +%s.%N)
 if uv sync --offline --locked --python 3.11 --extra chat --extra cuda --no-dev; then
   echo 'Python dependencies installed from the local cache; no package download required.'
 else
@@ -26,7 +44,10 @@ else
     exit 1
   fi
   uv sync --locked --python 3.11 --extra chat --extra cuda --no-dev
+  fetched=1
 fi
+clipforge_record_timing uv_sync "$uv_sync_started"
+cuda_check_started=$(date +%s.%N)
 if [[ ${CLIPFORGE_PREPARE_ONLY:-0} != 1 ]]; then
   source tools/colab_cuda_env.sh
   .venv/bin/python - <<'PY'
@@ -41,8 +62,18 @@ if 'float16' not in ctranslate2.get_supported_compute_types('cuda'):
 print('CUDA libraries and CTranslate2 GPU/float16 capability detected; ASR not run yet.')
 PY
 fi
+clipforge_record_timing cuda_check "$cuda_check_started"
 # Model files only: no inference or Gemini API call. The requested model is unchanged.
+model_prepare_started=$(date +%s.%N)
 if [[ ${CLIPFORGE_SKIP_MODEL_PREPARE:-0} != 1 ]]; then
+  if ! HF_HUB_OFFLINE=1 .venv/bin/python - >/dev/null 2>&1 <<'PY'
+import os
+from clipforge.whisper_cache import model_path
+model_path(os.environ.get('CLIPFORGE_WHISPER_MODEL', 'small'), os.environ.get('CLIPFORGE_WHISPER_REVISION'))
+PY
+  then
+    fetched=1
+  fi
   .venv/bin/python - <<'PY'
 import os
 from clipforge.whisper_cache import model_path
@@ -53,10 +84,19 @@ except Exception as error:
 print('Requested Whisper model files are available; inference has not been run.')
 PY
 fi
+clipforge_record_timing model_prepare "$model_prepare_started"
+runner_asset_started=$(date +%s.%N)
 if [[ ${CLIPFORGE_SKIP_RUNNER_ASSET:-0} != 1 ]]; then
   python3 tools/colab_cache.py runner >/dev/null
 fi
-python3 tools/colab_cache.py save
+clipforge_record_timing runner_asset "$runner_asset_started"
+if clipforge_should_save "${CLIPFORGE_PREPARE_ONLY:-0}" "$fetched"; then
+  cache_save_started=$(date +%s.%N)
+  python3 tools/colab_cache.py save
+  clipforge_record_timing cache_save "$cache_save_started"
+else
+  echo 'Dependency snapshot unchanged; save skipped.'
+fi
 if [[ ${CLIPFORGE_PREPARE_ONLY:-0} == 1 ]]; then
   echo 'Public assets prepared without requiring a GPU. No runner registered; no inference performed.'
 fi

@@ -30,6 +30,23 @@ def timed(timings, name):
         timings[name] = round(time.monotonic() - started, 2)
 
 
+def read_setup_timings(path):
+    try:
+        lines = Path(path).read_text().splitlines()
+    except FileNotFoundError:
+        return {}
+    timings = {}
+    for line in lines:
+        name, separator, seconds = line.partition("\t")
+        if not separator or not name:
+            continue
+        try:
+            timings["setup." + name] = float(seconds)
+        except ValueError:
+            continue
+    return timings
+
+
 def publish_result(bundles, payload, output, report, timings):
     # Results are published before the dependency cache so the control plane can
     # release the T4 and retrieve them early. Returns False if publication failed.
@@ -174,6 +191,7 @@ def main():
             "CLIPFORGE_SKIP_MODEL_PREPARE": "1" if mode == "pipeline" else "0",
             "CLIPFORGE_PREPARE_ONLY": "1" if mode == "prepare-cache" else "0",
             "CLIPFORGE_OFFLINE": "1" if payload.get("offline") else "0",
+            "CLIPFORGE_SETUP_TIMINGS": str(WORK / "setup-timings.tsv"),
             "CLIPFORGE_SOURCE_REF": payload["source_ref"],
             "GITHUB_REPOSITORY": REPOSITORY,
             "GITHUB_RUN_ID": payload["workflow_run"],
@@ -202,7 +220,10 @@ def main():
         report["host"] = host_info()
         report["stage"] = "asset-setup"
         with timed(timings, "setup"):
-            command(["bash", "tools/colab_setup.sh"], environment, "setup")
+            try:
+                command(["bash", "tools/colab_setup.sh"], environment, "setup")
+            finally:
+                timings.update(read_setup_timings(WORK / "setup-timings.tsv"))
         if mode == "pipeline":
             report["stage"] = "private-input"
             tag = payload["input_tag"]
