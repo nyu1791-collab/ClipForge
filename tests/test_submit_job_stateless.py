@@ -325,3 +325,41 @@ def test_dispatch_sends_public_cache_input(tmp_path, monkeypatch):
     legacy = {"request_id": REQUEST, "input_tag": "t", "source_ref": REF}
     module.send_dispatch(tmp_path, legacy)
     assert sent[-1]["inputs"]["public_cache"] == "off"
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        ("present", "REMAINS"),
+        (RuntimeError("GitHub operation failed: api (HTTP 404)"), "DELETED"),
+        (RuntimeError("GitHub operation failed: api (HTTP 502)"), "UNKNOWN"),
+        (TimeoutError("gh did not answer"), "UNKNOWN"),
+    ],
+)
+def test_input_cleanup_status_reports_whether_the_release_remains(
+    monkeypatch, outcome, expected
+):
+    module = load_tool("submit_job")
+    calls = []
+
+    def gh(*args, **kwargs):
+        calls.append(args)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return "clipforge-input-" + "a" * 32
+
+    monkeypatch.setattr(module, "gh", gh)
+    assert module.input_cleanup_status("clipforge-input-" + "a" * 32) == expected
+    assert calls[0][:2] == (
+        "api",
+        "repos/nyu1791-collab/ai-model-workers/releases/tags/clipforge-input-"
+        + "a" * 32,
+    )
+
+
+def test_input_cleanup_status_never_queries_an_unexpected_tag(monkeypatch):
+    module = load_tool("submit_job")
+    monkeypatch.setattr(
+        module, "gh", lambda *a, **k: pytest.fail("no query for a bad tag")
+    )
+    assert module.input_cleanup_status("clipforge-cache-gpu-x") == "UNKNOWN"

@@ -42,7 +42,7 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 3. URL経路は取得音声をColab GPUへ渡し、Geminiキーを渡さない。ローカル動画のGeminiへは候補の低解像度映像・音声・該当ASR文だけを送る。
 4. 送信したGoogle Filesは処理後に削除を試行し、失敗は記録・通知する。
 5. MP4・字幕・文字起こし・JSONは非公開Artifactsへ7日保存し、検証して回収する。
-6. 一時入力Release・タグは終了時に削除を試行する。checkoutや依存導入の失敗等で残った場合は依頼記録のタグを確認して手動削除する。
+6. 一時入力Release・タグは終了時に削除する。削除はrunner既定の `gh` だけで行うため、checkoutや依存導入が失敗しても実行される（タグ形式と非公開repoを確認してから削除）。削除を確認できなかった場合は、runの警告とSummaryに表示する。回収時には制御側がReleaseの残存を確認し、依頼記録の `input_cleanup` に `DELETED`・`REMAINS`・`UNKNOWN` を記録する。`REMAINS` のときは `tools/submit_job.py --cleanup-tag <タグ>` で削除する。
 
 段階キャッシュにはASR・チャットの時刻/重み・候補・選定JSONを含むが、原動画・MP4・APIキー・Cookie・OAuth情報は含めない。キャッシュはGitHubの保持・容量制限に従い、API呼び出しを確実に1回にする仕組みではない。モデル応答後・保存前にrunnerが失われた場合は記録を確認してから再依頼する。公開キャッシュは既定off。
 

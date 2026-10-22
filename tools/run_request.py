@@ -13,8 +13,6 @@ PRIVATE_REPO = "nyu1791-collab/ai-model-workers"
 
 
 def gh(*args):
-    # Kept standard-library only, unlike clipforge.github_cli: `cleanup` runs with the system
-    # python3 so the temporary input is deleted even when dependency setup failed.
     result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=180)
     if result.returncode:
         raise RuntimeError("private input operation failed")
@@ -36,24 +34,12 @@ def check(tag, remote=True):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["prepare", "run", "cleanup"])
+    parser.add_argument("command", choices=["prepare", "run"])
     parser.add_argument("--tag", required=True)
     parser.add_argument("--directory", type=Path, default=Path("job-input"))
     parser.add_argument("--output", type=Path, default=Path("out"))
     args = parser.parse_args()
     check(args.tag, remote=args.command != "run")
-    if args.command == "cleanup":
-        gh(
-            "release",
-            "delete",
-            args.tag,
-            "--repo",
-            PRIVATE_REPO,
-            "--yes",
-            "--cleanup-tag",
-        )
-        print("Temporary private input release deleted.")
-        return
     if args.command == "prepare":
         assets = json.loads(
             gh("release", "view", args.tag, "--repo", PRIVATE_REPO, "--json", "assets")

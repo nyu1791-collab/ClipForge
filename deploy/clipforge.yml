@@ -172,18 +172,37 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
       - name: Delete temporary private input
+        id: input-cleanup
         timeout-minutes: 10
         if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+        # Uses only the preinstalled gh, so cleanup still runs when checkout or setup failed.
         run: |
-          if [ -x clipforge-source/.venv/bin/python ]; then
-            clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py cleanup --tag "$INPUT_TAG"
-          else
-            echo 'Input cleanup could not run; inspect the private release before resubmitting.'
+          if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then
+            echo 'Unexpected temporary input tag; nothing was deleted.' >&2
             exit 1
           fi
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
+            echo 'The worker repository must remain private; nothing was deleted.' >&2
+            exit 1
+          fi
+          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            echo 'Temporary private input release deleted.'
+          else
+            echo 'No temporary private input release remains.'
+          fi
+      - name: Report a temporary input that could not be deleted
+        timeout-minutes: 5
+        if: always() && steps.input-cleanup.outcome != 'success'
+        run: |
+          echo "::warning title=Temporary private input remains::$INPUT_TAG may still hold private input. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG."
+          {
+            echo '### Temporary private input remains'
+            echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   colab-auto:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'colab-auto'
@@ -310,17 +329,37 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
       - name: Delete temporary private input and result transfer chunks
+        id: input-cleanup
         timeout-minutes: 10
         if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+        # Uses only the preinstalled gh, so cleanup still runs when checkout or setup failed.
         run: |
-          if [ -f clipforge-source/tools/run_request.py ]; then
-            python3 clipforge-source/tools/run_request.py cleanup --tag "$INPUT_TAG"
-          else
-            echo 'Input cleanup could not run; inspect the private input release before resubmitting.'
+          if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then
+            echo 'Unexpected temporary input tag; nothing was deleted.' >&2
+            exit 1
           fi
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
+            echo 'The worker repository must remain private; nothing was deleted.' >&2
+            exit 1
+          fi
+          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            echo 'Temporary private input release deleted.'
+          else
+            echo 'No temporary private input release remains.'
+          fi
+      - name: Report a temporary input that could not be deleted
+        timeout-minutes: 5
+        if: always() && steps.input-cleanup.outcome != 'success'
+        run: |
+          echo "::warning title=Temporary private input remains::$INPUT_TAG may still hold private input. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG."
+          {
+            echo '### Temporary private input remains'
+            echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   previews:
     needs: colab-auto

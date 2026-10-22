@@ -238,9 +238,34 @@ jobs:
           retention-days: 7
           if-no-files-found: warn
       - name: Delete the private transfer release
+        id: input-cleanup
+        timeout-minutes: 10
         if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
+        # Uses only the preinstalled gh, so cleanup still runs when checkout or setup failed.
         run: |
-          python3 clipforge-source/tools/run_request.py cleanup --tag "$INPUT_TAG"
+          if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then
+            echo 'Unexpected temporary input tag; nothing was deleted.' >&2
+            exit 1
+          fi
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
+            echo 'The worker repository must remain private; nothing was deleted.' >&2
+            exit 1
+          fi
+          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            echo 'Temporary private transfer release deleted.'
+          else
+            echo 'No temporary private transfer release remains.'
+          fi
+      - name: Report a transfer release that could not be deleted
+        timeout-minutes: 5
+        if: always() && steps.input-cleanup.outcome != 'success'
+        run: |
+          echo "::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG."
+          {
+            echo '### Temporary private transfer remains'
+            echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
+          } >> "$GITHUB_STEP_SUMMARY"

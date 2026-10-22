@@ -1660,12 +1660,32 @@ def test_runner_rejects_bad_manifest(runner, patch):
         invoke("prepare")
 
 
-def test_runner_cleanup_only_on_private_repository(runner):
-    _, control, invoke = runner
-    control["private"] = False
-    with pytest.raises(RuntimeError):
-        invoke("cleanup")
-    assert not control["deleted"]
+def test_workflow_input_cleanup_checks_tag_and_privacy_and_reports_failure():
+    import yaml
+
+    root = Path(__file__).resolve().parents[1] / "deploy"
+    checked = 0
+    for name in ("clipforge.yml", "audio-stages.yml"):
+        workflow = yaml.safe_load((root / name).read_text())
+        for job in workflow["jobs"].values():
+            steps = job["steps"]
+            cleanup = [s for s in steps if s.get("id") == "input-cleanup"]
+            if not cleanup:
+                continue
+            script = cleanup[0]["run"]
+            # Deletion needs only the preinstalled gh, a valid tag and a private repository.
+            assert "^clipforge-input-[a-f0-9]{32}$" in script
+            assert '--jq .private)" != true' in script
+            assert "run_request.py" not in script and ".venv" not in script
+            assert cleanup[0]["if"] == "always()"
+            reports = [
+                s
+                for s in steps
+                if s.get("if") == "always() && steps.input-cleanup.outcome != 'success'"
+            ]
+            assert len(reports) == 1 and "GITHUB_STEP_SUMMARY" in reports[0]["run"]
+            checked += 1
+    assert checked == 3
 
 
 @pytest.mark.parametrize("upload_fails", [False, True])

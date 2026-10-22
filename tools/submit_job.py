@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sys
 import tempfile
 import time
 import uuid
@@ -433,8 +434,28 @@ def collect_result(state, receipt, destination, collect_stage=None):
         )
     else:
         receipt.update(status="COMPLETE", output=str(destination.resolve()))
+        receipt["input_cleanup"] = input_cleanup_status(receipt["input_tag"])
     save(state / "receipt.json", receipt)
     print("Completed; private outputs verified and downloaded.")
+    if receipt.get("input_cleanup") == "REMAINS":
+        print(
+            "Warning: the temporary private input release still exists. Delete it with "
+            "tools/submit_job.py --cleanup-tag " + receipt["input_tag"],
+            file=sys.stderr,
+        )
+
+
+def input_cleanup_status(tag):
+    """Whether the worker removed the temporary private input; never fails a collection."""
+    if not re.fullmatch(r"clipforge-input-[a-f0-9]{32}", str(tag)):
+        return "UNKNOWN"
+    try:
+        gh("api", f"repos/{REPO}/releases/tags/{tag}", "--jq", ".tag_name")
+    except RuntimeError as error:
+        return "DELETED" if "HTTP 404" in str(error) else "UNKNOWN"
+    except Exception:
+        return "UNKNOWN"
+    return "REMAINS"
 
 
 def local_record_exists(identity):
