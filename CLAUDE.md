@@ -8,7 +8,7 @@ GitHubや他のAIサービスが実際に拒否した操作を、許可済み・
 
 ## 効率的な進め方（主担当モデル向け）
 
-- 主担当は判断・設計・統合・最終確認に集中する。広い読み込み、調査、定型の修正は、OpenCodeの無料モデル `opencode/deepseek-v4.1-flash-free` を `tools/opencode_harness.py` 経由で使う（`--mode read` は読むだけ、`--mode write` は専用worktreeだけを編集）。ハーネスを通さずにOpenCodeを起動しない。費用が0を超えたら止まる設計を外さない。
+- 主担当は分析・調査・指示・最終確認に集中し、修正と実装は自分でしない。実装は `tools/opencode_harness.py --mode write`（既定で GPT-6.1 Sol、推論強度 high、同時2体まで）に任せる。Sol は `CLIPFORGE_OPENAI_PROFILE` の1つのプロファイルだけを使い、上限に達しても別アカウントへ自動で切り替えない。広い読み込みや軽い調査は `--mode read`（既定で無料の `opencode/deepseek-v4.1-flash-free`）を使う。ハーネスを通さずに OpenCode を起動しない。無料モデルの費用ガードを外さない。
 - ハーネスが使えないときだけHaiku 5.5のサブエージェントを使う。Opusのサブエージェントは起動しない。
 - 1件ずつ結果を受け取りたいタスクは、ハーネスを別々に起動する（同じ起動の複数タスクは全部の完了後にまとめて表示される）。各runの `result.json` と `report.md` は実行中でも個別に読める。
 - writeモードの差分は主担当がworktreeで確認し、テストとruffを通してから本体へ取り込んでコミットする。

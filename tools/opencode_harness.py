@@ -31,8 +31,16 @@ MODEL = "opencode/deepseek-v4.1-flash-free"
 # A profile is never switched automatically; another one is used only when the owner says so.
 MODELS = {
     "deepseek": {"id": MODEL, "provider": "opencode", "free": True},
-    "sol": {"id": "openai/gpt-6.1-sol", "provider": "openai", "free": False},
+    "sol": {
+        "id": "openai/gpt-6.1-sol",
+        "provider": "openai",
+        "free": False,
+        "variant": "high",
+        "slots": 2,
+    },
 }
+# Fixes and implementation go to GPT-6.1 Sol at high reasoning; reading stays on the free model.
+DEFAULT_MODEL = {"write": "sol", "read": "deepseek"}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
 STALL_SECONDS = 120
@@ -143,12 +151,13 @@ def worktree(base, name):
     return path
 
 
-def slot():
-    """Hold one of MAX_RUNNING machine-wide slots; the free endpoint stalls when crowded."""
-    directory = STATE / "slots"
+def slot(model="deepseek"):
+    """Hold one of a model's machine-wide slots: the free endpoint stalls when crowded, and
+    the subscription model keeps within its usage limits."""
+    directory = STATE / "slots" / model
     directory.mkdir(parents=True, exist_ok=True)
     while True:
-        for index in range(MAX_RUNNING):
+        for index in range(MODELS[model].get("slots", MAX_RUNNING)):
             handle = (directory / f"{index}.lock").open("a")
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -286,8 +295,11 @@ def run_task(task, mode, base, timeout, model="deepseek"):
     }
     texts = []
     command = ["opencode", "run", "--format", "json", "--dir", str(workdir)]
-    command += ["-m", MODELS[model]["id"], prompt]
-    with slot(), log.open("w") as out:
+    command += ["-m", MODELS[model]["id"]]
+    if MODELS[model].get("variant"):
+        command += ["--variant", MODELS[model]["variant"]]
+    command.append(prompt)
+    with slot(model), log.open("w") as out:
         # A start that never answers is retried; one that has answered is never repeated.
         while result["attempts"] < START_ATTEMPTS:
             result["attempts"] += 1
@@ -329,10 +341,11 @@ def main(argv=None):
     parser.add_argument(
         "--model",
         choices=sorted(MODELS),
-        default="deepseek",
-        help="deepseek (free, default) or sol (GPT-6.1 Sol via one ChatGPT profile)",
+        help="deepseek (free) or sol (GPT-6.1 Sol high via one ChatGPT profile); "
+        "write tasks default to sol and read tasks to deepseek",
     )
     args = parser.parse_args(argv)
+    args.model = args.model or DEFAULT_MODEL[args.mode]
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
         results = list(
             pool.map(
