@@ -89,7 +89,10 @@ def pack(root, work, kind, identity, chunk_bytes=CHUNK_BYTES):
         raise BundleError("Bundle staging must be outside its source")
     work.mkdir(parents=True, exist_ok=True)
     archive = work / "bundle.tar"
-    with tarfile.open(archive, "w") as bundle:
+    # Runtime libraries compress well; MP4 results are already compressed.
+    mode = "w:gz" if kind == "assets" else "w"
+    options = {"compresslevel": 1} if kind == "assets" else {}
+    with tarfile.open(archive, mode, **options) as bundle:
         for path in sorted(root.iterdir()):
             bundle.add(path, arcname=path.name, filter=safe_tar_filter(root))
     if archive.stat().st_size > MAX_BYTES:
@@ -235,7 +238,12 @@ class ReleaseBundles:
         url += urllib.parse.urlencode({"name": name})
         with (
             path.open("rb") as data,
-            self.open("POST", url, data=data, size=path.stat().st_size) as response,
+            self.open(
+                "POST",
+                url,
+                data=iter(lambda: data.read(1024 * 1024), b""),
+                size=path.stat().st_size,
+            ) as response,
         ):
             json.load(response)
 
@@ -243,7 +251,7 @@ class ReleaseBundles:
         release = self.release(tag, create=kind == "assets")
         if not release:
             raise BundleError("Private input release is missing")
-        inventory = tree_id(directory) if kind == "assets" else None
+        inventory = ("gzip1:" + tree_id(directory)) if kind == "assets" else None
         existing = next(
             (a for a in release["assets"] if a["name"] == f"cf-{kind}-manifest.json"),
             None,

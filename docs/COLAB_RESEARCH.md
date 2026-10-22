@@ -14,6 +14,7 @@
 | [automate-colab-script-service](https://github.com/asgaralipq/automate-colab-script-service) | WebDriverでノートブックを開いて実行する方式。ブラウザ・UI依存を避け、公式CLIを採用 |
 | [Colab FAQ](https://research.google.com/colaboratory/faq.html) | 利用枠・切断・GPU提供は可変。契約・残高・実際の割り当てを区別 |
 | [GitHub Releases API](https://docs.github.com/en/rest/releases/assets) | 認証付きの大容量転送とキャッシュに利用。512MiB以下のチャンク、SHA-256、許可したCDNへのリダイレクト時の認証ヘッダ除去を実装 |
+| [NVIDIA: TuringのNVENC最小幅](https://forums.developer.nvidia.com/t/minimum-width-in-turing-gpus/155566) | H.264の最小幅145px。128pxの検出映像ではT4を誤って利用不可と判定するため、320×240の実エンコードで検出 |
 
 公式CLIリポジトリの調査時コミット: `4025416a03361d2ff34d06a4523ae76ce4c9bbaf`。
 実行時はPyPIの `google-colab-cli==0.7.5` と `tools/colab-control-requirements.txt` のハッシュを使います。上流READMEと既定認証方式の説明に差があるため、SDKへ認証済みセッションを明示的に渡し、対話ログインをCIで起動しない構成にしています。

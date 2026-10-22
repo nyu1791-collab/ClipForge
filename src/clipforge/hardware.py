@@ -57,7 +57,8 @@ def nvenc_available():
         result = subprocess.run(
             [
                 "ffmpeg", "-nostdin", "-hide_banner", "-v", "error",
-                "-f", "lavfi", "-i", "color=c=black:s=128x128:r=30",
+                # Turing H.264 NVENC requires width >=145; a 128px probe rejects T4.
+                "-f", "lavfi", "-i", "color=c=black:s=320x240:r=30",
                 "-frames:v", "1", "-an", "-c:v", "h264_nvenc",
                 "-preset", "p1", "-rc", "vbr", "-cq", "20",
                 "-b:v", "0", "-pix_fmt", "yuv420p", "-f", "null", "-",
@@ -65,7 +66,7 @@ def nvenc_available():
             capture_output=True,
             timeout=20,
         )
-        return result.returncode == 0 and not result.stderr.strip()
+        return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
 

@@ -8,6 +8,10 @@ on:
         type: choice
         options: [verify-gpu, prepare-cache]
         default: verify-gpu
+      offline:
+        description: Require cached runtime packages and models without new downloads
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -21,6 +25,8 @@ jobs:
     if: github.repository == 'nyu1791-collab/ai-model-workers'
     runs-on: ubuntu-24.04
     timeout-minutes: 100
+    env:
+      CLIPFORGE_OFFLINE: ${{ inputs.offline && '1' || '0' }}
     steps:
       - name: Check one-time OAuth setup without allocating resources
         env:
