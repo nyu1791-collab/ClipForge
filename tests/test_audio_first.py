@@ -414,3 +414,46 @@ def test_render_records_seconds_per_clip_in_manifest_and_output(
             in out
         )
     assert URL not in out
+
+
+@pytest.mark.parametrize("only", [0, 4, True, "2"])
+def test_only_must_name_one_reviewed_clip_before_any_fetch(
+    audio_job, monkeypatch, only
+):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    stub_clip_render(monkeypatch, events)
+    with pytest.raises(PipelineError, match="only must name"):
+        af.render(vod, root, settings, review, only=only)
+    assert "1080p" not in [e[0] for e in events]
+
+
+def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypatch):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    stub_clip_render(monkeypatch, events)
+    monkeypatch.setattr(
+        af.landscape,
+        "summarize_delivery",
+        lambda *a: pytest.fail("a single clip must not summarize the delivery"),
+    )
+    manifest = af.render(vod, root, settings, review, only=2)
+    assert [e for e in events if e[0] == "1080p"] == [("1080p", 120, 175)]
+    assert [e[1:] for e in events if e[0] == "prefetch"] == [(120, 175)]
+    assert [e for e in events if e[0] == "render"] == [("render", 2)]
+    analysis = json.loads((root / "topics.json").read_text())
+    selection = root / "review.json"
+    assert manifest == json.loads((root / "delivery/manifest.json").read_text())
+    assert manifest["status"] == "clip_rendered"
+    assert manifest["clip_index"] == 2 and manifest["clip_count"] == 3
+    assert manifest["analysis_key"] == analysis["analysis_key"]
+    assert manifest["selection_sha256"] == digest(selection)
+    assert manifest["rendered"] == [
+        {
+            "directory": "clips/clip-002",
+            "source_interval": {"start": 120, "end": 175, "topic_id": "topic-002"},
+        }
+    ]
+    assert set(manifest["timings"]) == {"clip-002", "total"}
+    assert set(manifest["timings"]["clip-002"]) == {"prefetch_wait", "fetch", "render"}
+    assert not (root / "delivery/e2e-summary.json").exists()

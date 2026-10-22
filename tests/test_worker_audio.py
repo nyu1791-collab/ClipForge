@@ -281,3 +281,386 @@ def test_worker_summary_passes_manifest_timings_when_present(
     summary = json.loads(capsys.readouterr().out)
     assert summary["timings"] == timings
     assert summary["model_generation_requests"] == 0
+
+
+SOURCE_REF = "a" * 40
+CLIP_REQUESTS = {1: "1" * 32, 2: "2" * 32, 3: "3" * 32}
+ANALYSIS = "d" * 64
+SELECTION = "e" * 64
+CACHE = "f" * 64
+
+
+def edit_json(path, change):
+    value = json.loads(path.read_text())
+    change(value)
+    write_json(path, value)
+
+
+def edit_part(root, name, change):
+    """Change a receipted file and refresh its receipt, so only the named fault remains."""
+    edit_json(root / name, change)
+    receipt = json.loads((root / "request-receipt.json").read_text())
+    receipt["sha256"][name] = digest(root / name)
+    write_json(root / "request-receipt.json", receipt)
+
+
+def edit_receipt(root, change):
+    edit_json(root / "request-receipt.json", change)
+
+
+def make_part(root, index, *, count=3, previous=IDENTITY):
+    name = f"clip-{index:03}"
+    clip = root / "delivery/clips" / name
+    clip.mkdir(parents=True)
+    (clip / "clip.mp4").write_bytes(f"synthetic {name}".encode())
+    write_json(root / "asr-receipt.json", {"key": CACHE, "reused": True})
+    write_json(
+        root / "delivery/manifest.json",
+        {"status": "clip_rendered", "rendered": []},
+    )
+    write_json(
+        root / "manifest.json",
+        {
+            "status": "clip_rendered",
+            "clip_index": index,
+            "clip_count": count,
+            "rendered": [
+                {
+                    "directory": "delivery/clips/" + name,
+                    "source_interval": {"start": 0, "end": 1, "topic_id": "topic"},
+                }
+            ],
+            "analysis_key": ANALYSIS,
+            "selection_sha256": SELECTION,
+            "timings": {
+                name: {"prefetch_wait": 0.5, "fetch": 1, "render": 2},
+                "total": 3.5,
+            },
+            "model_generation_requests": 0,
+            "source_url": URL,
+            "source_sha256": "9" * 64,
+            "asr_reused": True,
+        },
+    )
+    files = [
+        "manifest.json",
+        "asr-receipt.json",
+        "delivery/manifest.json",
+        f"delivery/clips/{name}/clip.mp4",
+    ]
+    write_json(
+        root / "request-receipt.json",
+        {
+            "request_id": CLIP_REQUESTS[index],
+            "source_ref": SOURCE_REF,
+            "status": "clip_rendered",
+            "clip_index": index,
+            "audio_source_url": URL,
+            "sha256": {n: digest(root / n) for n in files},
+            "asr_reused": True,
+            "audio_stage": "render",
+            "previous_run_id": "123",
+            "previous_request_id": previous,
+        },
+    )
+    return root
+
+
+@pytest.fixture
+def merge_env(tmp_path, monkeypatch):
+    settings = Settings.model_validate_json(
+        Path("config.landscape.example.json").read_text()
+    )
+    monkeypatch.setattr(
+        worker.landscape,
+        "summarize_delivery",
+        lambda manifest, output, expected: {
+            "status": "complete",
+            "rendered_clips": len(manifest["rendered"]),
+        },
+    )
+    monkeypatch.setattr(
+        worker.landscape,
+        "code_identity",
+        lambda settings: {"implementation_sha256": "x"},
+    )
+    monkeypatch.setattr(
+        worker, "gh", lambda *a: pytest.fail("merge must not call gh with local parts")
+    )
+    return tmp_path, settings
+
+
+def local_parts(tmp_path, order=(3, 1, 2)):
+    return [
+        (make_part(tmp_path / f"part-{index}", index), CLIP_REQUESTS[index])
+        for index in order
+    ]
+
+
+def test_merge_writes_the_same_shape_as_a_whole_render(merge_env):
+    tmp_path, settings = merge_env
+    output = tmp_path / "out"
+    result, lineage = worker.merge_parts(
+        local_parts(tmp_path), output, settings, SOURCE_REF
+    )
+    assert result["status"] == "complete"
+    assert [row["directory"] for row in result["rendered"]] == [
+        "delivery/clips/clip-001",
+        "delivery/clips/clip-002",
+        "delivery/clips/clip-003",
+    ]
+    assert set(result["timings"]) == {"clip-001", "clip-002", "clip-003", "total"}
+    assert result["timings"]["total"] == pytest.approx(10.5)
+    assert result["timings"]["clip-002"] == {
+        "prefetch_wait": 0.5,
+        "fetch": 1,
+        "render": 2,
+    }
+    assert json.loads((output / "manifest.json").read_text()) == result
+    delivery = json.loads((output / "delivery/manifest.json").read_text())
+    assert set(delivery) == {
+        "status",
+        "rendered",
+        "selection_receipt",
+        "analysis_key",
+        "selection_sha256",
+        "video_review_attested",
+        "human_review_performed",
+        "transcript_cache",
+        "timings",
+    }
+    assert [row["directory"] for row in delivery["rendered"]] == [
+        "clips/clip-001",
+        "clips/clip-002",
+        "clips/clip-003",
+    ]
+    assert (output / "delivery/clips/clip-002/clip.mp4").read_bytes() == (
+        b"synthetic clip-002"
+    )
+    assert (
+        json.loads((output / "delivery/e2e-summary.json").read_text())["rendered_clips"]
+        == 3
+    )
+    assert lineage == {
+        "previous_request_id": IDENTITY,
+        "part_request_ids": sorted(CLIP_REQUESTS.values()),
+    }
+
+
+def replace_with_symlink(root):
+    clip = root / "delivery/clips/clip-002/clip.mp4"
+    real = root / "elsewhere.mp4"
+    real.write_bytes(clip.read_bytes())
+    clip.unlink()
+    clip.symlink_to(real)
+
+
+FAULTS = {
+    "missing": lambda tmp, parts: parts.pop(),
+    "duplicate": lambda tmp, parts: parts.append(
+        (make_part(tmp / "again", 1), CLIP_REQUESTS[1])
+    ),
+    "previous_request": lambda tmp, parts: edit_receipt(
+        parts[0][0], lambda r: r.update(previous_request_id="9" * 32)
+    ),
+    "analysis": lambda tmp, parts: edit_part(
+        parts[0][0], "manifest.json", lambda m: m.update(analysis_key="other")
+    ),
+    "clip_count": lambda tmp, parts: edit_part(
+        parts[0][0], "manifest.json", lambda m: m.update(clip_count=4)
+    ),
+    "source_ref": lambda tmp, parts: edit_receipt(
+        parts[0][0], lambda r: r.update(source_ref="b" * 40)
+    ),
+    "hash": lambda tmp, parts: (
+        parts[0][0] / "delivery/clips/clip-003/clip.mp4"
+    ).write_bytes(b"changed"),
+    "traversal": lambda tmp, parts: edit_receipt(
+        parts[0][0], lambda r: r["sha256"].update({"../escape": "a" * 64})
+    ),
+    "absolute": lambda tmp, parts: edit_receipt(
+        parts[0][0], lambda r: r["sha256"].update({"/etc/passwd": "a" * 64})
+    ),
+    "symlink": lambda tmp, parts: replace_with_symlink(parts[2][0]),
+}
+
+
+@pytest.mark.parametrize("fault", sorted(FAULTS))
+def test_merge_refuses_missing_duplicate_mismatched_or_unsafe_parts(merge_env, fault):
+    tmp_path, settings = merge_env
+    parts = local_parts(tmp_path)
+    FAULTS[fault](tmp_path, parts)
+    with pytest.raises(PipelineError):
+        worker.merge_parts(parts, tmp_path / "out", settings, SOURCE_REF)
+    assert not (tmp_path / "out/manifest.json").exists()
+
+
+def test_merge_refuses_to_overwrite_an_existing_delivery(merge_env):
+    tmp_path, settings = merge_env
+    output = tmp_path / "out"
+    (output / "delivery").mkdir(parents=True)
+    with pytest.raises(PipelineError, match="already contains"):
+        worker.merge_parts(local_parts(tmp_path), output, settings, SOURCE_REF)
+
+
+def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
+    tmp_path, monkeypatch, capsys
+):
+    import shutil
+
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    sources = {
+        CLIP_REQUESTS[index]: make_part(tmp_path / f"src-{index}", index)
+        for index in (1, 2, 3)
+    }
+    runs = {"101": CLIP_REQUESTS[1], "102": CLIP_REQUESTS[2], "103": CLIP_REQUESTS[3]}
+    calls = []
+
+    def gh(*args):
+        calls.append(args)
+        if args[:2] == ("run", "view"):
+            request = runs[args[2]]
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "displayTitle": "ClipForge " + request,
+                }
+            )
+        request = args[args.index("--name") + 1].removeprefix("clipforge-result-")
+        shutil.copytree(sources[request], Path(args[args.index("--dir") + 1]))
+        return ""
+
+    monkeypatch.setattr(worker, "gh", gh)
+    monkeypatch.setattr(
+        worker.landscape,
+        "summarize_delivery",
+        lambda manifest, output, expected: {"status": "complete"},
+    )
+    monkeypatch.setattr(
+        worker.landscape,
+        "code_identity",
+        lambda settings: {"implementation_sha256": "x"},
+    )
+    output = tmp_path / "out"
+    part_runs = ",".join(f"{run}:{request}" for run, request in runs.items())
+    args = [
+        "--stage",
+        "merge",
+        "--part-runs",
+        part_runs,
+        "--request-id",
+        "c" * 32,
+        "--source-ref",
+        SOURCE_REF,
+        "--output",
+        str(output),
+    ]
+    assert worker.main(args) == 0
+    assert {c[2] for c in calls if c[:2] == ("run", "view")} == set(runs)
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    assert receipt["audio_stage"] == "merge"
+    assert receipt["status"] == "complete"
+    assert receipt["part_request_ids"] == sorted(CLIP_REQUESTS.values())
+    assert receipt["previous_request_id"] == IDENTITY
+    assert json.loads(capsys.readouterr().out)["status"] == "complete"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("status", "in_progress"),
+        ("conclusion", "failure"),
+        ("displayTitle", "ClipForge x"),
+    ],
+)
+def test_merge_main_refuses_a_clip_run_that_is_not_its_successful_render(
+    tmp_path, monkeypatch, field, value
+):
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    run = {
+        "status": "completed",
+        "conclusion": "success",
+        "displayTitle": "ClipForge " + CLIP_REQUESTS[1],
+    }
+    run[field] = value
+    downloads = []
+
+    def gh(*args):
+        if args[:2] == ("run", "view"):
+            return json.dumps(run)
+        downloads.append(args)
+        return ""
+
+    monkeypatch.setattr(worker, "gh", gh)
+    args = [
+        "--stage",
+        "merge",
+        "--part-runs",
+        f"101:{CLIP_REQUESTS[1]}",
+        "--request-id",
+        "c" * 32,
+        "--source-ref",
+        SOURCE_REF,
+        "--output",
+        str(tmp_path / "out"),
+    ]
+    assert worker.main(args) == 1
+    assert downloads == []
+
+
+def test_render_stage_passes_one_clip_index_and_records_it(
+    previous_analysis, monkeypatch
+):
+    previous, output, _ = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    seen = []
+
+    def gh(*args):
+        if args[:2] == ("run", "view"):
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success",
+                    "displayTitle": "ClipForge " + IDENTITY,
+                }
+            )
+        import shutil
+
+        shutil.copytree(previous, Path(args[args.index("--dir") + 1]))
+        return ""
+
+    def execute(*args):
+        seen.append(args)
+        return {"status": "clip_rendered", "source_url": URL, "clip_index": 2}
+
+    monkeypatch.setattr(worker, "gh", gh)
+    monkeypatch.setattr(worker, "execute", execute)
+    args = [
+        "--stage",
+        "render",
+        "--previous-run",
+        "123",
+        "--previous-request",
+        IDENTITY,
+        "--request-id",
+        "c" * 32,
+        "--source-ref",
+        SOURCE_REF,
+        "--output",
+        str(output),
+        "--clip-index",
+        "2",
+        "--review-file",
+        str(previous / "review.json"),
+    ]
+    assert worker.main(args) == 0
+    assert seen[0][-1] == 2
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    assert receipt["status"] == "clip_rendered" and receipt["clip_index"] == 2
+
+
+@pytest.mark.parametrize("clip_index", ["0", "21"])
+def test_clip_index_is_limited_to_one_to_twenty(clip_index):
+    with pytest.raises(SystemExit):
+        worker.main(["--stage", "render", "--clip-index", clip_index])

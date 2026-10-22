@@ -312,13 +312,15 @@ def prefetch_interval(vod, clip, target):
         vod.prefetch(clip.start, clip.end)
 
 
-def render(vod, root, settings, review_file, analysis_result=None):
+def render(vod, root, settings, review_file, analysis_result=None, only=None):
     analysis, transcript = (
         analysis_result if analysis_result is not None else analyze(vod, root, settings)
     )
     preview = json.loads((root / "previews.json").read_text())
     value = json.loads(review_file.read_text())
     clips = reviewed_clips(value, analysis, preview, settings)
+    if only is not None and (type(only) is not int or not 1 <= only <= len(clips)):
+        raise PipelineError("only must name one reviewed clip by its 1-based number")
     # Verify all previews before fetching even the first high-quality interval.
     for row in preview["previews"]:
         topic = next(t for t in analysis["topics"] if t["id"] == row["topic_id"])
@@ -353,12 +355,20 @@ def render(vod, root, settings, review_file, analysis_result=None):
         for clip in clips
     ]
     rows, timings = [], {}
+    indexes = range(1, len(clips) + 1) if only is None else [only]
     # The next clip's segments are fetched over HTTP while the current clip is rendered.
+    # A single-clip render has no next clip, so it warms only its own interval.
     with ThreadPoolExecutor(max_workers=1) as ahead:
-        pending = ahead.submit(prefetch_interval, vod, clips[0], targets[0])
-        for index, (clip, local_transcript, target) in enumerate(
-            zip(clips, local_transcripts, targets), 1
-        ):
+        pending = ahead.submit(
+            prefetch_interval,
+            vod,
+            clips[indexes[0] - 1],
+            targets[indexes[0] - 1],
+        )
+        for index in indexes:
+            clip = clips[index - 1]
+            local_transcript = local_transcripts[index - 1]
+            target = targets[index - 1]
             clip_timings = {}
             # Re-raises a prefetch failure as this clip's failure, before its fetch.
             pipeline.timed(clip_timings, "prefetch_wait", pending.result)
@@ -367,7 +377,7 @@ def render(vod, root, settings, review_file, analysis_result=None):
                 "fetch",
                 lambda: retrieved(vod, target, clip.start, clip.end, quality="1080p"),
             )
-            if index < len(clips):
+            if index < indexes[-1]:
                 pending = ahead.submit(
                     prefetch_interval, vod, clips[index], targets[index]
                 )
@@ -402,6 +412,19 @@ def render(vod, root, settings, review_file, analysis_result=None):
     timings["total"] = round(
         sum(v for t in timings.values() if isinstance(t, dict) for v in t.values()), 2
     )
+    if only is not None:
+        # One clip's part; the whole-delivery summary waits for the merge stage.
+        manifest = {
+            "status": "clip_rendered",
+            "clip_index": only,
+            "clip_count": len(clips),
+            "rendered": rows,
+            "analysis_key": analysis["analysis_key"],
+            "selection_sha256": digest(review_file),
+            "timings": timings,
+        }
+        write_json(output / "manifest.json", manifest)
+        return manifest
     manifest = {
         "status": "complete",
         "rendered": rows,
