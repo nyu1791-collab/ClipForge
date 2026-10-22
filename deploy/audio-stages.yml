@@ -58,6 +58,8 @@ jobs:
       PREVIOUS_RUN: ${{ inputs.previous_run_id }}
       PREVIOUS_REQUEST: ${{ inputs.previous_request_id }}
       REVIEW_JSON: ${{ inputs.review_json }}
+      CLIP_INDEX: ${{ inputs.clip_index }}
+      PART_RUNS: ${{ inputs.part_runs }}
       PYTHONUNBUFFERED: '1'
     steps:
       - name: Validate private stage identities
@@ -68,7 +70,11 @@ jobs:
               assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])
           assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']
           assert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])
-          assert os.environ['AUDIO_STAGE'] in {'previews','render'}
+          assert os.environ['AUDIO_STAGE'] in {'previews','render','merge'}
+          assert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])
+          parts=os.environ['PART_RUNS']
+          assert (os.environ['AUDIO_STAGE']=='merge')==bool(parts)
+          assert parts=='' or re.fullmatch(r'[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}',parts)
           text=os.environ['REVIEW_JSON']
           assert len(text.encode())<=32768
           if os.environ['AUDIO_STAGE']=='render':
@@ -100,16 +106,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$AUDIO_STAGE" = render ]; then
-            uv run --no-sync python tools/run_audio_stage.py --stage render \
-              --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
-              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" \
-              --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage
+          if [ "$AUDIO_STAGE" = merge ]; then
+            # The clip renders are verified private artifacts; merge checks every hash again.
+            uv run --no-sync python tools/run_audio_stage.py --stage merge \
+              --part-runs "$PART_RUNS" --previous-request "$PREVIOUS_REQUEST" \
+              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" --output artifacts/audio-stage
           else
-            uv run --no-sync python tools/run_audio_stage.py --stage previews \
-              --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
+            set -- --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
               --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" \
               --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage
+            if [ -n "$CLIP_INDEX" ]; then set -- "$@" --clip-index "$CLIP_INDEX"; fi
+            uv run --no-sync python tools/run_audio_stage.py --stage "$AUDIO_STAGE" "$@"
           fi
       - uses: actions/upload-artifact@v4
         if: always()
