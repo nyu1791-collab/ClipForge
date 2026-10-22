@@ -8,7 +8,11 @@ import re
 import ssl
 import tempfile
 import threading
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
+from email.utils import parsedate_to_datetime
+from fractions import Fraction
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -17,6 +21,92 @@ from .storage import PipelineError, digest, process, write_json
 
 
 RANGE_FORMAT = "segment-remux-v1"
+
+
+class HTTPFailure(Exception):
+    def __init__(self, status, headers):
+        self.status, self.headers = status, headers
+
+
+def retry_after(headers, default):
+    value = headers.get("Retry-After")
+    if value is not None:
+        try:
+            seconds = float(value)
+        except ValueError:
+            try:
+                seconds = parsedate_to_datetime(value).timestamp() - time.time()
+            except (TypeError, ValueError, OverflowError):
+                return default
+        if math.isfinite(seconds):
+            return min(60, max(0, seconds))
+    return default
+
+
+def extract_audio(source, output, start, duration):
+    """Decode locally with PyAV; timestamps retain the selected TS interval's clock."""
+    import av
+
+    try:
+        with (
+            av.open(str(source), options={"protocol_whitelist": "file,pipe"}) as media,
+            av.open(
+                str(output), "w", format="mp4", options={"movflags": "+faststart"}
+            ) as target,
+        ):
+            if not media.streams.audio:
+                raise PipelineError("valid audio is required")
+            audio = media.streams.audio[0]
+            origin = (
+                media.start_time / av.time_base
+                if media.start_time is not None
+                else float((audio.start_time or 0) * audio.time_base)
+            )
+            stream = target.add_stream("aac", rate=16000)
+            stream.layout, stream.bit_rate = "mono", 48000
+            resampler = av.AudioResampler(format="fltp", layout="mono", rate=16000)
+            written = 0
+
+            def encode(frame):
+                nonlocal written
+                if frame.time is None:
+                    raise PipelineError("audio timestamp is required")
+                relative = frame.time - origin
+                first = max(0, math.ceil((start - relative) * 16000 - 1e-6))
+                last = min(
+                    frame.samples,
+                    math.ceil((start + duration - relative) * 16000 - 1e-6),
+                )
+                if first >= last:
+                    return
+                trimmed = av.AudioFrame.from_ndarray(
+                    frame.to_ndarray()[:, first:last].copy(),
+                    format="fltp",
+                    layout="mono",
+                )
+                trimmed.sample_rate, trimmed.time_base = 16000, Fraction(1, 16000)
+                trimmed.pts = written
+                written += trimmed.samples
+                for packet in stream.encode(trimmed):
+                    target.mux(packet)
+
+            for frame in media.decode(audio):
+                for converted in resampler.resample(frame):
+                    encode(converted)
+                if frame.time is not None and frame.time - origin >= start + duration:
+                    break
+            for converted in resampler.resample(None):
+                encode(converted)
+            if not written:
+                raise PipelineError("valid audio is required")
+            for packet in stream.encode(None):
+                target.mux(packet)
+        with av.open(str(output)) as media:
+            if media.duration is None:
+                raise PipelineError("audio duration is required")
+            return media.duration / av.time_base
+    except av.FFmpegError:
+        raise PipelineError("PyAV audio extraction failed") from None
 
 
 class VideoMetadata(HTMLParser):
@@ -139,6 +229,10 @@ class KickVOD:
         )
         from curl_cffi import requests
 
+        errors = getattr(requests, "exceptions", None)
+        self._transport_errors = (ConnectionError, TimeoutError) + (
+            (errors.ConnectionError, errors.Timeout) if errors is not None else ()
+        )
         self._session_factory = requests.Session
         self.session = self._new_session()
         try:
@@ -214,25 +308,71 @@ class KickVOD:
         return self._local.session
 
     def fetch(self, url, limit):
-        with self._session_lock:
-            return self._fetch(self.session, url, limit)
+        return self._fetch(self.session, url, limit, lock=self._session_lock)
 
-    def _fetch(self, session, url, limit):
-        response = session.get(url, allow_redirects=False, timeout=30, stream=True)
+    def _fetch(self, session, url, limit, *, segment=False, lock=None):
+        last_status, forbidden_retried = "unavailable", False
+        for attempt in range(1, 5):
+            try:
+                return self._fetch_once(session, url, limit, segment=segment, lock=lock)
+            except HTTPFailure as error:
+                last_status = error.status
+                if error.status == 403 and not forbidden_retried:
+                    forbidden_retried, delay = True, retry_after(error.headers, 10)
+                elif error.status == 429 or 500 <= error.status <= 504:
+                    delay = retry_after(error.headers, (5, 15, 45)[min(attempt - 1, 2)])
+                else:
+                    break
+            except self._transport_errors:
+                delay = (5, 15, 45)[min(attempt - 1, 2)]
+            if attempt == 4:
+                break
+            time.sleep(delay)
+        raise PipelineError(
+            f"Kick media HTTP {last_status}; failed after {attempt} attempts"
+        ) from None
+
+    def _fetch_once(self, session, url, limit, *, segment, lock):
+        reserved, body, response = 0, None, None
+        if segment:
+            with self._budget:
+                while (
+                    self.max_bytes - self.used - self._reserved <= 0 and self._reserved
+                ):
+                    self._budget.wait()
+                reserved = min(limit, self.max_bytes - self.used - self._reserved)
+                if reserved <= 0:
+                    raise PipelineError("segment byte budget exhausted")
+                self._reserved += reserved
+                limit = reserved
         try:
-            if response.status_code != 200:
-                raise PipelineError(
-                    f"Kick media HTTP {response.status_code}; no automatic retry"
+            with lock if lock is not None else nullcontext():
+                response = session.get(
+                    url, allow_redirects=False, timeout=30, stream=True
                 )
-            chunks, size = [], 0
-            for chunk in response.iter_content():
-                size += len(chunk)
-                if size > limit:
-                    raise PipelineError("Kick response exceeds budget")
-                chunks.append(chunk)
-            return b"".join(chunks)
+                if response.status_code != 200:
+                    raise HTTPFailure(
+                        response.status_code, getattr(response, "headers", {})
+                    )
+                chunks, size = [], 0
+                for chunk in response.iter_content():
+                    size += len(chunk)
+                    if size > limit:
+                        raise PipelineError("Kick response exceeds budget")
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+                return body
         finally:
-            response.close()
+            try:
+                if response is not None:
+                    response.close()
+            finally:
+                if segment:
+                    with self._budget:
+                        if body is not None:
+                            self.used += len(body)
+                        self._reserved -= reserved
+                        self._budget.notify_all()
 
     def playlist(self, quality):
         if quality not in {"lowest", "preview", "720p", "1080p", "best"}:
@@ -356,22 +496,7 @@ class KickVOD:
                     if size <= self.max_bytes - self.used:
                         self.used += size
                         return path
-            while self.max_bytes - self.used - self._reserved <= 0 and self._reserved:
-                self._budget.wait()
-            remaining = self.max_bytes - self.used - self._reserved
-            if remaining <= 0:
-                raise PipelineError("segment byte budget exhausted")
-            reserved = min(64 * 1024**2, remaining)
-            self._reserved += reserved
-        body = None
-        try:
-            body = self._fetch(self._worker_session(), url, reserved)
-        finally:
-            with self._budget:
-                if body is not None:
-                    self.used += len(body)
-                self._reserved -= reserved
-                self._budget.notify_all()
+        body = self._fetch(self._worker_session(), url, 64 * 1024**2, segment=True)
         if not body or body[0] != 0x47:
             raise PipelineError("expected MPEG-TS segment")
         with tempfile.NamedTemporaryFile(dir=self.cache, delete=False) as temp:
@@ -456,21 +581,7 @@ class KickVOD:
             ]
             if not remux:
                 command += ["-t", str(end - start)]
-            if audio_only:
-                command += [
-                    "-map",
-                    "0:a:0",
-                    "-vn",
-                    "-ac",
-                    "1",
-                    "-ar",
-                    "16000",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "48k",
-                ]
-            elif remux:
+            if remux:
                 command += [
                     "-map",
                     "0:v:0",
@@ -500,25 +611,30 @@ class KickVOD:
                     "-c:a",
                     "aac",
                 ]
-            process(
-                [*command, "-movflags", "+faststart", str(product)],
-                timeout=max(300, (end - start) * 10),
-            )
-            info = json.loads(
+            if audio_only:
+                fetched_duration = extract_audio(
+                    ts, product, start - selected[0]["start"], end - start
+                )
+            else:
                 process(
-                    [
-                        "ffprobe",
-                        "-v",
-                        "error",
-                        "-show_entries",
-                        "format=duration",
-                        "-of",
-                        "json",
-                        product,
-                    ]
-                ).stdout
-            )
-            fetched_duration = float(info["format"]["duration"])
+                    [*command, "-movflags", "+faststart", str(product)],
+                    timeout=max(300, (end - start) * 10),
+                )
+                info = json.loads(
+                    process(
+                        [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-show_entries",
+                            "format=duration",
+                            "-of",
+                            "json",
+                            product,
+                        ]
+                    ).stdout
+                )
+                fetched_duration = float(info["format"]["duration"])
             if (
                 not math.isfinite(fetched_duration)
                 or abs(fetched_duration - covered_duration) > 0.3

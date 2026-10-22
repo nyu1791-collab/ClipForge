@@ -38,7 +38,9 @@ URLだけで音声取得・ASR・話題分割を投入できる。対応する `
 投入側はreleaseを作らず、設定をJSON文字列のdispatch入力 `settings_json`（UTF-8で最大16 KB）で渡す。依頼ID・設定はローカルの `request.json` にも保存する。`--output` で完了待機と検証付き回収を行う。
 GitHub-hosted `ubuntu-24.04` runnerが、GPU割り当て前に `uv sync --locked --extra media-fetch --no-dev` の環境で音声を取得する。
 runnerは `GITHUB_TOKEN` で一時releaseを作り、`tools/acquire_audio_url.py` が `tools/submit_job.py` の共通関数で設定のサイズ・JSON・許可キーを検証する。KickVODの既定6並列取得と `audio_first.acquire` を使い、音声を `input-video.bin`、設定・SHA-256・サイズ確定済みの依頼を `request.json` としてrunnerがアップロードしてからGPUを割り当てる。一時releaseは既存の `always()` ステップで削除する。
-ffmpeg/ffprobeが導入済みなら再インストールしない。未導入ならImageVersionをキーに含む `actions/cache@v4` の `.deb` から `apt-get install --no-download` し、キャッシュ不足・古い依存関係で失敗した場合はapt更新・通常インストールに戻り、取得した `.deb` を保存する。
+runnerの音声取得は固定済み依存のPyAVで連結TSを復号し、16 kHz・モノラル・AAC 48 kbpsのm4aへ変換する。長さの確認もPyAVで行い、ffmpeg/ffprobe CLI・apt・`.deb`キャッシュは使わない。候補映像・高画質区間の取得と描画は従来どおりffmpeg CLIを使う。
+Kick HTTP取得は429・500〜504・接続/タイムアウト例外を初回に加えて最大3回、5・15・45秒待って再試行する。`Retry-After`（秒またはHTTP日時）があれば最大60秒で従う。403は10秒待って1回だけ再試行し、その他の4xxは即失敗する。待機前に各試行の予算予約を解放し、他スレッドの取得を妨げない。最終エラーには最後のHTTPステータス（応答がなければunavailable）と試行回数を含め、URLのクエリ文字列は含めない。
+`clipforge.yml`の全ステップに個別の上限を設ける。依存導入・release操作は10分、音声取得と入力転送は30分、Colab実行は既存の5,100秒上限を収める90分。URL取得を含むジョブ全体は150分とし、後処理の時間を確保する。
 URL形式の検証はGoogleへの接続前に行う。Colabへ `AUDIO_URL` は渡さず、既存の `run_request.py prepare → run` の `audio_source_url` 分岐でASR・話題分割し、出力回収後すぐruntimeを停止する。
 workflowが一時releaseの `request.json` にある `audio_source_url` を確認し、音声解析では `CLIPFORGE_NO_MODEL_API=1` を制御コードへ渡す。URL投入・取得済み音声投入ともGeminiキーを要求せず、Colabへ送らない。音声分岐はGeminiクライアントを作らず、モデルAPIを呼ばない。
 URL投入では手元に音声SHA-256がないため、結果の `request-receipt.json` の `sha256["audio.m4a"]` を基準に `audio.m4a`・manifestを照合し、receiptの `audio_source_url` とmanifestの `source_url` を投入URLと照合する。
@@ -135,7 +137,7 @@ workflow起動前に`DISPATCHING`、応答不明なら`DISPATCH_UNCONFIRMED`を�
 旧ブランチ`ccr-12fe9485-ugaszt`を記録したreceiptも、`--collect`では旧workflow・旧ブランチを照合して回収できる。
 後段workflowはColab転送release用の`contents: write`と`actions: read`を使い、モデルAPI用Secretを渡さない。
 CPUの`merge`ではOSパッケージ導入を省略する。他のCPU段階はImageOS・ImageVersion・パッケージ一覧をキーに`.deb`を公式`actions/cache@v4`で保存する。
-未導入分だけキャッシュから`apt-get install --no-download`し、不足時だけupdateと通常installを実施する。
+未導入分だけキャッシュから`apt-get install --no-download`し、不足時だけupdateと通常installを実施する。このaptステップの上限は10分で、描画に必要なffmpegとフォントの導入は維持する。
 
 前段の成功artifactをworker内で回収し、元音声・ASR・話題の全ハッシュを確認する。
 有効なASRがなければ、取得・認識や別モデルへのfallbackで補わず停止する。

@@ -110,6 +110,7 @@ jobs:
           path: ${{ runner.temp }}/clipforge-debs/*.deb
           key: ${{ steps.debs.outputs.key }}
       - name: Install missing CPU media tools and fonts
+        timeout-minutes: 10
         if: inputs.audio_stage != 'merge'
         run: |
           missing=()

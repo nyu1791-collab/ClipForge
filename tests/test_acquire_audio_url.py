@@ -1,9 +1,7 @@
 import hashlib
 import importlib.util
 import json
-import os
 from pathlib import Path
-import subprocess
 
 import pytest
 import yaml
@@ -214,19 +212,11 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     assert cleanup["if"] == "always()"
     assert 'cleanup --tag "$INPUT_TAG"' in cleanup["run"]
     assert all("tools/audio_url_job.py" not in step.get("run", "") for step in steps)
-    cache = next(step for step in steps if step.get("uses") == "actions/cache@v4")
-    assert cache["if"] == "inputs.audio_url != ''"
-    assert cache["with"]["path"].endswith("/clipforge-ffmpeg-debs/*.deb")
-    install = next(
-        step["run"] for step in steps if "--no-download" in step.get("run", "")
-    )
-    assert "command -v ffmpeg" in install and "command -v ffprobe" in install
-    assert "if ! sudo apt-get install --no-download" in install
-    assert "apt-get update -qq" in install
-    assert "APT::Keep-Downloaded-Packages=true" in install
-    key = next(step for step in steps if step.get("id") == "ffmpeg-debs")
-    assert '"$ImageVersion"' in key["run"]
-    assert cache["with"]["key"] == "${{ steps.ffmpeg-debs.outputs.key }}"
+    assert all("apt-get" not in step.get("run", "") for step in steps)
+    assert all("ffmpeg" not in json.dumps(step).lower() for step in steps)
+    assert all(".deb" not in json.dumps(step) for step in steps)
+    assert steps[sync]["timeout-minutes"] == 10
+    assert steps[acquire]["timeout-minutes"] == 30
     request = next(i for i, step in enumerate(steps) if step.get("id") == "request")
     assert acquire < request < allocate
     run = next(step for step in steps if "colab_actions.py run" in step.get("run", ""))
@@ -239,48 +229,26 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     )
 
 
-@pytest.mark.parametrize(
-    "installed, cached_status, expected_calls", [(0, 0, 0), (1, 0, 1), (1, 1, 3)]
-)
-def test_ffmpeg_install_falls_back_when_cached_packages_fail(
-    tmp_path, installed, cached_status, expected_calls
-):
+def test_workflow_steps_have_timeouts_and_colab_has_execution_and_cleanup_time():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    script = next(
-        step["run"]
-        for step in workflow["jobs"]["colab-auto"]["steps"]
-        if step.get("name") == "Install ffmpeg only when missing"
+    for job in workflow["jobs"].values():
+        for step in job["steps"]:
+            assert 0 < step["timeout-minutes"] <= job["timeout-minutes"]
+    job = workflow["jobs"]["colab-auto"]
+    run = next(
+        step for step in job["steps"] if "colab_actions.py run" in step.get("run", "")
     )
-    archives = tmp_path / "clipforge-ffmpeg-debs"
-    archives.mkdir()
-    (archives / "synthetic.deb").touch()
-    log = tmp_path / "apt.log"
-    stubs = """
-    command() { return "$TOOLS_MISSING"; }
-    sudo() {
-      printf '%s\\n' "$*" >> "$APT_LOG"
-      if [[ "$*" == *--no-download* ]]; then return "$CACHED_STATUS"; fi
-    }
-    """
-    subprocess.run(
-        ["bash", "-e", "-c", stubs + script],
-        check=True,
-        env={
-            **os.environ,
-            "RUNNER_TEMP": str(tmp_path),
-            "APT_LOG": str(log),
-            "TOOLS_MISSING": str(installed),
-            "CACHED_STATUS": str(cached_status),
-        },
-    )
-    calls = log.read_text().splitlines() if log.exists() else []
-    assert len(calls) == expected_calls
-    if calls:
-        assert "--no-download" in calls[0]
-    if expected_calls == 3:
-        assert calls[1] == "apt-get update -qq"
-        assert "--no-download" not in calls[2]
-        assert "APT::Keep-Downloaded-Packages=true" in calls[2]
+    assert run["timeout-minutes"] == 90
+    assert job["timeout-minutes"] >= 30 + run["timeout-minutes"] + 20
+
+
+def test_cpu_render_package_install_retains_media_tools_with_timeout():
+    workflow = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())
+    job = workflow["jobs"]["audio-stage"]
+    step = next(s for s in job["steps"] if "apt-get update" in s.get("run", ""))
+    assert step["timeout-minutes"] == 10
+    assert "ffmpeg" in job["env"]["CPU_PACKAGES"]
+    assert "fonts-noto-cjk" in job["env"]["CPU_PACKAGES"]
 
 
 @pytest.mark.parametrize(

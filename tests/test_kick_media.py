@@ -89,7 +89,7 @@ def test_renditions_keep_audio_first_and_preview_video_distinct(vod):
 
 
 @pytest.mark.parametrize(
-    ("audio_only", "quality"), [(True, "720p"), (False, "preview"), (False, "1080p")]
+    ("audio_only", "quality"), [(False, "preview"), (False, "1080p")]
 )
 def test_retrieve_range_uses_original_clock_and_verifiable_cache(
     vod, tmp_path, audio_only, quality
@@ -101,8 +101,8 @@ def test_retrieve_range_uses_original_clock_and_verifiable_cache(
     assert result["audio_only"] is audio_only
     assert result["segment_count"] == 1
     command = next(c for c in commands if c[0] == "ffmpeg")
-    if audio_only or quality == "preview":
-        assert "-vn" in command if audio_only else "-c:v" in command
+    if quality == "preview":
+        assert "-c:v" in command
         assert command[command.index("-ss") + 1] == "2.5"
         assert "media_format" not in result
     else:
@@ -246,3 +246,69 @@ def test_concurrent_prefetch_and_segment_never_download_a_url_twice(vod):
         "https://stream.kick.com/archive/0.ts",
         "https://stream.kick.com/archive/1.ts",
     ]
+
+
+@pytest.mark.parametrize("start,end", [(0, 4), (0.5, 3.25), (2.5, 3.5)])
+def test_audio_retrieval_uses_pyav_without_cli(tmp_path, monkeypatch, start, end):
+    from fractions import Fraction
+
+    import av
+    import numpy as np
+
+    segments = []
+    for index in range(2):
+        path = tmp_path / f"synthetic-{index}.ts"
+        with av.open(str(path), "w", format="mpegts") as output:
+            audio = output.add_stream("aac", rate=48000)
+            audio.layout = "stereo"
+            for offset in range(0, 96000, 1024):
+                count = min(1024, 96000 - offset)
+                wave = (
+                    0.2 * np.sin(2 * np.pi * 440 * np.arange(count) / 48000)
+                ).astype("float32")
+                frame = av.AudioFrame.from_ndarray(
+                    np.stack([wave, wave]), format="fltp", layout="stereo"
+                )
+                frame.sample_rate, frame.time_base = 48000, Fraction(1, 48000)
+                frame.pts = (100 + index * 2) * 48000 + offset
+                output.mux(audio.encode(frame))
+            output.mux(audio.encode(None))
+        segments.append({"start": index * 2, "end": index * 2 + 2, "url": path})
+
+    value = object.__new__(km.KickVOD)
+    value.url = URL
+    monkeypatch.setattr(value, "playlist", lambda quality: (segments, 0))
+    monkeypatch.setattr(
+        value, "_download_segments", lambda selected: [s["url"] for s in selected]
+    )
+
+    def no_cli(*args, **kwargs):
+        pytest.fail("audio retrieval must not invoke a CLI")
+
+    monkeypatch.setattr(km, "process", no_cli)
+    monkeypatch.setenv("PATH", "")
+    target = tmp_path / "audio.m4a"
+    receipt = value.retrieve(target, start, end, audio_only=True)
+    assert receipt == {
+        "source_url": URL,
+        "source_start": start,
+        "source_end": end,
+        "source_duration": 4,
+        "rendition_height": 0,
+        "audio_only": True,
+        "segment_count": 1 if start >= 2 else 2,
+        "sha256": km.digest(target),
+    }
+    with av.open(str(target)) as output:
+        assert len(output.streams) == 1
+        audio = output.streams.audio[0]
+        assert audio.codec_context.name == "aac"
+        assert audio.codec_context.sample_rate == 16000
+        assert audio.codec_context.layout.name == "mono"
+        assert audio.codec_context.bit_rate == pytest.approx(48000, rel=0.3)
+        assert output.duration / av.time_base == pytest.approx(end - start, abs=0.1)
+        frames = list(output.decode(audio))
+        assert sum(frame.samples for frame in frames) / 16000 == pytest.approx(
+            end - start, abs=0.15
+        )
+        assert max(float(np.abs(frame.to_ndarray()).max()) for frame in frames) > 0.01
