@@ -17,6 +17,10 @@ on:
         type: choice
         options: [gpu, cpu]
         default: gpu
+      source_ref:
+        description: Exact 40-character ClipForge commit SHA to run (empty uses main)
+        type: string
+        default: ''
 
 permissions:
   contents: write
@@ -36,16 +40,21 @@ jobs:
       - name: Check one-time OAuth setup without allocating resources
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+          SOURCE_REF_INPUT: ${{ inputs.source_ref }}
         run: |
           python3 - <<'PY'
           import os
+          import re
+          ref = os.environ.get('SOURCE_REF_INPUT', '')
+          if ref and not re.fullmatch(r'[a-f0-9]{40}', ref):
+              raise SystemExit('source_ref must be an exact 40-character commit SHA.')
           if not os.environ.get('COLAB_ADC_JSON'):
               raise SystemExit('COLAB_ADC_JSON is missing; no GPU/CPU Colab runtime was allocated.')
           PY
       - uses: actions/checkout@v4
         with:
           repository: nyu1791-collab/ClipForge
-          ref: main
+          ref: ${{ inputs.source_ref || 'main' }}
           path: clipforge-source
           persist-credentials: false
       - name: Record the exact source SHA
