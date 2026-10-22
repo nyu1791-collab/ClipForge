@@ -142,10 +142,13 @@ def main():
     }
     failed = False
     try:
+        report["stage"] = "hardware-check"
         if mode != "prepare-cache":
             report["gpu"] = gpu_info()
+        report["stage"] = "asset-setup"
         command(["bash", "tools/colab_setup.sh"], environment, "setup")
         if mode == "pipeline":
+            report["stage"] = "private-input"
             tag = payload["input_tag"]
             if tag != "clipforge-input-" + payload["request_id"]:
                 raise RuntimeError("Input identity mismatch")
@@ -158,6 +161,7 @@ def main():
                 "prepare",
             )
             # API secrets are withheld from dependency setup and cache handling.
+            report["stage"] = "pipeline"
             run_env = {**environment, "GEMINI_API_KEY": payload["gemini_api_key"]}
             invocation = 'source tools/colab_cache_env.sh && source tools/colab_cuda_env.sh && exec "$@"'
             command(
@@ -181,10 +185,12 @@ def main():
             ]
         elif mode == "verify-gpu":
             # The child verification needs the same cache/library paths as the worker.
+            report["stage"] = "cuda-asr-verification"
             report["asr"] = verify_asr(environment)
             report["status"] = "complete"
         else:
             report["status"] = "complete"
+        report["stage"] = "complete"
     except Exception as error:
         failed = True
         report["error_type"] = type(error).__name__

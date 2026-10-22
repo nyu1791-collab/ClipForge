@@ -135,6 +135,57 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(controller.state()["endpoint"], "owned-session")
             self.assertEqual(controller.state()["status"], "allocated")
 
+    def test_failed_gpu_check_keeps_private_report_and_closes_connection(self):
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(os.environ, {"GH_TOKEN": "test-only"}),
+            patch("colab_cli.contents.ContentsClient") as contents_type,
+            patch.object(control, "runtime_from_state") as runtime_type,
+            patch.object(control, "ReleaseBundles"),
+            patch.object(
+                control, "checked_execute", side_effect=RuntimeError("failed")
+            ),
+        ):
+            controller = control.Controller(Path(temporary) / "state")
+            record = {
+                "status": "allocated",
+                "mode": "verify-gpu",
+                "source_ref": "b" * 40,
+                "endpoint": "owned-session",
+                "url": "https://test.invalid",
+                "token": "test-only",
+            }
+            control.write_private(controller.state_path, record)
+            report = {
+                "mode": "verify-gpu",
+                "source_ref": "b" * 40,
+                "status": "failed",
+                "stage": "cuda-asr-verification",
+            }
+
+            def download(remote, local):
+                Path(local).write_text(json.dumps(report))
+
+            contents_type.return_value.download.side_effect = download
+            client = Mock()
+            client.list_assignments.return_value = [
+                SimpleNamespace(
+                    endpoint="owned-session",
+                    runtime_proxy_info=SimpleNamespace(
+                        url=record["url"], token="refreshed-test-token"
+                    ),
+                )
+            ]
+            output = Path(temporary) / "output"
+            with patch.object(controller, "client", return_value=client):
+                with self.assertRaisesRegex(control.ControlError, "report was saved"):
+                    controller.run(output)
+            saved = output / "colab-report.json"
+            self.assertEqual(json.loads(saved.read_text()), report)
+            self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+            runtime_type.return_value.stop.assert_called_once_with()
+            self.assertFalse((controller.root / "job-payload.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

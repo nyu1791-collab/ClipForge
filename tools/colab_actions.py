@@ -286,10 +286,19 @@ del _clipforge_bootstrap
             report_path = self.root / "remote-report.json"
             contents.download("/content/clipforge-report.json", str(report_path))
             report = json.loads(report_path.read_text())
-            if execution_failed or report.get("status") != "complete":
-                raise ControlError("Colab verification/preparation did not complete")
+            if (report.get("mode"), report.get("source_ref")) != (
+                record["mode"],
+                record["source_ref"],
+            ):
+                raise ControlError(
+                    "Returned Colab report identity differs from the request"
+                )
             Path(output).mkdir(parents=True, exist_ok=True)
             write_private(Path(output) / "colab-report.json", report)
+            if execution_failed or report.get("status") != "complete":
+                raise ControlError(
+                    "Colab verification/preparation failed; its private report was saved"
+                )
             print("Colab verification/preparation completed; report saved.")
 
     def stop(self):
