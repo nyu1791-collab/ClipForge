@@ -18,6 +18,7 @@ clipforge_record_timing() {
 fetched=0
 if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then nvidia-smi; fi
 source tools/colab_cache_env.sh
+if [[ $CLIPFORGE_CACHE_PROFILE == cpu ]]; then bash tools/ensure_node.sh; fi
 os_deps_started=$(date +%s.%N)
 bash tools/colab_os_deps.sh
 clipforge_record_timing os_deps "$os_deps_started"

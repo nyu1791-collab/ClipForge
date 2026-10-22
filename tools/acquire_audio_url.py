@@ -9,7 +9,8 @@ import sys
 import tempfile
 
 from clipforge.audio_first import acquire
-from clipforge.kick_media import KickVOD, canonical
+from clipforge.kick_media import KickVOD
+from clipforge.media_sources import audio_only_url, canonical, open_source
 from clipforge.models import Settings
 from clipforge.storage import PipelineError, digest, write_json
 from submit_job import parse_settings_json
@@ -23,8 +24,13 @@ def main(argv=None):
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--settings-json", required=True)
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--require-video", action="store_true")
     args = parser.parse_args(argv)
     canonical(args.url)
+    if args.require_video and audio_only_url(args.url):
+        raise PipelineError(
+            "audio-only sources cannot produce automatic video previews"
+        )
     if not re.fullmatch(r"[a-f0-9]{32}", args.request_id) or not re.fullmatch(
         r"[a-f0-9]{40}", args.source_ref
     ):
@@ -53,14 +59,19 @@ def main(argv=None):
         prefix=".clipforge-acquire-", dir=args.directory.parent
     ) as temporary:
         root = Path(temporary)
-        vod = KickVOD(
+        vod = open_source(
             args.url,
             root / "segments",
+            kick_factory=KickVOD,
             max_bytes=settings.max_transport_bytes,
             max_seconds=settings.max_source_seconds,
         )
         try:
             acquire(vod, root)
+            if args.require_video and not getattr(vod, "has_video", True):
+                raise PipelineError(
+                    "audio-only sources cannot produce automatic video previews"
+                )
         finally:
             vod.close()
         audio = root / "audio.m4a"

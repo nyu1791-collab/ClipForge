@@ -542,6 +542,8 @@ del _clipforge_bootstrap
                 expected = (
                     "clip_rendered" if record["stage"]["clip_index"] else "complete"
                 )
+            elif receipt.get("asr_part") is not None:
+                expected = "asr_part_complete"
             elif receipt.get("audio_source_url"):
                 expected = "topics_allocated"
             else:

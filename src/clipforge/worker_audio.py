@@ -12,7 +12,8 @@ import tempfile
 
 from . import audio_first, audio_volume, landscape, media, pipeline, review_draft
 from .github_cli import run as run_gh
-from .kick_media import KickVOD, canonical
+from .kick_media import KickVOD
+from .media_sources import canonical, open_source
 from .models import Settings, Transcript
 from .storage import (
     PipelineError,
@@ -223,9 +224,10 @@ def execute(
         analysis = audio_first.allocate_audio(source, output, settings, url)
         if not json.loads((output / "asr-receipt.json").read_text())["reused"]:
             raise PipelineError("downstream stage must reuse ASR")
-        vod = KickVOD(
+        vod = open_source(
             url,
             output / "segments",
+            kick_factory=KickVOD,
             max_bytes=2 * 1024**3,
             max_seconds=settings.max_source_seconds,
         )

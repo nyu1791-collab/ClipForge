@@ -28,6 +28,7 @@ media-fetch = [
     "av==18.1.0; python_version < '3.12'",
     "av==19.0.2; python_version >= '3.12'",
     "curl-cffi==0.13.0",
+    "yt-dlp[default]==2026.10.21",
 ]
 cuda = [
   "nvidia-cublas-cu12>=12.4,<13; sys_platform == 'linux' and platform_machine == 'x86_64'",

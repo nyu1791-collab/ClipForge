@@ -18,10 +18,8 @@ from clipforge.storage import digest, write_json
 REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
 WORKFLOW = "clipforge.yml"
-# Each Colab job owns its own T4. The account was measured to grant two T4 runtimes at once
-# (a third was refused on 2026-10-22), so two jobs may run side by side; the hosted CPU
-# runner keeps one job at a time.
-MAX_ACTIVE = {"colab-auto": 2}
+# One request may own two independent ASR runtimes; do not overlap whole requests.
+MAX_ACTIVE = {"colab-auto": 1}
 MAX_SETTINGS_JSON_BYTES = 16 * 1024
 SETTINGS_FIELDS = {
     "gemini_model",
@@ -32,6 +30,7 @@ SETTINGS_FIELDS = {
     "whisper_model",
     "whisper_revision",
     "asr_batch_size",
+    "asr_parts",
     "language",
     "threads",
     "encode_threads",
@@ -115,6 +114,7 @@ def parse_settings_json(value):
 def preflight_audio_url(url, settings):
     """Read metadata and the lowest playlist only, before a runner is dispatched."""
     from clipforge.kick_media import KickVOD
+    from clipforge.media_sources import RemoteMedia, source_kind
     from clipforge.models import Settings
     from clipforge.storage import PipelineError
     from pydantic import ValidationError
@@ -129,6 +129,17 @@ def preflight_audio_url(url, settings):
         raise RuntimeError("invalid audio URL settings: " + reasons) from None
     with tempfile.TemporaryDirectory(prefix="clipforge-preflight-") as temporary:
         try:
+            if source_kind(url) != "kick":
+                source = RemoteMedia(
+                    url,
+                    Path(temporary) / "media",
+                    max_bytes=settings.max_transport_bytes,
+                    max_seconds=settings.max_source_seconds,
+                )
+                try:
+                    return source.metadata()
+                finally:
+                    source.close()
             # Read beyond the job's duration limit so rejection includes the actual length.
             vod = KickVOD(
                 url,
@@ -148,6 +159,7 @@ def preflight_audio_url(url, settings):
             f"archive duration {duration:g} seconds exceeds configured limit "
             f"{settings.max_source_seconds:g} seconds; no workflow dispatched"
         )
+    return {"duration": duration, "has_video": True}
 
 
 def gh(*args, body=None, timeout=120):
@@ -186,7 +198,7 @@ def verify_audio_analysis(
     directory, identity, source_ref, source_sha256, source_url=None, run_id=None
 ):
     """Verify a topics_allocated artifact. Without a local record, source_url is the artifact's own canonical VOD URL."""
-    from clipforge.kick_media import canonical
+    from clipforge.media_sources import canonical
     from clipforge.models import Transcript
     from clipforge.storage import TIME_TOLERANCE
 
@@ -807,7 +819,7 @@ def main():
     parser.add_argument("--gemini-model")
     parser.add_argument(
         "--audio-analysis-url",
-        help="allocate topics from a Kick VOD or local audio; no Gemini calls",
+        help="Kick / YouTube / Twitch または HTTPS の mp4・m4a・mp3・webm・m3u8。あなたが権利を持つファイルを置いた場所の URL。Gemini 呼び出しなし",
     )
     parser.add_argument("--ref", default="main")
     parser.add_argument("--worker", choices=["colab-auto", "cpu"], default="colab-auto")
@@ -817,6 +829,12 @@ def main():
     parser.add_argument("--chat-url")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--auto-previews", action="store_true")
+    parser.add_argument(
+        "--asr-parts",
+        type=int,
+        choices=(1, 2),
+        help="URL-only ASR runtimes (default: 2); use 1 for continuous recognition",
+    )
     parser.add_argument(
         "--public-cache",
         choices=("on", "off"),
@@ -904,9 +922,11 @@ def main():
         resume_audio_staging(args)
         return
     if args.audio_analysis_url:
-        from clipforge.kick_media import canonical
+        from clipforge.media_sources import audio_only_url, canonical
 
         canonical(args.audio_analysis_url)
+        if args.auto_previews and audio_only_url(args.audio_analysis_url):
+            parser.error("audio-only sources cannot produce automatic video previews")
         args.gemini_model = "manual-no-api"
     if args.audio_analysis_url and args.input is None and args.worker != "colab-auto":
         parser.error("URL-only audio analysis requires --worker colab-auto")
@@ -996,6 +1016,14 @@ def dispatch(args, state_root):
         )
         validate_settings(settings)
     settings.update(overrides)
+    if url_only:
+        settings.setdefault("asr_parts", 2)
+    if getattr(args, "asr_parts", None) is not None:
+        settings["asr_parts"] = args.asr_parts
+    if settings.get("asr_parts", 1) == 2 and (
+        not url_only or args.worker != "colab-auto"
+    ):
+        raise RuntimeError("two-part ASR requires URL-only analysis on colab-auto")
     settings["gemini_model"] = args.gemini_model
     if args.audio_analysis_url and (
         settings.get("image_search")
@@ -1016,7 +1044,15 @@ def dispatch(args, state_root):
         raise RuntimeError("clip count must be between 1 and 10")
     if url_only:
         parse_settings_json(json.dumps(settings, ensure_ascii=False))
-        preflight_audio_url(args.audio_analysis_url, settings)
+        metadata = preflight_audio_url(args.audio_analysis_url, settings)
+        if (
+            args.auto_previews
+            and metadata is not None
+            and metadata.get("has_video") is False
+        ):
+            raise RuntimeError(
+                "audio-only sources cannot produce automatic video previews"
+            )
     maximum = settings.get("max_input_bytes", 1073741824)
     if source is not None and (
         not source.is_file()

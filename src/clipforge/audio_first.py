@@ -15,7 +15,8 @@ import re
 import sys
 
 from . import landscape, pipeline, topics
-from .kick_media import RANGE_FORMAT, KickVOD, canonical
+from .kick_media import RANGE_FORMAT, KickVOD
+from .media_sources import canonical, open_source
 from .models import Transcript
 from .storage import (
     TIME_TOLERANCE,
@@ -127,8 +128,13 @@ def acquire(vod, root):
             "source_url": vod.url,
             "audio": receipt,
             "asr_started": False,
-            "high_quality_video_fetched": False,
-            "transport": "audio rendition if advertised, otherwise lowest HLS rendition; saved audio only",
+            "high_quality_video_fetched": receipt.get(
+                "high_quality_video_fetched", False
+            ),
+            "transport": receipt.get(
+                "transport",
+                "audio rendition if advertised, otherwise lowest HLS rendition; saved audio only",
+            ),
         },
     )
     discard_transport_cache(vod)
@@ -520,9 +526,10 @@ def main(argv=None):
             }:
                 raise PipelineError("workspace belongs to another source")
             write_json(identity, {"url": args.url})
-            vod = KickVOD(
+            vod = open_source(
                 args.url,
                 root / "segments",
+                kick_factory=KickVOD,
                 max_bytes=(
                     settings.max_transport_bytes
                     if args.stage in {"audio", "topics"}

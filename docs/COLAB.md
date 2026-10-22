@@ -8,10 +8,12 @@
 
 | 経路 | Colabの担当 | Gemini |
 | --- | --- | --- |
-| Kick URL | runnerで取得済みの音声をGPUで文字起こし・話題分割し、解放。同じrunのCPUジョブでpreviews・未承認の下書きを作り、映像確認・承認後はColab CPUで描画 | 呼ばず、キーも渡さない |
+| 対応メディアURL | runnerで取得済みの音声を既定2つのGPUランタイムで文字起こしし、解放。runnerで結合・話題分割し、映像入力なら同じrunのCPUジョブでpreviews・未承認の下書きを作る。映像確認・承認後はColab CPUで描画 | 呼ばず、キーも渡さない |
 | ローカル動画 `submit_job.py --input` | `colab-auto` でASR・Gemini選定・描画を実行 | 候補映像・音声・該当ASRを指定モデルへ送る |
 
 URL経路の段階と承認は [AUDIO_FIRST.md](AUDIO_FIRST.md)、結果の回収・再開・制御VMでの `merge --local` は [OPERATIONS.md](OPERATIONS.md) を参照してください。GPUのASRは逐次処理を使い、バッチ文字起こしは採用しません。
+
+URLだけの投入は既定 `asr_parts=2` で、各半分の内部では従来の逐次デコーダーを使います。境界前後5秒の文脈を重ね、元時刻へ結合した後に話題分割します。`--asr-parts 1` で1つのランタイムによる連続ASRを選べます。[2分割ASR](ASR_SPLIT.md)に識別・結合・失敗時の終了処理を記載しています。音声のみの直接URLでは映像の後段を指定しません。
 
 自動起動の共通手順は次のとおりです。
 

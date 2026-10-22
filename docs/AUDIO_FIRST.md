@@ -1,17 +1,17 @@
 # 音声から話題を割り振り、候補の映像を判定する
 
 対象は同じ配信から3〜5本の16:9・1920×1080横動画。Shortsは対象外。
-主な順序はKick URL → runnerで音声取得 → Colab GPUで全編ASR・話題分割 → 同じrunでpreviews・未承認の下書き → 映像確認・承認 → Colab CPUで採用区間の高画質取得・描画 → 制御VMで `merge --local`。
+主な順序はメディアURL → runnerで音声取得 → Colab GPUで2分割ASR → 結合・話題分割 → 同じrunでpreviews・未承認の下書き → 映像確認・承認 → Colab CPUで映像取得・描画 → 制御VMで `merge --local`。
 音声だけで最終採用せず、映像を確認する停止点を持つ。外部LLM・Gemini・OpenCodeの推論は、この処理から呼び出さない。
 
 ## 段階と私有ファイル
 
 | stage | 入力・出力 | 実施しない処理 |
 | --- | --- | --- |
-| `audio`（既定） | 公開Kick VOD → `audio.m4a`、取得receipt | ASR、話題選定、候補映像、高画質、描画 |
+| `audio`（既定） | 対応URL → `audio.m4a`、取得receipt | ASR、話題選定、候補映像、描画 |
 | `topics` | 保存音声 → 共有ASR、`topics.json`、ASR再利用receipt | 全編映像取得・場面検出、動画生成 |
 | `previews` | 音声話題候補 → 上位候補の低解像度映像、`previews.json` | 高画質取得、最終採用の自動承認 |
-| `render` | 分析と対応するレビュー済み区間JSON → 採用区間の高画質映像・横動画3〜5本 | 全編ASRや全編高画質の再取得、別モデルfallback |
+| `render` | 分析と対応するレビュー済み区間JSON → 映像取得・採用区間の横動画3〜5本 | 全編ASR、別モデルfallback |
 
 `topics.json`は、発話の間と語彙の変化で割り振った区間とASR本文を含む。
 意味的な話題の一致・完結や面白さを承認した結果ではない。プレビュー候補の優先順位は発話秒数による。
@@ -28,6 +28,12 @@
 
 ## 音声取得と非公開workerでの話題分割
 
+Kickに加え、YouTubeの単一動画、Twitchのアーカイブ・クリップ、直接HTTPS mp4・m4a・mp3・webm・HLS m3u8に対応する。**あなたが権利を持つファイルを置いた場所の URL** を指定する。署名クエリを含む元URLは非公開の同一性検証へ保持する。YouTube・Twitchと直接ファイルはyt-dlpを使い、HLSは終了済みのmedia playlistが必要。MP3・M4Aなど音声のみの入力は解析までで、`--auto-previews` は指定しない。
+
+追加経路のメタデータに長さがない場合は、runnerで取得・実測してからGPU割り当ての可否を決める。直接ファイルは音声抽出のためにも全体転送が必要な場合がある。追加経路の映像描画では元ファイル全体をremuxし、元時刻を保ったまま採用区間を描画する。Kickの区間取得だけに適用される通信量の説明と区別する。
+
+URLだけの投入は既定で2分割。境界前後5秒の文脈を付けたFLACを独立した2つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [ASR_SPLIT.md](ASR_SPLIT.md)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
+
 ```bash
 uv sync --locked --extra media-fetch --extra chat
 uv run --no-sync python tools/kick_audio_first.py \
@@ -41,7 +47,7 @@ URLだけの投入（`--input` なし）は、投入側チェックアウトの 
 dispatch前に制御側でKickVODのメタデータと最低画質プレイリストを読み、終了済みか・配信長が上限内かを確認する。この確認ではTSを取得せず、ASRや描画も開始しない。上限超過は配信長と設定上限（秒）を示して停止し、配信中・接続再試行の最終失敗も理由を示して停止する。runner・GPUは起動しない。制御側にも `media-fetch` の依存が必要。
 GitHub-hosted `ubuntu-24.04` runnerが、GPU割り当て前に `uv sync --locked --extra media-fetch --no-dev` の環境で音声を取得する。
 runnerは `GITHUB_TOKEN` で一時releaseを作り、`tools/acquire_audio_url.py` が `tools/submit_job.py` の共通関数で設定のサイズ・JSON・許可キーを検証する。KickVODの既定6並列取得と `audio_first.acquire` を使い、音声を `input-video.bin`、設定・SHA-256・サイズ確定済みの依頼を `request.json` としてrunnerがアップロードしてからGPUを割り当てる。一時releaseは既存の `always()` ステップで削除する。
-runnerの音声取得は固定済み依存のPyAVで連結TSを復号し、16 kHz・モノラル・AAC 48 kbpsのm4aへ変換する。長さの確認もPyAVで行い、ffmpeg/ffprobe CLI・apt・`.deb`キャッシュは使わない。候補映像・高画質区間の取得と描画は従来どおりffmpeg CLIを使う。
+runnerの音声取得は固定済み依存のPyAVで復号し、16 kHz・モノラル・AAC 48 kbpsのm4aへ変換する。Kickの長さ確認はPyAV、追加経路の取得ファイルの確認はffprobeを使う。2分割用のPCM・FLAC作成にもffmpegを使うため、URLジョブはGPU起動前にffmpeg/ffprobeとNode.js 22を用意する。Node.jsはyt-dlpのYouTube取得に使用する。
 Kick HTTP取得は429・500〜504・接続/タイムアウト例外を初回に加えて最大3回、5・15・45秒待って再試行する。`Retry-After`（秒またはHTTP日時）があれば最大60秒で従う。403は10秒待って1回だけ再試行し、その他の4xxは即失敗する。待機前に各試行の予算予約を解放し、他スレッドの取得を妨げない。最終エラーには最後のHTTPステータス（応答がなければunavailable）と試行回数を含め、URLのクエリ文字列は含めない。
 `clipforge.yml`の各ステップに個別の上限を設ける。依存導入・release操作は10分、音声取得と入力転送は30分。ジョブ・Colab実行・待機の上限は [OPERATIONS.md](OPERATIONS.md#動画ジョブの実行場所) を参照する。
 URL形式の検証はGoogleへの接続前に行う。Colabへ `AUDIO_URL` は渡さず、既存の `run_request.py prepare → run` の `audio_source_url` 分岐でASR・話題分割し、出力回収後すぐruntimeを停止する。

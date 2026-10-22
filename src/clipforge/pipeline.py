@@ -479,7 +479,7 @@ def timed(timings, name, function, *args):
 # The transcript depends only on the audio, the recognition settings and the code that reads and
 # recognises it, not on captions or rendering. Its own identity lets a saved transcript serve any
 # later run, so a change to captions does not repeat the recognition.
-TRANSCRIPT_CODE = ("signals.py", "media.py")
+TRANSCRIPT_CODE = ("signals.py", "media.py", "asr_split.py")
 
 
 def asr_identity(settings):
@@ -522,6 +522,7 @@ def transcript_identity(source, info, settings):
             "language": settings.language,
             **asr_identity(settings),
             "asr_batch_size": settings.asr_batch_size,
+            "asr_parts": settings.asr_parts,
         }
     )
 
@@ -548,6 +549,8 @@ def transcribe_once(source, info, settings, receipt=None):
     receipt = receipt if receipt is not None else {}
     receipt.update(enabled=bool(settings.transcript_cache), reused=False, source="asr")
     if not settings.transcript_cache:
+        if settings.asr_parts != 1:
+            raise PipelineError("two-part ASR requires the split job coordinator")
         receipt["key"] = None
         return signals.transcribe(source, info, settings)
     # The receipt is output metadata, never authority to select another input's cache.
@@ -568,6 +571,8 @@ def transcribe_once(source, info, settings, receipt=None):
         raise PipelineError(
             "a matching valid transcript cache is required; ASR was not started"
         )
+    if settings.asr_parts != 1:
+        raise PipelineError("two-part ASR requires the split job coordinator")
     # Segments are noted here as they are recognised; a stopped run keeps them. A new run
     # starts the journal afresh, since recognition is one pass and is not resumed mid-way.
     journal = path.with_suffix(".partial.jsonl")

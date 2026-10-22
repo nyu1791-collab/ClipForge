@@ -27,7 +27,7 @@ on:
         options: [high-ram, standard]
         default: high-ram
       audio_url:
-        description: Canonical Kick VOD URL for URL-only audio analysis on colab-auto
+        description: Kick, YouTube, Twitch or owned HTTPS mp4/m4a/mp3/webm/m3u8 URL
         type: string
         default: ''
       settings_json:
@@ -48,10 +48,9 @@ permissions:
   contents: write
   actions: read
 
-# Each colab-auto job owns its own T4, so those run side by side (the account grants two).
-# Hosted CPU jobs share one group and run one at a time.
+# Each request may own two ASR runtimes. Serialize requests across worker kinds.
 concurrency:
-  group: ${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}
+  group: clipforge-video
   cancel-in-progress: false
 
 jobs:
@@ -207,7 +206,7 @@ jobs:
   colab-auto:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'colab-auto'
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
+    timeout-minutes: 180
     env:
       CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
       INPUT_TAG: ${{ inputs.input_tag }}
@@ -228,7 +227,8 @@ jobs:
           assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
           assert os.environ['AUTO_PREVIEWS'] != 'true' or os.environ['AUDIO_URL']
           if os.environ['AUDIO_URL']:
-              assert re.fullmatch(r'https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', os.environ['AUDIO_URL'])
+              from urllib.parse import urlsplit
+              assert urlsplit(os.environ['AUDIO_URL']).scheme == 'https'
           if not os.environ.get('COLAB_ADC_JSON'):
               raise SystemExit('COLAB_ADC_JSON is missing. Authorize n.yu17919191@gmail.com once; no GPU was allocated.')
           PY
@@ -261,6 +261,19 @@ jobs:
         if: inputs.audio_url != ''
         working-directory: clipforge-source
         run: uv sync --locked --extra media-fetch --no-dev
+      - uses: actions/setup-node@v4
+        timeout-minutes: 10
+        if: inputs.audio_url != ''
+        with:
+          node-version: '22'
+      - name: Ensure media tools for URL probing and lossless ASR splitting
+        timeout-minutes: 10
+        if: inputs.audio_url != ''
+        run: |
+          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
       - name: Acquire audio and stage verified private input before GPU allocation
         timeout-minutes: 30
         if: inputs.audio_url != ''
@@ -268,14 +281,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           AUDIO_URL: ${{ inputs.audio_url }}
           SETTINGS_JSON: ${{ inputs.settings_json }}
+          AUTO_PREVIEWS: ${{ inputs.auto_previews }}
         run: |
           gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
             --title "$INPUT_TAG" --latest=false \
             --notes 'Temporary private ClipForge URL input. Automatically cleaned after execution.'
+          video_options=()
+          if [ "$AUTO_PREVIEWS" = true ]; then video_options+=(--require-video); fi
           clipforge-source/.venv/bin/python clipforge-source/tools/acquire_audio_url.py \
             --url "$AUDIO_URL" --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
             --settings-json "$SETTINGS_JSON" \
-            --directory "$RUNNER_TEMP/clipforge-input"
+            --directory "$RUNNER_TEMP/clipforge-input" "${video_options[@]}"
           gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
             "$RUNNER_TEMP/clipforge-input/input-video.bin" \
             "$RUNNER_TEMP/clipforge-input/request.json"
@@ -284,6 +300,7 @@ jobs:
         id: request
         env:
           GH_TOKEN: ${{ github.token }}
+          AUDIO_URL: ${{ inputs.audio_url }}
         run: |
           gh release download "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
             --pattern request.json --dir "$RUNNER_TEMP/clipforge-model-request"
@@ -294,11 +311,16 @@ jobs:
           assert request['request_id'] == os.environ['REQUEST_ID']
           assert request['source_ref'] == os.environ['CLIPFORGE_SOURCE_REF']
           no_model_api = '1' if request.get('audio_source_url') else '0'
+          parts = request.get('settings', {}).get('asr_parts', 1)
+          assert type(parts) is int and parts in (1, 2)
+          assert parts == 1 or (request.get('audio_source_url') and os.environ.get('AUDIO_URL'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'no_model_api={no_model_api}\n')
+              output.write(f'asr_parts={parts}\n')
           PY
       - name: Allocate a dedicated T4 for the verified Google account
         timeout-minutes: 20
+        if: steps.request.outputs.asr_parts != '2'
         id: allocate
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
@@ -308,17 +330,70 @@ jobs:
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
       - name: Run the pipeline on Colab and retrieve verified private outputs
         timeout-minutes: 90
+        if: steps.request.outputs.asr_parts != '2'
         env:
           GH_TOKEN: ${{ github.token }}
           CLIPFORGE_NO_MODEL_API: ${{ steps.request.outputs.no_model_api }}
           GEMINI_API_KEY: ${{ steps.request.outputs.no_model_api == '0' && secrets.GEMINI_API_KEY || '' }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
+      - name: Run two owned ASR runtimes and merge before topic allocation
+        timeout-minutes: 110
+        if: steps.request.outputs.asr_parts == '2'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
+          CLIPFORGE_PUBLIC_CACHE: ${{ inputs.public_cache || 'off' }}
+        run: |
+          clipforge-source/.venv/bin/python clipforge-source/tools/split_asr_job.py \
+            --directory "$RUNNER_TEMP/clipforge-input" --output "$RUNNER_TEMP/clipforge-out" \
+            --control-python "$RUNNER_TEMP/colab-control/bin/python" \
+            --state-root "$RUNNER_TEMP/clipforge-split"
       - name: Release and verify removal of the dedicated Colab runtime
         timeout-minutes: 10
         if: always() && steps.control.outcome == 'success'
         run: |
-          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop
+          failed=0
+          for state in "$RUNNER_TEMP/clipforge-colab-control" "$RUNNER_TEMP/clipforge-split/control-0" "$RUNNER_TEMP/clipforge-split/control-1"; do
+            if [ -f "$state/state.json" ]; then
+              "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop --state-dir "$state" || failed=1
+            fi
+          done
+          exit "$failed"
+      - name: Keep available ASR part outputs privately after split failure
+        timeout-minutes: 10
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipforge-partial-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-split/result-*/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Delete temporary private ASR part releases
+        timeout-minutes: 10
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then exit 1; fi
+          mapfile -t tags < <(python3 - <<'PY'
+          import hashlib, os, re
+          parent = os.environ['REQUEST_ID']
+          assert re.fullmatch(r'[a-f0-9]{32}', parent)
+          for index in (0, 1):
+              identity = hashlib.sha256(f'clipforge-asr-part-v1:{parent}:{index}'.encode()).hexdigest()[:32]
+              print('clipforge-input-' + identity)
+          PY
+          )
+          failed=0
+          for tag in "${tags[@]}"; do
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || failed=1
+            fi
+          done
+          if [ "$failed" = 1 ]; then echo '::warning::Temporary private ASR part input cleanup failed.'; fi
+          exit "$failed"
       - uses: actions/upload-artifact@v4
         timeout-minutes: 10
         if: always()

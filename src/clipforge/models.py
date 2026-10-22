@@ -154,6 +154,8 @@ class Settings(Record):
     whisper_revision: str | None = None
     # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
     asr_batch_size: int = Field(default=0, ge=0, le=16)
+    # URL jobs may recognise two overlapping parts on separate Colab runtimes.
+    asr_parts: Literal[1, 2] = 1
     # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.
     transcript_cache: str | None = Field(default=None, max_length=1024)
     require_transcript_cache: bool = False
@@ -247,6 +249,13 @@ class Settings(Record):
             aspect = data.get("aspect", "9:16")
             data = {**data, "height": 1920 if aspect == "9:16" else 1080}
         return data
+
+    @field_validator("asr_parts", mode="before")
+    @classmethod
+    def integer_parts(cls, value):
+        if type(value) is not int or value not in (1, 2):
+            raise ValueError("asr_parts must be the integer 1 or 2")
+        return value
 
     @model_validator(mode="after")
     def limits(self):

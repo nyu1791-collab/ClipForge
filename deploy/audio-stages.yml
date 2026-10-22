@@ -130,6 +130,9 @@ jobs:
       - name: Install Python stage dependencies
         run: |
           uv sync --locked --extra media-fetch --no-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - name: Reuse verified ASR and execute only the requested stage
         env:
           GH_TOKEN: ${{ github.token }}

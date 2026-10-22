@@ -34,8 +34,8 @@ jobs:
       - name: Install Japanese caption font for unit tests
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-cjk libcairo2
-      - run: uv sync --locked --extra chat
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2
+      - run: uv sync --locked --extra chat --extra media-fetch
       - name: Install the locked Colab control SDK (Python 3.12+ only)
         if: matrix.python == '3.12'
         run: uv pip install --require-hashes -r tools/colab-control-requirements.txt
@@ -76,7 +76,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2 espeak-ng open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
-      - run: uv sync --locked --extra chat
+      - run: uv sync --locked --extra chat --extra media-fetch
       - name: Generate labelled synthetic video and speech
         run: uv run --no-sync python tools/make_quality_fixture.py --output artifacts/quality-fixture --japanese
       - name: Real video and speech-recognition checks

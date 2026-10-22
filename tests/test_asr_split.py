@@ -1,0 +1,360 @@
+import copy
+import json
+from types import SimpleNamespace
+import threading
+import wave
+
+import pytest
+
+from clipforge import asr_split, audio_first, pipeline
+from clipforge.models import Settings
+from clipforge.storage import PipelineError, digest, write_json
+from tools import run_request, split_asr_job, submit_job
+
+URL = "https://cdn.example/audio.mp3?signature=private-test"
+
+
+@pytest.fixture
+def prepared(tmp_path):
+    source = tmp_path / "audio.wav"
+    with wave.open(str(source), "wb") as handle:
+        handle.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        handle.writeframes(b"\0\0" * 16000 * 40)
+    settings = Settings(
+        gemini_model="manual-no-api",
+        asr_parts=2,
+        whisper_device="cuda",
+        whisper_compute_type="float16",
+        min_seconds=3,
+        max_seconds=10,
+    )
+    request = {
+        "request_id": "a" * 32,
+        "source_ref": "b" * 40,
+        "video_sha256": digest(source),
+        "video_bytes": source.stat().st_size,
+        "settings": settings.model_dump(),
+        "audio_source_url": URL,
+        "chat_sha256": None,
+    }
+    plan = asr_split.prepare(
+        source, tmp_path / "parts", request, settings, audio_first.audio_info(source)
+    )
+    return source, plan, tmp_path
+
+
+def transcript(words):
+    return {
+        "language": "ja",
+        "segments": [
+            {
+                "start": start,
+                "end": end,
+                "text": text,
+                "words": [{"start": start, "end": end, "text": text}],
+            }
+            for start, end, text in words
+        ],
+    }
+
+
+def results(plan):
+    return [
+        (
+            plan["parts"][0]["asr_part"],
+            transcript([(1, 2, "前半"), (19.7, 20.3, "境界")]),
+        ),
+        (
+            plan["parts"][1]["asr_part"],
+            transcript([(4.7, 5.3, "境界"), (20, 21, "後半")]),
+        ),
+    ]
+
+
+def test_lossless_split_has_overlap_and_preserves_parent_identity(prepared):
+    source, plan, root = prepared
+    assert plan["boundary"] == 20
+    assert [child["asr_part"]["offset"] for child in plan["parts"]] == [0, 15]
+    assert [child["asr_part"]["duration"] for child in plan["parts"]] == [25, 25]
+    assert not (root / "parts/audio.wav").exists()
+    for index, child in enumerate(plan["parts"]):
+        audio = root / f"parts/part-{index}/input-video.bin"
+        assert digest(audio) == child["video_sha256"]
+        assert child["request_id"] != plan["request"]["request_id"]
+        assert child["asr_part"]["source_sha256"] == digest(source)
+        assert child["settings"]["asr_parts"] == 1
+        assert audio_first.audio_info(audio)["duration"] == 25
+
+
+def test_merge_owns_boundary_words_once_and_restores_full_clock(prepared):
+    _, plan, _ = prepared
+    value = asr_split.merge(list(reversed(results(plan))), 40)
+    assert [row["text"] for row in value["segments"]] == ["前半", "境界", "後半"]
+    assert [row["start"] for row in value["segments"]] == [1, 19.7, 35]
+
+
+@pytest.mark.parametrize(
+    "change", ["missing", "duplicate", "foreign", "gap", "duration", "bad_time"]
+)
+def test_merge_refuses_incomplete_or_unrelated_parts(prepared, change):
+    _, plan, _ = prepared
+    parts = copy.deepcopy(results(plan))
+    if change == "missing":
+        parts.pop()
+    elif change == "duplicate":
+        parts[1] = parts[0]
+    elif change == "foreign":
+        parts[1][0]["source_sha256"] = "c" * 64
+    elif change == "gap":
+        parts[1][0]["core_start"] += 1
+    elif change == "duration":
+        parts[1][0]["duration"] = 1
+    else:
+        parts[1][0]["offset"] = float("nan")
+    with pytest.raises(PipelineError):
+        asr_split.merge(parts, 40)
+
+
+def test_ambiguous_boundary_fails_without_clipping_words(prepared):
+    _, plan, _ = prepared
+    parts = results(plan)
+    parts[0][1]["segments"] = transcript([(19.6, 20.2, "左")])["segments"]
+    parts[1][1]["segments"] = transcript([(4.8, 5.4, "右")])["segments"]
+    with pytest.raises(PipelineError, match="ambiguous"):
+        asr_split.merge(parts, 40)
+
+
+def test_full_split_identity_is_separate_and_cannot_silently_run_sequentially(prepared):
+    source, plan, _ = prepared
+    settings = Settings.model_validate(plan["settings"])
+    assert (
+        pipeline.transcript_identity(
+            source, plan["info"], settings.model_copy(update={"asr_parts": 1})
+        )
+        != plan["transcript_key"]
+    )
+    with pytest.raises(PipelineError, match="coordinator"):
+        pipeline.transcribe_once(source, plan["info"], settings)
+
+
+def test_joined_analysis_can_be_collected_and_reused_without_asr(prepared, monkeypatch):
+    source, plan, root = prepared
+    directories = []
+    for index, (descriptor, raw) in enumerate(results(plan)):
+        child = plan["parts"][index]
+        directory = root / f"result-{index}"
+        directories.append(directory)
+        write_json(directory / "transcript.json", raw)
+        write_json(
+            directory / "manifest.json",
+            {
+                "status": "asr_part_complete",
+                "asr_part": descriptor,
+                "source_sha256": child["video_sha256"],
+                "rendered": [],
+            },
+        )
+        write_json(
+            directory / "request-receipt.json",
+            {
+                "request_id": child["request_id"],
+                "source_ref": child["source_ref"],
+                "audio_source_url": URL,
+                "workflow_run": "123",
+                "status": "asr_part_complete",
+                "asr_part": descriptor,
+                "sha256": {
+                    name: digest(directory / name)
+                    for name in ("manifest.json", "transcript.json")
+                },
+            },
+        )
+    monkeypatch.setattr(
+        pipeline.signals,
+        "transcribe",
+        lambda *a, **k: pytest.fail("merge must never recognise again"),
+    )
+    output = root / "analysis"
+    split_asr_job.finish(source, output, plan, directories, "123")
+    submit_job.verify_audio_analysis(
+        output, "a" * 32, "b" * 40, digest(source), URL, "123"
+    )
+    assert json.loads((output / "asr-receipt.json").read_text())["parts"] == 2
+    (directories[1] / "transcript.json").write_text("{}")
+    with pytest.raises(PipelineError, match="checksum"):
+        split_asr_job.finish(source, root / "tampered", plan, directories, "123")
+
+
+def test_gpu_worker_recognises_only_its_part_and_writes_verified_receipts(
+    prepared, monkeypatch
+):
+    _, plan, root = prepared
+    child = plan["parts"][1]
+    raw = results(plan)[1][1]
+    calls = []
+
+    def recognise(source, info, settings, journal=None):
+        calls.append((info["duration"], settings.whisper_device, settings.asr_parts))
+        return raw
+
+    monkeypatch.setattr(pipeline.signals, "transcribe", recognise)
+    monkeypatch.setenv("GITHUB_REPOSITORY", split_asr_job.PRIVATE_REPO)
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", child["source_ref"])
+    monkeypatch.setenv("CLIPFORGE_REQUIRE_CUDA", "1")
+    output = root / "worker-result"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_request.py",
+            "run",
+            "--tag",
+            "clipforge-input-" + child["request_id"],
+            "--directory",
+            str(root / "parts/part-1"),
+            "--output",
+            str(output),
+        ],
+    )
+    run_request.main()
+    assert calls == [(25, "cuda", 1)]
+    assert split_asr_job.verify_part(output, child, "123") == raw
+    assert not (output / "topics.json").exists()
+
+
+@pytest.mark.parametrize("failed_index", [None, 0])
+def test_coordinator_runs_both_parts_concurrently_and_stops_each_owned_runtime(
+    prepared, monkeypatch, failed_index
+):
+    source, plan, root = prepared
+    directory = root / "parent"
+    directory.mkdir()
+    (directory / "input-video.bin").write_bytes(source.read_bytes())
+    write_json(directory / "request.json", plan["request"])
+    monkeypatch.setattr(asr_split, "prepare", lambda *a: plan)
+    monkeypatch.setenv("GITHUB_REPOSITORY", split_asr_job.PRIVATE_REPO)
+    monkeypatch.setenv("REQUEST_ID", plan["request"]["request_id"])
+    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", plan["request"]["source_ref"])
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    operations, stopped, active = [], [], set()
+    barrier = threading.Barrier(2)
+
+    def gh(*arguments, **kwargs):
+        operations.append(arguments)
+        return "true" if arguments[0] == "api" else ""
+
+    monkeypatch.setattr(split_asr_job.github_cli, "run", gh)
+
+    def control(python, state, command, output, environment):
+        index = int(state.name[-1])
+        child = plan["parts"][index]
+        assert environment["REQUEST_ID"] == child["request_id"]
+        assert "GEMINI_API_KEY" not in environment
+        if command == "start":
+            write_json(state / "state.json", {"status": "allocated"})
+            active.add(index)
+            barrier.wait(timeout=5)
+            assert active == {0, 1}
+        elif command == "stop":
+            stopped.append(index)
+        else:
+            if index == failed_index:
+                raise PipelineError("synthetic part failure")
+            write_json(
+                output / "manifest.json",
+                {
+                    "status": "asr_part_complete",
+                    "asr_part": child["asr_part"],
+                    "source_sha256": child["video_sha256"],
+                    "rendered": [],
+                },
+            )
+            write_json(output / "transcript.json", results(plan)[index][1])
+            write_json(
+                output / "request-receipt.json",
+                {
+                    "request_id": child["request_id"],
+                    "source_ref": child["source_ref"],
+                    "audio_source_url": URL,
+                    "workflow_run": "123",
+                    "status": "asr_part_complete",
+                    "asr_part": child["asr_part"],
+                    "sha256": {
+                        name: digest(output / name)
+                        for name in ("manifest.json", "transcript.json")
+                    },
+                },
+            )
+
+    monkeypatch.setattr(split_asr_job, "control", control)
+    args = SimpleNamespace(
+        directory=directory,
+        output=root / "combined",
+        control_python="python",
+        state_root=root / "coordinator",
+    )
+    if failed_index is None:
+        split_asr_job.run(args)
+        submit_job.verify_audio_analysis(
+            args.output, "a" * 32, "b" * 40, digest(source), URL, "123"
+        )
+    else:
+        with pytest.raises(PipelineError, match="split ASR failed"):
+            split_asr_job.run(args)
+        assert not (args.output / "topics.json").exists()
+    assert sorted(stopped) == [0, 1]
+    assert len([row for row in operations if row[:2] == ("release", "delete")]) == 2
+
+
+@pytest.mark.parametrize(
+    "explicit,configured,expected",
+    [(None, None, 2), (1, None, 1), (None, 1, 1), (2, 1, 2)],
+)
+def test_url_submission_defaults_to_two_parts_and_respects_explicit_choice(
+    tmp_path, monkeypatch, explicit, configured, expected
+):
+    def gh(*arguments, **kwargs):
+        if arguments[0] == "run":
+            return "[]"
+        if arguments[0] == "secret":
+            return '[{"name":"COLAB_ADC_JSON"}]'
+        return (
+            '{"state":"active"}'
+            if "workflows" in arguments[1]
+            else '{"sha":"' + "b" * 40 + '"}'
+        )
+
+    monkeypatch.setattr(submit_job, "gh", gh)
+    monkeypatch.setattr(
+        submit_job, "preflight_audio_url", lambda *a: {"has_video": False}
+    )
+    monkeypatch.setattr(submit_job, "send_dispatch", lambda *a: None)
+    config = tmp_path / "settings.json"
+    config.write_text(
+        json.dumps({} if configured is None else {"asr_parts": configured})
+    )
+    args = SimpleNamespace(
+        worker="colab-auto",
+        audio_analysis_url=URL,
+        input=None,
+        config=config,
+        clips=None,
+        chat_file=None,
+        chat_url=None,
+        gemini_model="manual-no-api",
+        ref="b" * 40,
+        auto_previews=False,
+        asr_parts=explicit,
+        public_cache="off",
+    )
+    state, _ = submit_job.dispatch(args, tmp_path)
+    assert (
+        json.loads((state / "request.json").read_text())["settings"]["asr_parts"]
+        == expected
+    )
+
+
+@pytest.mark.parametrize("value", [True, False, 0, 3, 2.0, "2"])
+def test_asr_parts_requires_an_exact_supported_integer(value):
+    with pytest.raises(ValueError, match="asr_parts"):
+        Settings(gemini_model="manual-no-api", asr_parts=value)

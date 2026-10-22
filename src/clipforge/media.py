@@ -12,7 +12,7 @@ from .hardware import encode_threads, video_options
 from .storage import TIME_TOLERANCE, PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
-FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf"]
+FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf,wav,flac,mp3"]
 AUDIO_RATE = 48000
 ASR_SAMPLE_RATE = 16000
 LOUDNESS = "I=-16:TP=-1.5:LRA=11"

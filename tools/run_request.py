@@ -68,6 +68,7 @@ def main():
         "settings",
         "chat_sha256",
         "audio_source_url",
+        "asr_part",
     }:
         raise RuntimeError("unknown request fields")
     if args.tag != "clipforge-input-" + request["request_id"]:
@@ -90,8 +91,19 @@ def main():
     from clipforge.storage import digest, fingerprint, write_json
 
     settings = Settings.model_validate(request["settings"])
+    if request.get("asr_part") is not None:
+        from clipforge.asr_split import part_id, validate_part
+
+        part = request["asr_part"]
+        validate_part(part)
+        if (
+            request["request_id"] != part_id(part["parent_request_id"], part["index"])
+            or not request.get("audio_source_url")
+            or settings.asr_parts != 1
+        ):
+            raise RuntimeError("ASR part request identity mismatch")
     if request.get("audio_source_url"):
-        from clipforge.kick_media import canonical
+        from clipforge.media_sources import canonical
 
         canonical(request["audio_source_url"])
         if (
@@ -160,7 +172,27 @@ def main():
     chat_file = args.directory / "chat.json" if request.get("chat_sha256") else None
     if chat_file and digest(chat_file) != request["chat_sha256"]:
         raise RuntimeError("chat checksum mismatch")
-    if request.get("audio_source_url"):
+    if request.get("asr_part") is not None:
+        from clipforge.audio_first import audio_info
+        from clipforge import signals
+
+        args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
+        info = audio_info(source)
+        if abs(info["duration"] - request["asr_part"]["duration"]) > 0.3:
+            raise RuntimeError("ASR part audio duration mismatch")
+        transcript = signals.transcribe(
+            source, info, settings, journal=args.output / "transcript.partial.jsonl"
+        )
+        write_json(args.output / "transcript.json", transcript)
+        (args.output / "transcript.partial.jsonl").unlink(missing_ok=True)
+        result = {
+            "status": "asr_part_complete",
+            "asr_part": request["asr_part"],
+            "source_sha256": request["video_sha256"],
+            "rendered": [],
+        }
+        write_json(args.output / "manifest.json", result)
+    elif request.get("audio_source_url"):
         import shutil
         from clipforge.audio_first import allocate_audio, exclusive
 
@@ -185,7 +217,12 @@ def main():
 
         result = run(source, args.output, settings, resume=True, chat_file=chat_file)
     result_hashes = {}
-    if request.get("audio_source_url"):
+    if request.get("asr_part") is not None:
+        result_hashes = {
+            name: digest(args.output / name)
+            for name in ("manifest.json", "transcript.json")
+        }
+    elif request.get("audio_source_url"):
         cache = json.loads((args.output / "asr-receipt.json").read_text())
         names = [
             "audio.m4a",
@@ -205,6 +242,11 @@ def main():
             "rendered_clips": len(result["rendered"]),
             "audio_source_url": request.get("audio_source_url"),
             "sha256": result_hashes,
+            **(
+                {"asr_part": request["asr_part"]}
+                if request.get("asr_part") is not None
+                else {}
+            ),
         },
     )
     print(json.dumps({"status": result["status"], "clips": len(result["rendered"])}))

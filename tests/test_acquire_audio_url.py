@@ -213,9 +213,12 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     assert cleanup["if"] == "always()"
     assert 'gh release delete "$INPUT_TAG"' in cleanup["run"]
     assert all("tools/audio_url_job.py" not in step.get("run", "") for step in steps)
-    assert all("apt-get" not in step.get("run", "") for step in steps)
-    assert all("ffmpeg" not in json.dumps(step).lower() for step in steps)
-    assert all(".deb" not in json.dumps(step) for step in steps)
+    media_tools = next(
+        i for i, step in enumerate(steps) if "command -v ffmpeg" in step.get("run", "")
+    )
+    assert sync < media_tools < acquire
+    assert steps[media_tools]["if"] == "inputs.audio_url != ''"
+    assert "GH_TOKEN" not in steps[media_tools].get("env", {})
     assert steps[sync]["timeout-minutes"] == 10
     assert steps[acquire]["timeout-minutes"] == 30
     request = next(i for i, step in enumerate(steps) if step.get("id") == "request")
@@ -262,7 +265,12 @@ def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages(
     }
     assert workflow["permissions"]["actions"] == "read"
     analysis = workflow["jobs"]["colab-auto"]["steps"]
-    upload = next(s for s in analysis if s.get("uses") == "actions/upload-artifact@v4")
+    upload = next(
+        s
+        for s in analysis
+        if s.get("uses") == "actions/upload-artifact@v4"
+        and "partial" not in s["with"]["name"]
+    )
     assert (
         upload["with"]["name"]
         == "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}"
@@ -355,7 +363,7 @@ def test_workflow_detects_model_requirements_from_request(
     monkeypatch.setenv("CLIPFORGE_SOURCE_REF", request["source_ref"])
     code = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     exec(compile(code, "workflow-request", "exec"), {})
-    assert output.read_text() == f"no_model_api={int(bool(audio_url))}\n"
+    assert output.read_text() == f"no_model_api={int(bool(audio_url))}\nasr_parts=1\n"
 
 
 def test_maintenance_workflow_passes_cache_profile_to_allocation():

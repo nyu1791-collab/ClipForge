@@ -289,8 +289,10 @@ def test_rejects_public_repository_and_active_jobs(submitter, condition):
     assert not control["posts"] and not control["releases"]
 
 
-@pytest.mark.parametrize("active, allowed", [(1, True), (2, False)])
-def test_colab_jobs_run_two_at_once(submitter, active, allowed):
+@pytest.mark.parametrize("active, allowed", [(0, True), (1, False), (2, False)])
+def test_colab_requests_are_serialized_when_one_request_can_own_two_runtimes(
+    submitter, active, allowed
+):
     _, _, control, invoke = submitter
     control["active"] = active
     if allowed:
@@ -487,6 +489,7 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
     assert request["settings"] == {
         **json.loads(Path("config.landscape.example.json").read_text()),
         "asr_batch_size": 8,
+        "asr_parts": 2,
         "threads": 4,
     }
     assert control["playlists"] == ["lowest"] and control["preflight_closed"]
@@ -589,6 +592,7 @@ def test_url_settings_match_submission_acquisition_and_analysis(
     expected = Settings.model_validate(submitted)
     assert submitted == {
         **json.loads(Path("config.landscape.example.json").read_text()),
+        "asr_parts": 2,
         **overrides,
     }
     assert control["preflight_budgets"][0]["max_bytes"] == expected.max_transport_bytes
@@ -752,7 +756,7 @@ def test_audio_dispatch_rejects_noncanonical_url(
     if local_input:
         argv.extend(["--input", str(source)])
     monkeypatch.setattr(sys, "argv", argv)
-    with pytest.raises(PipelineError, match="canonical Kick VOD URL"):
+    with pytest.raises(PipelineError, match="canonical"):
         module.main()
     assert not control["posts"] and not control["releases"]
 
