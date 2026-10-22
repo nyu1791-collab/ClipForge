@@ -450,3 +450,33 @@ class ControlTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeTests(unittest.TestCase):
+    def run_probe(self, assign):
+        client = Mock()
+        client.assign.side_effect = assign
+        client.list_assignments.return_value = []
+        client.get_consumption_user_info.side_effect = RuntimeError("not reported")
+        with (
+            patch.dict(os.environ, {"COLAB_ADC_JSON": '{"type":"authorized_user"}'}),
+            patch.object(control, "authenticated_client", return_value=client),
+            patch("builtins.print") as printed,
+        ):
+            control.probe("L4")
+        return client, " ".join(str(c.args[0]) for c in printed.call_args_list)
+
+    def test_a_granted_runtime_is_released_at_once(self):
+        granted = SimpleNamespace(endpoint="probe-session")
+        client, lines = self.run_probe(lambda *a, **k: granted)
+        client.unassign.assert_called_once_with("probe-session")
+        self.assertIn("Probe L4/STANDARD: granted", lines)
+        self.assertIn("released", lines)
+
+    def test_a_refusal_allocates_nothing(self):
+        def refuse(*args, **kwargs):
+            raise RuntimeError("412")
+
+        client, lines = self.run_probe(refuse)
+        client.unassign.assert_not_called()
+        self.assertIn("refused (RuntimeError)", lines)

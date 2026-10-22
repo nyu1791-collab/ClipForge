@@ -444,10 +444,52 @@ del _clipforge_bootstrap
             )
 
 
+def probe(accelerator_name):
+    """Ask for one runtime and release it at once, to learn whether the account grants it.
+
+    A refusal allocates nothing. A grant is released immediately and confirmed gone, so the
+    check costs seconds of runtime. Used to measure how many runtimes of which kind run at once.
+    """
+    from colab_cli.client import Accelerator, Variant
+
+    raw = os.environ.get("COLAB_ADC_JSON", "")
+    if not raw:
+        raise ControlError("COLAB_ADC_JSON is missing; nothing was allocated")
+    if accelerator_name not in {"NONE", "T4", "L4", "G4", "A100"}:
+        raise ControlError("Unknown accelerator for the probe")
+    accelerator = Accelerator(accelerator_name)
+    variant = Variant.DEFAULT if accelerator is Accelerator.NONE else Variant.GPU
+    shape = colab_shape()
+    client = authenticated_client(json.loads(raw))
+    print_units("before probe", compute_units(client))
+    label = f"{accelerator.value}/{shape.name}"
+    try:
+        assignment = client.assign(
+            uuid.uuid4(), variant=variant, accelerator=accelerator, shape=shape
+        )
+    except Exception as error:
+        print(f"Probe {label}: refused ({type(error).__name__})", flush=True)
+        return
+    try:
+        print(f"Probe {label}: granted", flush=True)
+    finally:
+        client.unassign(assignment.endpoint)
+        for attempt in range(4):
+            if not any(
+                item.endpoint == assignment.endpoint
+                for item in client.list_assignments()
+            ):
+                print(f"Probe {label}: released", flush=True)
+                break
+            if attempt == 3:
+                raise ControlError("Probe runtime release has not been confirmed")
+            time.sleep(1 + attempt)
+
+
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["start", "run", "stop", "doctor"])
+    parser.add_argument("command", choices=["start", "run", "stop", "doctor", "probe"])
     parser.add_argument(
         "--mode",
         choices=["pipeline", "verify-gpu", "prepare-cache"],
@@ -473,6 +515,8 @@ def main():
         controller.run(args.output)
     elif args.command == "stop":
         controller.stop()
+    elif args.command == "probe":
+        probe(os.environ.get("CLIPFORGE_PROBE_ACCELERATOR") or "T4")
     else:
         raw = os.environ.get("COLAB_ADC_JSON", "")
         if not raw:
