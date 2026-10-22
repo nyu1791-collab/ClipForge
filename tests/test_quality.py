@@ -427,3 +427,137 @@ def test_landscape_reading_and_real_font_width_are_independent(
     assert narrower["metrics"]["lines_over_horizontal_limit"] == 1
     # Independent 13-equivalent measurement does not silently strengthen the quality gate.
     assert narrower["passed"] == report["passed"]
+
+
+@pytest.mark.parametrize(
+    ("text", "warns"),
+    [("あ。", True), ("あ、い、う", True), ("あ　い", False), ("あ．い，う", False)],
+)
+def test_japanese_full_stops_and_commas_are_counted_without_examples(text, warns):
+    warnings = quality.japanese_style_warnings([(0, 2000, text)], landscape=True)
+    assert warnings == (
+        ["1 caption(s) contain Japanese full stops or commas"] if warns else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "warns"),
+    [("あ?", True), ("あ!", True), ("あ?!", True), ("あ？！", False), ("あ", False)],
+)
+def test_halfwidth_question_and_exclamation_marks_are_warnings(text, warns):
+    warnings = quality.japanese_style_warnings([(0, 2000, text)], landscape=True)
+    assert warnings == (
+        [
+            "1 caption(s) use halfwidth question or exclamation marks, "
+            "use fullwidth marks, for example " + text
+        ]
+        if warns
+        else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "warns"),
+    [
+        ("あ？い", True),
+        ("あ！い", True),
+        ("あ？ い", True),
+        ("あ？！い", True),
+        ("あ?い", True),
+        ("あ!い", True),
+        ("あ？　い", False),
+        ("あ！　い", False),
+        ("あ？！", False),
+        ("あ？\nい", False),
+        ("「あ？」", False),
+        ("『あ！』", False),
+        ("（あ！）", False),
+    ],
+)
+def test_fullwidth_spacing_is_needed_only_before_continuing_text(text, warns):
+    warnings = quality.japanese_style_warnings([(0, 2000, text)], landscape=True)
+    spacing = [warning for warning in warnings if "lack a fullwidth space" in warning]
+    assert spacing == (
+        [
+            "1 caption(s) lack a fullwidth space after a question or "
+            "exclamation mark before more text, for example " + text.replace("\n", " ")
+        ]
+        if warns
+        else []
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "landscape", "count"),
+    [
+        ("あ" * 14, True, 1),
+        ("あ" * 13, True, 0),
+        ("i" * 26, True, 0),
+        ("i" * 27, True, 1),
+        ("ｱ" * 26, True, 0),
+        ("ｱ" * 27, True, 1),
+        ("あ" * 12 + "ab", True, 0),
+        ("あ" * 12 + "abc", True, 1),
+        ("あ" * 13 + "\n" + "い" * 13, True, 0),
+        ("あ" * 14 + "\n" + "い" * 14, True, 2),
+        ("あ" * 14, False, 0),
+    ],
+)
+def test_thirteen_fullwidth_character_limit_counts_lines_and_halfwidths(
+    text, landscape, count
+):
+    warnings = quality.japanese_style_warnings([(0, 2000, text)], landscape)
+    assert warnings == (
+        [
+            f"{count} caption line(s) exceed 13 fullwidth characters, for example "
+            + text[:10]
+        ]
+        if count
+        else []
+    )
+
+
+def test_japanese_style_warnings_count_captions_and_truncate_the_first_example():
+    first = "あ" * 10 + "、?い！う"
+    second = "い、う!え？お。"
+    warnings = quality.japanese_style_warnings(
+        [(0, 2000, first), (2000, 4000, second)], landscape=True
+    )
+    assert len(warnings) == 4
+    assert warnings[0] == "2 caption(s) contain Japanese full stops or commas"
+    assert all(warning.startswith("2 caption(s)") for warning in warnings[1:3])
+    assert all(warning.endswith("for example " + "あ" * 10) for warning in warnings[1:])
+
+
+def test_japanese_style_checks_only_warn_and_do_not_use_font_width(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(
+        tmp_path,
+        [
+            (0, 3000, "あ、い?う！え。"),
+            (3000, 6000, "i" * 27),
+            (6000, 9000, "う、!", "Heading"),
+        ],
+    )
+    report = quality.check_clip(
+        folder, {**RENDERED, "width": 1920, "height": 1080}, [], []
+    )
+    assert report["passed"] is True
+    assert report["failures"] == []
+    assert quality.enforce(report, "strict") is report
+    assert report["metrics"]["line_overflows"] == 0
+    assert report["metrics"]["lines_over_horizontal_limit"] == 0
+    assert "1 caption(s) contain Japanese full stops or commas" in report["warnings"]
+    assert any(
+        warning.startswith("1 caption(s) use halfwidth")
+        for warning in report["warnings"]
+    )
+    assert any(
+        warning.startswith("1 caption(s) lack a fullwidth space")
+        for warning in report["warnings"]
+    )
+    assert any(
+        warning.startswith("1 caption line(s) exceed 13")
+        for warning in report["warnings"]
+    )

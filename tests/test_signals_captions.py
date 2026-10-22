@@ -157,6 +157,48 @@ def test_empty_captions_valid(tmp_path, settings):
     assert result["events"] == 0
     assert (tmp_path / "captions.ass").is_file()
     assert (tmp_path / "captions.srt").read_text() == ""
+    assert result["asr_cleanup"] == {
+        "repetitions": 0,
+        "boilerplate_segments": 0,
+        "compression_segments": 0,
+    }
+
+
+@pytest.mark.parametrize("keep", [None, [(10, 12), (15, 20)]])
+def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings, keep):
+    words = [
+        Word(start=15 + i * 0.5, end=15.5 + i * 0.5, text="うん") for i in range(4)
+    ]
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=10, end=11, text="ご視聴ありがとうございました"),
+            Segment(start=11, end=12, text="架空の圧縮判定用の文字列。" * 60),
+            Segment(start=15, end=17, text="うん" * 4, words=words),
+            Segment(
+                start=18,
+                end=19,
+                text="続き",
+                words=[Word(start=18, end=19, text="続き")],
+            ),
+        ],
+    )
+    before = transcript.model_dump()
+    clip = SelectedClip(
+        start=10, end=20, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    result = captions.create(transcript, clip, tmp_path, settings, keep=keep)
+    srt = pysubs2.load(str(tmp_path / "captions.srt"))
+    assert [event.plaintext for event in srt] == ["うんうん", "続き"]
+    assert [event.start for event in srt] == (
+        [5000, 8000] if keep is None else [2000, 5000]
+    )
+    assert result["asr_cleanup"] == {
+        "repetitions": 2,
+        "boilerplate_segments": 1,
+        "compression_segments": 1,
+    }
+    assert transcript.model_dump() == before
 
 
 class FixedWidth:
@@ -192,11 +234,15 @@ def test_fast_speech_stays_on_screen_until_the_next_caption_needs_the_room(
 ):
     # Portrait frames read at 10 characters a second; landscape frames read at 4 (see the next test).
     settings.aspect = "9:16"
-    words = [Word(start=0.1 * i, end=0.1 * i + 0.1, text="あい") for i in range(10)]
+    text = "アイウエオカキクケコサシスセソタチツテト"
+    words = [
+        Word(start=0.1 * i, end=0.1 * i + 0.1, text=text[2 * i : 2 * i + 2])
+        for i in range(10)
+    ]
     transcript = Transcript(
         language="ja",
         segments=[
-            Segment(start=0, end=1.0, text="あい" * 10, words=words),
+            Segment(start=0, end=1.0, text=text, words=words),
             Segment(
                 start=2.5,
                 end=2.6,

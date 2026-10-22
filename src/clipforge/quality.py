@@ -8,6 +8,7 @@ import math
 import re
 import statistics
 import subprocess
+import unicodedata
 from pathlib import Path
 
 import pysubs2
@@ -30,6 +31,7 @@ LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
 MAX_TRUE_PEAK = -1.0  # dBTP; leaves room for lossy encoding overshoot
 TEXT_STYLES = {"Default", "Sequential"}
 MAX_CAPTION_LINES = 2
+MAX_JAPANESE_LINE_CHARS = 13
 SHORT_CAPTION_MS = round(MIN_DISPLAY_SECONDS * 1000)  # shorter captions flicker
 LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
 
@@ -246,6 +248,49 @@ def horizontal_width_metrics(path, line_chars):
     }
 
 
+def japanese_style_warnings(events, landscape):
+    """Netflix Japanese style checks; character counts are independent of font pixels."""
+    texts = [text for _, _, text in events]
+    found = []
+    punctuation = sum(any(mark in text for mark in "。、") for text in texts)
+    if punctuation:
+        found.append(f"{punctuation} caption(s) contain Japanese full stops or commas")
+    halfwidth = [text for text in texts if re.search(r"[?!]", text)]
+    if halfwidth:
+        found.append(
+            f"{len(halfwidth)} caption(s) use halfwidth question or exclamation marks, "
+            "use fullwidth marks, for example " + halfwidth[0].replace("\n", " ")[:10]
+        )
+    unspaced = [
+        text
+        for text in texts
+        if re.search(r"[?!？！][ \t]*[^\s?!？！」』）)\]］】〉》、。…‥]", text)
+    ]
+    if unspaced:
+        found.append(
+            f"{len(unspaced)} caption(s) lack a fullwidth space after a question or "
+            "exclamation mark before more text, for example "
+            + unspaced[0].replace("\n", " ")[:10]
+        )
+    if landscape:
+        long_lines = [
+            line
+            for text in texts
+            for line in text.splitlines()
+            if sum(
+                1 if unicodedata.east_asian_width(char) in "FWA" else 0.5
+                for char in line
+            )
+            > MAX_JAPANESE_LINE_CHARS
+        ]
+        if long_lines:
+            found.append(
+                f"{len(long_lines)} caption line(s) exceed {MAX_JAPANESE_LINE_CHARS} "
+                "fullwidth characters, for example " + long_lines[0][:10]
+            )
+    return found
+
+
 def _finite(value):
     """JSON has no infinity; silence is reported by a warning instead."""
     return value if value is not None and math.isfinite(value) else None
@@ -298,6 +343,9 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             f"{len(splits)} line or caption break(s) fall inside a word, for example "
             + splits[0]
         )
+    warnings.extend(
+        japanese_style_warnings(events, rendered["width"] > rendered["height"])
+    )
     decode = decode_errors(directory / "video.mp4")
     if decode:
         failures.append(

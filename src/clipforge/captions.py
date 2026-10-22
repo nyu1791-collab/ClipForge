@@ -7,6 +7,7 @@ import unicodedata
 import pysubs2
 
 from . import fonts, silence
+from .asr_cleanup import clean_segments
 from .caption_breaks import (
     NO_LINE_START,
     NO_LINE_END,
@@ -403,7 +404,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         )
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
 
-    tokens, approximate = collect_tokens(transcript, clip, keep)
+    segments, cleanup = clean_segments(transcript.segments)
+    caption_transcript = transcript.model_copy(update={"segments": segments})
+    tokens, approximate = collect_tokens(caption_transcript, clip, keep)
     tokens, split = split_long(tokens, measure, line_px)
     approximate += split
     groups = group(tokens, measure, line_px)
@@ -532,4 +535,5 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         "approximate_tokens": approximate,
         "missing_glyphs": missing,
         "caption_mode": settings.caption,
+        "asr_cleanup": cleanup,
     }
