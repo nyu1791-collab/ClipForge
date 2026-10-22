@@ -15,7 +15,7 @@ import re
 import sys
 
 from . import landscape, pipeline, topics
-from .kick_media import KickVOD, canonical
+from .kick_media import RANGE_FORMAT, KickVOD, canonical
 from .models import Transcript
 from .storage import PipelineError, digest, fingerprint, process, stage, write_json
 
@@ -63,6 +63,8 @@ def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"
     """A media hash alone cannot establish which original interval it contains."""
     receipt_path = path.with_suffix(path.suffix + ".receipt.json")
     expected = {"source_url": vod.url, "source_start": start, "audio_only": audio_only}
+    if not audio_only and quality != "preview":
+        expected["media_format"] = RANGE_FORMAT
     if end is not None:
         expected["source_end"] = end
     if path.exists() or receipt_path.exists():
@@ -83,6 +85,22 @@ def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"
             )
         ):
             raise PipelineError("media cache source or interval mismatch")
+        if "media_format" in expected:
+            offset, covered = (
+                receipt.get("start_offset"),
+                receipt.get("covered_duration"),
+            )
+            if (
+                any(
+                    isinstance(v, bool)
+                    or not isinstance(v, (int, float))
+                    or not math.isfinite(v)
+                    for v in (offset, covered)
+                )
+                or not 0 <= offset < covered
+                or offset + (receipt["source_end"] - start) > covered + 0.01
+            ):
+                raise PipelineError("invalid media cache coverage")
         return receipt
     receipt = vod.retrieve(
         path, start=start, end=end, audio_only=audio_only, quality=quality
@@ -273,7 +291,7 @@ def reviewed_clips(value, analysis, preview, settings):
     return clips
 
 
-def shifted_transcript(transcript, start, end):
+def shifted_transcript(transcript, start, end, offset=0.0):
     """Keep full-source ASR; clip and shift its word clock without recognising again."""
     segments = []
     for segment in transcript.segments:
@@ -285,8 +303,8 @@ def shifted_transcript(transcript, start, end):
             )
         words = [
             dict(
-                start=max(w.start, start) - start,
-                end=min(w.end, end) - start,
+                start=max(w.start, start) - start + offset,
+                end=min(w.end, end) - start + offset,
                 text=w.text,
             )
             for w in segment.words
@@ -297,8 +315,8 @@ def shifted_transcript(transcript, start, end):
         text = "".join(w["text"] for w in words) if segment.words else segment.text
         segments.append(
             dict(
-                start=max(segment.start, start) - start,
-                end=min(segment.end, end) - start,
+                start=max(segment.start, start) - start + offset,
+                end=min(segment.end, end) - start + offset,
                 text=text,
                 words=words,
             )
@@ -348,10 +366,13 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
             "analysis": analysis["analysis_key"],
             "settings": settings.model_dump(),
             "code": landscape.code_identity(settings)["implementation_sha256"],
+            "media_format": RANGE_FORMAT,
         }
     )
     targets = [
-        root / "ranges" / f"{fingerprint({'start': clip.start, 'end': clip.end})}.mp4"
+        root
+        / "ranges"
+        / f"{fingerprint({'start': clip.start, 'end': clip.end, 'media_format': RANGE_FORMAT})}.mp4"
         for clip in clips
     ]
     rows, timings = [], {}
@@ -383,7 +404,16 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
                 )
             if receipt["rendition_height"] < 720:
                 raise PipelineError("selected source video is below 720p")
-            local = clip.model_copy(update={"start": 0.0, "end": clip.end - clip.start})
+            start_offset = receipt["start_offset"]
+            local = clip.model_copy(
+                update={
+                    "start": start_offset,
+                    "end": start_offset + (clip.end - clip.start),
+                }
+            )
+            local_transcript = shifted_transcript(
+                local_transcript, 0.0, clip.end - clip.start, offset=start_offset
+            )
             row = pipeline.timed(
                 clip_timings,
                 "render",

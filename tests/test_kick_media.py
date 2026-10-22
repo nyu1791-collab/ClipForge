@@ -1,6 +1,7 @@
 import json
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -59,11 +60,17 @@ def vod(tmp_path, monkeypatch):
     def process(command, **kwargs):
         commands.append(command)
         if command[0] == "ffmpeg":
-            duration[0] = float(command[command.index("-t") + 1])
-            from pathlib import Path
-
+            duration[0] = (
+                float(command[command.index("-t") + 1])
+                if "-t" in command
+                else Path(command[command.index("-i") + 1]).stat().st_size / 91 * 10
+            )
             Path(command[-1]).write_bytes(b"synthetic rendered media")
             return SimpleNamespace(stdout=b"")
+        if "-select_streams" in command:
+            return SimpleNamespace(
+                stdout=json.dumps({"streams": [{"start_time": 100}]})
+            )
         return SimpleNamespace(stdout=json.dumps({"format": {"duration": duration[0]}}))
 
     monkeypatch.setattr(km, "process", process)
@@ -81,18 +88,33 @@ def test_renditions_keep_audio_first_and_preview_video_distinct(vod):
         value.playlist("invalid")
 
 
-@pytest.mark.parametrize("audio_only", [True, False])
+@pytest.mark.parametrize(
+    ("audio_only", "quality"), [(True, "720p"), (False, "preview"), (False, "1080p")]
+)
 def test_retrieve_range_uses_original_clock_and_verifiable_cache(
-    vod, tmp_path, audio_only
+    vod, tmp_path, audio_only, quality
 ):
     value, _, calls, commands = vod
     target = tmp_path / ("audio.m4a" if audio_only else "video.mp4")
-    result = value.retrieve(target, 12, 17, audio_only=audio_only)
-    assert result["source_start"] == 12 and result["source_end"] == 17
+    result = value.retrieve(target, 12.5, 17, audio_only=audio_only, quality=quality)
+    assert result["source_start"] == 12.5 and result["source_end"] == 17
     assert result["audio_only"] is audio_only
     assert result["segment_count"] == 1
-    assert "-vn" in commands[0] if audio_only else "-c:v" in commands[0]
-    assert commands[0][commands[0].index("-ss") + 1] == "2.0"
+    command = next(c for c in commands if c[0] == "ffmpeg")
+    if audio_only or quality == "preview":
+        assert "-vn" in command if audio_only else "-c:v" in command
+        assert command[command.index("-ss") + 1] == "2.5"
+        assert "media_format" not in result
+    else:
+        assert command[command.index("-c") + 1] == "copy"
+        assert "-ss" not in command and "-t" not in command
+        assert "libx264" not in command and "aac" not in command
+        assert command[command.index("-itsoffset") + 1] == "-100.0"
+        assert command[command.index("-avoid_negative_ts") + 1] == "disabled"
+        assert "+genpts" in command and "-copyts" in command
+        assert result["media_format"] == km.RANGE_FORMAT
+        assert result["start_offset"] == 2.5
+        assert result["covered_duration"] == 10.0
     before = len(calls)
     value.segment("https://stream.kick.com/archive/1.ts")
     assert len(calls) == before
@@ -100,6 +122,34 @@ def test_retrieve_range_uses_original_clock_and_verifiable_cache(
         value.retrieve(target)
     with pytest.raises(PipelineError, match="outside"):
         value.retrieve(tmp_path / "other.mp4", 30, 35)
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "offset", "covered", "count"),
+    [(10, 20, 0, 10, 1), (12.5, 20, 2.5, 10, 1), (2.5, 17, 2.5, 20, 2)],
+)
+def test_remux_receipt_covers_whole_selected_segments(
+    vod, tmp_path, start, end, offset, covered, count
+):
+    result = vod[0].retrieve(tmp_path / "video.mp4", start, end, quality="1080p")
+    assert result["start_offset"] == offset
+    assert result["covered_duration"] == covered
+    assert result["segment_count"] == count
+
+
+def test_remux_rejects_incomplete_segment_coverage(vod, tmp_path, monkeypatch):
+    original = km.process
+
+    def process(command, **kwargs):
+        if "format=duration" in command:
+            return SimpleNamespace(stdout=json.dumps({"format": {"duration": 5}}))
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(km, "process", process)
+    target = tmp_path / "video.mp4"
+    with pytest.raises(PipelineError, match="duration mismatch"):
+        vod[0].retrieve(target, 12, 17, quality="1080p")
+    assert not target.exists()
 
 
 @pytest.mark.parametrize(

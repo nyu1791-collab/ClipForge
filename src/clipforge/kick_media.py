@@ -16,6 +16,9 @@ from urllib.parse import urljoin, urlsplit
 from .storage import PipelineError, digest, process, write_json
 
 
+RANGE_FORMAT = "segment-remux-v1"
+
+
 class VideoMetadata(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -391,6 +394,11 @@ class KickVOD:
         ):
             raise PipelineError("requested range is outside archive")
         selected = [s for s in segments if s["end"] > start and s["start"] < end]
+        remux = not audio_only and quality != "preview"
+        start_offset = start - selected[0]["start"] if remux else 0.0
+        covered_duration = (
+            selected[-1]["end"] - selected[0]["start"] if remux else end - start
+        )
         output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with tempfile.TemporaryDirectory(dir=output.parent, prefix=".fetch-") as temp:
             ts = Path(temp) / "input.ts"
@@ -407,15 +415,47 @@ class KickVOD:
                 "-v",
                 "error",
                 "-n",
-                "-ss",
-                str(start - selected[0]["start"]),
+            ]
+            if remux:
+                # Anchor presentation time to the first video frame, not the earliest
+                # audio packet or DTS. Keep negative B-frame DTS via MP4 edit lists;
+                # make_zero would move the picture away from the segment's zero.
+                video = json.loads(
+                    process(
+                        [
+                            "ffprobe",
+                            "-v",
+                            "error",
+                            "-select_streams",
+                            "v:0",
+                            "-show_entries",
+                            "stream=start_time",
+                            "-of",
+                            "json",
+                            ts,
+                        ]
+                    ).stdout
+                )
+                video_start = float(video["streams"][0]["start_time"])
+                if not math.isfinite(video_start):
+                    raise PipelineError("invalid segment video start time")
+                command += [
+                    "-fflags",
+                    "+genpts",
+                    "-copyts",
+                    "-itsoffset",
+                    str(-video_start),
+                ]
+            else:
+                command += ["-ss", str(start - selected[0]["start"])]
+            command += [
                 "-protocol_whitelist",
                 "file,pipe",
                 "-i",
                 str(ts),
-                "-t",
-                str(end - start),
             ]
+            if not remux:
+                command += ["-t", str(end - start)]
             if audio_only:
                 command += [
                     "-map",
@@ -429,6 +469,19 @@ class KickVOD:
                     "aac",
                     "-b:a",
                     "48k",
+                ]
+            elif remux:
+                command += [
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a:0?",
+                    "-c",
+                    "copy",
+                    "-avoid_negative_ts",
+                    "disabled",
+                    "-use_editlist",
+                    "1",
                 ]
             else:
                 command += [
@@ -465,11 +518,15 @@ class KickVOD:
                     ]
                 ).stdout
             )
-            if abs(float(info["format"]["duration"]) - (end - start)) > 0.3:
+            fetched_duration = float(info["format"]["duration"])
+            if (
+                not math.isfinite(fetched_duration)
+                or abs(fetched_duration - covered_duration) > 0.3
+            ):
                 raise PipelineError("fetched duration mismatch")
             # Hard-link creates the final name exclusively; partial files remain private.
             os.link(product, output)
-        return {
+        receipt = {
             "source_url": self.url,
             "source_start": start,
             "source_end": end,
@@ -479,3 +536,10 @@ class KickVOD:
             "segment_count": len(selected),
             "sha256": digest(output),
         }
+        if remux:
+            receipt.update(
+                media_format=RANGE_FORMAT,
+                start_offset=start_offset,
+                covered_duration=covered_duration,
+            )
+        return receipt

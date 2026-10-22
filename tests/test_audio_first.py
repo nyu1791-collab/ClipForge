@@ -45,6 +45,15 @@ def audio_job(tmp_path, monkeypatch):
                 "audio_only": audio_only,
                 "rendition_height": 1080,
                 "sha256": digest(path),
+                **(
+                    {
+                        "media_format": af.RANGE_FORMAT,
+                        "start_offset": 0.0,
+                        "covered_duration": (end or 300) - start,
+                    }
+                    if not audio_only and quality != "preview"
+                    else {}
+                ),
             }
 
     transcript = Transcript.model_validate(
@@ -119,7 +128,15 @@ def test_invalid_audio_topic_shortlist_stops_before_video_fetch(audio_job, ids):
 
 @pytest.mark.parametrize(
     "field",
-    ["source_url", "source_start", "source_end", "audio_only", "sha256", "missing"],
+    [
+        "source_url",
+        "source_start",
+        "source_end",
+        "audio_only",
+        "sha256",
+        "media_format",
+        "missing",
+    ],
 )
 def test_cached_media_requires_matching_source_and_interval(audio_job, field):
     vod, root, _, events, _ = audio_job
@@ -133,6 +150,42 @@ def test_cached_media_requires_matching_source_and_interval(audio_job, field):
         value[field] = "wrong"
         write_json(receipt, value)
     with pytest.raises(PipelineError):
+        af.retrieved(vod, path, 20, 80)
+    assert len(events) == 1
+
+
+def test_cached_transcoded_range_without_format_is_rejected(audio_job):
+    vod, root, _, events, _ = audio_job
+    path = root / "range.mp4"
+    af.retrieved(vod, path, 20, 80)
+    receipt_path = path.with_suffix(".mp4.receipt.json")
+    receipt = json.loads(receipt_path.read_text())
+    del receipt["media_format"]
+    write_json(receipt_path, receipt)
+    with pytest.raises(PipelineError, match="cache source or interval mismatch"):
+        af.retrieved(vod, path, 20, 80)
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    [
+        ("start_offset", None),
+        ("start_offset", -1),
+        ("start_offset", float("nan")),
+        ("covered_duration", None),
+        ("covered_duration", 59),
+    ],
+)
+def test_cached_remux_requires_valid_coverage(audio_job, field, invalid):
+    vod, root, _, events, _ = audio_job
+    path = root / "range.mp4"
+    af.retrieved(vod, path, 20, 80)
+    receipt_path = path.with_suffix(".mp4.receipt.json")
+    receipt = json.loads(receipt_path.read_text())
+    receipt[field] = invalid
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(PipelineError, match="cache coverage"):
         af.retrieved(vod, path, 20, 80)
     assert len(events) == 1
 
@@ -224,6 +277,90 @@ def test_changed_preview_blocks_all_high_quality_fetch(audio_job):
     with pytest.raises(PipelineError, match="preview changed"):
         af.render(vod, root, settings, review)
     assert "1080p" not in [e[0] for e in events]
+
+
+@pytest.mark.parametrize("silence_cut", [False, True])
+def test_render_aligns_segment_clip_word_clock_and_keep(
+    audio_job, monkeypatch, silence_cut
+):
+    from clipforge import captions
+    from clipforge.models import SelectedClip
+
+    vod, root, settings, _, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    settings.silence_cut = silence_cut
+    clip = SelectedClip(
+        start=12.5,
+        end=20,
+        candidate_id="topic-001",
+        title="synthetic",
+        reason="r",
+        confidence=1,
+    )
+    transcript = Transcript.model_validate(
+        {
+            "language": "ja",
+            "segments": [
+                {
+                    "start": 12.5,
+                    "end": 20,
+                    "text": "合成の字幕",
+                    "words": [{"start": 12.5, "end": 20, "text": "合成の字幕"}],
+                }
+            ],
+        }
+    )
+    monkeypatch.setattr(af, "reviewed_clips", lambda *a: [clip])
+    retrieve = vod.retrieve
+
+    def remux(*args, **kwargs):
+        receipt = retrieve(*args, **kwargs)
+        receipt.update(start_offset=2.5, covered_duration=10.0)
+        return receipt
+
+    monkeypatch.setattr(vod, "retrieve", remux)
+    observed = []
+
+    def render(source, output, index, local, shifted, settings, key):
+        assert local.start == 2.5 and local.end == 10.0
+        segment = shifted.segments[0]
+        assert (segment.start, segment.end) == (2.5, 10.0)
+        assert (segment.words[0].start, segment.words[0].end) == (2.5, 10.0)
+        keep = pipeline.cut_regions(source, shifted, local, settings)
+        assert keep == ([(2.5, 10.0)] if silence_cut else None)
+        tokens, _ = captions.collect_tokens(shifted, local, keep)
+        assert tokens[0][0] == 0.0
+        assert tokens[-1][1] == 7.5
+        observed.append(source)
+        return {"directory": "clips/clip-001"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    analysis = json.loads((root / "topics.json").read_text())
+    af.render(
+        vod, root, settings, review, analysis_result=(analysis, transcript), only=1
+    )
+    assert len(observed) == 1
+    assert observed[0].stem == af.fingerprint(
+        {"start": clip.start, "end": clip.end, "media_format": af.RANGE_FORMAT}
+    )
+
+
+def test_render_still_rejects_below_720p(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    retrieve = vod.retrieve
+
+    def low_resolution(*args, **kwargs):
+        receipt = retrieve(*args, **kwargs)
+        receipt["rendition_height"] = 480
+        return receipt
+
+    monkeypatch.setattr(vod, "retrieve", low_resolution)
+    monkeypatch.setattr(
+        pipeline, "render_clip", lambda *a: pytest.fail("low resolution was rendered")
+    )
+    with pytest.raises(PipelineError, match="below 720p"):
+        af.render(vod, root, settings, review, only=1)
 
 
 def test_word_clock_and_text_shift_without_inventing_boundary_text():

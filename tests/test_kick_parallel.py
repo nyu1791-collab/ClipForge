@@ -105,8 +105,12 @@ def make_vod(tmp_path, monkeypatch):
                     Path(command[command.index("-i") + 1]).read_bytes()
                 )
                 Path(command[-1]).write_bytes(b"synthetic rendered media")
-                state.duration = float(command[command.index("-t") + 1])
+                state.duration = len(state.rendered[-1]) / 2
                 return SimpleNamespace(stdout=b"")
+            if "-select_streams" in command:
+                return SimpleNamespace(
+                    stdout=json.dumps({"streams": [{"start_time": 100}]})
+                )
             return SimpleNamespace(
                 stdout=json.dumps({"format": {"duration": state.duration}})
             )
