@@ -11,7 +11,7 @@ import tempfile
 from clipforge.audio_first import acquire
 from clipforge.kick_media import KickVOD, canonical
 from clipforge.models import Settings
-from clipforge.storage import digest, write_json
+from clipforge.storage import PipelineError, digest, write_json
 from submit_job import parse_settings_json
 
 
@@ -77,5 +77,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print("Audio acquisition failed: " + type(error).__name__, file=sys.stderr)
+        detail = type(error).__name__
+        if isinstance(error, PipelineError):
+            detail += ": " + str(error)
+        print("Audio acquisition failed: " + detail, file=sys.stderr)
         raise SystemExit(1) from None
