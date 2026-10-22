@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import shutil
 
+from .hardware import cpu_threads, video_options
 from .storage import PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
@@ -105,6 +106,10 @@ def preview(source, destination, candidate, settings):
             "-n",
             "-ss",
             f"{candidate.start:.6f}",
+            "-threads",
+            str(cpu_threads(settings)),
+            "-filter_threads",
+            str(cpu_threads(settings)),
             *PROTOCOLS,
             *FORMATS,
             "-i",
@@ -120,16 +125,7 @@ def preview(source, destination, candidate, settings):
             "pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1",
             "-r",
             "5",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "28",
-            "-pix_fmt",
-            "yuv420p",
-            "-threads",
-            str(settings.threads),
+            *video_options(settings, 28),
             "-c:a",
             "aac",
             "-ac",
@@ -174,6 +170,10 @@ def render(source, destination, clip, settings, ass=None):
         "-n",
         "-ss",
         f"{clip.start:.6f}",
+        "-threads",
+        str(cpu_threads(settings)),
+        "-filter_threads",
+        str(cpu_threads(settings)),
         *PROTOCOLS,
         *FORMATS,
         "-i",
@@ -188,16 +188,7 @@ def render(source, destination, clip, settings, ass=None):
         ",".join(filters),
         "-r",
         "30",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "20",
-        "-pix_fmt",
-        "yuv420p",
-        "-threads",
-        str(settings.threads),
+        *video_options(settings, 20),
     ]
     if probe(source)["audio"]:
         command += [

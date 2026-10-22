@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Values are shell-quoted by the repository's standard-library-only cache helper.
+clipforge_cache_script=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/colab_cache.py
+clipforge_cache_exports=$(python3 "$clipforge_cache_script" env) || return 1
+eval "$clipforge_cache_exports"
+export PIP_DISABLE_PIP_VERSION_CHECK=1
+if [[ ${CLIPFORGE_OFFLINE:-0} == 1 ]]; then
+  export HF_HUB_OFFLINE=1
+fi
+unset clipforge_cache_script clipforge_cache_exports

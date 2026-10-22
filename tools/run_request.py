@@ -103,6 +103,9 @@ def main():
     from clipforge.storage import digest, fingerprint, write_json
 
     settings = Settings.model_validate(request["settings"])
+    if os.environ.get("CLIPFORGE_REQUIRE_CUDA") == "1":
+        settings.whisper_device = "cuda"
+        settings.whisper_compute_type = "float16"
     if (
         type(request["video_bytes"]) is not int
         or not 0 < request["video_bytes"] <= settings.max_input_bytes

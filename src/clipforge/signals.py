@@ -1,4 +1,4 @@
-"""CPU transcription and optional chat signals share original-video seconds."""
+"""Transcription and optional chat signals share original-video seconds."""
 
 import bisect
 import math
@@ -7,8 +7,10 @@ import re
 import tempfile
 
 from . import media
+from .hardware import asr_options
 from .models import Candidate, Segment, Transcript, Word
 from .storage import PipelineError
+from .whisper_cache import model_path
 
 
 def transcribe(source, info, settings):
@@ -16,14 +18,17 @@ def transcribe(source, info, settings):
         return Transcript(language="und", segments=[]).model_dump()
     from faster_whisper import WhisperModel
 
+    options = asr_options(settings)
+    print(
+        f"ASR: {options['device']}/{options['compute_type']}, "
+        f"CPU threads={options['cpu_threads']}", flush=True,
+    )
     with tempfile.TemporaryDirectory(prefix="clipforge-asr-") as temporary:
         path = Path(temporary) / "audio.wav"
         media.audio(source, path, info["duration"])
         model = WhisperModel(
-            settings.whisper_model,
-            device="cpu",
-            compute_type="int8",
-            cpu_threads=settings.threads,
+            model_path(settings.whisper_model, settings.whisper_revision),
+            **options,
             num_workers=1,
             revision=settings.whisper_revision,
         )

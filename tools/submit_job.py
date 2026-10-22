@@ -49,6 +49,7 @@ def main():
     parser.add_argument("--input", type=Path)
     parser.add_argument("--gemini-model")
     parser.add_argument("--ref", default="main")
+    parser.add_argument("--worker", choices=["colab-auto", "colab-gpu", "cpu"], default="colab-auto")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
     parser.add_argument("--clips", type=int)
@@ -90,6 +91,15 @@ def main():
     workflow = json.loads(gh("api", f"repos/{REPO}/actions/workflows/{WORKFLOW}"))
     if workflow.get("state") != "active":
         raise RuntimeError("private ClipForge workflow is not active")
+    if args.worker == "colab-gpu":
+        runners = json.loads(gh("api", f"repos/{REPO}/actions/runners", "--paginate", "--slurp"))
+        if not any(
+            runner.get("status") == "online"
+            and not runner.get("busy")
+            and "colab-gpu" in {label["name"] for label in runner.get("labels", [])}
+            for page in runners for runner in page.get("runners", [])
+        ):
+            raise RuntimeError("no idle Colab GPU runner; start the notebook before submitting")
     runs = json.loads(
         gh(
             "run",
@@ -109,6 +119,8 @@ def main():
             "another video job is active; wait before submitting a new input"
         )
     names = json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
+    if args.worker == "colab-auto" and not any(secret["name"] == "COLAB_ADC_JSON" for secret in names):
+        raise RuntimeError("COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup")
     if not any(secret["name"] == "GEMINI_API_KEY" for secret in names):
         raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True)
@@ -145,6 +157,7 @@ def main():
         "source_ref": sha,
         "input_tag": tag,
         "status": "STAGING",
+        "worker": args.worker,
     }
     receipt_path = state / "receipt.json"
     save(receipt_path, receipt)
@@ -185,10 +198,13 @@ def main():
         )
     receipt["status"] = "STAGED"
     save(receipt_path, receipt)
+    dispatch_inputs = {
+        "request_id": identity, "input_tag": tag, "source_ref": sha, "worker": args.worker,
+    }
     payload = json.dumps(
         {
             "ref": "main",
-            "inputs": {"request_id": identity, "input_tag": tag, "source_ref": sha},
+            "inputs": dispatch_inputs,
         }
     )
     gh(

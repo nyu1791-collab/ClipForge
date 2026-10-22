@@ -67,7 +67,7 @@ clipforge-submit --input /path/to/source.mp4 \
 モデルを指定した動画ジョブで、候補動画のGoogleへの送信とそのモデルのAPI利用を行います。
 別のモデルには切り替えません。キーが登録済みでも無料tierや十分な割当を保証しません。
 GitHubの非公開Actionsの実行時間・Artifacts・Cacheにも契約の無料枠が適用されます。
-1ジョブの実行上限は90分、CPUのみ。サーバー増設や有料プラン購入は行いません。
+1ジョブの実行上限は90分。CPUのほか、接続済みのColab GPUを明示選択できます。詳細は [Colab起動手順](COLAB.md)。サーバー増設や有料プラン購入は行いません。
 
 ## 非公開データの経路と保管
 
@@ -138,5 +138,9 @@ clipforge-submit --cleanup-tag clipforge-input-REQUEST_ID
 ## 今回の確認範囲
 
 依存解決、ソースの構文・静的検査、wheel作成とGitHub/VMへの配置を確認します。
-ユーザーからテスト実行の依頼がないため、テストの追加・実行はしません。
+2026-10-22にユーザーから確認・検証の明示依頼を受け、Colabのライフサイクル、キャッシュ、転送、モデル選択のテストと合成動画のCPU切り抜きを追加・実行します。実GPUの確認はOAuth認証後のmaintenance workflowで別に行います。
 動画未提供のため、モデル呼び出し・文字起こし・実動画レンダリングも未実施です。
+
+## Colabの自動起動
+
+動画ジョブの既定は `colab-auto`。Google公式SDKでT4を作成し、処理後に解放します。初回のGoogle OAuthと `COLAB_ADC_JSON` の登録は [Colab設定手順](COLAB.md) を参照してください。ブラウザのログインだけでは登録されません。明示CPUは `--worker cpu`、既存ランナーは `--worker colab-gpu` です。
