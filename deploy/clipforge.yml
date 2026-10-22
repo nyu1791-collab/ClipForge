@@ -21,6 +21,11 @@ on:
         type: choice
         options: [colab-auto, colab-gpu, cpu]
         default: colab-auto
+      shape:
+        description: Colab runtime shape for colab-auto (high-ram has 8 CPU cores and 51 GB)
+        type: choice
+        options: [high-ram, standard]
+        default: high-ram
 
 permissions:
   contents: write
@@ -230,6 +235,7 @@ jobs:
         id: allocate
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+          CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
       - name: Run the pipeline on Colab and retrieve verified private outputs
