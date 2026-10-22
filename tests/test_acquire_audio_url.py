@@ -209,9 +209,9 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     )
     assert all("AUDIO_URL" not in step.get("env", {}) for step in steps[allocate:])
     assert "AUDIO_URL" not in job["env"]
-    cleanup = steps[-1]
+    cleanup = next(step for step in steps if step.get("id") == "input-cleanup")
     assert cleanup["if"] == "always()"
-    assert 'cleanup --tag "$INPUT_TAG"' in cleanup["run"]
+    assert 'gh release delete "$INPUT_TAG"' in cleanup["run"]
     assert all("tools/audio_url_job.py" not in step.get("run", "") for step in steps)
     assert all("apt-get" not in step.get("run", "") for step in steps)
     assert all("ffmpeg" not in json.dumps(step).lower() for step in steps)
