@@ -57,6 +57,10 @@ jobs:
         run: python3 tools/verify_colab_storage.py
       - name: Verify real CPU clipping with synthetic media and no model calls
         run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
           ffmpeg -nostdin -v error -f lavfi -i testsrc2=size=320x180:rate=15 \
             -f lavfi -i sine=frequency=440:sample_rate=16000 -t 3 \
             -c:v libx264 -preset ultrafast -c:a aac "$RUNNER_TEMP/synthetic.mp4"
