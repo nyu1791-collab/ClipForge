@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 
+from .hardware import cpu_threads, video_options
 from .storage import PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
@@ -21,6 +22,25 @@ VIDEO_CRF = (
     18  # x264 quality: lower is sharper and larger; 18 is near visually lossless
 )
 PROGRESS_RGB = (255, 196, 0)
+
+
+def final_video_options(settings):
+    """Delivery encode: NVENC on a usable GPU, else x264 at the configured preset and CRF 18."""
+    options = video_options(settings, VIDEO_CRF)
+    if "h264_nvenc" in options:
+        return options
+    return [
+        "-c:v",
+        "libx264",
+        "-preset",
+        settings.encode_preset,
+        "-crf",
+        str(VIDEO_CRF),
+        "-pix_fmt",
+        "yuv420p",
+        "-threads",
+        str(cpu_threads(settings)),
+    ]
 
 
 def require_tools(captions=True):
@@ -144,6 +164,10 @@ def preview(source, destination, candidate, settings):
             "-n",
             "-ss",
             f"{candidate.start:.6f}",
+            "-threads",
+            str(cpu_threads(settings)),
+            "-filter_threads",
+            str(cpu_threads(settings)),
             *PROTOCOLS,
             *FORMATS,
             "-i",
@@ -159,16 +183,7 @@ def preview(source, destination, candidate, settings):
             "pad=640:360:(ow-iw)/2:(oh-ih)/2,setsar=1",
             "-r",
             "5",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "28",
-            "-pix_fmt",
-            "yuv420p",
-            "-threads",
-            str(settings.threads),
+            *video_options(settings, 28),
             "-c:a",
             "aac",
             "-ac",
@@ -549,6 +564,10 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
         "-n",
         "-ss",
         f"{clip.start:.6f}",
+        "-threads",
+        str(cpu_threads(settings)),
+        "-filter_threads",
+        str(cpu_threads(settings)),
         *PROTOCOLS,
         *FORMATS,
         "-i",
@@ -575,16 +594,7 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
     command += [
         "-r",
         str(output_rate(source_info.get("frame_rate"))),
-        "-c:v",
-        "libx264",
-        "-preset",
-        settings.encode_preset,
-        "-crf",
-        str(VIDEO_CRF),
-        "-pix_fmt",
-        "yuv420p",
-        "-threads",
-        str(settings.threads),
+        *final_video_options(settings),
         "-movflags",
         "+faststart",
         str(Path(destination).resolve()),

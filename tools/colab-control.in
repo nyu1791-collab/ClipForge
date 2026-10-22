@@ -1,0 +1,2 @@
+# Control plane only. Never install ASR/CUDA packages on the hosted controller.
+google-colab-cli==0.7.5

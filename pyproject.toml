@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clipforge"
 version = "0.2.1"
-description = "CPU video clipping with timestamped transcription, visual Gemini selection and ASS captions"
+description = "CPU/CUDA video clipping with timestamped transcription, visual Gemini selection and ASS captions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -26,6 +26,10 @@ dependencies = [
 chat = ["chat-downloader==0.2.8"]
 media-fetch = [
     "curl-cffi==0.13.0",
+]
+cuda = [
+  "nvidia-cublas-cu12>=12.4,<13; sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [project.scripts]

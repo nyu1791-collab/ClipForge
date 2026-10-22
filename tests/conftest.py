@@ -67,3 +67,11 @@ def japanese_font():
         except PipelineError:
             continue
     pytest.skip("no Japanese caption font is installed")
+
+
+@pytest.fixture(autouse=True)
+def _no_gpu_encoder(monkeypatch):
+    # The hardware probe runs FFmpeg; tests fake FFmpeg, so a fake success must not pick NVENC.
+    from clipforge import hardware
+
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: False)

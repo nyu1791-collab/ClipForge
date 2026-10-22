@@ -154,6 +154,7 @@ def test_one_model_is_loaded_per_configuration(monkeypatch, settings):
             loads.append((name, kwargs["cpu_threads"]))
 
     monkeypatch.setattr(faster_whisper, "WhisperModel", CountingModel)
+    monkeypatch.setattr(signals, "model_path", lambda model, revision=None: model)
     settings.threads = 2
     first = signals._shared_model(settings)
     assert signals._shared_model(settings) is first
@@ -186,6 +187,7 @@ def test_a_saved_transcript_is_reused_only_when_its_identity_matches(
         return {"language": "ja", "segments": []}
 
     monkeypatch.setattr(signals, "transcribe", recognise)
+    settings.threads = 2
     settings.transcript_cache = str(tmp_path / "cache")
     fresh = {}
     first = pipeline.transcribe_once(source, info, settings, fresh)
@@ -296,3 +298,27 @@ def test_a_journal_is_removed_after_a_complete_recognition(
     monkeypatch.setattr(signals, "transcribe", recognise)
     pipeline.transcribe_once(source, info, settings)
     assert not seen["journal"].exists()
+
+
+def test_transcript_identity_names_gpu_decoding_without_needing_a_gpu(
+    monkeypatch, settings
+):
+    from clipforge import pipeline
+
+    def no_probe(settings):
+        raise AssertionError("explicit devices must not probe hardware")
+
+    monkeypatch.setattr(pipeline, "asr_options", no_probe)
+    settings.whisper_device, settings.whisper_compute_type = "cuda", "float16"
+    gpu = pipeline.asr_identity(settings)
+    assert gpu == {"whisper_device": "cuda", "whisper_compute_type": "float16"}
+    settings.whisper_device, settings.whisper_compute_type = "cpu", "int8"
+    settings.threads = 2
+    assert pipeline.asr_identity(settings) == {"threads": 2}
+    monkeypatch.setattr(
+        pipeline,
+        "asr_options",
+        lambda s: {"device": "cpu", "compute_type": "int8", "cpu_threads": 2},
+    )
+    settings.whisper_device = settings.whisper_compute_type = "auto"
+    assert pipeline.asr_identity(settings) == {"threads": 2}

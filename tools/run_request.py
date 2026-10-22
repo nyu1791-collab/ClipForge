@@ -113,6 +113,9 @@ def main():
             or request.get("chat_sha256")
         ):
             raise RuntimeError("audio analysis cannot include external lookups or chat")
+    if os.environ.get("CLIPFORGE_REQUIRE_CUDA") == "1":
+        settings.whisper_device = "cuda"
+        settings.whisper_compute_type = "float16"
     if (
         type(request["video_bytes"]) is not int
         or not 0 < request["video_bytes"] <= settings.max_input_bytes

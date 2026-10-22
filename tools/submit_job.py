@@ -27,6 +27,9 @@ SETTINGS_FIELDS = {
     "asr_batch_size",
     "language",
     "threads",
+    "whisper_device",
+    "whisper_compute_type",
+    "video_encoder",
     "aspect",
     "framing",
     "height",
@@ -403,6 +406,8 @@ def send_dispatch(state, receipt):
                 "request_id": receipt["request_id"],
                 "input_tag": receipt["input_tag"],
                 "source_ref": receipt["source_ref"],
+                # Receipts written before worker selection ran on the hosted CPU runner.
+                "worker": receipt.get("worker", "cpu"),
             },
         }
     )
@@ -608,6 +613,9 @@ def main():
         "--audio-analysis-url", help="allocate topics from local audio; no Gemini calls"
     )
     parser.add_argument("--ref", default="main")
+    parser.add_argument(
+        "--worker", choices=["colab-auto", "colab-gpu", "cpu"], default="colab-auto"
+    )
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
     parser.add_argument("--clips", type=int)
@@ -701,6 +709,20 @@ def dispatch(args, state_root):
     workflow = json.loads(gh("api", f"repos/{REPO}/actions/workflows/{WORKFLOW}"))
     if workflow.get("state") != "active":
         raise RuntimeError("private ClipForge workflow is not active")
+    if args.worker == "colab-gpu":
+        runners = json.loads(
+            gh("api", f"repos/{REPO}/actions/runners", "--paginate", "--slurp")
+        )
+        if not any(
+            runner.get("status") == "online"
+            and not runner.get("busy")
+            and "colab-gpu" in {label["name"] for label in runner.get("labels", [])}
+            for page in runners
+            for runner in page.get("runners", [])
+        ):
+            raise RuntimeError(
+                "no idle Colab GPU runner; start the notebook before submitting"
+            )
     runs = json.loads(
         gh(
             "run",
@@ -717,10 +739,23 @@ def dispatch(args, state_root):
         raise RuntimeError(
             "another video job is active; wait before submitting a new input"
         )
-    if not args.audio_analysis_url:
-        names = json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
-        if not any(secret["name"] == "GEMINI_API_KEY" for secret in names):
-            raise RuntimeError("private worker GEMINI_API_KEY is not registered")
+    # Audio analysis on the hosted CPU runner needs neither the Colab nor the Gemini secret.
+    needs_secrets = args.worker == "colab-auto" or not args.audio_analysis_url
+    names = (
+        json.loads(gh("secret", "list", "--repo", REPO, "--json", "name"))
+        if needs_secrets
+        else []
+    )
+    if args.worker == "colab-auto" and not any(
+        secret["name"] == "COLAB_ADC_JSON" for secret in names
+    ):
+        raise RuntimeError(
+            "COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup"
+        )
+    if not args.audio_analysis_url and not any(
+        secret["name"] == "GEMINI_API_KEY" for secret in names
+    ):
+        raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True)
     settings = json.loads(args.config.read_text()) if args.config else {}
     if (
@@ -775,6 +810,7 @@ def dispatch(args, state_root):
         "source_ref": sha,
         "input_tag": tag,
         "status": "STAGING",
+        "worker": args.worker,
     }
     receipt_path = state / "receipt.json"
     save(receipt_path, receipt)

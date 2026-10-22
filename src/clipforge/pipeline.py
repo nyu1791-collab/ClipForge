@@ -26,6 +26,7 @@ from . import (
 )
 from . import topics as topic_tools
 from .captions import create as create_captions
+from .hardware import asr_options, cpu_threads
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import PipelineError, digest, fingerprint, stage, within, write_json
 
@@ -448,6 +449,23 @@ def timed(timings, name, function, *args):
 TRANSCRIPT_CODE = ("signals.py", "media.py")
 
 
+def asr_identity(settings):
+    """Recognition hardware that shapes the transcript, without needing that hardware.
+
+    GPU float16 and CPU int8 decode differently, so each keeps its own transcript. An explicit
+    device is taken as stated, so a CPU-only later stage can name a GPU transcript; only "auto"
+    is resolved on the current machine. CPU results also depend on the thread count.
+    """
+    device, compute = settings.whisper_device, settings.whisper_compute_type
+    if "auto" in (device, compute):
+        resolved = asr_options(settings)
+        device = resolved["device"] if device == "auto" else device
+        compute = resolved["compute_type"] if compute == "auto" else compute
+    if device == "cpu" and compute == "int8":
+        return {"threads": cpu_threads(settings)}
+    return {"whisper_device": device, "whisper_compute_type": compute}
+
+
 def transcript_identity(source, info, settings):
     code = {name: digest(Path(__file__).parent / name) for name in TRANSCRIPT_CODE}
     return fingerprint(
@@ -460,7 +478,7 @@ def transcript_identity(source, info, settings):
             "whisper_model": settings.whisper_model,
             "whisper_revision": settings.whisper_revision,
             "language": settings.language,
-            "threads": settings.threads,
+            **asr_identity(settings),
             "asr_batch_size": settings.asr_batch_size,
         }
     )
@@ -552,7 +570,7 @@ def run(
                 "a matching valid transcript cache is required; ASR was not started"
             )
         current_stage = "transcription"
-        print("Transcribing on CPU…", flush=True)
+        print("Transcribing (device chosen from settings and hardware)…", flush=True)
         print("Detecting scene boundaries…", flush=True)
         # Scene detection does not depend on speech, so the two run side by side.
         with ThreadPoolExecutor(max_workers=1) as side:
@@ -787,7 +805,7 @@ def run_batch(inputs, output_root, settings, concurrency, resume=False):
 def default_concurrency(settings):
     """Videos processed at once: enough cores for each video's threads and render workers."""
     cores = os.cpu_count() or 1
-    return max(1, cores // max(1, settings.threads * settings.workers))
+    return max(1, cores // max(1, cpu_threads(settings) * settings.workers))
 
 
 def _folder_name(path):

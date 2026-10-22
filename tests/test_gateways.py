@@ -42,7 +42,7 @@ def submitter(tmp_path, monkeypatch):
         if args[:2] == ("repo", "view"):
             return json.dumps({"isPrivate": control["private"]})
         if args[:2] == ("secret", "list"):
-            return json.dumps([{"name": "GEMINI_API_KEY"}])
+            return json.dumps([{"name": "GEMINI_API_KEY"}, {"name": "COLAB_ADC_JSON"}])
         if args[0] == "api" and "/commits/" in args[1]:
             return json.dumps({"sha": "a" * 40})
         if args[0] == "api" and "actions/workflows/" in args[1]:
@@ -231,7 +231,9 @@ def test_audio_analysis_dispatch_has_no_model_or_secret_requirement(
 
     monkeypatch.setattr(module, "gh", gh)
     url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
-    invoke("--audio-analysis-url", url, "--ref", "ccr-12fe9485-ugaszt")
+    invoke(
+        "--audio-analysis-url", url, "--ref", "ccr-12fe9485-ugaszt", "--worker", "cpu"
+    )
     assert control["request"]["audio_source_url"] == url
     assert control["request"]["settings"]["gemini_model"] == "manual-no-api"
     assert len(control["posts"]) == 1

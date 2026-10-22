@@ -16,6 +16,11 @@ on:
         description: Exact reviewed ClipForge commit SHA
         type: string
         required: true
+      worker:
+        description: Automatic Colab T4, already-connected Colab runner, or explicit CPU
+        type: choice
+        options: [colab-auto, colab-gpu, cpu]
+        default: colab-auto
 
 permissions:
   contents: write
@@ -26,8 +31,8 @@ concurrency:
 
 jobs:
   clip:
-    if: github.repository == 'nyu1791-collab/ai-model-workers'
-    runs-on: ubuntu-24.04
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker != 'colab-auto'
+    runs-on: ${{ inputs.worker == 'colab-gpu' && fromJSON('["self-hosted","linux","x64","colab-gpu"]') || 'ubuntu-24.04' }}
     timeout-minutes: 90
     env:
       CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
@@ -36,6 +41,7 @@ jobs:
       PYTHONUNBUFFERED: '1'
       HF_HUB_DISABLE_PROGRESS_BARS: '1'
       HF_HUB_DISABLE_TELEMETRY: '1'
+      CLIPFORGE_REQUIRE_CUDA: ${{ inputs.worker == 'colab-gpu' && '1' || '0' }}
     steps:
       - name: Validate request identifiers
         shell: bash
@@ -53,19 +59,53 @@ jobs:
           path: clipforge-source
           persist-credentials: false
       - uses: actions/setup-python@v5
+        if: inputs.worker != 'colab-gpu'
         with:
           python-version: '3.11'
       - uses: astral-sh/setup-uv@v6
+        if: inputs.worker != 'colab-gpu'
         with:
           version: '0.12.23'
           enable-cache: false
-      - name: Install CPU media tools and Japanese fonts
+      - name: Install media tools and Japanese fonts
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2
+          if [ "$CLIPFORGE_REQUIRE_CUDA" = 1 ] && [ -f clipforge-source/tools/colab_cache_env.sh ]; then
+            cd clipforge-source
+            source tools/colab_cache_env.sh
+            python3 tools/colab_cache.py restore
+            python3 tools/colab_cache.py github-env
+            bash tools/colab_os_deps.sh
+          else
+            if [ "$(id -u)" = 0 ]; then APT=(apt-get); else APT=(sudo apt-get); fi
+            "${APT[@]}" update -qq
+            "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk gh libcairo2
+          fi
       - name: Install locked Python dependencies without API credentials
         working-directory: clipforge-source
-        run: uv sync --locked --extra chat --no-dev
+        shell: bash
+        run: |
+          if [ "$CLIPFORGE_REQUIRE_CUDA" = 1 ]; then
+            if ! uv sync --offline --locked --python 3.11 --extra chat --extra cuda --no-dev; then
+              if [ "${CLIPFORGE_OFFLINE:-0}" = 1 ]; then
+                echo 'Dependency cache incomplete; offline mode forbids downloading.' >&2
+                exit 1
+              fi
+              uv sync --locked --python 3.11 --extra chat --extra cuda --no-dev
+            fi
+            source tools/colab_cuda_env.sh
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+            nvidia-smi
+            .venv/bin/python - <<'PY'
+          import ctypes
+          import ctranslate2
+          ctypes.CDLL('libcublas.so.12')
+          ctypes.CDLL('libcudnn.so.9')
+          assert ctranslate2.get_cuda_device_count() > 0, 'GPU worker requires CUDA'
+          assert 'float16' in ctranslate2.get_supported_compute_types('cuda')
+          PY
+          else
+            uv sync --locked --extra chat --no-dev
+          fi
       - name: Download and validate temporary private input
         id: prepare
         env:
@@ -93,6 +133,13 @@ jobs:
           clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py run \
             --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input" \
             --output "$RUNNER_TEMP/clipforge-out"
+      - name: Persist public GPU dependencies for the next Colab session
+        if: always() && inputs.worker == 'colab-gpu'
+        continue-on-error: true
+        run: |
+          if [ -f clipforge-source/tools/colab_cache.py ]; then
+            python3 clipforge-source/tools/colab_cache.py save
+          fi
       - name: Keep partial transcript privately after failure, timeout or cancellation
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
@@ -133,4 +180,82 @@ jobs:
           else
             echo 'Input cleanup could not run; inspect the private release before resubmitting.'
             exit 1
+          fi
+
+  colab-auto:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'colab-auto'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    env:
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      INPUT_TAG: ${{ inputs.input_tag }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Validate request and one-time Colab OAuth setup
+        env:
+          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
+          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
+          assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
+          if not os.environ.get('COLAB_ADC_JSON'):
+              raise SystemExit('COLAB_ADC_JSON is missing. Authorize n.yu17919191@gmail.com once; no GPU was allocated.')
+          PY
+      - uses: actions/checkout@v4
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          path: clipforge-source
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+          enable-cache: true
+          cache-dependency-glob: clipforge-source/tools/colab-control-requirements.txt
+      - name: Install the locked Google Colab control SDK without ASR or CUDA packages
+        id: control
+        run: |
+          uv venv "$RUNNER_TEMP/colab-control" --python 3.12
+          uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
+            -r clipforge-source/tools/colab-control-requirements.txt
+      - name: Allocate a dedicated T4 for the verified Google account
+        id: allocate
+        env:
+          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
+      - name: Run the pipeline on Colab and retrieve verified private outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
+      - name: Release and verify removal of the dedicated Colab runtime
+        if: always() && steps.control.outcome == 'success'
+        run: |
+          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clipforge-result-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-out/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Delete temporary private input and result transfer chunks
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f clipforge-source/tools/run_request.py ]; then
+            python3 clipforge-source/tools/run_request.py cleanup --tag "$INPUT_TAG"
+          else
+            echo 'Input cleanup could not run; inspect the private input release before resubmitting.'
           fi

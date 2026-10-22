@@ -1,4 +1,4 @@
-"""CPU transcription and optional chat signals share original-video seconds."""
+"""Transcription and optional chat signals share original-video seconds."""
 
 import bisect
 import json
@@ -11,8 +11,10 @@ import time
 import wave
 
 from . import media
+from .hardware import asr_options
 from .models import Candidate, Segment, Transcript, Word
 from .storage import PipelineError
+from .whisper_cache import model_path
 
 
 def read_samples(path):
@@ -52,16 +54,20 @@ def _shared_model(settings):
     from faster_whisper import WhisperModel
 
     revision = model_revision(settings)
-    key = (settings.whisper_model, revision, settings.threads)
+    # CUDA/float16 when a GPU is usable (or required), else CPU/int8 on every available core.
+    options = asr_options(settings)
+    key = (settings.whisper_model, revision, tuple(sorted(options.items())))
     with _MODELS_LOCK:
         if key not in _MODELS:
+            print(
+                f"ASR: {options['device']}/{options['compute_type']}, "
+                f"CPU threads={options['cpu_threads']}",
+                flush=True,
+            )
             _MODELS[key] = WhisperModel(
-                settings.whisper_model,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=settings.threads,
+                model_path(settings.whisper_model, revision),
+                **options,
                 num_workers=1,
-                revision=revision,
             )
         return _MODELS[key]
 
