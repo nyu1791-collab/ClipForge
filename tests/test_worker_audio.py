@@ -322,7 +322,7 @@ def test_contact_sheet_is_labelled_samples_not_full_video_attestation(
     monkeypatch.setattr(worker.media, "probe", lambda *a: {"duration": 30})
     calls = []
 
-    def process(command):
+    def process(command, **kwargs):
         calls.append(command)
         Image.new("RGB", (320, 180), "blue").save(command[-1])
 

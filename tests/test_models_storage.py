@@ -168,6 +168,63 @@ def test_process_never_echoes_child_errors(monkeypatch):
     assert "private-content" not in str(caught.value)
 
 
+def test_process_failure_names_stage_and_exit_without_arguments(monkeypatch):
+    secret_url = "https://media.example/clip.mp4?token=SECRET"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, 3, b"", b"private-content"),
+    )
+    with pytest.raises(PipelineError) as caught:
+        process(
+            ["/usr/bin/ffmpeg", "-i", secret_url, "--token", "SECRET"],
+            stage="preview",
+        )
+    error = caught.value
+    assert str(error) == "ffmpeg failed at stage preview (exit 3)"
+    assert (error.stage, error.returncode, error.timed_out) == ("preview", 3, False)
+    for private in ("SECRET", "https", "media.example", "--token", "private-content"):
+        assert private not in str(error)
+
+
+def test_process_timeout_is_a_pipeline_error_without_the_command_line(monkeypatch):
+    def timed_out(command, **kwargs):
+        raise subprocess.TimeoutExpired(
+            ["ffprobe", "--token", "SECRET", "https://media.example/?k=SECRET"], 5
+        )
+
+    monkeypatch.setattr(subprocess, "run", timed_out)
+    with pytest.raises(PipelineError) as caught:
+        process(["ffprobe", "--token", "SECRET"], stage="probe")
+    error = caught.value
+    assert str(error) == "ffprobe timed out at stage probe"
+    assert (error.stage, error.returncode, error.timed_out) == ("probe", None, True)
+    # The original TimeoutExpired is not chained, since it repeats the full command line.
+    assert error.__context__ is None
+    assert "SECRET" not in str(error)
+
+
+def test_failure_fields_are_recorded_only_for_command_failures(tmp_path, monkeypatch):
+    from clipforge.pipeline import record_failure
+    from clipforge.storage import failure_fields
+
+    assert failure_fields(PipelineError("plain")) == {}
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **kw: subprocess.CompletedProcess(a, 1, b"", b""),
+    )
+    with pytest.raises(PipelineError) as caught:
+        process(["ffmpeg", "-i", "x"], stage="remux")
+    record_failure(tmp_path, caught.value, "render")
+    failure = json.loads((tmp_path / "failure.json").read_text())
+    assert failure["stage"] == "render"
+    assert failure["command_stage"] == "remux"
+    assert failure["returncode"] == 1
+    assert failure["timed_out"] is False
+    assert failure["message"] == "ffmpeg failed at stage remux (exit 1)"
+
+
 def test_a_pinned_transcript_key_requires_the_saved_transcript(settings):
     from pydantic import ValidationError
 

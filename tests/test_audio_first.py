@@ -467,7 +467,7 @@ def test_audio_metadata_requires_finite_duration(tmp_path, monkeypatch):
         "format": {"duration": "300"},
     }
     monkeypatch.setattr(
-        af, "process", lambda *a: SimpleNamespace(stdout=json.dumps(data))
+        af, "process", lambda *a, **kwargs: SimpleNamespace(stdout=json.dumps(data))
     )
     assert af.audio_info(tmp_path / "audio.m4a")["duration"] == 300
     data["format"]["duration"] = "nan"

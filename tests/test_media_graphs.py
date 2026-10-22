@@ -301,7 +301,9 @@ def test_preview_removes_stale_output_and_reports_decoding_errors(
     monkeypatch.setattr(
         media,
         "process",
-        lambda command, timeout: subprocess.CompletedProcess(command, 0, b"", b""),
+        lambda command, timeout, **kwargs: subprocess.CompletedProcess(
+            command, 0, b"", b""
+        ),
     )
     monkeypatch.setattr(media, "probe", lambda path: {"duration": 4.0})
     assert media.preview("/in.mp4", destination, candidate, make()) == {"duration": 4.0}
@@ -309,7 +311,7 @@ def test_preview_removes_stale_output_and_reports_decoding_errors(
     monkeypatch.setattr(
         media,
         "process",
-        lambda command, timeout: subprocess.CompletedProcess(
+        lambda command, timeout, **kwargs: subprocess.CompletedProcess(
             command, 0, b"", b"Invalid data"
         ),
     )
@@ -321,13 +323,15 @@ def test_audio_extraction_reports_decoding_errors(monkeypatch, tmp_path):
     monkeypatch.setattr(
         media,
         "process",
-        lambda command, timeout: subprocess.CompletedProcess(command, 0, b"", b""),
+        lambda command, timeout, **kwargs: subprocess.CompletedProcess(
+            command, 0, b"", b""
+        ),
     )
     media.audio("/in.mp4", tmp_path / "a.wav", 10.0)
     monkeypatch.setattr(
         media,
         "process",
-        lambda command, timeout: subprocess.CompletedProcess(
+        lambda command, timeout, **kwargs: subprocess.CompletedProcess(
             command, 0, b"", b"bad packet"
         ),
     )

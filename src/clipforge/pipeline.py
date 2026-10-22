@@ -32,6 +32,7 @@ from .storage import (
     TIME_TOLERANCE,
     PipelineError,
     digest,
+    failure_fields,
     fingerprint,
     stage,
     within,
@@ -138,6 +139,7 @@ def record_failure(output, error, current_stage):
     }
     if isinstance(error, PipelineError):
         failure["message"] = str(error)[:240]
+    failure.update(failure_fields(error))
     write_json(output / "failure.json", failure)
     write_json(output / "manifest.json", {**failure, "rendered": []})
 

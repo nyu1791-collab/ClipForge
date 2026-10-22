@@ -53,7 +53,8 @@ def audio_info(path):
                 "-of",
                 "json",
                 path,
-            ]
+            ],
+            stage="audio-info",
         ).stdout
     )
     stream = next((s for s in data["streams"] if s["codec_type"] == "audio"), None)

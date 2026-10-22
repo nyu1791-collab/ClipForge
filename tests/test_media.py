@@ -38,7 +38,7 @@ def test_probe_rejects_invalid_video(monkeypatch, data, tmp_path):
     monkeypatch.setattr(
         media,
         "process",
-        lambda command: subprocess.CompletedProcess(
+        lambda command, **kwargs: subprocess.CompletedProcess(
             command, 0, json.dumps(data).encode(), b""
         ),
     )
@@ -47,7 +47,7 @@ def test_probe_rejects_invalid_video(monkeypatch, data, tmp_path):
 
 
 def test_probe_whitelists_protocols_and_ignores_cover_art(monkeypatch, tmp_path):
-    def execute(command):
+    def execute(command, **kwargs):
         assert command[command.index("-protocol_whitelist") + 1] == "file,pipe"
         assert "hls" not in command[command.index("-format_whitelist") + 1]
         return subprocess.CompletedProcess(
@@ -95,7 +95,7 @@ def test_probe_reports_the_exact_frame_rate(monkeypatch, tmp_path):
     monkeypatch.setattr(
         media,
         "process",
-        lambda command: subprocess.CompletedProcess(
+        lambda command, **kwargs: subprocess.CompletedProcess(
             command, 0, json.dumps(output).encode(), b""
         ),
     )
@@ -145,7 +145,7 @@ def test_probe_normalizes_frame_rates(
     monkeypatch.setattr(
         media,
         "process",
-        lambda command: subprocess.CompletedProcess(
+        lambda command, **kwargs: subprocess.CompletedProcess(
             command, 0, json.dumps(data).encode(), b""
         ),
     )

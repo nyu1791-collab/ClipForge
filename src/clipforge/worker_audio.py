@@ -14,7 +14,14 @@ from . import audio_first, landscape, media, pipeline, review_draft
 from .github_cli import run as run_gh
 from .kick_media import KickVOD, canonical
 from .models import Settings, Transcript
-from .storage import PipelineError, digest, process, within, write_json
+from .storage import (
+    PipelineError,
+    digest,
+    failure_fields,
+    process,
+    within,
+    write_json,
+)
 
 REPO = "nyu1791-collab/ai-model-workers"
 PART_RUN = re.compile(r"([0-9]{1,20}):([a-f0-9]{32})")
@@ -158,7 +165,8 @@ def preview_contact_sheet(root, previews):
                         "-vf",
                         "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2",
                         target,
-                    ]
+                    ],
+                    stage="frames",
                 )
                 with Image.open(target) as frame:
                     panel.paste(frame.convert("RGB"), (320 * index, 28))
@@ -687,6 +695,7 @@ def main(argv=None):
             "stage": args.stage,
             "error_type": type(error).__name__,
             "message": message,
+            **failure_fields(error),
         }
         with contextlib.suppress(OSError):
             write_json(args.output / "stage-error.json", record)

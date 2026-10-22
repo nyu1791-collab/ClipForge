@@ -45,15 +45,46 @@ def write_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
-def process(command, timeout=180):
-    result = subprocess.run(
-        [str(c) for c in command], capture_output=True, timeout=timeout
-    )
+def command_error(command, stage=None, returncode=None, timed_out=False):
+    # Only the executable name, stage and exit state: arguments may hold paths, URLs or tokens.
+    where = "" if stage is None else " at stage " + stage
+    if timed_out:
+        text = "timed out" + where
+    elif returncode is None:
+        text = "failed" + where
+    else:
+        text = "failed" + where + " (exit " + str(returncode) + ")"
+    error = PipelineError(Path(str(command[0])).name + " " + text)
+    error.stage = stage
+    error.returncode = returncode
+    error.timed_out = timed_out
+    return error
+
+
+def failure_fields(error):
+    if not hasattr(error, "timed_out"):
+        return {}
+    return {
+        "command_stage": error.stage,
+        "returncode": error.returncode,
+        "timed_out": error.timed_out,
+    }
+
+
+def process(command, timeout=180, stage=None, cwd=None):
+    timed_out = False
+    try:
+        result = subprocess.run(
+            [str(c) for c in command], capture_output=True, timeout=timeout, cwd=cwd
+        )
+    except subprocess.TimeoutExpired:
+        # Handled outside the except block: TimeoutExpired carries the full command line.
+        timed_out = True
+    if timed_out:
+        raise command_error(command, stage, timed_out=True)
     if result.returncode:
         # FFmpeg and providers can echo paths, URLs and content. Do not echo bodies.
-        raise PipelineError(
-            Path(str(command[0])).name + " failed (exit " + str(result.returncode) + ")"
-        )
+        raise command_error(command, stage, returncode=result.returncode)
     return result
 
 

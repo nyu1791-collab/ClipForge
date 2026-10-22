@@ -63,9 +63,9 @@ def require_tools(captions=True):
         if not shutil.which(name):
             raise PipelineError(name + " is not installed")
     if captions:
-        output = process(["ffmpeg", "-hide_banner", "-filters"]).stdout.decode(
-            errors="replace"
-        )
+        output = process(
+            ["ffmpeg", "-hide_banner", "-filters"], stage="filters"
+        ).stdout.decode(errors="replace")
         if not any(" ass " in line for line in output.splitlines()):
             raise PipelineError("FFmpeg must include the libass ass filter")
 
@@ -83,7 +83,8 @@ def probe(path):
             "-of",
             "json",
             Path(path).resolve(),
-        ]
+        ],
+        stage="probe",
     )
     data = json.loads(result.stdout)
     streams = data.get("streams", [])
@@ -175,6 +176,7 @@ def audio(source, destination, duration):
             destination,
         ],
         timeout=max(180, duration * 2),
+        stage="audio",
     )
     if result.stderr.strip():
         raise PipelineError("audio extraction reported a decoding error")
@@ -226,6 +228,7 @@ def preview(source, destination, candidate, settings):
             destination,
         ],
         timeout=300,
+        stage="preview",
     )
     if result.stderr.strip():
         raise PipelineError("preview reported a decoding error")
@@ -640,14 +643,13 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
         "+faststart",
         str(Path(destination).resolve()),
     ]
-    result = subprocess.run(
+    result = process(
         command,
         cwd=Path(destination).parent,
-        capture_output=True,
-        text=True,
         timeout=max(300, duration * 20),
+        stage="render",
     )
-    if result.returncode or result.stderr.strip():
+    if result.stderr.strip():
         raise PipelineError("clip rendering failed")
     info = probe(destination)
     if abs(info["duration"] - duration) > 0.3:

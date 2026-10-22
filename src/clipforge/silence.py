@@ -55,6 +55,7 @@ def silero_spans(source, start, end):
                 str(path),
             ],
             timeout=600,
+            stage="vad-audio",
         )
         model = load_silero_vad()
         wave = read_audio(str(path), sampling_rate=ASR_SAMPLE_RATE)

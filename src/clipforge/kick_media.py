@@ -564,7 +564,8 @@ class KickVOD:
                             "-of",
                             "json",
                             ts,
-                        ]
+                        ],
+                        stage="remux-probe",
                     ).stdout
                 )
                 video_start = float(video["streams"][0]["start_time"])
@@ -625,6 +626,7 @@ class KickVOD:
                 process(
                     [*command, "-movflags", "+faststart", str(product)],
                     timeout=max(300, (end - start) * 10),
+                    stage="remux" if remux else "render",
                 )
                 info = json.loads(
                     process(
@@ -637,7 +639,8 @@ class KickVOD:
                             "-of",
                             "json",
                             product,
-                        ]
+                        ],
+                        stage="probe",
                     ).stdout
                 )
                 fetched_duration = float(info["format"]["duration"])
