@@ -69,7 +69,7 @@ jobs:
         run: |
           if [ "$(id -u)" = 0 ]; then APT=(apt-get); else APT=(sudo apt-get); fi
           "${APT[@]}" update -qq
-          "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk
+          "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk gh
       - name: Install locked Python dependencies without API credentials
         working-directory: clipforge-source
         shell: bash

@@ -9,7 +9,7 @@ else
   apt=(sudo apt-get)
 fi
 "${apt[@]}" update -qq
-"${apt[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk curl git libicu-dev
+"${apt[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk curl git gh libicu-dev
 if ! command -v uv >/dev/null; then
   python3 -m pip install 'uv==0.12.23'
 fi
