@@ -43,7 +43,7 @@ jobs:
         run: |
           uv run --no-sync ruff check src tools tests
           uv run --no-sync ruff format --check src tools tests
-          uv run --no-sync pytest -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
+          uv run --no-sync python -m pytest -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -80,7 +80,7 @@ jobs:
       - name: Generate labelled synthetic video and speech
         run: uv run --no-sync python tools/make_quality_fixture.py --output artifacts/quality-fixture --japanese
       - name: Real video and speech-recognition checks
-        run: uv run --no-sync pytest -m 'integration or asr' --junitxml=artifacts/video-results.xml
+        run: uv run --no-sync python -m pytest -m 'integration or asr' --junitxml=artifacts/video-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
