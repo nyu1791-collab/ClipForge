@@ -22,6 +22,20 @@ VIDEO_CRF = (
     18  # x264 quality: lower is sharper and larger; 18 is near visually lossless
 )
 PROGRESS_RGB = (255, 196, 0)
+STANDARD_FRAME_RATES = tuple(
+    Fraction(rate)
+    for rate in (
+        "24000/1001",
+        "24",
+        "25",
+        "30000/1001",
+        "30",
+        "48",
+        "50",
+        "60000/1001",
+        "60",
+    )
+)
 
 
 def final_video_options(settings):
@@ -94,21 +108,35 @@ def probe(path):
         "audio": audio is not None,
         # Speech extraction starts at the audio stream's own start, not at 0 s.
         "audio_start": float(audio.get("start_time") or 0) if audio else 0.0,
-        "frame_rate": _frame_rate(video.get("avg_frame_rate"))
-        or _frame_rate(video.get("r_frame_rate")),
+        "frame_rate": _frame_rate(
+            video.get("avg_frame_rate"), video.get("r_frame_rate")
+        ),
         "audio_sample_rate": int(audio["sample_rate"])
         if audio and audio.get("sample_rate")
         else None,
     }
 
 
-def _frame_rate(value):
-    """Exact frame rate as text such as 30000/1001; None when the probe value is unusable."""
-    try:
-        rate = Fraction(value)
-    except (TypeError, ValueError, ZeroDivisionError):
+def _frame_rate(*values):
+    """Prefer exact standard rates, then snap the first usable rate within 0.5%."""
+    rates = []
+    for value in values:
+        try:
+            rate = Fraction(value)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        if rate > 0:
+            rates.append(rate)
+    if not rates:
         return None
-    return str(rate) if rate > 0 else None
+    for rate in rates:
+        if rate in STANDARD_FRAME_RATES:
+            return str(rate)
+    rate = rates[0]
+    nearest = min(STANDARD_FRAME_RATES, key=lambda standard: abs(rate - standard))
+    if abs(rate - nearest) / nearest <= Fraction(1, 200):
+        rate = nearest
+    return str(rate)
 
 
 def output_rate(source_rate):

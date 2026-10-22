@@ -108,6 +108,62 @@ def test_probe_reports_the_exact_frame_rate(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("average", "nominal", "expected", "output"),
+    [
+        ("134400/4481", "0/0", "30", "30"),
+        ("328851/10964", "0/0", "30", "30"),
+        ("30000/1001", "0/0", "30000/1001", "30000/1001"),
+        ("59.94", "0/0", "60000/1001", "30"),
+        ("25", "0/0", "25", "25"),
+        ("17.3", "0/0", "173/10", "173/10"),
+        ("134400/4481", "30/1", "30", "30"),
+        ("328851/10964", "30/1", "30", "30"),
+        ("29.98", "30/1", "30", "30"),
+        ("30/1", "30000/1001", "30", "30"),
+        ("30000/1001", "30/1", "30000/1001", "30000/1001"),
+        ("17.3", "18.2", "173/10", "173/10"),
+        ("0/0", "59.94", "60000/1001", "30"),
+        ("25.125", None, "25", "25"),
+        ("25.126", None, "12563/500", "12563/500"),
+    ],
+)
+def test_probe_normalizes_frame_rates(
+    monkeypatch, tmp_path, average, nominal, expected, output
+):
+    data = {
+        "format": {"duration": "5"},
+        "streams": [
+            {
+                "codec_type": "video",
+                "width": 640,
+                "height": 360,
+                "avg_frame_rate": average,
+                "r_frame_rate": nominal,
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        media,
+        "process",
+        lambda command: subprocess.CompletedProcess(
+            command, 0, json.dumps(data).encode(), b""
+        ),
+    )
+    rate = media.probe(tmp_path / "input")["frame_rate"]
+    assert rate == expected
+    assert str(media.output_rate(rate)) == output
+
+
+@pytest.mark.parametrize(
+    "standard",
+    ["24000/1001", "24", "25", "30000/1001", "30", "48", "50", "60000/1001", "60"],
+)
+def test_frame_rate_prefers_exact_standard_in_either_probe_value(standard):
+    assert media._frame_rate("17.3", standard) == standard
+    assert media._frame_rate(standard, "17.3") == standard
+
+
+@pytest.mark.parametrize(
     ("source", "expected"),
     [
         ("25", "25"),
