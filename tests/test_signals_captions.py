@@ -288,6 +288,6 @@ def test_word_cut_avoids_a_fragment_even_at_a_word_start():
 
 
 def test_margins_scale_with_the_frame_height():
-    assert captions.margin_px(720) == captions.MARGIN == 35
-    assert captions.margin_px(1920) == 93
+    assert captions.margin_px(720) == captions.MARGIN == 25
+    assert captions.margin_px(1920) == 67
     assert captions.scale(1080) == pytest.approx(1.5)

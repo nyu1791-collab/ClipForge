@@ -10,7 +10,9 @@ from .models import Word
 from .storage import PipelineError
 
 REFERENCE_HEIGHT = 720  # the margins below are in pixels at this height
-MARGIN = 35
+# Side margin of captions and headings. Narrower than before: the caption line is then long
+# enough that fewer captions split words or end up as fragments (measured on the sample).
+MARGIN = 25
 MIN_EVENT_MS = 100
 # Reading speed in characters a second. A caption faster than the target stays on screen
 # into the silence after it; one still faster than the maximum is reported as a warning.
@@ -30,6 +32,9 @@ MIN_FILL = 0.3
 # A pause this long ends a caption. Shorter captions are joined to a neighbour across
 # shorter pauses; no caption is shown for less than MIN_CAPTION_SECONDS when avoidable.
 PAUSE_SECONDS = 0.7
+JOIN_PAUSE_SECONDS = (
+    0.7  # longest silence across which a short caption may join its neighbour
+)
 MIN_CAPTION_SECONDS = 1.0
 # Latin terms that speech recognition often writes in lower case.
 TERMS = {"ai": "AI", "agi": "AGI", "asi": "ASI"}
@@ -301,11 +306,11 @@ def _join_short(groups, measure, line_px, max_lines):
             index += 1
             continue
         options = []
-        if index > 0 and members[0][0] - merged[index - 1][-1][1] <= PAUSE_SECONDS:
+        if index > 0 and members[0][0] - merged[index - 1][-1][1] <= JOIN_PAUSE_SECONDS:
             options.append((index - 1, merged[index - 1] + members))
         if (
             index + 1 < len(merged)
-            and merged[index + 1][0][0] - members[-1][1] <= PAUSE_SECONDS
+            and merged[index + 1][0][0] - members[-1][1] <= JOIN_PAUSE_SECONDS
         ):
             options.append((index, members + merged[index + 1]))
         joined = next(
