@@ -19,4 +19,4 @@
 公式CLIリポジトリの調査時コミット: `4025416a03361d2ff34d06a4523ae76ce4c9bbaf`。
 実行時はPyPIの `google-colab-cli==0.7.5` と `tools/colab-control-requirements.txt` のハッシュを使います。上流READMEと既定認証方式の説明に差があるため、SDKへ認証済みセッションを明示的に渡し、対話ログインをCIで起動しない構成にしています。
 
-初期説明の「Colab Proに公式APIがない」という断定は誤りでした。新しい公式API・CLIを調査して設計を修正しました。
+設定と実行手順は [COLAB.md](COLAB.md) を参照してください。

@@ -11,6 +11,7 @@
 | ASS/SRT編集 | [tkarabela/pysubs2](https://github.com/tkarabela/pysubs2) | 1.8.1 / MIT。Python 3.11対応版 |
 | 任意の配信チャット取得 | [xenova/chat-downloader](https://github.com/xenova/chat-downloader) | 0.2.8 / MIT |
 | 公開Kick VODのHTTP/HLS取得（media-fetch extra） | [lexiforest/curl_cffi](https://github.com/lexiforest/curl_cffi) | 0.13.0 / MIT。libcurl等の同梱依存の条件も適用 |
+| runnerでの音声復号・変換・長さ確認 | [PyAV-Org/PyAV](https://github.com/PyAV-Org/PyAV)（`av`） | Python 3.11は18.1.0、3.12以上は19.0.2（`uv.lock`） / BSD-3-Clause。同梱FFmpegの条件も適用 |
 | 切り抜き・画面調整・エンコード | [FFmpeg/FFmpeg](https://github.com/FFmpeg/FFmpeg) | runner配布版。主にLGPL、libx264等を有効にした構成はGPL |
 | ASS描画 | [libass/libass](https://github.com/libass/libass) | FFmpeg側で使用 / ISC |
 | 日本語字幕フォント | [notofonts/noto-cjk](https://github.com/notofonts/noto-cjk) | runnerの `fonts-noto-cjk` / SIL OFL 1.1 |

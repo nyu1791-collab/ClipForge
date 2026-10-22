@@ -1,146 +1,122 @@
 # GitHub・AI運用
 
-## リポジトリの権限
+## リポジトリと権限
 
-リポジトリはpublic。Actionsを有効化し、既定のworkflow tokenを書き込み可能にする。
-ActionsからPRを作成・承認できる設定も有効化する。
-`Build package` のjobは `contents: write`、`pull-requests: write`、`issues: write` を宣言する。
-権限は実行中の `ClipForge` に対するもので、GitHub全アカウントや他社サービスの全権限ではない。
-AIという共通ユーザーへ権限を付ける仕組みではなく、各エージェントが利用する認証に権限が付く。
-GitHubの仕様上、botが自身のPRを承認できるとは限らない。
-また通常の `GITHUB_TOKEN` によるpushやPR作成では、別のworkflowは自動起動しない。
-必要な処理は `workflow_dispatch` か、所有者が認証済みの制御VMから起動する。
+公開ClipForgeはコードの保存先。動画・音声・文字起こし・成果物は非公開workerで扱う。
+`deploy/clipforge.yml` と `deploy/audio-stages.yml` の配置・処理の関係は [ARCHITECTURE.md](ARCHITECTURE.md#配置) を参照する。
+公開側の `Build package` は開発用wheelを7日間保存する。動画生成・SNS投稿・PyPI公開は行わず、ビルド成功はモデル呼び出しや切り抜き品質の確認ではない。
 
-初期状態で必須レビューやブランチ保護は追加しない。自動マージは機能として有効にするが、
-AIやワークフローが勝手にPRをマージする処理は今回追加しない。
+通常の `GITHUB_TOKEN` によるpushやPR作成では、別workflowは自動起動しない。必要な処理は `workflow_dispatch` で起動する。権限は対象リポジトリと処理に必要な範囲へ付与し、workflowからの自動マージは行わない。
 
-## クライアント設定
+## ClipForgeのSecrets
 
-- Claude Code: プロジェクトを信頼した場合、ファイル操作とBash実行を事前許可する。
-- Codex CLI: 作業ディレクトリ内の書き込みとネットワークを許可し、個々のコマンドの承認要求を省く。
-- 上位の管理設定、サービス側の安全判定、OAuth本人確認、利用枠はこの設定では変更されない。
-- 他の利用者や他のリポジトリの設定を変更しない。
+- `GEMINI_API_KEY`：ローカル動画のGemini選定に使用する。URL音声解析経路では要求せず、Colabへ送らない。
+- `COLAB_ADC_JSON`：指定ユーザーのColab自動起動用。初回設定と一時認証用Secretの扱いは [COLAB.md](COLAB.md) を参照する。
+- `GH_TOKEN`：非公開workerへの依頼・一時入力転送・回収に必要なGitHub認証。転送元とActions内の認証は区別する。
 
-## APIキー
-
-制御VMの既存 `github-api-sync` が所有リポジトリを検出し、次のキーをActions Secretsへ登録する。
-
-- `GEMINI_API_KEY`
-- `YOUTUBE_API_KEY`
-- `ANTIGRAVITY_GEMINI_API_KEY`
-- `DEEPSEEK_API_KEY`
-- `FIRECRAWL_API_KEY`
-- `OPENCODE_API_KEY`
-- `OPENROUTER_API_KEY`
-- `TEMPORAL_CLOUD_API_KEY`
-
-新規リポジトリの検出はVM稼働中の15分間隔。値の更新元はVMの保護された保存先。
-GitHub Secretsから値を読み戻すことはできない。新しいキーをリポジトリ側に追加しただけでは、
-他のリポジトリへ自動輸入されない。
-
-Secretsは必要なステップにだけ明示的に渡す。公開側のビルドworkflowはAPIキーを使用しない。
-Claude・AntigravityのOAuth情報は `ai-model-workers` の非公開Secretsに置く。
-
-## 手動ビルド
-
-Actions → `Build package` → Run workflow。
-開発用wheelだけを7日間保存し、動画生成・SNS投稿・PyPI公開・有料サービス購入は行わない。
-これはパッケージ作成であり、切り抜きの動作確認やモデル呼び出しの確認ではない。
+Secretsは必要なステップにだけ明示的に渡す。公開ビルドはAPIキーを使用しない。値を文書・チャット・Git・公開Artifactsへ含めない。
 
 ## 動画ジョブの実行場所
 
-`deploy/clipforge.yml` を非公開 `nyu1791-collab/ai-model-workers/.github/workflows/clipforge.yml` に配置します。
-既存のモデルworkerとは別ワークフローです。公開ClipForge側に動画用workflowを追加しません。
-元コードは指定されたClipForgeの40桁SHAで取得し、`uv.lock` の依存をPython 3.11へ導入します。
+主な経路はKick URL → GitHub-hosted runnerで音声取得 → Colab GPUでASR・話題分割 → 同じrunのCPUジョブでpreviews・未承認の下書き → 映像確認・承認 → Colab CPUで描画 → 制御VMで `merge --local`。Geminiは呼ばない。URL固有の引数と承認は [AUDIO_FIRST.md](AUDIO_FIRST.md) を参照する。
 
-制御VMには `~/.local/bin/clipforge-submit` を置き、`tools/submit_job.py` を起動します。
-標準ライブラリと認証済みの `gh` だけを使うので、VMにWhisperやFFmpegを導入しません。
-最初の実行には、VMから読める入力動画と動画対応GeminiモデルのAPI識別子が必要です。
+ローカル動画は `tools/submit_job.py --input` で依頼し、Gemini選定と描画を行う。workerは既定の `colab-auto`、または `--worker cpu`。`colab-auto` のローカル動画経路はColabでASR・Gemini選定・描画を行う。Colabの認証・起動・解放・キャッシュ手順は [COLAB.md](COLAB.md) を正とする。
 
 ```bash
-clipforge-submit --input /path/to/source.mp4 \
+python tools/submit_job.py --input /path/to/source.mp4 \
   --gemini-model YOUR_VIDEO_MODEL_ID \
-  --config /home/n_yu1791/repos/ClipForge/config.example.json \
-  --wait --output /home/n_yu1791/clipforge-results/job-001
+  --config "<CLONE>/config.example.json" \
+  --wait --output "<CLONE>/outputs/job-001"
 ```
 
-モデルを指定した動画ジョブで、候補動画のGoogleへの送信とそのモデルのAPI利用を行います。
-別のモデルには切り替えません。キーが登録済みでも無料tierや十分な割当を保証しません。
-GitHubの非公開Actionsの実行時間・Artifacts・Cacheにも契約の無料枠が適用されます。
-1ジョブの実行上限は90分。CPUのほか、接続済みのColab GPUを明示選択できます。詳細は [Colab起動手順](COLAB.md)。サーバー増設や有料プラン購入は行いません。
+`<CLONE>` はチェックアウト先、モデル識別子は利用する動画対応モデルに置き換える。ローカル動画では候補動画のGoogleへの送信と指定モデルのAPI利用を行い、別モデルには切り替えない。キー登録だけで無料tierや十分な割当を保証しない。非公開Actionsの時間・Artifacts・Cacheにも契約の無料枠が適用される。
+
+実行上限はローカル動画ジョブ90分、URL取得を含む全体150分。URL経路のColab実行ステップは90分で、既存の5,100秒の実行上限と後処理時間を収める。配信長は横用設定で6時間、設定可能な最大は12時間。待機の上限は実行上限とは別で、既定18,000秒（5時間）、`--wait-timeout SECONDS` で変更できる。
+
+同時に依頼できる動画ジョブは、`cpu` が1件、`colab-auto` が2件まで（T4を同時に2台まで確保できた実測による。`tools/submit_job.py` の `MAX_ACTIVE`）。クリップの並列描画は別枠で4件まで（`tools/submit_audio_stage.py`）。入口とActionsで重複実行を防ぎ、待機ジョブを蓄積する用途には使わない。制御VMは依頼・回収・検証・結合だけを担当する。
 
 ## 非公開データの経路と保管
 
-1. VMが入力SHA-256と設定を記録し、非公開workerの一時Releaseへ動画・依頼JSON・任意のチャットJSONを送信。
-2. runnerが非公開であること、リクエストID、コードSHA、入力サイズ、SHA-256を検査。
-3. 元動画はrunner内で処理。Googleには選定候補の低解像度動画・その音声・該当するASR文だけを送信。
-4. 送信したGoogle Filesは処理後に削除を試行。削除失敗は成功したふりをせず記録・通知します。
-5. 処理結果のMP4・字幕・文字起こし・JSONは非公開Artifactsに7日間保存。`--wait` 指定時はVMへ回収します。
-6. 入力用の非公開Releaseとタグは終了時に削除を試行。checkoutや依存導入が失敗した場合などは手動削除が必要です。
+1. ローカル入力は送信元でSHA-256と設定を記録し、非公開workerの一時Releaseへ入力・依頼JSON・任意のチャットJSONを送信する。URLだけの投入はrunnerが音声取得後に一時Releaseを作る。
+2. runnerが非公開であること、依頼ID、コードSHA、入力サイズ、SHA-256を検査する。
+3. URL経路は取得音声をColab GPUへ渡し、Geminiキーを渡さない。ローカル動画のGeminiへは候補の低解像度映像・音声・該当ASR文だけを送る。
+4. 送信したGoogle Filesは処理後に削除を試行し、失敗は記録・通知する。
+5. MP4・字幕・文字起こし・JSONは非公開Artifactsへ7日保存し、検証して回収する。
+6. 一時入力Release・タグは終了時に削除を試行する。checkoutや依存導入の失敗等で残った場合は依頼記録のタグを確認して手動削除する。
 
-段階キャッシュには文字起こし・チャットの時刻/重み・候補・選定JSONを含みます。
-原動画・MP4・APIキー・Cookie・OAuth情報はキャッシュしません。キャッシュの保管はGitHubの保持・容量制限によります。
-キャッシュはAPI呼び出しが確実に1回だけであることを保証する仕組みではありません。
-モデル応答後・キャッシュ保存前にrunnerが失われたときは、記録を確認してから再依頼します。
+段階キャッシュにはASR・チャットの時刻/重み・候補・選定JSONを含むが、原動画・MP4・APIキー・Cookie・OAuth情報は含めない。キャッシュはGitHubの保持・容量制限に従い、API呼び出しを確実に1回にする仕組みではない。モデル応答後・保存前にrunnerが失われた場合は記録を確認してから再依頼する。公開キャッシュは既定off。
 
-## 結果の回収と失敗時
+## 結果の回収と再開
 
 依頼記録は `~/.local/state/clipforge/<request_id>/receipt.json`。
-`STAGING` / `STAGED` / `DISPATCHED` / `RUNNING` / `COMPLETE` / `FAILED` / `UNCONFIRMED` を区別します。
-依頼APIの応答が不明な場合は自動再送せず、Actions一覧を確認します。
+`STAGING` / `STAGED` / `DISPATCHED` / `RUNNING` / `COMPLETE` / `FAILED` / `UNCONFIRMED` 等の状態を区別する。APIの応答が不明な場合は自動再送せず、同じ依頼IDのworkflowを確認する。
 
-`--wait` を使わなかった場合やSSHが切れた場合は、記録にあるrun IDで回収できます。
+`--wait` を使わなかった場合、SSH切断、待機上限到達時も、runを再投入せず状態確認・回収を続ける。
 
 ```bash
-gh run view RUN_ID --repo nyu1791-collab/ai-model-workers
+python tools/submit_job.py --status REQUEST_ID
+python tools/submit_job.py --collect REQUEST_ID --output /private/result-NEW
+```
+
+音声後段の回収には `python tools/submit_audio_stage.py --collect REQUEST_ID --output /private/stage-NEW` を使う。回収は新しい出力先へ行い、依頼ID・元コミットSHA・前段run・manifest・各ファイルのSHA-256を検査する。`complete` やActions成功は、人による内容・字幕確認や公開とは別。
+
+### ローカル受付票がない環境での音声解析の回収
+
+期待値を明示し、成功run・依頼ID・元コミット・音声SHA-256・ASR・話題・manifestを検査する。ローカル記録は書き込まない。受付票がある場合は通常の回収を使う。
+
+```bash
+python tools/submit_job.py --collect REQUEST_ID --run-id RUN_ID \
+  --source-ref REVIEWED_COMMIT_SHA --audio-sha256 AUDIO_SHA256 --output /private/analysis-NEW
+```
+
+`--auto-previews` の中間解析だけを回収する `--collect-stage analysis` と部分失敗状態は [AUDIO_FIRST.md](AUDIO_FIRST.md#同じrunで候補映像と採用候補の下書きまで作る) を参照する。
+
+### アップロード失敗と同じ音声依頼の再開
+
+HTTP 401／403のアップロード失敗は `UPLOAD_FAILED_AUTH`、タイムアウトや5xx等は `STAGING_PARTIAL` と記録する。添付失敗はworkflowやASRの起動成功ではない。release作成・dispatch・run閲覧が成功しても、添付アップロードの認証成功とは限らない。
+
+認証は転送元のGitHub接続で復旧する。workerのActions Secretsだけを更新しても、転送元CLIには渡らない。Fine-grained PATを使う場合は対象の非公開repoにContents: Read and write（release/添付）とActions: Read and write（dispatch/回収）を付与する。classic PATは通常 `repo`、workflow自体の変更には別途 `workflow` の条件も確認する。値は安全な設定画面で登録する。
+
+```bash
+python tools/submit_job.py --status SAVED_REQUEST_ID
+python tools/submit_job.py --resume-audio SAVED_REQUEST_ID --input /private/original-audio.m4a
+```
+
+`--resume-audio` は保存済み設定・元コミット・依頼IDを維持し、元音声と添付のSHA-256・サイズを照合して不足分だけを転送する。不一致・重複添付・別の稼働ジョブで停止し、上書きしない。同じIDのworkflowがあれば新規dispatchしない。dispatch前は `DISPATCHING`、応答不明は `DISPATCH_UNCONFIRMED` とし自動再送しない。投入ロックはdispatch記録まで保持し、待機・回収前に解放する。
+
+入力は処理後に削除されるため、Actionsの「Re-run jobs」だけでは再取得できない。失敗を確認し、新規依頼が必要な場合だけ同じ動画・設定・コードを送る。段階キャッシュが残れば完了済みASR・選定を再利用するが、長いASRの途中チェックポイントからの再開は未実装。モデル拒否・割当超過に自動再試行や別アカウント・別サービスでの回避を行わない。
+
+### 途中保存と一時入力の削除
+
+初回workflowが失敗・タイムアウト・キャンセルした場合、`transcripts/*.partial.jsonl` を非公開 `clipforge-partial-REQUEST_ID` artifactへ7日保存する。これは途中の発話本文で、完成ASRでも再開用でもない。私有領域へだけ回収する。
+
+```bash
 gh run download RUN_ID --repo nyu1791-collab/ai-model-workers \
-  --name clipforge-result-REQUEST_ID --dir /path/to/new-result-directory
+  --name clipforge-partial-REQUEST_ID --dir /private/partial-NEW
+python tools/submit_job.py --cleanup-tag clipforge-input-REQUEST_ID
 ```
 
-`request-receipt.json` のrequest IDと、`manifest.json` の `status=complete` を確認します。
-各クリップの `render.json` に記録したSHA-256と実ファイルを照合できます。
-Actions成功・生成完了と、人による内容・字幕の確認、YouTubeへの公開は別です。
-
-同時に依頼できる動画ジョブは1件です。VM入口は処理中のジョブがあれば新規依頼を止めます。
-Actionsも同時実行1件で、待機ジョブを何件も蓄積する用途には使いません。
-
-入力は処理後に削除されるため、Actionsの「Re-run jobs」だけでは再取得できません。
-失敗内容を確認し、必要なら同じ動画・設定・コードを新しい依頼として送信します。
-段階キャッシュが残っていれば文字起こしや完了済み選定を再利用します。
-モデル拒否や割当超過に対する自動再試行・別アカウントや別サービスによる回避は行いません。
-
-一時入力が残っている場合は、依頼記録のタグを確認して削除します。
+### 単一クリップ成果物のローカル結合
 
 ```bash
-clipforge-submit --cleanup-tag clipforge-input-REQUEST_ID
+python tools/submit_audio_stage.py --stage merge --local \
+  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 --output /private/merged-NEW
 ```
+
+制御VMで各runのcompleted・success・依頼IDを確認し、artifactを一度取得して `merge_parts` で検証・コピーする。GitHub run・FFmpeg・フォントは使わない。元コミット・本数・前段依頼IDは検証済みpartから取得し、任意の `--source-ref REVIEWED_COMMIT_SHA` で期待値を固定できる。
+`delivery/`・manifest・request receiptを通常の回収と同じ検証後に確定し、receiptの `workflow_run` は `"local"` となる。GitHub上の結合では `--local` を付けず、`--previous-run`・`--previous-request`・`--source-ref`・`--part-runs` を指定する。
 
 ## チャットと人による修正
 
-`--chat-file` は次の形式の配列です。元動画の0秒に合わせて時刻を指定します。
-`chat_offset_seconds` はチャットの時刻へ加算されます。
+`--chat-file` は元動画0秒基準の配列で、`chat_offset_seconds` を時刻へ加算する。以下は合成例。
 
 ```json
 [
-  {"time_in_seconds": 130.5, "message": "草"},
-  {"time_in_seconds": 131.0, "message": "すごい"}
+  {"time_in_seconds": 130.5, "message": "合成の反応A"},
+  {"time_in_seconds": 131.0, "message": "合成の反応B"}
 ]
 ```
 
-チャットは任意です。公開リプレイが取得できない場合は、その状態を記録して場面転換とASRで候補を作ります。
-候補データにはユーザー名やチャット本文を残さず、時刻と反応の重みだけを保存します。
+チャットは任意。取得不能時は状態を記録して場面転換・ASRで候補を作る。候補データにユーザー名・本文を残さず、時刻と反応の重みだけを保存する。
 
-ローカルで区間を修正する場合は、元動画秒数の `selection.json` を別ファイルへ複製して `clips` を編集し、
-`clipforge run ... --selection-file edited-selection.json --output NEW_DIRECTORY` を使えます。
-各clipには `start`、`end`、`candidate_id`、`title`、`reason`、0～1の `confidence` が必要です。
-この指定ではGeminiを呼びません。既存の生成物とは別の出力先を使います。
-
-## 今回の確認範囲
-
-依存解決、ソースの構文・静的検査、wheel作成とGitHub/VMへの配置を確認します。
-2026-10-22にユーザーから確認・検証の明示依頼を受け、Colabのライフサイクル、キャッシュ、転送、モデル選択のテストと合成動画のCPU切り抜きを追加・実行します。実GPUの確認はOAuth認証後のmaintenance workflowで別に行います。
-動画未提供のため、モデル呼び出し・文字起こし・実動画レンダリングも未実施です。
-
-## Colabの自動起動
-
-動画ジョブの既定は `colab-auto`。Google公式SDKでT4を作成し、処理後に解放します。初回のGoogle OAuthと `COLAB_ADC_JSON` の登録は [Colab設定手順](COLAB.md) を参照してください。ブラウザのログインだけでは登録されません。明示CPUは `--worker cpu`、既存ランナーは `--worker colab-gpu` です。
+ローカル動画の区間修正は `selection.json` を別ファイルへ複製し、元動画秒数の `clips` を編集して `clipforge run ... --selection-file edited-selection.json --output NEW_DIRECTORY` を使う。各clipに `start`・`end`・`candidate_id`・`title`・`reason`・0〜1の `confidence` が必要。この指定ではGeminiを呼ばず、既存生成物とは別の出力先を使う。
