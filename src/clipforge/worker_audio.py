@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 
-from . import audio_first, landscape, media, pipeline, review_draft
+from . import audio_first, audio_volume, landscape, media, pipeline, review_draft
 from .github_cli import run as run_gh
 from .kick_media import KickVOD, canonical
 from .models import Settings, Transcript
@@ -190,6 +190,14 @@ def preview_contact_sheet(root, previews):
     sheet.save(root / "preview-contact-sheet.jpg", quality=90)
 
 
+def _volume_series(source, info):
+    """(series, reason): per-second loudness on the topic clock, or None and a reason code."""
+    try:
+        return audio_volume.loudness_series(source, offset=info["audio_start"]), None
+    except audio_volume.VolumeUnavailable as error:
+        return None, error.reason
+
+
 def execute(
     previous, output, previous_id, settings, mode, review_file=None, clip_index=None
 ):
@@ -236,8 +244,14 @@ def execute(
                 result = audio_first.previews(
                     vod, output, settings, analysis_result=analysis, **options
                 )
+                volume, volume_reason = _volume_series(source, info)
                 draft, diagnostics = review_draft.build_review_draft(
-                    analysis[0], result, settings, transcript=analysis[1]
+                    analysis[0],
+                    result,
+                    settings,
+                    transcript=analysis[1],
+                    volume=volume,
+                    volume_reason=volume_reason,
                 )
                 write_json(output / "review-draft.json", draft)
                 write_json(output / "review-draft-diagnostics.json", diagnostics)

@@ -1,3 +1,4 @@
+import math
 import json
 from pathlib import Path
 import subprocess
@@ -231,3 +232,165 @@ def test_cli_profanity_dictionary_and_failure(tmp_path, capsys):
     broken.write_text("{}", encoding="utf-8")
     assert th.main([str(broken)]) == 1
     assert SECRET not in capsys.readouterr().err
+
+
+def volume_series(levels, start=0.0):
+    return [(start + index, level) for index, level in enumerate(levels)]
+
+
+def quiet_with_bump(bump_at, bump_db=15.0, length=800, base=-30.0, width=10):
+    levels = [base] * length
+    for index in range(bump_at, bump_at + width):
+        levels[index] = base + bump_db
+    return volume_series(levels)
+
+
+PLAIN_TEXT = "一日の終わりに少し話します。"
+OTHER_TEXT = "明日の予定は特にありません。"
+
+
+def test_without_volume_output_matches_text_and_speech_ranking():
+    rows = [topic("a", 300, 360, 30, PLAIN_TEXT), topic("b", 400, 460, 10, OTHER_TEXT)]
+    analysis = {"duration": 1000, "topics": rows}
+    plain = th.hint_topics(analysis)
+    assert th.hint_topics(analysis, volume=None) == plain
+    assert "volume_weight" not in plain
+    assert all("volume_score" not in row for row in plain["topics"])
+    assert all("volume_bump_db" not in row for row in plain["topics"])
+    expected = round(0.5 * 0.5 + 0.5 * (14 / 60 / th.CHARS_PER_SECOND_REFERENCE), 4)
+    assert hint_for(topic("a", 300, 360, 30, PLAIN_TEXT))["score"] == expected
+
+
+def test_bump_inside_topic_raises_its_rank_by_at_most_the_weight():
+    quiet = topic("quiet", 300, 360, 30, PLAIN_TEXT)
+    loud = topic("loud", 500, 560, 30, OTHER_TEXT)
+    analysis = {"duration": 1000, "topics": [quiet, loud]}
+    plain = {r["id"]: r for r in th.hint_topics(analysis)["topics"]}
+    rows = th.hint_topics(analysis, volume=quiet_with_bump(520))["topics"]
+    assert [r["id"] for r in rows] == ["loud", "quiet"]
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["loud"]["volume_bump_db"] == 15.0
+    assert by_id["loud"]["volume_score"] == 1.0
+    assert by_id["quiet"]["volume_score"] == 0.0
+    gain = by_id["loud"]["score"] - plain["loud"]["score"]
+    assert gain == pytest.approx(th.VOLUME_WEIGHT, abs=1e-4)
+
+
+def test_bumps_just_outside_the_topic_are_not_counted():
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    before = quiet_with_bump(290)
+    after = quiet_with_bump(360)
+    for volume in (before, after):
+        hint = th.hint_topics({"duration": 1000, "topics": [row]}, volume=volume)
+        assert hint["topics"][0]["volume_score"] == 0.0
+        assert hint["topics"][0]["volume_bump_db"] == 0.0
+
+
+def test_bump_straddling_the_topic_start_counts_its_inside_part():
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    hint = th.hint_topics(
+        {"duration": 1000, "topics": [row]}, volume=quiet_with_bump(299)
+    )
+    assert hint["topics"][0]["volume_score"] == 1.0
+
+
+def test_bump_score_scales_between_minimum_and_full_dB():
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    analysis = {"duration": 1000, "topics": [row]}
+    for bump_db, expected in [
+        (3.0, 0.0),
+        (6.0, 0.0),
+        (10.5, 0.5),
+        (15.0, 1.0),
+        (20.0, 1.0),
+    ]:
+        hint = th.hint_topics(analysis, volume=quiet_with_bump(320, bump_db))
+        assert hint["topics"][0]["volume_score"] == pytest.approx(expected)
+
+
+def test_local_median_makes_a_uniformly_loud_stream_flat():
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    volume = volume_series([-10.0] * 800)
+    hint = th.hint_topics({"duration": 1000, "topics": [row]}, volume=volume)
+    assert hint["topics"][0]["volume_bump_db"] == 0.0
+    assert hint["topics"][0]["volume_score"] == 0.0
+
+
+def test_volume_never_overturns_a_clear_speech_or_text_difference():
+    dense = topic("dense", 300, 360, 60, PLAIN_TEXT)
+    sparse = topic("sparse", 500, 560, 0, PLAIN_TEXT)
+    volume = quiet_with_bump(520, bump_db=40.0)
+    rows = th.hint_topics({"duration": 1000, "topics": [sparse, dense]}, volume=volume)
+    assert [r["id"] for r in rows["topics"]] == ["dense", "sparse"]
+    assert rows["topics"][1]["score"] < rows["topics"][0]["score"]
+    repeated = topic("repeat", 500, 560, 30, "はっ" * 12)
+    rows = th.hint_topics(
+        {
+            "duration": 1000,
+            "topics": [repeated, topic("plain", 300, 360, 30, OTHER_TEXT)],
+        },
+        volume=quiet_with_bump(520, bump_db=40.0),
+    )
+    assert [r["id"] for r in rows["topics"]] == ["plain", "repeat"]
+
+
+@pytest.mark.parametrize(
+    "volume",
+    [
+        "not a list",
+        [(0, -30.0), (2, -30.0)],
+        [(0, "loud")],
+        [(0, -30.0, 1)],
+        [(0, float("nan"))],
+    ],
+)
+def test_invalid_volume_series_is_rejected(volume):
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    with pytest.raises(ValueError, match="volume|invalid"):
+        th.hint_topics({"duration": 1000, "topics": [row]}, volume=volume)
+
+
+def silence_then_speech(silence=120, speech=120, speech_db=-30.0, wander=0.0):
+    levels = [-90.0] * silence
+    levels += [speech_db + wander * math.sin(index) for index in range(speech)]
+    return volume_series(levels)
+
+
+def test_speech_starting_after_long_silence_is_not_a_bump():
+    # Silence is floored at -90 dB; the first speech windows must not look like a 60 dB peak.
+    row = topic("a", 120, 180, 30, PLAIN_TEXT)
+    volume = silence_then_speech(wander=2.0)
+    hint = th.hint_topics({"duration": 1000, "topics": [row]}, volume=volume)
+    assert hint["topics"][0]["volume_score"] == 0.0
+    assert hint["topics"][0]["volume_bump_db"] < th.VOLUME_MIN_BUMP_DB
+    straddling = topic("b", 110, 170, 30, PLAIN_TEXT)
+    hint = th.hint_topics({"duration": 1000, "topics": [straddling]}, volume=volume)
+    assert hint["topics"][0]["volume_score"] == 0.0
+
+
+def test_topic_inside_silence_has_no_bump():
+    row = topic("a", 10, 70, 30, PLAIN_TEXT)
+    hint = th.hint_topics(
+        {"duration": 1000, "topics": [row]}, volume=silence_then_speech()
+    )
+    assert hint["topics"][0]["volume_bump_db"] == 0.0
+    assert hint["topics"][0]["volume_score"] == 0.0
+
+
+def test_ordinary_four_dB_wander_scores_nothing():
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    volume = silence_then_speech(silence=0, speech=800, wander=4.0)
+    hint = th.hint_topics({"duration": 1000, "topics": [row]}, volume=volume)
+    assert hint["topics"][0]["volume_bump_db"] < th.VOLUME_MIN_BUMP_DB
+    assert hint["topics"][0]["volume_score"] == 0.0
+
+
+def test_one_loud_window_alone_does_not_reach_full_score():
+    levels = [-30.0] * 800
+    levels[320] = 0.0  # one 30 dB spike inside the topic
+    row = topic("a", 300, 360, 30, PLAIN_TEXT)
+    hint = th.hint_topics(
+        {"duration": 1000, "topics": [row]}, volume=volume_series(levels)
+    )
+    assert hint["topics"][0]["volume_bump_db"] == pytest.approx(10.0)
+    assert 0.0 < hint["topics"][0]["volume_score"] < 1.0

@@ -2,15 +2,26 @@
 
 from .audio_first import shifted_transcript
 from .storage import PipelineError
-from .topic_hints import hint_topics
+from .topic_hints import VOLUME_WEIGHT, hint_topics
 from .storage import TIME_TOLERANCE
 
 
-def build_review_draft(analysis, previews, settings, *, transcript=None, count=None):
+def build_review_draft(
+    analysis,
+    previews,
+    settings,
+    *,
+    transcript=None,
+    count=None,
+    volume=None,
+    volume_reason=None,
+):
     """Return review-file-shaped suggestions and text-free selection diagnostics.
 
     Preview rows with a file and receipt represent successful acquisitions. Failed
-    rows, if supplied, must not be treated as available review media.
+    rows, if supplied, must not be treated as available review media. ``volume`` is
+    the optional one-second loudness series; without it the ranking is unchanged and
+    ``volume_reason`` records why it is missing.
     """
     count = settings.clips if count is None else count
     if type(count) is not int or not 3 <= count <= 5:
@@ -27,7 +38,8 @@ def build_review_draft(analysis, previews, settings, *, transcript=None, count=N
     }
     clips, skipped = [], []
     selected_ids = set()
-    for topic in hint_topics(analysis)["topics"]:
+    ranked = hint_topics(analysis, volume=volume)["topics"]
+    for topic in ranked:
         topic_id, start, end = topic["id"], topic["start"], topic["end"]
         reason = None
         if topic_id not in available:
@@ -76,5 +88,28 @@ def build_review_draft(analysis, previews, settings, *, transcript=None, count=N
         "selected_count": len(clips),
         "shortfall": count - len(clips),
         "skipped": skipped,
+        "volume_hints": _volume_diagnostics(ranked, volume, volume_reason),
     }
     return draft, diagnostics
+
+
+def _volume_diagnostics(ranked, volume, reason):
+    if volume is None:
+        return {
+            "data": "not_available",
+            "reason": reason or "not_provided",
+            "weight": 0.0,
+            "topics": [],
+        }
+    return {
+        "data": "available",
+        "weight": VOLUME_WEIGHT,
+        "topics": [
+            {
+                "topic_id": hint["id"],
+                "bump_db": hint["volume_bump_db"],
+                "score": hint["volume_score"],
+            }
+            for hint in ranked
+        ],
+    }

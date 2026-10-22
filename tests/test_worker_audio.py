@@ -175,6 +175,9 @@ def test_previews_write_unapproved_drafts_before_receipting(
     assert all(row["video_reviewed"] is False for row in draft["clips"])
     assert diagnostics["transcript_boundary_check"] == "performed"
     assert diagnostics["semantic_topic_review"] == "required"
+    # The fixture audio is not decodable, so the draft proceeds without loudness.
+    assert diagnostics["volume_hints"]["data"] == "not_available"
+    assert diagnostics["volume_hints"]["reason"] == "decode_failed"
     assert manifest["status"] == "awaiting_video_review"
     assert manifest["human_review_performed"] is False
     assert (

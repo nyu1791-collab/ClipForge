@@ -6,12 +6,16 @@ and is never returned, printed or logged.
 """
 
 import argparse
+import bisect
 import json
 import math
 from pathlib import Path
 import re
+import statistics
 import sys
 import unicodedata
+
+from .storage import PipelineError
 
 EDGE_START_SECONDS = 120
 EDGE_END_SECONDS = 180
@@ -40,6 +44,20 @@ PENALTY = {
     "profanity": 0.5,
     "duplicate": 0.2,
 }
+# Loudness is a light tiebreak: a bump adds at most VOLUME_WEIGHT to the base score,
+# so it cannot overturn a clear difference in speech density or text.
+VOLUME_WINDOW_SECONDS = 1.0
+VOLUME_WEIGHT = 0.05
+# Windows below this level are silence. They are not used as a reference, and they
+# never count as a bump themselves.
+VOLUME_SILENCE_DB = -50.0
+# Each window is compared with the median of the non-silent windows within this span.
+VOLUME_BASELINE_SECONDS = 60
+# A topic's bump is the mean of its loudest windows, so one noisy window cannot max it out.
+VOLUME_TOP_WINDOWS = 3
+# Excess below the minimum is ordinary variation; the full score needs the full dB.
+VOLUME_MIN_BUMP_DB = 6.0
+VOLUME_FULL_BUMP_DB = 15.0
 
 
 def _number(value):
@@ -146,7 +164,56 @@ def _mark_near_duplicates(topics, hints):
             hint["score"] = round(hint["score"] - PENALTY["duplicate"], 4)
 
 
-def _hint(topic, duration, terms):
+def _volume_index(volume):
+    """Window times and each window's excess (dB) over its local non-silent median."""
+    if volume is None:
+        return None
+    if not isinstance(volume, (list, tuple)):
+        raise ValueError("volume series must be a list")
+    times, levels = [], []
+    for row in volume:
+        if not isinstance(row, (list, tuple)) or len(row) != 2:
+            raise ValueError("invalid volume row")
+        time, level = _number(row[0]), _number(row[1])
+        if time is None or level is None:
+            raise ValueError("invalid volume row")
+        if times and abs(time - times[-1] - VOLUME_WINDOW_SECONDS) > 1e-6:
+            raise ValueError("volume windows must be one second apart")
+        times.append(time)
+        levels.append(level)
+    half = VOLUME_BASELINE_SECONDS // 2
+    excess = []
+    for index, level in enumerate(levels):
+        if level < VOLUME_SILENCE_DB:
+            excess.append(0.0)
+            continue
+        # The window itself is non-silent, so the reference is never empty.
+        reference = [
+            other
+            for other in levels[max(0, index - half) : index + half + 1]
+            if other >= VOLUME_SILENCE_DB
+        ]
+        excess.append(level - statistics.median(reference))
+    return times, excess
+
+
+def _volume_bump(index, topic):
+    """Mean of the loudest excess windows overlapping the topic, and its 0..1 score."""
+    if index is None:
+        return None, None
+    times, excess = index
+    # Window i covers [times[i], times[i] + window); it counts when it overlaps the topic.
+    low = bisect.bisect_right(times, topic["start"] - VOLUME_WINDOW_SECONDS)
+    high = bisect.bisect_left(times, topic["end"])
+    loudest = sorted(excess[low:high], reverse=True)[:VOLUME_TOP_WINDOWS]
+    if not loudest:
+        return None, 0.0
+    bump = sum(loudest) / len(loudest)
+    span = VOLUME_FULL_BUMP_DB - VOLUME_MIN_BUMP_DB
+    return bump, min(1.0, max(0.0, (bump - VOLUME_MIN_BUMP_DB) / span))
+
+
+def _hint(topic, duration, terms, volume_score=None):
     text = topic["text"]
     start, end = topic["start"], topic["end"]
     length = end - start
@@ -167,6 +234,8 @@ def _hint(topic, duration, terms):
     base = 0.5 * speech_ratio + 0.5 * min(
         1.0, chars_per_second / CHARS_PER_SECOND_REFERENCE
     )
+    if volume_score is not None:
+        base += VOLUME_WEIGHT * volume_score
     flags = {
         "edge": edge,
         "greeting": greeting,
@@ -190,26 +259,39 @@ def _hint(topic, duration, terms):
     }
 
 
-def hint_topics(analysis, *, profanity_terms=None):
+def hint_topics(analysis, *, profanity_terms=None, volume=None):
     """Return flags and numbers per topic, highest score first.
 
     ``profanity_terms`` is an optional iterable of terms supplied by the caller.
     When omitted, the profanity flag is ``None`` (not judged).
+    ``volume`` is an optional list of ``(seconds, dB)`` one-second windows on the
+    topic clock. When omitted, the ranking is exactly the text and speech ranking.
     """
     rows = analysis.get("topics") if isinstance(analysis, dict) else None
     if not isinstance(rows, list):
         raise ValueError("topics list is required")
     terms = None if profanity_terms is None else _terms(profanity_terms)
+    index = _volume_index(volume)
     topics = [_topic(row) for row in rows]
     duration = _stream_duration(analysis, topics)
-    hints = [_hint(topic, duration, terms) for topic in topics]
+    hints = []
+    for topic in topics:
+        bump, volume_score = _volume_bump(index, topic)
+        hint = _hint(topic, duration, terms, volume_score)
+        if index is not None:
+            hint["volume_bump_db"] = None if bump is None else round(bump, 2)
+            hint["volume_score"] = round(volume_score, 4)
+        hints.append(hint)
     _mark_near_duplicates(topics, hints)
     hints.sort(key=lambda hint: (-hint["score"], hint["start"]))
-    return {
+    result = {
         "status": "topic_hints",
         "topics": hints,
         "model_generation_requests": 0,
     }
+    if index is not None:
+        result["volume_weight"] = VOLUME_WEIGHT
+    return result
 
 
 def _read_terms(path):
@@ -224,12 +306,22 @@ def main(argv=None):
         type=Path,
         help="UTF-8 file with one term per line; omitted means not judged",
     )
+    parser.add_argument(
+        "--audio",
+        type=Path,
+        help="audio file whose loudness adds a small bump score; its time 0 is the topic clock's 0",
+    )
     args = parser.parse_args(argv)
     try:
         analysis = json.loads(args.topics_json.read_text(encoding="utf-8"))
         terms = _read_terms(args.profanity_dict) if args.profanity_dict else None
-        result = hint_topics(analysis, profanity_terms=terms)
-    except (OSError, ValueError, KeyError, TypeError):
+        volume = None
+        if args.audio:
+            from .audio_volume import loudness_series
+
+            volume = loudness_series(args.audio)
+        result = hint_topics(analysis, profanity_terms=terms, volume=volume)
+    except (OSError, ValueError, KeyError, TypeError, PipelineError):
         print("topic hints failed: invalid input", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
