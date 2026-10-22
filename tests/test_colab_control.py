@@ -142,6 +142,52 @@ class ControlTests(unittest.TestCase):
         client.get_consumption_user_info.side_effect = RuntimeError("not reported")
         self.assertIsNone(control.compute_units(client))
 
+    def test_high_ram_shape_is_requested_and_unknown_shapes_stop_before_access(self):
+        from colab_cli.client import Shape
+
+        for name, expected in (("high-ram", Shape.HIGH_RAM), ("", Shape.STANDARD)):
+            with (
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {
+                        **REQUEST,
+                        "COLAB_ADC_JSON": '{"type":"authorized_user"}',
+                        "CLIPFORGE_COLAB_SHAPE": name,
+                    },
+                ),
+            ):
+                client = Mock()
+                client.list_assignments.return_value = []
+                client.assign.return_value = SimpleNamespace(
+                    endpoint="owned-session",
+                    runtime_proxy_info=SimpleNamespace(
+                        url="https://t.invalid", token="t"
+                    ),
+                )
+                with patch.object(control, "authenticated_client", return_value=client):
+                    controller = control.Controller(temporary)
+                    controller.start()
+                self.assertEqual(client.assign.call_args.kwargs["shape"], expected)
+                self.assertEqual(controller.state()["shape"], expected.name)
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.dict(
+                os.environ,
+                {
+                    **REQUEST,
+                    "COLAB_ADC_JSON": '{"type":"authorized_user"}',
+                    "CLIPFORGE_COLAB_SHAPE": "huge",
+                },
+            ),
+            patch.object(control, "authenticated_client") as authenticated,
+        ):
+            controller = control.Controller(temporary)
+            with self.assertRaisesRegex(control.ControlError, "Unknown Colab shape"):
+                controller.start()
+            authenticated.assert_not_called()
+            self.assertFalse(controller.credentials_path.exists())
+
     def test_explicit_allocation_refusal_does_not_retry_or_leave_credentials(self):
         from colab_cli.client import TooManyAssignmentsError
 

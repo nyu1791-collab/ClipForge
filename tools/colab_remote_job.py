@@ -77,6 +77,15 @@ def command(arguments, environment, name, timeout=4800):
     return result.stdout
 
 
+def host_info():
+    """CPU cores and memory of the assigned runtime (standard or high-memory shape)."""
+    pages = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    return {
+        "cpu_count": len(os.sched_getaffinity(0)),
+        "memory_gib": round(pages / 2**30, 1),
+    }
+
+
 def gpu_info():
     result = subprocess.run(
         [
@@ -190,6 +199,7 @@ def main():
         report["stage"] = "hardware-check"
         if mode != "prepare-cache":
             report["gpu"] = gpu_info()
+        report["host"] = host_info()
         report["stage"] = "asset-setup"
         with timed(timings, "setup"):
             command(["bash", "tools/colab_setup.sh"], environment, "setup")

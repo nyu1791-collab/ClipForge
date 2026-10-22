@@ -108,6 +108,17 @@ def print_units(label, units):
         )
 
 
+def colab_shape():
+    """The runtime shape named by CLIPFORGE_COLAB_SHAPE: standard (default) or high-ram."""
+    from colab_cli.client import Shape
+
+    shapes = {"standard": Shape.STANDARD, "high-ram": Shape.HIGH_RAM}
+    name = os.environ.get("CLIPFORGE_COLAB_SHAPE") or "standard"
+    if name not in shapes:
+        raise ControlError("Unknown Colab shape: use standard or high-ram")
+    return shapes[name]
+
+
 class Controller:
     def __init__(self, root):
         self.root = Path(root)
@@ -132,6 +143,9 @@ class Controller:
         )
         if not re.fullmatch(r"[a-f0-9]{40}", request["source_ref"]):
             raise ControlError("Use an exact ClipForge source SHA")
+        # The high-memory shape gives 8 CPU cores instead of 2 for the CPU-bound setup,
+        # decompression and encoding around the GPU work, at a higher hourly rate.
+        shape = colab_shape()
         if self.state_path.is_file() and self.state().get("status") != "stopped":
             raise ControlError("This control directory already tracks a runtime")
         raw = os.environ.get("COLAB_ADC_JSON", "")
@@ -154,6 +168,7 @@ class Controller:
             "status": "creating",
             "account": EXPECTED_ACCOUNT,
             "units_before": units,
+            "shape": shape.name,
         }
         write_private(self.state_path, record)
         from colab_cli.client import Accelerator, Variant
@@ -162,7 +177,7 @@ class Controller:
         variant = Variant.DEFAULT if mode == "prepare-cache" else Variant.GPU
         try:
             assignment = client.assign(
-                uuid.uuid4(), variant=variant, accelerator=accelerator
+                uuid.uuid4(), variant=variant, accelerator=accelerator, shape=shape
             )
         except Exception as error:
             response = getattr(error, "response", None)
@@ -188,6 +203,7 @@ class Controller:
         print(
             "Colab runtime allocated for the verified account:",
             accelerator.value,
+            shape.name,
             flush=True,
         )
 
