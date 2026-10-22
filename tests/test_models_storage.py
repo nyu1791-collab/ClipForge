@@ -44,7 +44,9 @@ def test_invalid_spans(start, end):
         {"analysis_fps": 0},
         {"analysis_fps": 6},
         {"max_input_bytes": 0},
-        {"max_source_seconds": 7201},
+        {"max_source_seconds": 43201},
+        {"max_transport_bytes": 1023},
+        {"max_transport_bytes": 16 * 1024**3 + 1},
         {"min_seconds": 10, "max_seconds": 10},
         {"font": "Noto\nInjected"},
         {"font": r"Noto\x"},
@@ -57,6 +59,20 @@ def test_invalid_spans(start, end):
 def test_settings_reject_invalid_configuration(settings, updates):
     with pytest.raises(ValidationError):
         Settings.model_validate({**settings.model_dump(), **updates})
+
+
+def test_long_source_and_transport_budgets_keep_local_defaults():
+    settings = Settings(gemini_model="manual-no-api")
+    assert settings.max_source_seconds == 3600
+    assert settings.max_input_bytes == 1024**3
+    assert settings.max_transport_bytes == 6 * 1024**3
+    maximum = Settings(
+        gemini_model="manual-no-api",
+        max_source_seconds=43200,
+        max_transport_bytes=16 * 1024**3,
+    )
+    assert maximum.max_source_seconds == 43200
+    assert maximum.max_transport_bytes == 16 * 1024**3
 
 
 def pick(start=1, end=6, **overrides):

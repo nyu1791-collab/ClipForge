@@ -102,6 +102,16 @@ def test_audio_then_topics_then_video_reuses_single_asr(audio_job):
     assert len(events) == 5
 
 
+def test_saved_audio_size_is_checked_before_asr(audio_job):
+    vod, root, settings, events, _ = audio_job
+    af.acquire(vod, root)
+    (root / "audio.m4a").write_bytes(b"x" * 1025)
+    settings.max_input_bytes = 1024
+    with pytest.raises(PipelineError, match="input size limit"):
+        af.allocate_audio(root / "audio.m4a", root, settings, URL)
+    assert events == [("audio", 0, None)]
+
+
 def test_audio_review_can_choose_topics_before_video_fetch(audio_job):
     vod, root, settings, events, _ = audio_job
     result = af.previews(
@@ -468,13 +478,21 @@ def test_audio_metadata_requires_finite_duration(tmp_path, monkeypatch):
 @pytest.mark.parametrize("step", ["audio", "topics", "previews", "render"])
 def test_stage_entry_point_does_not_skip_ahead(tmp_path, monkeypatch, capsys, step):
     closed = []
-    monkeypatch.setattr(
-        af,
-        "KickVOD",
-        lambda *a, **k: SimpleNamespace(close=lambda: closed.append(True)),
-    )
+
+    def vod(*args, **kwargs):
+        assert kwargs["max_bytes"] == (
+            6 * 1024**3 if step in {"audio", "topics"} else 1024**3
+        )
+        return SimpleNamespace(close=lambda: closed.append(True))
+
+    monkeypatch.setattr(af, "KickVOD", vod)
     calls = []
-    monkeypatch.setattr(af, "acquire", lambda *a: calls.append("audio"))
+
+    def acquire(vod, root):
+        calls.append("audio")
+        (root / "audio.m4a").write_bytes(b"synthetic audio")
+
+    monkeypatch.setattr(af, "acquire", acquire)
     monkeypatch.setattr(
         af,
         "analyze",

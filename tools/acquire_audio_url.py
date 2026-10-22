@@ -56,7 +56,7 @@ def main(argv=None):
         vod = KickVOD(
             args.url,
             root / "segments",
-            max_bytes=settings.max_input_bytes,
+            max_bytes=settings.max_transport_bytes,
             max_seconds=settings.max_source_seconds,
         )
         try:

@@ -22,6 +22,8 @@ def load_tool(name):
 
 @pytest.fixture
 def submitter(tmp_path, monkeypatch):
+    from clipforge import kick_media
+
     module = load_tool("submit_job")
     monkeypatch.setenv("HOME", str(tmp_path))
     source = tmp_path / "source.mp4"
@@ -34,7 +36,28 @@ def submitter(tmp_path, monkeypatch):
         "releases": [],
         "tamper": False,
         "calls": [],
+        "preflight_duration": 5536,
+        "preflight_error": None,
+        "preflight_closed": False,
+        "preflight_budgets": [],
+        "playlists": [],
     }
+
+    class VOD:
+        def __init__(self, url, cache, **kwargs):
+            control["preflight_budgets"].append(kwargs)
+            assert kwargs["max_seconds"] == 86400
+
+        def playlist(self, quality):
+            control["playlists"].append(quality)
+            if control["preflight_error"]:
+                raise control["preflight_error"]
+            return [{"start": 0, "end": control["preflight_duration"]}], 160
+
+        def close(self):
+            control["preflight_closed"] = True
+
+    monkeypatch.setattr(kick_media, "KickVOD", VOD)
 
     def gh(*args, body=None, timeout=None):
         control["calls"].append(args)
@@ -443,11 +466,6 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
     monkeypatch.setattr(
         module, "digest", lambda *a: pytest.fail("URL-only submission read local media")
     )
-    monkeypatch.setattr(
-        module.tempfile,
-        "TemporaryDirectory",
-        lambda **k: pytest.fail("URL-only submission staged input"),
-    )
     module.main()
     inputs = control["posts"][0]["inputs"]
     assert inputs == {
@@ -468,10 +486,183 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
     assert request["video_sha256"] is None and request["video_bytes"] is None
     assert json.loads(inputs["settings_json"]) == request["settings"]
     assert request["settings"] == {
-        "gemini_model": "manual-no-api",
+        **json.loads(Path("config.landscape.example.json").read_text()),
         "asr_batch_size": 8,
         "threads": 4,
     }
+    assert control["playlists"] == ["lowest"] and control["preflight_closed"]
+    assert control["preflight_budgets"] == [
+        {"max_bytes": 6 * 1024**3, "max_seconds": 86400}
+    ]
+    assert len(inputs["settings_json"].encode("utf-8")) < module.MAX_SETTINGS_JSON_BYTES
+
+
+@pytest.mark.parametrize(
+    "duration, error, message",
+    [
+        (21601, None, "21601 seconds.*21600 seconds"),
+        (
+            5536,
+            "archive playlist is still growing; retry after completion",
+            "still growing",
+        ),
+        (5536, "Kick media HTTP 503; failed after 4 attempts", "HTTP 503.*4 attempts"),
+    ],
+)
+def test_url_preflight_rejects_before_dispatch(
+    submitter, tmp_path, monkeypatch, duration, error, message
+):
+    from clipforge.storage import PipelineError
+
+    module, _, control, _ = submitter
+    control["preflight_duration"] = duration
+    control["preflight_error"] = PipelineError(error) if error else None
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+        ],
+    )
+    with pytest.raises(RuntimeError, match=message):
+        module.main()
+    assert not control["posts"] and not control["releases"]
+    assert control["preflight_closed"] and control["playlists"] == ["lowest"]
+    assert not list((tmp_path / ".local/state/clipforge").glob("*/request.json"))
+
+
+@pytest.mark.parametrize("duration", [21600, 43200])
+def test_url_preflight_accepts_configured_duration_boundary(
+    submitter, tmp_path, monkeypatch, duration
+):
+    module, _, control, _ = submitter
+    control["preflight_duration"] = duration
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"max_source_seconds": duration}))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--config",
+            str(config),
+        ],
+    )
+    module.main()
+    assert len(control["posts"]) == 1 and control["preflight_closed"]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {},
+        {"max_source_seconds": 18000, "max_transport_bytes": 8 * 1024**3, "threads": 4},
+    ],
+)
+def test_url_settings_match_submission_acquisition_and_analysis(
+    submitter, tmp_path, monkeypatch, overrides
+):
+    from clipforge import audio_first
+    from clipforge.storage import write_json
+
+    module, _, control, _ = submitter
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(overrides))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--config",
+            str(config),
+        ],
+    )
+    module.main()
+    inputs = control["posts"][0]["inputs"]
+    state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
+    submitted = json.loads((state / "request.json").read_text())["settings"]
+    expected = Settings.model_validate(submitted)
+    assert submitted == {
+        **json.loads(Path("config.landscape.example.json").read_text()),
+        **overrides,
+    }
+    assert control["preflight_budgets"][0]["max_bytes"] == expected.max_transport_bytes
+    monkeypatch.syspath_prepend(str(Path("tools").resolve()))
+    acquisition = load_tool("acquire_audio_url")
+
+    class VOD:
+        def __init__(self, url, cache, **kwargs):
+            assert kwargs == {
+                "max_bytes": expected.max_transport_bytes,
+                "max_seconds": expected.max_source_seconds,
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(acquisition, "KickVOD", VOD)
+    monkeypatch.setattr(
+        acquisition,
+        "acquire",
+        lambda vod, root: (root / "audio.m4a").write_bytes(b"synthetic-audio"),
+    )
+    directory = tmp_path / "acquired"
+    acquisition.main(
+        [
+            "--url",
+            inputs["audio_url"],
+            "--request-id",
+            inputs["request_id"],
+            "--source-ref",
+            inputs["source_ref"],
+            "--settings-json",
+            inputs["settings_json"],
+            "--directory",
+            str(directory),
+        ]
+    )
+    acquired = json.loads((directory / "request.json").read_text())
+    assert acquired["settings"] == submitted
+
+    def allocate(source, root, settings, source_url):
+        assert settings == expected
+        assert source_url == inputs["audio_url"]
+        write_json(root / "asr-receipt.json", {"key": "e" * 64})
+        write_json(
+            root / "transcripts" / ("e" * 64 + ".json"),
+            {"language": "ja", "segments": []},
+        )
+        result = {"status": "topics_allocated", "topics": []}
+        write_json(root / "topics.json", result)
+        return result, None
+
+    monkeypatch.setattr(audio_first, "allocate_audio", allocate)
+    runner = load_tool("run_request")
+    monkeypatch.setenv("GITHUB_REPOSITORY", runner.PRIVATE_REPO)
+    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", inputs["source_ref"])
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.delenv("CLIPFORGE_REQUIRE_CUDA", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_request",
+            "run",
+            "--tag",
+            inputs["input_tag"],
+            "--directory",
+            str(directory),
+            "--output",
+            str(tmp_path / "analysis"),
+        ],
+    )
+    runner.main()
 
 
 @pytest.mark.parametrize(
@@ -480,6 +671,7 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
         ({"unexpected": True}, "unknown fields"),
         ({"bgm": "synthetic.mp3"}, "local files"),
         ({"heading": "あ" * 6000}, "16 KB"),
+        ({"max_source_seconds": 43201}, "max_source_seconds.*43200"),
     ],
 )
 def test_url_only_audio_rejects_invalid_settings_before_dispatch(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standard-library-only VM gateway: stage private input, dispatch, retrieve."""
+"""VM gateway: preflight URL audio, stage private input, dispatch, retrieve."""
 
 import argparse
 import fcntl
@@ -73,6 +73,7 @@ SETTINGS_FIELDS = {
     "analysis_fps",
     "max_source_seconds",
     "max_input_bytes",
+    "max_transport_bytes",
     "chat_url",
     "chat_offset_seconds",
 }
@@ -107,6 +108,44 @@ def parse_settings_json(value):
     settings = json.loads(value)
     validate_settings(settings)
     return settings
+
+
+def preflight_audio_url(url, settings):
+    """Read metadata and the lowest playlist only, before a runner is dispatched."""
+    from clipforge.kick_media import KickVOD
+    from clipforge.models import Settings
+    from clipforge.storage import PipelineError
+    from pydantic import ValidationError
+
+    try:
+        settings = Settings.model_validate(settings)
+    except ValidationError as error:
+        reasons = "; ".join(
+            ".".join(map(str, row["loc"])) + ": " + row["msg"]
+            for row in error.errors(include_input=False)
+        )
+        raise RuntimeError("invalid audio URL settings: " + reasons) from None
+    with tempfile.TemporaryDirectory(prefix="clipforge-preflight-") as temporary:
+        try:
+            # Read beyond the job's duration limit so rejection includes the actual length.
+            vod = KickVOD(
+                url,
+                Path(temporary) / "segments",
+                max_bytes=settings.max_transport_bytes,
+                max_seconds=86400,
+            )
+            try:
+                segments, _ = vod.playlist("lowest")
+            finally:
+                vod.close()
+        except PipelineError as error:
+            raise RuntimeError("audio URL preflight failed: " + str(error)) from None
+    duration = segments[-1]["end"]
+    if duration > settings.max_source_seconds:
+        raise RuntimeError(
+            f"archive duration {duration:g} seconds exceeds configured limit "
+            f"{settings.max_source_seconds:g} seconds; no workflow dispatched"
+        )
 
 
 def gh(*args, body=None, timeout=120):
@@ -822,8 +861,18 @@ def dispatch(args, state_root):
         if not args.audio_analysis_url and "GEMINI_API_KEY" not in names:
             raise RuntimeError("private worker GEMINI_API_KEY is not registered")
     source = args.input.resolve(strict=True) if args.input else None
-    settings = json.loads(args.config.read_text()) if args.config else {}
-    validate_settings(settings)
+    overrides = json.loads(args.config.read_text()) if args.config else {}
+    validate_settings(overrides)
+    url_only = bool(args.audio_analysis_url and source is None)
+    settings = {}
+    if url_only:
+        settings = json.loads(
+            (
+                Path(__file__).resolve().parents[1] / "config.landscape.example.json"
+            ).read_text()
+        )
+        validate_settings(settings)
+    settings.update(overrides)
     settings["gemini_model"] = args.gemini_model
     if args.audio_analysis_url and (
         settings.get("image_search")
@@ -842,6 +891,9 @@ def dispatch(args, state_root):
         raise RuntimeError("invalid Gemini model identifier")
     if type(clips) is not int or not 1 <= clips <= 10:
         raise RuntimeError("clip count must be between 1 and 10")
+    if url_only:
+        parse_settings_json(json.dumps(settings, ensure_ascii=False))
+        preflight_audio_url(args.audio_analysis_url, settings)
     maximum = settings.get("max_input_bytes", 1073741824)
     if source is not None and (
         not source.is_file()

@@ -36,6 +36,8 @@ uv run --no-sync python tools/kick_audio_first.py \
 
 URLだけで音声取得・ASR・話題分割を投入できる。対応する `deploy/clipforge.yml` と実装を非公開workerへ配置して使う。
 投入側はreleaseを作らず、設定をJSON文字列のdispatch入力 `settings_json`（UTF-8で最大16 KB）で渡す。依頼ID・設定はローカルの `request.json` にも保存する。`--output` で完了待機と検証付き回収を行う。
+URLだけの投入（`--input` なし）は、投入側チェックアウトの `config.landscape.example.json` を土台に `--config` の指定キーを上書きし、CLIの指定を反映した設定を保存・送信する。許可キーと16 KB制限を投入前に検証する。土台を含めた設定は16 KB未満で、差分送信は不要。runner取得とColab解析は依頼内の設定だけを読み、各環境のexample設定を読み直さない（既存のCUDA必須指定時のdevice/compute type上書きは継続）。
+dispatch前に制御側でKickVODのメタデータと最低画質プレイリストを読み、終了済みか・配信長が上限内かを確認する。この確認ではTSを取得せず、ASRや描画も開始しない。上限超過は配信長と設定上限（秒）を示して停止し、配信中・接続再試行の最終失敗も理由を示して停止する。runner・GPUは起動しない。制御側にも `media-fetch` の依存が必要。
 GitHub-hosted `ubuntu-24.04` runnerが、GPU割り当て前に `uv sync --locked --extra media-fetch --no-dev` の環境で音声を取得する。
 runnerは `GITHUB_TOKEN` で一時releaseを作り、`tools/acquire_audio_url.py` が `tools/submit_job.py` の共通関数で設定のサイズ・JSON・許可キーを検証する。KickVODの既定6並列取得と `audio_first.acquire` を使い、音声を `input-video.bin`、設定・SHA-256・サイズ確定済みの依頼を `request.json` としてrunnerがアップロードしてからGPUを割り当てる。一時releaseは既存の `always()` ステップで削除する。
 runnerの音声取得は固定済み依存のPyAVで連結TSを復号し、16 kHz・モノラル・AAC 48 kbpsのm4aへ変換する。長さの確認もPyAVで行い、ffmpeg/ffprobe CLI・apt・`.deb`キャッシュは使わない。候補映像・高画質区間の取得と描画は従来どおりffmpeg CLIを使う。
@@ -76,6 +78,13 @@ uv run --no-sync python tools/submit_job.py --collect REQUEST_ID --run-id RUN_ID
 ローカル記録がある場合は従来どおりで、これらの引数は使わない。
 音声・ASR・話題・manifestのハッシュと依頼元SHAを検査する。Colab GPUではASRをCUDA/float16で実行し、CPU workerでは設定に従う。
 キャッシュが一致しない音声や別配信のASRを流用しない。長いASRは完了まで時間を要し、失敗後の途中チェックポイント再開はこの経路では未実装。
+
+### 長い配信の予算とメモリ
+
+- `max_source_seconds` の設定可能上限は43,200秒（12時間）。landscape設定は21,600秒（6時間）なので、URLだけの投入も既定で6時間まで受け付ける。モデルの既定3,600秒はローカル動画の `pipeline` / `landscape` の長さ制限にも使われるため維持する。6時間を超える終了済み配信は、必要な上限を `--config` で明示する。
+- 音声取得時の `max_transport_bytes` は既定6 GiB、設定可能範囲1 KiB〜16 GiB。最低画質に映像が含まれる場合の一時TS取得予算であり、保存音声の上限とは別。保存音声には `max_input_bytes`（既定1 GiB、上限2 GiB）を適用する。AAC 48 kbpsの6時間音声は概算130 MB（コンテナ等を除く）。最低画質のビットレート次第では6時間未満でも転送予算に達するので、必要なら16 GiB以内で明示する。
+- 後段workerのプレビュー・1080p区間取得は従来の2 GiB予算。直接CLIの `previews` / `render` は従来の `max_input_bytes` 予算を維持し、`audio` / `topics` の音声取得にだけ `max_transport_bytes` を使う。選定区間のみの映像取得に全編音声用の予算を広げない。
+- `signals.read_samples` は6時間 × 16,000 Hz = 345,600,000サンプルを読む。float32の保持配列は1,382,400,000 bytes（約1.38 GB / 1.29 GiB）。読み込み時には16-bit PCMの約0.69 GBと、変換・正規化のfloat32配列2本が一時的に重なり、当該処理だけのピークは概算3.46 GB（3.22 GiB）。ASR/VADのコピー・特徴量・モデル等は別途必要だが、51 GBのColab high-ramではこの音声読み込みがメモリ不足の主因となる見積もりではない。6時間の実ASRのピークRSS・所要時間・完走は未計測。
 
 ### 失敗・タイムアウト・キャンセル時の途中保存（私有）
 

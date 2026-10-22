@@ -212,8 +212,10 @@ class Settings(Record):
     # strict refuses a clip whose quality.json lists failures; report keeps it and records them.
     quality_gate: Literal["report", "strict"] = "strict"
     analysis_fps: float = Field(default=2, ge=0.5, le=5)
-    max_source_seconds: float = Field(default=3600, ge=5, le=7200)
+    max_source_seconds: float = Field(default=3600, ge=5, le=43200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
+    # Temporary HLS transport may contain video even when only audio is retained.
+    max_transport_bytes: int = Field(default=6 * 1024**3, ge=1024, le=16 * 1024**3)
     chat_url: str | None = None
     chat_offset_seconds: float = Field(default=0, ge=-300, le=300)
 

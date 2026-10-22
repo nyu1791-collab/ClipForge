@@ -145,6 +145,8 @@ def analyze(vod, root, settings):
 def allocate_audio(source, root, settings, source_url):
     """Worker entry point for an already acquired audio file; no Kick or video fetch."""
     canonical(source_url)
+    if not 0 < source.stat().st_size <= settings.max_input_bytes:
+        raise PipelineError("audio exceeds the input size limit")
     info = audio_info(source)
     if info["duration"] > settings.max_source_seconds:
         raise PipelineError("source duration exceeds the analysis budget")
@@ -512,11 +514,21 @@ def main(argv=None):
             vod = KickVOD(
                 args.url,
                 root / "segments",
-                max_bytes=settings.max_input_bytes,
+                max_bytes=(
+                    settings.max_transport_bytes
+                    if args.stage in {"audio", "topics"}
+                    else settings.max_input_bytes
+                ),
                 max_seconds=settings.max_source_seconds,
             )
             if args.stage == "audio":
                 acquire(vod, root)
+                if (
+                    not 0
+                    < (root / "audio.m4a").stat().st_size
+                    <= settings.max_input_bytes
+                ):
+                    raise PipelineError("audio exceeds the input size limit")
                 status = "audio_acquired"
             elif args.stage == "topics":
                 result, _ = analyze(vod, root, settings)

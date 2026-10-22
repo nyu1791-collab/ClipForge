@@ -27,6 +27,7 @@ def acquisition(tmp_path, monkeypatch):
         "settings": {
             "gemini_model": "manual-no-api",
             "max_input_bytes": 8192,
+            "max_transport_bytes": 32768,
             "max_source_seconds": 600,
             "asr_batch_size": 8,
         },
@@ -44,7 +45,7 @@ def acquisition(tmp_path, monkeypatch):
     class VOD:
         def __init__(self, url, cache, **kwargs):
             assert url == URL
-            assert kwargs == {"max_bytes": 8192, "max_seconds": 600}
+            assert kwargs == {"max_bytes": 32768, "max_seconds": 600}
             self.cache = cache
             control["created"] = True
 
