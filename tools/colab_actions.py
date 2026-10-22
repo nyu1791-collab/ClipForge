@@ -120,9 +120,9 @@ def colab_shape():
 
 
 # Clip rendering is CPU work (x264), so it tries the cheapest runtime first and moves on only
-# when the account refuses one more of that kind (measured 2026-10-22: two T4 at once; L4 and
-# CPU runtimes are granted alongside). Rates measured then: CPU high-ram 0.26, T4 1.07,
-# T4 high-ram 1.27, L4 1.54 compute units an hour.
+# when the account refuses one more of that kind. Measured 2026-10-22: at most two T4 and two
+# L4 at once, counted per kind; three CPU high-ram and two CPU standard were granted together.
+# Rates then: CPU high-ram 0.26, T4 1.07, T4 high-ram 1.27, L4 1.54 compute units an hour.
 DEFAULT_POOLS = {"audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4"}
 
 
