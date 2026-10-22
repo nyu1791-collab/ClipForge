@@ -6,6 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .storage import TIME_TOLERANCE
+
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -279,7 +281,7 @@ def validate_picks(picks, duration, settings):
         raise ValueError("invalid selected clip count")
     accepted = []
     for pick in picks:
-        if not math.isfinite(pick.end) or pick.end > duration + 0.01:
+        if not math.isfinite(pick.end) or pick.end > duration + TIME_TOLERANCE:
             raise ValueError("selected clip is outside the video")
         if (
             not settings.min_seconds - 0.1

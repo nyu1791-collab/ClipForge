@@ -431,6 +431,8 @@ cuda = [
     { name = "nvidia-cudnn-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
 ]
 media-fetch = [
+    { name = "av", version = "18.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "av", version = "19.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "curl-cffi" },
 ]
 
@@ -443,6 +445,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "av", marker = "python_full_version >= '3.12' and extra == 'media-fetch'", specifier = "==19.0.2" },
+    { name = "av", marker = "python_full_version < '3.12' and extra == 'media-fetch'", specifier = "==18.1.0" },
     { name = "budoux", specifier = "==0.10.0" },
     { name = "cairosvg", specifier = "==2.9.1" },
     { name = "chat-downloader", marker = "extra == 'chat'", specifier = "==0.2.8" },

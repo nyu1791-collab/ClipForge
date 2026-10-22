@@ -31,7 +31,7 @@ LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
 MAX_TRUE_PEAK = -1.0  # dBTP; leaves room for lossy encoding overshoot
 TEXT_STYLES = {"Default", "Sequential"}
 MAX_CAPTION_LINES = 2
-MAX_JAPANESE_LINE_CHARS = 13
+READING_CPS_THRESHOLDS = (4, 7, 10)
 SHORT_CAPTION_MS = round(MIN_DISPLAY_SECONDS * 1000)  # shorter captions flicker
 LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
 
@@ -248,7 +248,7 @@ def horizontal_width_metrics(path, line_chars):
     }
 
 
-def japanese_style_warnings(events, landscape):
+def japanese_style_warnings(events, landscape, settings=None):
     """Netflix Japanese style checks; character counts are independent of font pixels."""
     texts = [text for _, _, text in events]
     found = []
@@ -273,6 +273,11 @@ def japanese_style_warnings(events, landscape):
             + unspaced[0].replace("\n", " ")[:10]
         )
     if landscape:
+        line_chars = (
+            settings.horizontal_line_chars
+            if settings
+            else Settings.model_fields["horizontal_line_chars"].default
+        )
         long_lines = [
             line
             for text in texts
@@ -281,11 +286,11 @@ def japanese_style_warnings(events, landscape):
                 1 if unicodedata.east_asian_width(char) in "FWA" else 0.5
                 for char in line
             )
-            > MAX_JAPANESE_LINE_CHARS
+            > line_chars
         ]
         if long_lines:
             found.append(
-                f"{len(long_lines)} caption line(s) exceed {MAX_JAPANESE_LINE_CHARS} "
+                f"{len(long_lines)} caption line(s) exceed {line_chars} "
                 "fullwidth characters, for example " + long_lines[0][:10]
             )
     return found
@@ -344,7 +349,9 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             + splits[0]
         )
     warnings.extend(
-        japanese_style_warnings(events, rendered["width"] > rendered["height"])
+        japanese_style_warnings(
+            events, rendered["width"] > rendered["height"], settings
+        )
     )
     decode = decode_errors(directory / "video.mp4")
     if decode:
@@ -387,7 +394,8 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             else 10,
             "reading_count_method": "non_whitespace_codepoints",
             "captions_over_cps": {
-                str(cps): sum(rate > cps for rate in rates) for cps in (4, 7, 10)
+                str(cps): sum(rate > cps for rate in rates)
+                for cps in READING_CPS_THRESHOLDS
             },
             **(
                 horizontal_width_metrics(

@@ -10,6 +10,7 @@ import sys
 
 from . import fonts, media, pipeline, signals
 from .models import SelectedClip, Settings, validate_picks
+from .quality import READING_CPS_THRESHOLDS
 from .storage import PipelineError, digest, fingerprint, within, write_json
 
 
@@ -46,7 +47,7 @@ def safe_quality_summary(report):
     counts = report.get("metrics", {}).get("captions_over_cps", {})
     metrics["captions_over_cps"] = {
         str(cps): counts[str(cps)]
-        for cps in (4, 7, 10)
+        for cps in READING_CPS_THRESHOLDS
         if type(counts.get(str(cps))) is int and counts[str(cps)] >= 0
     }
     return {
@@ -168,7 +169,7 @@ def summarize_delivery(manifest, output, expected):
         if (info["width"], info["height"], info.get("audio_sample_rate")) != (
             1920,
             1080,
-            48000,
+            media.AUDIO_RATE,
         ):
             raise PipelineError("landscape output dimensions or audio rate differ")
         report = row["quality"]

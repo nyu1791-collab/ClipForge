@@ -27,7 +27,7 @@ import threading
 import time
 
 MODEL = "opencode/deepseek-v4.1-flash-free"
-# The free model is the default; GPT-6.1 Sol runs on the owner's ChatGPT subscription through
+# GPT-6.1 Sol is the default and runs on the owner's ChatGPT subscription through
 # one logged-in OpenCode profile named by CLIPFORGE_OPENAI_PROFILE (its data directory).
 # A profile is never switched automatically; another one is used only when the owner says so.
 MODELS = {
@@ -40,7 +40,7 @@ MODELS = {
         "slots": 4,
     },
 }
-# Fixes and implementation go to GPT-6.1 Sol at high reasoning; reading stays on the free model.
+# Both read and write tasks default to GPT-6.1 Sol at high reasoning.
 DEFAULT_MODEL = {"write": "sol", "read": "sol"}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
@@ -387,7 +387,7 @@ def main(argv=None):
         "--model",
         choices=sorted(MODELS),
         help="deepseek (free) or sol (GPT-6.1 Sol high via one ChatGPT profile); "
-        "write tasks default to sol and read tasks to deepseek",
+        "both read and write tasks default to sol",
     )
     args = parser.parse_args(argv)
     args.model = args.model or DEFAULT_MODEL[args.mode]

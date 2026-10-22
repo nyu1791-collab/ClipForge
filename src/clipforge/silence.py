@@ -6,6 +6,7 @@ All times are original-video seconds until mapped with to_output().
 import tempfile
 from pathlib import Path
 
+from .media import ASR_SAMPLE_RATE
 from .storage import PipelineError, process
 
 
@@ -50,15 +51,15 @@ def silero_spans(source, start, end):
                 "-ac",
                 "1",
                 "-ar",
-                "16000",
+                str(ASR_SAMPLE_RATE),
                 str(path),
             ],
             timeout=600,
         )
         model = load_silero_vad()
-        wave = read_audio(str(path), sampling_rate=16000)
+        wave = read_audio(str(path), sampling_rate=ASR_SAMPLE_RATE)
         stamps = get_speech_timestamps(
-            wave, model, sampling_rate=16000, return_seconds=True
+            wave, model, sampling_rate=ASR_SAMPLE_RATE, return_seconds=True
         )
     spans = []
     for stamp in stamps:

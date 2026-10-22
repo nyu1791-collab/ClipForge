@@ -9,11 +9,12 @@ import shutil
 import subprocess
 
 from .hardware import encode_threads, video_options
-from .storage import PipelineError, process
+from .storage import TIME_TOLERANCE, PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
 FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf"]
 AUDIO_RATE = 48000
+ASR_SAMPLE_RATE = 16000
 LOUDNESS = "I=-16:TP=-1.5:LRA=11"
 MAX_KEEP_REGIONS = 60
 MAX_SOUND_EFFECTS = 20
@@ -168,7 +169,7 @@ def audio(source, destination, duration):
             "-ac",
             "1",
             "-ar",
-            "16000",
+            str(ASR_SAMPLE_RATE),
             "-c:a",
             "pcm_s16le",
             destination,
@@ -217,7 +218,7 @@ def preview(source, destination, candidate, settings):
             "-ac",
             "1",
             "-ar",
-            "16000",
+            str(ASR_SAMPLE_RATE),
             "-b:a",
             "48k",
             "-movflags",
@@ -553,10 +554,10 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
     width, height = frame_size(settings)
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
     for zoom in settings.zoom:
-        if zoom.end > duration + 0.01:
+        if zoom.end > duration + TIME_TOLERANCE:
             raise PipelineError("zoom interval is outside the rendered clip")
     for visual in visuals:
-        if visual["end"] > duration + 0.01:
+        if visual["end"] > duration + TIME_TOLERANCE:
             raise PipelineError("visual interval is outside the rendered clip")
         if not Path(visual["file"]).is_file():
             raise PipelineError("visual file is missing")

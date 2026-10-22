@@ -28,7 +28,15 @@ from . import topics as topic_tools
 from .captions import create as create_captions
 from .hardware import asr_options, cpu_threads, encode_threads
 from .models import Candidate, SelectedClip, Transcript, validate_picks
-from .storage import PipelineError, digest, fingerprint, stage, within, write_json
+from .storage import (
+    TIME_TOLERANCE,
+    PipelineError,
+    digest,
+    fingerprint,
+    stage,
+    within,
+    write_json,
+)
 
 
 def prepare(source, output, resume, settings):
@@ -865,7 +873,7 @@ def cut(source, output, start, end, settings, transcript_file=None, resume=False
             reason="User-selected interval",
             confidence=1,
         )
-        if end > info["duration"] + 0.01:
+        if end > info["duration"] + TIME_TOLERANCE:
             raise PipelineError("clip interval exceeds the input video")
         transcript = (
             Transcript.model_validate_json(Path(transcript_file).read_text())

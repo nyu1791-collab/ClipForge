@@ -188,12 +188,13 @@ def test_unsupported_playlists_fail_closed(tag):
 
 def test_byte_duration_and_live_stream_limits(vod):
     value, data, _, _ = vod
+    assert value.max_seconds == 43200
     with pytest.raises(PipelineError, match="budget"):
         value.fetch(MASTER, 1)
     value.max_seconds = 1
     with pytest.raises(PipelineError, match="duration budget"):
         value.playlist("lowest")
-    value.max_seconds = 14400
+    value.max_seconds = 43200
     data["https://stream.kick.com/archive/audio.m3u8"] = PLAYLIST.replace(
         "#EXT-X-ENDLIST", ""
     )

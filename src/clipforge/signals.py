@@ -25,7 +25,7 @@ def read_samples(path):
         if (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) != (
             1,
             2,
-            16000,
+            media.ASR_SAMPLE_RATE,
         ):
             raise PipelineError("speech audio must be mono 16-bit PCM at 16 kHz")
         frames = wav.readframes(wav.getnframes())

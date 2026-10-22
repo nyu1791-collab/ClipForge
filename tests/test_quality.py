@@ -425,8 +425,28 @@ def test_landscape_reading_and_real_font_width_are_independent(
     settings.horizontal_line_chars = 8
     narrower = quality.check_clip(folder, landscape, [], [], settings)
     assert narrower["metrics"]["lines_over_horizontal_limit"] == 1
-    # Independent 13-equivalent measurement does not silently strengthen the quality gate.
+    assert any("caption line(s) exceed 8" in text for text in narrower["warnings"])
+    assert not any("caption line(s) exceed" in text for text in report["warnings"])
+    # The configured line limit only warns; it does not strengthen the quality gate.
     assert narrower["passed"] == report["passed"]
+
+
+@pytest.mark.parametrize("line_chars", [8, 20])
+def test_japanese_line_limit_uses_settings_and_preserves_halfwidth_counting(
+    settings, line_chars
+):
+    settings.horizontal_line_chars = line_chars
+    events = [
+        (0, 2000, "あ" * line_chars),
+        (2000, 4000, "i" * (2 * line_chars)),
+        (4000, 6000, "あ" * line_chars + "i"),
+    ]
+    warnings = quality.japanese_style_warnings(events, True, settings)
+    assert len(warnings) == 1
+    assert warnings[0].startswith(
+        f"1 caption line(s) exceed {line_chars} fullwidth characters"
+    )
+    assert quality.japanese_style_warnings(events, False, settings) == []
 
 
 @pytest.mark.parametrize(

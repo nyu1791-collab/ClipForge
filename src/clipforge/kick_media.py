@@ -17,7 +17,8 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
-from .storage import PipelineError, digest, process, write_json
+from .media import ASR_SAMPLE_RATE
+from .storage import TIME_TOLERANCE, PipelineError, digest, process, write_json
 
 
 RANGE_FORMAT = "segment-remux-v1"
@@ -62,9 +63,11 @@ def extract_audio(source, output, start, duration):
                 if media.start_time is not None
                 else float((audio.start_time or 0) * audio.time_base)
             )
-            stream = target.add_stream("aac", rate=16000)
+            stream = target.add_stream("aac", rate=ASR_SAMPLE_RATE)
             stream.layout, stream.bit_rate = "mono", 48000
-            resampler = av.AudioResampler(format="fltp", layout="mono", rate=16000)
+            resampler = av.AudioResampler(
+                format="fltp", layout="mono", rate=ASR_SAMPLE_RATE
+            )
             written = 0
 
             def encode(frame):
@@ -72,10 +75,10 @@ def extract_audio(source, output, start, duration):
                 if frame.time is None:
                     raise PipelineError("audio timestamp is required")
                 relative = frame.time - origin
-                first = max(0, math.ceil((start - relative) * 16000 - 1e-6))
+                first = max(0, math.ceil((start - relative) * ASR_SAMPLE_RATE - 1e-6))
                 last = min(
                     frame.samples,
-                    math.ceil((start + duration - relative) * 16000 - 1e-6),
+                    math.ceil((start + duration - relative) * ASR_SAMPLE_RATE - 1e-6),
                 )
                 if first >= last:
                     return
@@ -84,7 +87,10 @@ def extract_audio(source, output, start, duration):
                     format="fltp",
                     layout="mono",
                 )
-                trimmed.sample_rate, trimmed.time_base = 16000, Fraction(1, 16000)
+                trimmed.sample_rate, trimmed.time_base = (
+                    ASR_SAMPLE_RATE,
+                    Fraction(1, ASR_SAMPLE_RATE),
+                )
                 trimmed.pts = written
                 written += trimmed.samples
                 for packet in stream.encode(trimmed):
@@ -205,7 +211,7 @@ def parse_media(text, base, root):
 
 
 class KickVOD:
-    def __init__(self, url, cache, max_bytes=2 * 1024**3, max_seconds=14400, workers=6):
+    def __init__(self, url, cache, max_bytes=2 * 1024**3, max_seconds=43200, workers=6):
         self.url = canonical(url)
         if not 1024 <= max_bytes <= 16 * 1024**3 or not 1 <= max_seconds <= 86400:
             raise PipelineError("invalid byte/duration budget")
@@ -408,7 +414,7 @@ class KickVOD:
         duration = segments[-1]["end"]
         if (
             not all(math.isfinite(v) for v in (start, end))
-            or not 0 <= start < end <= duration + 0.01
+            or not 0 <= start < end <= duration + TIME_TOLERANCE
         ):
             raise PipelineError("requested range is outside archive")
         self._download_segments(
@@ -515,7 +521,7 @@ class KickVOD:
         end = duration if end is None else end
         if (
             not all(math.isfinite(v) for v in (start, end))
-            or not 0 <= start < end <= duration + 0.01
+            or not 0 <= start < end <= duration + TIME_TOLERANCE
         ):
             raise PipelineError("requested range is outside archive")
         selected = [s for s in segments if s["end"] > start and s["start"] < end]

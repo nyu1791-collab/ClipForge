@@ -25,6 +25,8 @@ dependencies = [
 [project.optional-dependencies]
 chat = ["chat-downloader==0.2.8"]
 media-fetch = [
+    "av==18.1.0; python_version < '3.12'",
+    "av==19.0.2; python_version >= '3.12'",
     "curl-cffi==0.13.0",
 ]
 cuda = [
