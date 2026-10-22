@@ -3,10 +3,38 @@
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": [
-      "Read", "Edit", "Write", "Glob", "Grep", "Bash",
-      "WebFetch", "WebSearch", "Agent",
-      "mcp__github", "mcp__claude-code-remote",
-      "mcp__Remote_Desktop_Commander", "mcp__Google_Drive"
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "mcp__github",
+      "mcp__claude-code-remote",
+      "mcp__Remote_Desktop_Commander",
+      "mcp__Google_Drive"
+    ],
+    "deny": [
+      "Read(./uv.lock)",
+      "Read(./tools/colab-control-requirements.txt)",
+      "Read(./.venv/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./outputs/**)",
+      "Read(./artifacts/**)",
+      "Read(./inputs/**)",
+      "Read(./build/**)",
+      "Read(./dist/**)",
+      "Read(./.pytest_cache/**)",
+      "Read(./.ruff_cache/**)",
+      "Read(./coverage.xml)",
+      "Read(./**/*.mp4)",
+      "Read(./**/*.wav)",
+      "Read(./**/*.m4a)",
+      "Read(./**/*.png)",
+      "Read(./**/*.jpg)"
     ]
   }
 }
