@@ -153,7 +153,7 @@ def test_dispatch_is_private_pinned_and_correlated(submitter, tmp_path):
 @pytest.mark.parametrize("condition", ["private", "active"])
 def test_rejects_public_repository_and_active_jobs(submitter, condition):
     _, _, control, invoke = submitter
-    control[condition] = False if condition == "private" else True
+    control[condition] = condition != "private"
     with pytest.raises(RuntimeError):
         invoke()
     assert not control["posts"] and not control["releases"]
@@ -192,8 +192,8 @@ def test_failed_download_does_not_leave_partial_destination(submitter, tmp_path)
 
 def test_gateway_settings_field_list_tracks_model(submitter):
     module = submitter[0]
-    assert module.SETTINGS_FIELDS | module.LOCAL_FILE_FIELDS == set(
-        Settings.model_fields
+    assert (
+        set(Settings.model_fields) == module.SETTINGS_FIELDS | module.LOCAL_FILE_FIELDS
     )
     assert not module.SETTINGS_FIELDS & module.LOCAL_FILE_FIELDS
 

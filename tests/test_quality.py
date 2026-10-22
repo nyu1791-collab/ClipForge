@@ -91,7 +91,9 @@ def test_measurement_reads_the_summary_and_refuses_when_it_is_missing(
         SimpleNamespace(returncode=1, stderr=SUMMARY),
         SimpleNamespace(returncode=0, stderr="no summary"),
     ]:
-        monkeypatch.setattr(quality.subprocess, "run", lambda *a, **k: result)
+        monkeypatch.setattr(
+            quality.subprocess, "run", lambda *a, _result=result, **k: _result
+        )
         with pytest.raises(PipelineError, match="could not be measured"):
             quality.measure_output(tmp_path / "video.mp4")
 

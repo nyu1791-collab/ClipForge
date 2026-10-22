@@ -263,10 +263,9 @@ def test_mid_word_review_is_rejected_before_any_high_quality_fetch(audio_job):
 
 
 def test_lock_prevents_duplicate_analysis(tmp_path):
-    with af.exclusive(tmp_path):
-        with pytest.raises(PipelineError, match="another"):
-            with af.exclusive(tmp_path):
-                pytest.fail("duplicate lock")
+    with af.exclusive(tmp_path), pytest.raises(PipelineError, match="another"):
+        with af.exclusive(tmp_path):
+            pytest.fail("duplicate lock")
 
 
 def test_only_generated_transport_cache_is_discarded(tmp_path):

@@ -142,7 +142,7 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     for value in hashes.values():
         if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
             raise RuntimeError("invalid SHA-256 entry in stage receipt")
-    if not REQUIRED_FILES <= listed:
+    if not listed >= REQUIRED_FILES:
         raise RuntimeError("stage artifact omits required files")
     found = staged_files(root) - {"request-receipt.json"}
     missing = listed - found

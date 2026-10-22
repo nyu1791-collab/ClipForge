@@ -491,10 +491,13 @@ def group(tokens, measure, line_px, max_lines=2):
     final = sentence_ends(tokens)
     groups, current = [], []
     for index, token in enumerate(tokens):
-        if current and token[0] - current[-1][1] > PAUSE_SECONDS:
-            groups.append(current)
-            current = []
-        elif current and index - 1 in final and _lasts_a_caption(current):
+        if (
+            current
+            and token[0] - current[-1][1] > PAUSE_SECONDS
+            or current
+            and index - 1 in final
+            and _lasts_a_caption(current)
+        ):
             groups.append(current)
             current = []
         while current and overflows(current, token):
