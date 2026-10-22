@@ -3,12 +3,10 @@
   "permissions": {
     "defaultMode": "acceptEdits",
     "allow": [
-      "Read",
-      "Edit",
-      "Write",
-      "Glob",
-      "Grep",
-      "Bash"
+      "Read", "Edit", "Write", "Glob", "Grep", "Bash",
+      "WebFetch", "WebSearch", "Agent",
+      "mcp__github", "mcp__claude-code-remote",
+      "mcp__Remote_Desktop_Commander", "mcp__Google_Drive"
     ]
   }
 }
