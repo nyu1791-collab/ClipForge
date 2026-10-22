@@ -76,6 +76,9 @@ def probe(path):
         "audio_start": float(audio.get("start_time") or 0) if audio else 0.0,
         "frame_rate": _frame_rate(video.get("avg_frame_rate"))
         or _frame_rate(video.get("r_frame_rate")),
+        "audio_sample_rate": int(audio["sample_rate"])
+        if audio and audio.get("sample_rate")
+        else None,
     }
 
 

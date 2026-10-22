@@ -51,6 +51,7 @@ def job(tmp_path, monkeypatch, transcript, on_target_loudness):
             "width": 404,
             "height": 720,
             "audio": True,
+            "audio_sample_rate": 48000,
         }
 
     monkeypatch.setattr(media, "require_tools", lambda *a, **kw: None)

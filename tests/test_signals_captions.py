@@ -291,3 +291,27 @@ def test_margins_scale_with_the_frame_height():
     assert captions.margin_px(720) == captions.MARGIN == 25
     assert captions.margin_px(1920) == 67
     assert captions.scale(1080) == pytest.approx(1.5)
+
+
+def test_a_combining_mark_never_starts_a_line(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    # The mark at index 3 would start the second line; the break moves in front of 漢 instead.
+    assert captions.wrap_breaks("漢字漢́字", FixedWidth(), 30) == [2]
+
+
+def test_an_english_term_is_not_split_across_lines(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    # No word start is available, and ChatGPT fits a line, so the break goes before it.
+    assert captions.wrap_breaks("漢字ChatGPT漢字", FixedWidth(), 80) == [2, 10]
+
+
+def test_a_url_is_not_split_across_lines(monkeypatch):
+    monkeypatch.setattr(captions, "_PARSER", OnePhrase())
+    assert (
+        captions.wrap_breaks("漢字https://example.com/a漢字", FixedWidth(), 60)[0] == 2
+    )
+
+
+def test_text_is_normalised_to_composed_characters():
+    # か followed by a separate voiced mark is the single character が.
+    assert captions.safe("が") == "が"

@@ -2,6 +2,7 @@
 
 import math
 import re
+import unicodedata
 
 import pysubs2
 
@@ -43,6 +44,9 @@ _PARSER = None
 
 
 def safe(text):
+    # Canonical composition: a base character and its separate voiced mark become one
+    # character, so the line breaker never sees the two apart.
+    text = unicodedata.normalize("NFC", text)
     return (
         text.replace("\\", "＼")
         .replace("{", "｛")
@@ -147,12 +151,23 @@ NUMBER = re.compile(
 )
 
 
+# Latin words, versions and URLs stay on one line when they fit ("GPT-4o", "v1.2").
+LATIN = re.compile(r"[A-Za-z0-9]+(?:[._:/+%-][A-Za-z0-9]+)*")
+URL = re.compile(r"https?://\S+")
+
+
 def _unbreakable(text):
-    """Positions that may not start a line because they are inside a number and its unit."""
+    """Positions that may not start a line because they are inside a number, term or URL."""
     blocked = set()
-    for match in NUMBER.finditer(text):
-        blocked.update(range(match.start() + 1, match.end()))
+    for pattern in (NUMBER, LATIN, URL):
+        for match in pattern.finditer(text):
+            blocked.update(range(match.start() + 1, match.end()))
     return blocked
+
+
+def _is_combining(char):
+    """A combining mark belongs to the character before it and never starts a line."""
+    return unicodedata.category(char) in ("Mn", "Mc", "Me")
 
 
 def _is_kanji(char):
@@ -174,6 +189,8 @@ def _boundary_rank(prev, nxt):
     katakana or a Latin word); 1: between two kana; 0: inside a word, or not allowed.
     """
     if not prev or not nxt or nxt in NO_LINE_START or prev in NO_LINE_END:
+        return 0
+    if _is_combining(nxt):
         return 0
     if prev in BREAK_AFTER:
         return 3
@@ -221,7 +238,9 @@ def wrap_breaks(text, measure, line_px):
             )
             if cut is None:
                 cut = index
-                while cut > begin + 1 and text[cut] in NO_LINE_START:
+                while cut > begin + 1 and (
+                    text[cut] in NO_LINE_START or _is_combining(text[cut])
+                ):
                     cut -= 1
             # Move the break in front of a number; a number wider than a line is split.
             start = cut

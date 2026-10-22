@@ -13,11 +13,15 @@ from pathlib import Path
 import pysubs2
 
 from .captions import MAX_CAPTION_CPS, spoken_length
+from .media import AUDIO_RATE
 from .storage import PipelineError, write_json
 
 LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
 MAX_TRUE_PEAK = -1.0  # dBTP; leaves room for lossy encoding overshoot
 TEXT_STYLES = {"Default", "Sequential"}
+MAX_CAPTION_LINES = 2
+SHORT_CAPTION_MS = 1000  # shorter captions flicker
+LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
 
 
 def parse_ebur128_summary(text):
@@ -65,6 +69,46 @@ def measure_output(video):
     return measured
 
 
+def decode_errors(video):
+    """Messages from decoding the whole file; an empty list means it decodes cleanly."""
+    proc = subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-i",
+            str(Path(video).resolve()),
+            "-f",
+            "null",
+            "-",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )
+    lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
+    if proc.returncode:
+        lines.append(f"ffmpeg exited with status {proc.returncode}")
+    return lines
+
+
+def caption_events(path):
+    """(start ms, end ms, text) of each spoken caption event in a caption file.
+
+    An empty SRT is a clip without speech; it has no captions rather than an error.
+    """
+    if not Path(path).read_text(encoding="utf-8").strip():
+        return []
+    return [
+        (event.start, event.end, event.plaintext)
+        for event in pysubs2.load(str(path))
+        if event.style in TEXT_STYLES
+    ]
+
+
 def caption_rates(path):
     """Reading speed (characters per second) of each spoken caption, and overlap count."""
     rates, overlaps = [], 0
@@ -104,9 +148,14 @@ def _finite(value):
 def check_clip(directory, rendered, missing_glyphs, ledger):
     """Quality report for a rendered clip folder; the caller decides what to do with it."""
     failures, warnings = [], []
+    events = caption_events(directory / "captions.ass")
     rates, overlaps = caption_rates(directory / "captions.ass")
     if overlaps:
         failures.append(f"{overlaps} caption(s) overlap the previous caption")
+    if caption_events(directory / "captions.srt") != events:
+        failures.append("captions.srt and captions.ass differ in timing or text")
+    if any(text.count("\n") + 1 > MAX_CAPTION_LINES for _, _, text in events):
+        failures.append(f"a caption has more than {MAX_CAPTION_LINES} lines")
     if missing_glyphs:
         failures.append("the caption font lacks: " + "".join(missing_glyphs)[:40])
     too_fast = sum(rate > MAX_CAPTION_CPS for rate in rates)
@@ -115,8 +164,21 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
             f"{too_fast} caption(s) read faster than "
             f"{MAX_CAPTION_CPS:g} characters a second"
         )
+    short = sum(end - start < SHORT_CAPTION_MS for start, end, _ in events)
+    if short:
+        warnings.append(f"{short} caption(s) are shown for less than 1 second")
+    long = sum(end - start > LONG_CAPTION_MS for start, end, _ in events)
+    if long:
+        warnings.append(f"{long} caption(s) are shown for more than 4 seconds")
+    decode = decode_errors(directory / "video.mp4")
+    if decode:
+        failures.append(
+            "the rendered video does not decode cleanly: " + decode[0][:160]
+        )
     loudness = {"integrated_lufs": None, "true_peak_dbtp": None}
     if rendered["audio"]:
+        if rendered["audio_sample_rate"] != AUDIO_RATE:
+            failures.append(f"the rendered audio is not {AUDIO_RATE} Hz")
         try:
             loudness = measure_output(directory / "video.mp4")
         except PipelineError:
@@ -135,6 +197,8 @@ def check_clip(directory, rendered, missing_glyphs, ledger):
             "caption_max_cps": round(max(rates), 2) if rates else 0.0,
             "caption_median_cps": round(statistics.median(rates), 2) if rates else 0.0,
             "captions_over_limit": too_fast,
+            "captions_under_1s": short,
+            "captions_over_4s": long,
             "integrated_lufs": _finite(loudness["integrated_lufs"]),
             "true_peak_dbtp": _finite(loudness["true_peak_dbtp"]),
             "duration": rendered["duration"],

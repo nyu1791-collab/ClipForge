@@ -95,7 +95,7 @@ uv run --no-sync clipforge cut /path/to/source.mp4 \
 | `thumbnail` | 切り抜きの1フレームに題名を載せた1280×720のサムネイル |
 | `encode_preset` | x264の速度設定。既定は `slow`（CRF 18と組み合わせ）。`medium` と同程度の時間で、`veryfast`（CRF 20）より約4dB画質が高い。速さを優先するなら `veryfast` や `faster` |
 | `table_query` | 日本語版Wikipediaの表を検索し、独自の表として描画。記事のURLとCC BY-SA 4.0の表記を画面に表示 |
-| `quality_gate` | `strict`（既定）は失敗（字幕の重なり、フォントにない文字、出典・ライセンス不足、音量の測定不能）があるクリップを確定せず停止します。`report` は結果を `quality.json` に残して出力します |
+| `quality_gate` | `strict`（既定）は失敗（字幕の重なり、3行以上の字幕、ASSとSRTの内容の不一致、フォントにない文字、出典・ライセンス不足、映像が最後まで復号できない、48 kHzでない音声、音量の測定不能）があるクリップを確定せず停止します。`report` は結果を `quality.json` に残して出力します |
 
 速度を優先する場合は `asr_batch_size`（1〜16）で文字起こしを一括処理できます。実測では約2倍速くなりましたが、無音の扱いが変わり、話題の区切りも変わります（実音声では15件→10件）。既定の `0`（逐次処理）が品質の基準です。
 

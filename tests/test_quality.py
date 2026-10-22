@@ -1,5 +1,7 @@
 import json
 import math
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pysubs2
@@ -24,7 +26,13 @@ SUMMARY = """\
   True peak:
     Peak:       -1.4 dBFS
 """
-RENDERED = {"duration": 5.0, "width": 404, "height": 720, "audio": True}
+RENDERED = {
+    "duration": 5.0,
+    "width": 404,
+    "height": 720,
+    "audio": True,
+    "audio_sample_rate": 48000,
+}
 LEDGER = [{"file": "visuals/visual-01.png", "source_credit": "作者", "license": "CC0"}]
 
 
@@ -35,6 +43,14 @@ def write_ass(folder, events):
         style = rest[0] if rest else "Default"
         subtitles.append(pysubs2.SSAEvent(start=start, end=end, text=text, style=style))
     subtitles.save(str(folder / "captions.ass"))
+    # The SRT holds the same spoken captions, as the pipeline writes it.
+    spoken = pysubs2.SSAFile()
+    for event in subtitles:
+        if event.style in ("Default", "Sequential"):
+            spoken.append(
+                pysubs2.SSAEvent(start=event.start, end=event.end, text=event.plaintext)
+            )
+    spoken.save(str(folder / "captions.srt"))
     return folder
 
 
@@ -102,7 +118,9 @@ def test_a_clean_clip_passes_and_reports_its_metrics(tmp_path, on_target_loudnes
     assert report["metrics"]["true_peak_dbtp"] == -2.0
 
 
-def test_fast_captions_and_off_target_audio_are_warnings_only(tmp_path, monkeypatch):
+def test_fast_captions_and_off_target_audio_are_warnings_only(
+    tmp_path, monkeypatch, on_target_loudness
+):
     folder = write_ass(tmp_path, [(0, 1000, "あ" * 30)])
     monkeypatch.setattr(
         quality,
@@ -129,7 +147,9 @@ def test_overlap_missing_glyph_and_unlicensed_visual_are_failures(
     assert "no source credit or licence" in report["failures"][2]
 
 
-def test_silent_audio_is_a_warning_and_unmeasurable_audio_fails(tmp_path, monkeypatch):
+def test_silent_audio_is_a_warning_and_unmeasurable_audio_fails(
+    tmp_path, monkeypatch, on_target_loudness
+):
     folder = write_ass(tmp_path, [])
     monkeypatch.setattr(
         quality,
@@ -151,7 +171,7 @@ def test_silent_audio_is_a_warning_and_unmeasurable_audio_fails(tmp_path, monkey
     assert "could not be measured" in report["failures"][0]
 
 
-def test_clip_without_audio_is_not_measured(tmp_path, monkeypatch):
+def test_clip_without_audio_is_not_measured(tmp_path, monkeypatch, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 1000, "あ" * 5)])
 
     def must_not_measure(video):
@@ -176,3 +196,83 @@ def test_record_writes_the_report_beside_the_clip(tmp_path):
     report = {"passed": True, "failures": [], "warnings": [], "metrics": {}}
     assert quality.record(tmp_path, report) is report
     assert json.loads((tmp_path / "quality.json").read_text()) == report
+
+
+def test_captions_shown_under_a_second_or_over_four_seconds_are_warnings(
+    tmp_path, on_target_loudness
+):
+    folder = write_ass(tmp_path, [(0, 800, "あ"), (800, 5600, "いいいい")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is True
+    assert report["metrics"]["captions_under_1s"] == 1
+    assert report["metrics"]["captions_over_4s"] == 1
+    assert any("less than 1 second" in text for text in report["warnings"])
+    assert any("more than 4 seconds" in text for text in report["warnings"])
+
+
+def test_a_caption_with_three_lines_fails(tmp_path, on_target_loudness):
+    folder = write_ass(tmp_path, [(0, 2000, "一\\N二\\N三")])
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is False
+    assert any("more than 2 lines" in failure for failure in report["failures"])
+
+
+def test_srt_and_ass_must_carry_the_same_captions(tmp_path, on_target_loudness):
+    folder = write_ass(tmp_path, [(0, 2000, "あいう")])
+    (folder / "captions.srt").write_text(
+        "1\n00:00:00,000 --> 00:00:02,000\nかきく\n", encoding="utf-8"
+    )
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is False
+    assert any("differ in timing or text" in failure for failure in report["failures"])
+
+
+def test_a_video_that_does_not_decode_cleanly_fails(tmp_path, monkeypatch):
+    folder = write_ass(tmp_path, [(0, 1000, "あ")])
+    monkeypatch.setattr(
+        quality,
+        "measure_output",
+        lambda video: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
+    )
+    monkeypatch.setattr(
+        quality, "decode_errors", lambda video: ["[h264] error while decoding MB"]
+    )
+    report = quality.check_clip(folder, RENDERED, [], [])
+    assert report["passed"] is False
+    assert "does not decode cleanly" in report["failures"][0]
+
+
+def test_audio_that_is_not_48_khz_fails(tmp_path, on_target_loudness):
+    folder = write_ass(tmp_path, [(0, 1000, "あ")])
+    report = quality.check_clip(
+        folder, {**RENDERED, "audio_sample_rate": 44100}, [], []
+    )
+    assert report["passed"] is False
+    assert any("48000 Hz" in failure for failure in report["failures"])
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
+    good = tmp_path / "good.mp4"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=duration=1:size=64x64:rate=10",
+            "-pix_fmt",
+            "yuv420p",
+            str(good),
+        ],
+        check=True,
+    )
+    assert quality.decode_errors(good) == []
+    broken = tmp_path / "broken.mp4"
+    broken.write_bytes(b"not a video stream" * 64)
+    assert quality.decode_errors(broken)

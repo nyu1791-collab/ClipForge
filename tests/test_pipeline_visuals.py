@@ -444,12 +444,18 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
         source, destination, clip, settings, ass=None, keep=None, visuals=()
     ):
         destination.write_bytes(b"video")
-        return {"duration": 10, "width": 404, "height": 720, "audio": True}
+        return {
+            "duration": 10,
+            "width": 404,
+            "height": 720,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
 
     def fake_captions(transcript, clip, directory, settings, keep=None, credits=None):
         seen["credits"] = credits
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
-        (directory / "captions.srt").write_text("srt")
+        pysubs2.SSAFile().save(str(directory / "captions.srt"))
         return {"events": 0, "heading": False, "missing_glyphs": []}
 
     def fake_thumbnail(video, destination, title, font_path, at_seconds):
