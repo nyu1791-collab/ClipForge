@@ -252,6 +252,80 @@ def test_cpu_render_package_install_retains_media_tools_with_timeout():
     assert "fonts-noto-cjk" in job["env"]["CPU_PACKAGES"]
 
 
+def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages():
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["auto_previews"] == {
+        "description": "Continue URL-only analysis with CPU previews and an unapproved review draft",
+        "type": "boolean",
+        "default": False,
+    }
+    assert workflow["permissions"]["actions"] == "read"
+    analysis = workflow["jobs"]["colab-auto"]["steps"]
+    upload = next(s for s in analysis if s.get("uses") == "actions/upload-artifact@v4")
+    assert (
+        upload["with"]["name"]
+        == "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}"
+    )
+    stop = next(
+        i for i, s in enumerate(analysis) if "colab_actions.py stop" in s.get("run", "")
+    )
+    assert stop < analysis.index(upload)
+    job = workflow["jobs"]["previews"]
+    assert job["needs"] == "colab-auto"
+    assert "inputs.auto_previews" in job["if"]
+    assert "needs.colab-auto.result == 'success'" in job["if"]
+    assert "github.event.repository.private" in job["if"]
+    assert job["runs-on"] == "ubuntu-24.04"
+    steps = job["steps"]
+    checkout = next(s for s in steps if s.get("uses") == "actions/checkout@v4")
+    assert checkout["with"]["ref"] == "${{ inputs.source_ref }}"
+    download = next(s for s in steps if s.get("uses") == "actions/download-artifact@v4")
+    assert download["with"]["name"] == "clipforge-analysis-${{ inputs.request_id }}"
+    assert "run-id" not in download["with"]
+    execute = next(s for s in steps if "tools/run_audio_stage.py" in s.get("run", ""))
+    assert '--same-run-analysis "$RUNNER_TEMP/clipforge-analysis"' in execute["run"]
+    assert (
+        '--previous-run "$GITHUB_RUN_ID" --previous-request "$REQUEST_ID"'
+        in execute["run"]
+    )
+    assert '--config "$RUNNER_TEMP/preview-settings.json"' in execute["run"]
+    upload = steps[-1]
+    assert upload["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
+    assert upload["if"] == "always()"
+    cpu = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())["jobs"][
+        "audio-stage"
+    ]
+    assert job["env"]["CPU_PACKAGES"] == cpu["env"]["CPU_PACKAGES"]
+    for name in (
+        "Prepare CPU package cache",
+        "Restore CPU package archives",
+        "Install missing CPU media tools and fonts",
+    ):
+        step = next(s for s in steps if s.get("name") == name)
+        original = next(s for s in cpu["steps"] if s.get("name") == name)
+        for key in ("run", "uses", "with"):
+            assert step.get(key) == original.get(key)
+
+
+def test_chained_previews_preserve_submitted_settings(tmp_path, monkeypatch):
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    step = next(
+        s
+        for s in workflow["jobs"]["previews"]["steps"]
+        if s.get("name") == "Prepare the submitted preview settings"
+    )
+    settings = json.loads((ROOT / "config.landscape.example.json").read_text())
+    settings.update(clips=4, candidates=9, threads=3, max_source_seconds=43200)
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("SETTINGS_JSON", json.dumps(settings))
+    code = step["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    exec(compile(code, "preview-settings", "exec"), {})
+    config = tmp_path / "preview-settings.json"
+    assert json.loads(config.read_text()) == settings
+    assert config.stat().st_mode & 0o777 == 0o600
+
+
 @pytest.mark.parametrize(
     "audio_url, local_audio", [(None, True), (URL, False), (URL, True)]
 )

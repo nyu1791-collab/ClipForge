@@ -53,6 +53,38 @@ uv run --no-sync python tools/submit_job.py \
   --worker colab-auto --ref REVIEWED_COMMIT_SHA --output /private/audio-analysis-NEW
 ```
 
+### 同じrunで候補映像と採用候補の下書きまで作る
+
+URLだけの投入に `--auto-previews` を付けると、ColabのASR・話題分割後にruntimeを解放し、同じrunのGitHub-hosted CPUジョブで候補映像・静止画シート・`review-draft.json`・diagnosticsを作る。`colab-auto` 専用で、受付票に `target_stage: previews` を記録する。
+
+```bash
+uv run --no-sync python tools/submit_job.py \
+  --audio-analysis-url 'https://kick.com/example/videos/00000000-0000-0000-0000-000000000001' \
+  --worker colab-auto --ref REVIEWED_COMMIT_SHA --auto-previews \
+  --wait-timeout 18000 --output /private/previews-NEW
+```
+
+待機上限は既定18,000秒（5時間）で、`--wait-timeout SECONDS` に正の秒数を指定して変更できる。上限到達時もrunを再投入せず、受付票のIDで状態確認・回収を続ける。
+前段は `clipforge-analysis-REQUEST_ID`、最終結果は従来名の `clipforge-result-REQUEST_ID` として非公開artifactへ7日保存する。CPUジョブは同じ `source_ref` と投入時の設定を使用し、同じrun・依頼ID・元コミット・ハッシュを照合する専用経路で中間artifactを読む。通常の別run経路では引き続き前段の成功完了を要求する。
+最終回収は `submit_audio_stage.py` と共通の検証で、全ファイルのハッシュ・ASR再利用・前段の系譜を確認する。下書きは未承認のままなので、映像・話題・境界の確認後に別の承認ファイルを作る。
+
+```bash
+uv run --no-sync python tools/submit_job.py --status REQUEST_ID
+uv run --no-sync python tools/submit_job.py --collect REQUEST_ID --output /private/previews-RECOVERED
+uv run --no-sync python tools/submit_audio_stage.py --stage render \
+  --previous-run CHAINED_RUN_ID --previous-request REQUEST_ID \
+  --source-ref REVIEWED_COMMIT_SHA --review-file /private/reviewed-topics.json
+```
+
+前段だけ成功して候補映像ジョブが失敗・キャンセルされた場合、受付票は `status: PARTIAL_FAILED` とし、`analysis_status` と `previews_status` を分けて記録する。通常の最終回収は失敗を返す。保存済みのローカル受付票がある環境では、中間解析だけを明示して回収できる。
+
+```bash
+uv run --no-sync python tools/submit_job.py --collect REQUEST_ID \
+  --collect-stage analysis --output /private/analysis-RECOVERED
+```
+
+この回収は `clipforge-analysis-REQUEST_ID` の元コミット・run・依頼ID・音声・ASR・話題のハッシュを検証し、`analysis_collection_status` と `analysis_output` に結果を保存する。最終段階の失敗状態は保持する。`--collect-stage previews` は最終結果を明示する指定としても使える。中間回収は新たなGPU・候補映像生成を開始しない。
+
 音声取得済みなら、重いASRだけを非公開 `clipforge.yml` workerに渡す従来の方法も使える。
 `--ref`はレビュー済みの完全なコミットSHAを指定する。
 

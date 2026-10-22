@@ -127,8 +127,9 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
     assert json.loads((output / "asr-receipt.json").read_text())["reused"] is True
 
 
+@pytest.mark.parametrize("same_run", [False, True])
 def test_previews_write_unapproved_drafts_before_receipting(
-    previous_analysis, monkeypatch
+    previous_analysis, monkeypatch, same_run
 ):
     previous, output, _ = previous_analysis
     monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
@@ -162,7 +163,10 @@ def test_previews_write_unapproved_drafts_before_receipting(
         return value
 
     monkeypatch.setattr(audio_first, "previews", previews)
-    assert worker.main(_previews_args(output)) == 0
+    args = _previews_args(output)
+    if same_run:
+        args = same_run_args(previous, output, monkeypatch)
+    assert worker.main(args) == 0
     draft = json.loads((output / "review-draft.json").read_text())
     diagnostics = json.loads((output / "review-draft-diagnostics.json").read_text())
     receipt = json.loads((output / "request-receipt.json").read_text())
@@ -179,6 +183,22 @@ def test_previews_write_unapproved_drafts_before_receipting(
     )
     for name in ("review-draft.json", "review-draft-diagnostics.json"):
         assert receipt["sha256"][name] == digest(output / name)
+    if same_run:
+        monkeypatch.syspath_prepend(str(Path("tools").resolve()))
+        from submit_audio_stage import verify_stage_artifact
+
+        assert not (output / ".state").exists()
+        verify_stage_artifact(
+            output,
+            IDENTITY,
+            "previews",
+            {
+                "source_ref": SOURCE_REF,
+                "previous_run_id": "123",
+                "previous_request_id": IDENTITY,
+            },
+            "123",
+        )
 
 
 def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(
@@ -230,6 +250,7 @@ def test_missing_recorded_transcript_stops_before_network_or_recognition(
     "workflow, branch",
     [
         ("ClipForge audio-first stages", "main"),
+        ("ClipForge", "main"),
         ("ClipForge", "ccr-12fe9485-ugaszt"),
     ],
 )
@@ -1009,3 +1030,123 @@ def test_non_pipeline_error_records_only_its_type(
     for private in ("secret-token", "kick.com", "/home/user", "private.m4a"):
         assert private not in err
         assert private not in (output / "stage-error.json").read_text()
+
+
+def same_run_args(previous, output, monkeypatch):
+    for key, value in {
+        "GITHUB_REPOSITORY": worker.REPO,
+        "GITHUB_EVENT_NAME": "workflow_dispatch",
+        "GITHUB_WORKFLOW": "ClipForge",
+        "GITHUB_JOB": "previews",
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_RUN_ID": "123",
+        "REQUEST_ID": IDENTITY,
+        "CLIPFORGE_SOURCE_REF": SOURCE_REF,
+    }.items():
+        monkeypatch.setenv(key, value)
+    edit_receipt(
+        previous, lambda r: r.update(source_ref=SOURCE_REF, workflow_run="123")
+    )
+    monkeypatch.setattr(
+        worker, "gh", lambda *a: pytest.fail("same-run path queried an unfinished run")
+    )
+    args = _previews_args(output)
+    args[args.index("--request-id") + 1] = IDENTITY
+    return args + ["--same-run-analysis", str(previous)]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "run",
+        "request",
+        "source_ref",
+        "receipt_run",
+        "receipt_request",
+        "receipt_source",
+        "hash",
+        "stage",
+        "event",
+        "workflow",
+        "job",
+        "branch",
+    ],
+)
+def test_same_run_path_refuses_unrelated_or_modified_analysis(
+    previous_analysis, monkeypatch, fault
+):
+    previous, output, _ = previous_analysis
+    args = same_run_args(previous, output, monkeypatch)
+    if fault in {"run", "request", "source_ref", "stage"}:
+        flag, value = {
+            "run": ("--previous-run", "456"),
+            "request": ("--previous-request", "f" * 32),
+            "source_ref": ("--source-ref", "f" * 40),
+            "stage": ("--stage", "render"),
+        }[fault]
+        args[args.index(flag) + 1] = value
+    elif fault.startswith("receipt_"):
+        field, value = {
+            "receipt_run": ("workflow_run", "456"),
+            "receipt_request": ("request_id", "f" * 32),
+            "receipt_source": ("source_ref", "f" * 40),
+        }[fault]
+        edit_receipt(previous, lambda r: r.update({field: value}))
+    elif fault == "hash":
+        (previous / "audio.m4a").write_bytes(b"modified synthetic audio")
+    else:
+        field, value = {
+            "event": ("GITHUB_EVENT_NAME", "push"),
+            "workflow": ("GITHUB_WORKFLOW", "Unrelated workflow"),
+            "job": ("GITHUB_JOB", "colab-auto"),
+            "branch": ("GITHUB_REF", "refs/heads/unreviewed"),
+        }[fault]
+        monkeypatch.setenv(field, value)
+    monkeypatch.setattr(
+        worker,
+        "execute",
+        lambda *a: pytest.fail("unverified analysis reached execution"),
+    )
+    assert worker.main(args) == 1
+
+
+def test_render_reuses_chained_clipforge_run_on_main(previous_analysis, monkeypatch):
+    previous, output, _ = previous_analysis
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    original = _previous_gh(previous)
+    downloads = []
+
+    def gh(*args):
+        value = original(*args)
+        if args[:2] == ("run", "view"):
+            run = json.loads(value)
+            run.update(workflowName="ClipForge", headBranch="main")
+            return json.dumps(run)
+        downloads.append(args)
+        return value
+
+    edit_receipt(previous, lambda r: r.update(status="awaiting_video_review"))
+    edit_json(
+        previous / "manifest.json", lambda m: m.update(status="awaiting_video_review")
+    )
+    edit_receipt(
+        previous,
+        lambda r: r["sha256"].update(
+            {"manifest.json": digest(previous / "manifest.json")}
+        ),
+    )
+    monkeypatch.setattr(worker, "gh", gh)
+
+    def execute(previous, output, previous_id, settings, mode, *args):
+        assert mode == "render"
+        output.mkdir()
+        assert worker.restore_analysis(previous, output, previous_id) == URL
+        return {"status": "complete", "source_url": URL}
+
+    monkeypatch.setattr(worker, "execute", execute)
+    args = _previews_args(output)
+    args[1] = "render"
+    assert worker.main(args) == 0
+    assert (
+        downloads[0][downloads[0].index("--name") + 1] == "clipforge-result-" + IDENTITY
+    )

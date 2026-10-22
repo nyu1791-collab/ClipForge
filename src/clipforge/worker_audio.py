@@ -514,6 +514,39 @@ def write_receipt(
     write_json(output / "request-receipt.json", receipt)
 
 
+def verify_same_run_analysis(previous, request_id, source_ref, run_id, previous_id):
+    """Only the chained ClipForge previews job may consume an unfinished run's analysis."""
+    if (
+        os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
+        or os.environ.get("GITHUB_WORKFLOW") != "ClipForge"
+        or os.environ.get("GITHUB_JOB") != "previews"
+        or os.environ.get("GITHUB_REF") != "refs/heads/main"
+        or os.environ.get("GITHUB_RUN_ID") != run_id
+        or os.environ.get("REQUEST_ID") != request_id
+        or os.environ.get("CLIPFORGE_SOURCE_REF") != source_ref
+        or previous_id != request_id
+    ):
+        raise PipelineError("same-run analysis execution identity mismatch")
+    receipt = json.loads(private_member(previous, "request-receipt.json").read_text())
+    if (
+        receipt.get("request_id") != request_id
+        or receipt.get("source_ref") != source_ref
+        or str(receipt.get("workflow_run")) != run_id
+        or receipt.get("status") != "topics_allocated"
+    ):
+        raise PipelineError("same-run analysis receipt identity mismatch")
+    hashes = receipt.get("sha256")
+    if not isinstance(hashes, dict) or not 1 <= len(hashes) <= 200:
+        raise PipelineError("same-run analysis receipts are incomplete")
+    for name, sha in hashes.items():
+        if (
+            not isinstance(sha, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", sha)
+            or digest(private_member(previous, name)) != sha
+        ):
+            raise PipelineError("same-run analysis files changed")
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -521,6 +554,7 @@ def main(argv=None):
     )
     parser.add_argument("--previous-run")
     parser.add_argument("--previous-request")
+    parser.add_argument("--same-run-analysis", type=Path)
     parser.add_argument("--request-id", required=True)
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--output", type=Path, default=Path("artifacts/audio-stage"))
@@ -541,6 +575,10 @@ def main(argv=None):
             or (args.clip_index is not None and args.stage != "render")
             or (args.stage == "merge" and not (args.part_dir or args.part_runs))
             or (args.stage != "merge" and (args.part_dir or args.part_runs))
+            or (
+                args.same_run_analysis is not None
+                and (args.stage != "previews" or args.review_file is not None)
+            )
         ):
             raise PipelineError("invalid private worker identity")
         if args.stage != "merge" and (
@@ -562,6 +600,27 @@ def main(argv=None):
                 result, lineage = merge_parts(
                     parts, args.output, settings, args.source_ref
                 )
+        elif args.same_run_analysis is not None:
+            verify_same_run_analysis(
+                args.same_run_analysis,
+                args.request_id,
+                args.source_ref,
+                args.previous_run,
+                args.previous_request,
+            )
+            result = execute(
+                args.same_run_analysis,
+                args.output,
+                args.previous_request,
+                settings,
+                "previews",
+            )
+            # Internal stage caches are not deliverables and are not receipted.
+            shutil.rmtree(args.output / ".state", ignore_errors=True)
+            lineage = {
+                "previous_run_id": args.previous_run,
+                "previous_request_id": args.previous_request,
+            }
         else:
             run = json.loads(
                 gh(

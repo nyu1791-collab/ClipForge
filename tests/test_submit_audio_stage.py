@@ -79,6 +79,28 @@ def test_stage_identity_prevents_duplicate_dispatch(stage_submitter):
     assert len(control["posts"]) == 1
 
 
+def test_render_submission_accepts_the_chained_run_and_request(
+    stage_submitter, tmp_path
+):
+    module, control, args = stage_submitter
+    args[1] = "render"
+    review = tmp_path / "reviewed.json"
+    review.write_text(
+        json.dumps(
+            {
+                "analysis_key": "c" * 64,
+                "clips": [{"candidate_id": "topic-001", "video_reviewed": True}],
+            }
+        )
+    )
+    # The chained previews keep the original analysis run and request identities.
+    assert module.main([*args, "--review-file", str(review)]) == 0
+    inputs = control["posts"][0]["inputs"]
+    assert inputs["audio_stage"] == "render"
+    assert inputs["previous_run_id"] == "123"
+    assert inputs["previous_request_id"] == "b" * 32
+
+
 def test_active_clipforge_run_blocks_dispatch(stage_submitter):
     module, control, args = stage_submitter
     control["runs"] = [{"workflow": module.WORKFLOW, "status": "in_progress"}]

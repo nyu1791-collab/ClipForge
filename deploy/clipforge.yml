@@ -34,9 +34,14 @@ on:
         description: URL-only audio analysis settings JSON (at most 16 KB)
         type: string
         default: '{}'
+      auto_previews:
+        description: Continue URL-only analysis with CPU previews and an unapproved review draft
+        type: boolean
+        default: false
 
 permissions:
   contents: write
+  actions: read
 
 # Each colab-auto job owns its own T4, so those run side by side (the account grants two).
 # Hosted and self-hosted runners share one group and run one at a time.
@@ -60,6 +65,8 @@ jobs:
     steps:
       - name: Validate request identifiers
         timeout-minutes: 10
+        env:
+          AUTO_PREVIEWS: ${{ inputs.auto_previews }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -67,6 +74,7 @@ jobs:
           assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
           assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
           assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
+          assert os.environ['AUTO_PREVIEWS'] != 'true', 'auto_previews requires colab-auto and audio_url'
           PY
       - uses: actions/checkout@v4
         timeout-minutes: 10
@@ -226,12 +234,14 @@ jobs:
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           AUDIO_URL: ${{ inputs.audio_url }}
+          AUTO_PREVIEWS: ${{ inputs.auto_previews }}
         run: |
           python3 - <<'PY'
           import os, re
           assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
           assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
           assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
+          assert os.environ['AUTO_PREVIEWS'] != 'true' or os.environ['AUDIO_URL']
           if os.environ['AUDIO_URL']:
               assert re.fullmatch(r'https://kick\.com/[A-Za-z0-9_-]+/videos/[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', os.environ['AUDIO_URL'])
           if not os.environ.get('COLAB_ADC_JSON'):
@@ -327,7 +337,7 @@ jobs:
         timeout-minutes: 10
         if: always()
         with:
-          name: clipforge-result-${{ inputs.request_id }}
+          name: clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}
           path: ${{ runner.temp }}/clipforge-out/
           compression-level: 0
           retention-days: 7
@@ -344,3 +354,97 @@ jobs:
           else
             echo 'Input cleanup could not run; inspect the private input release before resubmitting.'
           fi
+
+  previews:
+    needs: colab-auto
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.auto_previews && needs.colab-auto.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
+      REQUEST_ID: ${{ inputs.request_id }}
+      CPU_PACKAGES: ffmpeg fontconfig fonts-noto-cjk libcairo2
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        timeout-minutes: 10
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        timeout-minutes: 10
+        with:
+          python-version: '3.11'
+      - name: Install pinned uv
+        timeout-minutes: 10
+        run: python -m pip install uv==0.12.23
+      - name: Prepare CPU package cache
+        timeout-minutes: 10
+        id: debs
+        run: |
+          mkdir -p "$RUNNER_TEMP/clipforge-debs"
+          package_hash=$(printf '%s' "$CPU_PACKAGES" | sha256sum | cut -d' ' -f1)
+          printf 'key=debs-%s-%s-%s\n' "$ImageOS" "$ImageVersion" "$package_hash" >> "$GITHUB_OUTPUT"
+      - name: Restore CPU package archives
+        timeout-minutes: 10
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/clipforge-debs/*.deb
+          key: ${{ steps.debs.outputs.key }}
+      - name: Install missing CPU media tools and fonts
+        timeout-minutes: 10
+        run: |
+          missing=()
+          for package in $CPU_PACKAGES; do
+            if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
+              missing+=("$package")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            cache="$RUNNER_TEMP/clipforge-debs"
+            options=(-y --no-install-recommends -o "Dir::Cache::archives=$cache" -o APT::Keep-Downloaded-Packages=true)
+            if ! sudo apt-get install --no-download "${options[@]}" "${missing[@]}"; then
+              sudo apt-get update -qq
+              sudo apt-get install "${options[@]}" "${missing[@]}"
+            fi
+          fi
+      - name: Install Python stage dependencies
+        timeout-minutes: 10
+        run: uv sync --locked --extra media-fetch --no-dev
+      - uses: actions/download-artifact@v4
+        timeout-minutes: 10
+        with:
+          name: clipforge-analysis-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-analysis
+      - name: Prepare the submitted preview settings
+        timeout-minutes: 10
+        env:
+          SETTINGS_JSON: ${{ inputs.settings_json }}
+        run: |
+          uv run --no-sync python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from tools.submit_job import parse_settings_json
+          settings = parse_settings_json(os.environ['SETTINGS_JSON'])
+          path = Path(os.environ['RUNNER_TEMP']) / 'preview-settings.json'
+          path.write_text(json.dumps(settings))
+          path.chmod(0o600)
+          PY
+      - name: Verify this run's analysis and create previews and an unapproved draft
+        timeout-minutes: 60
+        run: |
+          uv run --no-sync python tools/run_audio_stage.py --stage previews \
+            --same-run-analysis "$RUNNER_TEMP/clipforge-analysis" \
+            --previous-run "$GITHUB_RUN_ID" --previous-request "$REQUEST_ID" \
+            --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
+            --config "$RUNNER_TEMP/preview-settings.json" --output "$RUNNER_TEMP/clipforge-previews"
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 10
+        if: always()
+        with:
+          name: clipforge-result-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-previews/
+          compression-level: 0
+          retention-days: 7
+          if-no-files-found: warn

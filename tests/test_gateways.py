@@ -776,6 +776,297 @@ def test_url_only_audio_wait_collects_verified_analysis(
     assert not control["releases"]
 
 
+@pytest.fixture
+def chained_submitter(submitter, monkeypatch):
+    module, _, control, _ = submitter
+    monkeypatch.syspath_prepend(str(Path("tools").resolve()))
+    original = module.gh
+    control.update(
+        analysis_conclusion="success", previews_conclusion="success", chain_fault=None
+    )
+
+    def gh(*args, **kwargs):
+        if args[:2] == ("run", "view"):
+            control["calls"].append(args)
+            return json.dumps(
+                {
+                    "status": "completed",
+                    "conclusion": "success"
+                    if control["analysis_conclusion"]
+                    == control["previews_conclusion"]
+                    == "success"
+                    else "failure",
+                    "jobs": [
+                        {"name": name, "conclusion": conclusion, "status": "completed"}
+                        for name, conclusion in (
+                            ("colab-auto", control["analysis_conclusion"]),
+                            ("previews", control["previews_conclusion"]),
+                        )
+                    ],
+                }
+            )
+        result = original(*args, **kwargs)
+        if args[:2] != ("run", "download"):
+            return result
+        root = Path(args[args.index("--dir") + 1])
+        receipt_path = root / "request-receipt.json"
+        returned = json.loads(receipt_path.read_text())
+        returned["workflow_run"] = "99"
+        if args[args.index("--name") + 1].startswith("clipforge-result-"):
+            manifest = json.loads((root / "manifest.json").read_text())
+            manifest.update(
+                status="awaiting_video_review", audio_stage="previews", asr_reused=True
+            )
+            (root / "manifest.json").write_text(json.dumps(manifest))
+            cache_path = root / "asr-receipt.json"
+            cache = json.loads(cache_path.read_text())
+            cache["reused"] = True
+            cache_path.write_text(json.dumps(cache))
+            values = {
+                "previews.json": {"status": "awaiting_video_review", "previews": []},
+                "review-draft.json": {"clips": []},
+                "review-draft-diagnostics.json": {"shortfall": 3},
+            }
+            for name, value in values.items():
+                (root / name).write_text(json.dumps(value))
+            returned.update(
+                status="awaiting_video_review",
+                audio_stage="previews",
+                asr_reused=True,
+                previous_run_id="99",
+                previous_request_id=returned["request_id"],
+            )
+            returned["sha256"] = {
+                name: module.digest(root / name)
+                for name in [*returned["sha256"], *values]
+            }
+            fault = control["chain_fault"]
+            if fault in {"workflow_run", "previous_run_id"}:
+                returned[fault] = "100"
+            elif fault in {"request_id", "previous_request_id"}:
+                returned[fault] = "f" * 32
+            elif fault == "source_ref":
+                returned[fault] = "f" * 40
+            elif fault == "url":
+                returned["audio_source_url"] = returned["audio_source_url"].replace(
+                    "example", "other"
+                )
+            elif fault == "hash":
+                (root / "audio.m4a").write_bytes(b"modified synthetic audio")
+            elif fault == "draft":
+                (root / "review-draft.json").unlink()
+                returned["sha256"].pop("review-draft.json")
+        elif control["chain_fault"] == "analysis_hash":
+            (root / "audio.m4a").write_bytes(b"modified synthetic audio")
+        elif control["chain_fault"] == "analysis_run":
+            returned["workflow_run"] = "100"
+        receipt_path.write_text(json.dumps(returned))
+        return result
+
+    monkeypatch.setattr(module, "gh", gh)
+
+    def invoke(*extra):
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "submit_job",
+                "--audio-analysis-url",
+                "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+                "--auto-previews",
+                *extra,
+            ],
+        )
+        module.main()
+
+    return module, control, invoke
+
+
+def test_auto_previews_dispatch_receipt_and_verified_collection(
+    chained_submitter, tmp_path
+):
+    _, control, invoke = chained_submitter
+    output = tmp_path / "previews"
+    invoke("--output", str(output))
+    inputs = control["posts"][0]["inputs"]
+    assert inputs["auto_previews"] is True
+    state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
+    receipt = json.loads((state / "receipt.json").read_text())
+    assert receipt["target_stage"] == "previews" and receipt["status"] == "COMPLETE"
+    assert receipt["analysis_status"] == receipt["previews_status"] == "success"
+    assert (output / "review-draft.json").is_file()
+    assert len(control["posts"]) == 1 and not control["releases"]
+    download = next(c for c in control["calls"] if c[:2] == ("run", "download"))
+    assert (
+        download[download.index("--name") + 1]
+        == "clipforge-result-" + inputs["request_id"]
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "workflow_run",
+        "previous_run_id",
+        "request_id",
+        "previous_request_id",
+        "source_ref",
+        "url",
+        "hash",
+        "draft",
+    ],
+)
+def test_chained_collection_refuses_invalid_result(chained_submitter, tmp_path, fault):
+    _, control, invoke = chained_submitter
+    control["chain_fault"] = fault
+    output = tmp_path / "previews"
+    with pytest.raises(RuntimeError):
+        invoke("--output", str(output))
+    assert not output.exists()
+    identity = control["posts"][0]["inputs"]["request_id"]
+    receipt = json.loads(
+        (tmp_path / ".local/state/clipforge" / identity / "receipt.json").read_text()
+    )
+    assert receipt["status"] == "DOWNLOAD_FAILED"
+
+
+@pytest.mark.parametrize("preview_status", ["failure", "cancelled", "timed_out"])
+def test_partial_failure_can_collect_only_verified_analysis(
+    chained_submitter, tmp_path, monkeypatch, preview_status
+):
+    module, control, invoke = chained_submitter
+    control["previews_conclusion"] = preview_status
+    with pytest.raises(RuntimeError, match="did not complete successfully"):
+        invoke("--wait")
+    identity = control["posts"][0]["inputs"]["request_id"]
+    state = tmp_path / ".local/state/clipforge" / identity
+    receipt = json.loads((state / "receipt.json").read_text())
+    assert receipt["status"] == "PARTIAL_FAILED"
+    assert (
+        receipt["analysis_status"] == "success"
+        and receipt["previews_status"] == preview_status
+    )
+    assert not any(c[:2] == ("run", "download") for c in control["calls"])
+    output = tmp_path / "recovered"
+    monkeypatch.setattr(
+        sys, "argv", ["submit_job", "--collect", identity, "--output", str(output)]
+    )
+    with pytest.raises(RuntimeError, match="not completed successfully"):
+        module.main()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--collect",
+            identity,
+            "--collect-stage",
+            "analysis",
+            "--output",
+            str(output),
+        ],
+    )
+    module.main()
+    receipt = json.loads((state / "receipt.json").read_text())
+    assert receipt["status"] == "PARTIAL_FAILED"
+    assert receipt["analysis_collection_status"] == "COMPLETE"
+    assert receipt["analysis_output"] == str(output)
+    assert (output / "audio.m4a").read_bytes() == b"synthetic-audio"
+    download = next(c for c in control["calls"] if c[:2] == ("run", "download"))
+    assert download[download.index("--name") + 1] == "clipforge-analysis-" + identity
+    assert len(control["posts"]) == 1
+
+
+@pytest.mark.parametrize("fault", ["analysis_hash", "analysis_run", "analysis_failure"])
+def test_partial_analysis_collection_refuses_invalid_intermediate(
+    chained_submitter, tmp_path, monkeypatch, fault
+):
+    module, control, invoke = chained_submitter
+    control["previews_conclusion"] = "failure"
+    if fault == "analysis_failure":
+        control["analysis_conclusion"] = "failure"
+    else:
+        control["chain_fault"] = fault
+    invoke()
+    identity = control["posts"][0]["inputs"]["request_id"]
+    output = tmp_path / "analysis"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--collect",
+            identity,
+            "--collect-stage",
+            "analysis",
+            "--output",
+            str(output),
+        ],
+    )
+    with pytest.raises(RuntimeError):
+        module.main()
+    assert not output.exists()
+    receipt = json.loads(
+        (tmp_path / ".local/state/clipforge" / identity / "receipt.json").read_text()
+    )
+    if fault == "analysis_failure":
+        assert receipt["status"] == "FAILED"
+        assert not any(c[:2] == ("run", "download") for c in control["calls"])
+    else:
+        assert receipt["status"] == "PARTIAL_FAILED"
+        assert receipt["analysis_collection_status"] == "DOWNLOAD_FAILED"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [],
+        [
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--input",
+            "synthetic.m4a",
+        ],
+        [
+            "--audio-analysis-url",
+            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
+            "--worker",
+            "cpu",
+        ],
+    ],
+)
+def test_auto_previews_requires_url_only_colab_submission(
+    submitter, monkeypatch, extra
+):
+    module, _, control, _ = submitter
+    monkeypatch.setattr(sys, "argv", ["submit_job", "--auto-previews", *extra])
+    with pytest.raises(SystemExit) as error:
+        module.main()
+    assert error.value.code == 2 and not control["posts"]
+
+
+def test_chain_wait_timeout_is_configurable(chained_submitter, monkeypatch, tmp_path):
+    module, control, invoke = chained_submitter
+    clock = iter([0, 0, 2])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    with pytest.raises(RuntimeError, match="waiting timed out"):
+        invoke("--wait", "--wait-timeout", "1")
+    identity = control["posts"][0]["inputs"]["request_id"]
+    receipt = json.loads(
+        (tmp_path / ".local/state/clipforge" / identity / "receipt.json").read_text()
+    )
+    assert receipt["status"] == "UNCONFIRMED" and receipt["run_id"] == 99
+
+
+def test_chain_default_wait_allows_analysis_and_cpu_stage(
+    chained_submitter, monkeypatch
+):
+    module, _, invoke = chained_submitter
+    clock = iter([0, 0, 17000])
+    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
+    invoke("--wait")
+
+
 def test_url_only_audio_corruption_can_be_collected_again(
     submitter, monkeypatch, tmp_path
 ):

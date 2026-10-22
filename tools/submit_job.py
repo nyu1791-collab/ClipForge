@@ -193,7 +193,7 @@ def plain_tree(directory):
 
 
 def verify_audio_analysis(
-    directory, identity, source_ref, source_sha256, source_url=None
+    directory, identity, source_ref, source_sha256, source_url=None, run_id=None
 ):
     """Verify a topics_allocated artifact. Without a local record, source_url is the artifact's own canonical VOD URL."""
     from clipforge.kick_media import canonical
@@ -210,6 +210,7 @@ def verify_audio_analysis(
         or returned.get("source_ref") != source_ref
         or returned.get("status") != "topics_allocated"
         or returned.get("audio_source_url") != source_url
+        or (run_id is not None and str(returned.get("workflow_run")) != str(run_id))
     ):
         raise RuntimeError("result identity or completion state mismatch")
     cache = json.loads((directory / "asr-receipt.json").read_text())
@@ -294,6 +295,31 @@ def verify_audio_analysis(
 
 
 def verify_download(directory, receipt, request):
+    if receipt.get("target_stage") == "previews":
+        from submit_audio_stage import verify_stage_artifact
+
+        returned = json.loads((directory / "request-receipt.json").read_text())
+        if (
+            returned.get("audio_source_url") != request["audio_source_url"]
+            or str(returned.get("previous_run_id")) != str(receipt["run_id"])
+            or returned.get("previous_request_id") != receipt["request_id"]
+        ):
+            raise RuntimeError("chained previews lineage or source mismatch")
+        verify_stage_artifact(
+            directory,
+            receipt["request_id"],
+            "previews",
+            {
+                **request,
+                "previous_run_id": str(receipt["run_id"]),
+                "previous_request_id": receipt["request_id"],
+            },
+            receipt["run_id"],
+        )
+        for name in ("review-draft.json", "review-draft-diagnostics.json"):
+            if name not in returned["sha256"]:
+                raise RuntimeError("chained previews draft is missing")
+        return
     if request.get("audio_source_url"):
         # URL-only submissions have no local audio hash. The returned audio is the
         # runner-acquired input, checked against both its manifest and file receipt.
@@ -354,7 +380,7 @@ def prepare_destination(destination):
     return destination
 
 
-def download_verified(run_id, identity, destination, verify):
+def download_verified(run_id, identity, destination, verify, artifact_stage="result"):
     """Download into a private staging directory, verify it, then move it into place."""
     with tempfile.TemporaryDirectory(
         prefix=".clipforge-download-", dir=destination.parent
@@ -367,7 +393,7 @@ def download_verified(run_id, identity, destination, verify):
             "--repo",
             REPO,
             "--name",
-            "clipforge-result-" + identity,
+            "clipforge-" + artifact_stage + "-" + identity,
             "--dir",
             str(staging),
             timeout=300,
@@ -378,21 +404,45 @@ def download_verified(run_id, identity, destination, verify):
         staging.rename(destination)
 
 
-def collect_result(state, receipt, destination):
+def collect_result(state, receipt, destination, collect_stage=None):
     destination = prepare_destination(destination)
     request = json.loads((state / "request.json").read_text())
+    analysis = collect_stage == "analysis" and receipt.get("target_stage") == "previews"
+
+    def verify(staging):
+        if analysis:
+            verify_audio_analysis(
+                staging,
+                receipt["request_id"],
+                receipt["source_ref"],
+                request["video_sha256"],
+                request["audio_source_url"],
+                receipt["run_id"],
+            )
+        else:
+            verify_download(staging, receipt, request)
+
     try:
         download_verified(
             receipt["run_id"],
             receipt["request_id"],
             destination,
-            lambda staging: verify_download(staging, receipt, request),
+            verify,
+            artifact_stage="analysis" if analysis else "result",
         )
     except Exception:
-        receipt["status"] = "DOWNLOAD_FAILED"
+        receipt["analysis_collection_status" if analysis else "status"] = (
+            "DOWNLOAD_FAILED"
+        )
         save(state / "receipt.json", receipt)
         raise
-    receipt.update(status="COMPLETE", output=str(destination.resolve()))
+    if analysis:
+        receipt.update(
+            analysis_collection_status="COMPLETE",
+            analysis_output=str(destination.resolve()),
+        )
+    else:
+        receipt.update(status="COMPLETE", output=str(destination.resolve()))
     save(state / "receipt.json", receipt)
     print("Completed; private outputs verified and downloaded.")
 
@@ -409,6 +459,8 @@ def local_record_exists(identity):
 def collect_without_record(args):
     """Collect a topics_allocated audio analysis on a machine with no local state record."""
     identity = args.collect
+    if args.collect_stage is not None:
+        raise RuntimeError("--collect-stage requires the saved local request record")
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
         raise RuntimeError("invalid request identifier")
     if (
@@ -495,6 +547,7 @@ def send_dispatch(state, receipt):
                 "worker": receipt.get("worker", "cpu"),
                 "audio_url": receipt.get("audio_url", ""),
                 "settings_json": settings_json,
+                **({"auto_previews": True} if receipt.get("auto_previews") else {}),
             },
         }
     )
@@ -654,6 +707,26 @@ def resume_audio_staging(args):
     print("Resumed private audio request " + identity + "; one workflow submitted.")
 
 
+def record_run_status(state, receipt, run):
+    """Keep successful analysis distinct from a failed chained preview job."""
+    receipt.update(github_status=run["status"], conclusion=run.get("conclusion"))
+    if receipt.get("target_stage") == "previews":
+        jobs = {job["name"]: job for job in run.get("jobs", [])}
+        for job_name, field in (
+            ("colab-auto", "analysis_status"),
+            ("previews", "previews_status"),
+        ):
+            job = jobs.get(job_name, {})
+            receipt[field] = job.get("conclusion") or job.get("status") or "unknown"
+    if run["status"] == "completed" and run.get("conclusion") != "success":
+        receipt["status"] = (
+            "PARTIAL_FAILED"
+            if receipt.get("analysis_status") == "success"
+            else "FAILED"
+        )
+    save(state / "receipt.json", receipt)
+
+
 def recover(args):
     identity = args.collect or args.status
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
@@ -671,7 +744,17 @@ def recover(args):
             "no matching workflow run found; inspect the staged input before resubmitting"
         )
     run = json.loads(
-        gh("run", "view", str(run_id), "--repo", REPO, "--json", "status,conclusion")
+        gh(
+            "run",
+            "view",
+            str(run_id),
+            "--repo",
+            REPO,
+            "--json",
+            "status,conclusion,jobs"
+            if receipt.get("target_stage") == "previews"
+            else "status,conclusion",
+        )
     )
     receipt.update(
         run_id=run_id,
@@ -680,15 +763,29 @@ def recover(args):
         conclusion=run.get("conclusion"),
         url=f"https://github.com/{REPO}/actions/runs/{run_id}",
     )
-    save(state / "receipt.json", receipt)
+    record_run_status(state, receipt, run)
     if args.status:
         print(json.dumps(receipt, indent=2))
         return
-    if run["status"] != "completed" or run.get("conclusion") != "success":
+    analysis = (
+        args.collect_stage == "analysis" and receipt.get("target_stage") == "previews"
+    )
+    if args.collect_stage == "previews" and receipt.get("target_stage") != "previews":
+        raise RuntimeError("this request did not target previews")
+    if run["status"] != "completed" or (
+        receipt.get("analysis_status") != "success"
+        if analysis
+        else run.get("conclusion") != "success"
+    ):
         raise RuntimeError(
             "request has not completed successfully; no new generation was submitted"
         )
-    collect_result(state, receipt, args.output or state / "result")
+    collect_result(
+        state,
+        receipt,
+        args.output or state / ("analysis" if analysis else "result"),
+        args.collect_stage,
+    )
 
 
 def main():
@@ -709,6 +806,14 @@ def main():
     parser.add_argument("--clips", type=int)
     parser.add_argument("--chat-url")
     parser.add_argument("--wait", action="store_true")
+    parser.add_argument("--auto-previews", action="store_true")
+    parser.add_argument(
+        "--wait-timeout",
+        type=int,
+        default=18000,
+        help="maximum wait in seconds (default: 18000)",
+    )
+    parser.add_argument("--collect-stage", choices=("analysis", "previews"))
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--run-id",
@@ -739,6 +844,22 @@ def main():
         help="Delete one temporary private input release after inspecting its job",
     )
     args = parser.parse_args()
+    if args.wait_timeout <= 0:
+        parser.error("--wait-timeout must be positive")
+    if args.collect_stage and not args.collect:
+        parser.error("--collect-stage requires --collect")
+    if args.auto_previews and (
+        not args.audio_analysis_url
+        or args.input is not None
+        or args.worker != "colab-auto"
+        or args.collect
+        or args.status
+        or args.resume_audio
+        or args.cleanup_tag
+    ):
+        parser.error(
+            "--auto-previews requires URL-only submission with --worker colab-auto"
+        )
     if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
         raise RuntimeError("use the authenticated owner VM connection")
     if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
@@ -921,6 +1042,8 @@ def dispatch(args, state_root):
         "audio_url": args.audio_analysis_url if source is None else "",
         "input_staged": False,
     }
+    if args.auto_previews:
+        receipt.update(auto_previews=True, target_stage="previews")
     receipt_path = state / "receipt.json"
     save(receipt_path, receipt)
     print("Private job receipt: " + str(receipt_path), flush=True)
@@ -978,7 +1101,7 @@ def wait_for_result(args, state, receipt):
     identity = receipt["request_id"]
     receipt_path = state / "receipt.json"
     print("Submitted private ClipForge job " + identity, flush=True)
-    deadline = time.monotonic() + 6000
+    deadline = time.monotonic() + args.wait_timeout
     run_id = None
     while time.monotonic() < deadline:
         if run_id is None:
@@ -1022,13 +1145,14 @@ def wait_for_result(args, state, receipt):
                     "--repo",
                     REPO,
                     "--json",
-                    "status,conclusion",
+                    "status,conclusion,jobs"
+                    if receipt.get("target_stage") == "previews"
+                    else "status,conclusion",
                 )
             )
             if run["status"] == "completed":
+                record_run_status(state, receipt, run)
                 if run["conclusion"] != "success":
-                    receipt.update(status="FAILED", conclusion=run["conclusion"])
-                    save(receipt_path, receipt)
                     raise RuntimeError(
                         "private job did not complete successfully; no retry or fallback"
                     )
