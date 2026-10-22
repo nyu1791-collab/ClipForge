@@ -207,6 +207,7 @@ def main():
             "CLIPFORGE_PREPARE_ONLY": "1" if mode == "prepare-cache" else "0",
             "CLIPFORGE_OFFLINE": "1" if payload.get("offline") else "0",
             "CLIPFORGE_SETUP_TIMINGS": str(WORK / "setup-timings.tsv"),
+            "CLIPFORGE_SETUP_FETCHED": str(WORK / "setup-fetched"),
             "CLIPFORGE_SOURCE_REF": payload["source_ref"],
             "GITHUB_REPOSITORY": REPOSITORY,
             "GITHUB_RUN_ID": payload["workflow_run"],
@@ -332,9 +333,12 @@ def main():
             bundles, payload, output, report, timings
         ):
             failed = True
-        # A job that restored the cache does not rebuild it: the key already names its lock and
-        # setup, and parallel jobs would otherwise each upload about 3 GB to the same release.
-        if mode in {"pipeline", "audio-stage"} and cached:
+        # A job that restored the cache rebuilds it only when its setup fetched something new,
+        # and among parallel clip renders only clip 1 does, so they do not race on one release.
+        fetched = (WORK / "setup-fetched").is_file()
+        report["setup_fetched"] = fetched
+        first = (payload.get("stage") or {}).get("clip_index") in (None, "1")
+        if mode in {"pipeline", "audio-stage"} and cached and not (fetched and first):
             report["public_cache_saved"] = "skipped_restored"
         else:
             try:

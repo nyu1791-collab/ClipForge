@@ -90,6 +90,8 @@ if [[ ${CLIPFORGE_SKIP_RUNNER_ASSET:-0} != 1 ]]; then
   python3 tools/colab_cache.py runner >/dev/null
 fi
 clipforge_record_timing runner_asset "$runner_asset_started"
+# Tell the worker that this setup fetched something the shared cache does not hold yet.
+if [[ $fetched == 1 && -n ${CLIPFORGE_SETUP_FETCHED:-} ]]; then : > "$CLIPFORGE_SETUP_FETCHED"; fi
 if clipforge_should_save "${CLIPFORGE_PREPARE_ONLY:-0}" "$fetched"; then
   cache_save_started=$(date +%s.%N)
   python3 tools/colab_cache.py save

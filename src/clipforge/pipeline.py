@@ -486,6 +486,15 @@ def asr_identity(settings):
     return {"whisper_device": device, "whisper_compute_type": compute}
 
 
+def transcript_key(source, info, settings):
+    """The saved transcript to use: a pinned key from a verified analysis, else the identity.
+
+    A downstream stage reuses the transcript its analysis recorded, even after the recognition
+    code has changed; a pinned key is only ever read, never recognised again.
+    """
+    return settings.transcript_key or transcript_identity(source, info, settings)
+
+
 def transcript_identity(source, info, settings):
     code = {name: digest(Path(__file__).parent / name) for name in TRANSCRIPT_CODE}
     return fingerprint(
@@ -509,7 +518,7 @@ def saved_transcript(source, info, settings):
     if not settings.transcript_cache:
         return None
     path = Path(settings.transcript_cache) / (
-        transcript_identity(source, info, settings) + ".json"
+        transcript_key(source, info, settings) + ".json"
     )
     if path.is_file():
         try:
@@ -529,7 +538,7 @@ def transcribe_once(source, info, settings, receipt=None):
         receipt["key"] = None
         return signals.transcribe(source, info, settings)
     # The receipt is output metadata, never authority to select another input's cache.
-    key = transcript_identity(source, info, settings)
+    key = transcript_key(source, info, settings)
     receipt["key"] = key
     path = Path(settings.transcript_cache) / (key + ".json")
     if path.is_file():
@@ -576,7 +585,7 @@ def run(
         start_job(source, output)
         cache_receipt = {
             "enabled": bool(settings.transcript_cache),
-            "key": transcript_identity(source, info, settings)
+            "key": transcript_key(source, info, settings)
             if settings.transcript_cache
             else None,
             "reused": True,

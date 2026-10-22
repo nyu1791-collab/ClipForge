@@ -148,3 +148,19 @@ def test_process_never_echoes_child_errors(monkeypatch):
         process(["ffmpeg", "-i", "private-input"])
     assert str(caught.value) == "ffmpeg failed (exit 7)"
     assert "private-content" not in str(caught.value)
+
+
+def test_a_pinned_transcript_key_requires_the_saved_transcript(settings):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        settings.model_validate({**settings.model_dump(), "transcript_key": "a" * 64})
+    pinned = settings.model_validate(
+        {
+            **settings.model_dump(),
+            "transcript_key": "a" * 64,
+            "transcript_cache": "cache",
+            "require_transcript_cache": True,
+        }
+    )
+    assert pinned.transcript_key == "a" * 64

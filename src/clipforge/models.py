@@ -155,6 +155,8 @@ class Settings(Record):
     # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.
     transcript_cache: str | None = Field(default=None, max_length=1024)
     require_transcript_cache: bool = False
+    # A verified analysis's transcript key; only valid with require_transcript_cache.
+    transcript_key: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     language: str | None = None
     whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
     whisper_compute_type: Literal[
@@ -246,6 +248,8 @@ class Settings(Record):
             raise ValueError("horizontal reading target must not exceed warning limit")
         if self.require_transcript_cache and not self.transcript_cache:
             raise ValueError("requiring a saved transcript needs transcript_cache")
+        if self.transcript_key and not self.require_transcript_cache:
+            raise ValueError("a pinned transcript key is read only; require the cache")
         if self.height == 1920 and self.aspect != "9:16":
             raise ValueError("height 1920 is only for the 9:16 aspect")
         if self.min_seconds >= self.max_seconds:

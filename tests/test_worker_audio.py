@@ -127,17 +127,48 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
     assert json.loads((output / "asr-receipt.json").read_text())["reused"] is True
 
 
-def test_changed_asr_settings_stop_before_network_or_recognition(
+def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(
     previous_analysis, monkeypatch
 ):
+    from clipforge import signals
+
     previous, output, settings = previous_analysis
     settings.threads = 4
+    monkeypatch.setattr(
+        signals, "transcribe", lambda *a, **k: pytest.fail("recognition started")
+    )
+
+    class Reached(Exception):
+        pass
+
+    def network(*args, **kwargs):
+        raise Reached
+
+    monkeypatch.setattr(worker, "KickVOD", network)
+    with pytest.raises(Reached):
+        worker.execute(previous, output, IDENTITY, settings, "previews")
+    receipt = json.loads((output / "asr-receipt.json").read_text())
+    assert receipt["reused"] is True
+
+
+def test_missing_recorded_transcript_stops_before_network_or_recognition(
+    previous_analysis, monkeypatch
+):
+    from clipforge import signals
+
+    previous, output, settings = previous_analysis
+    for path in (previous / "transcripts").glob("*.json"):
+        path.unlink()
+    monkeypatch.setattr(
+        signals, "transcribe", lambda *a, **k: pytest.fail("recognition started")
+    )
     monkeypatch.setattr(
         worker,
         "KickVOD",
         lambda *a, **k: pytest.fail("network started before cache validation"),
     )
-    with pytest.raises(PipelineError, match="no new recognition"):
+    # The analysis check finds the listed transcript missing before anything starts.
+    with pytest.raises((PipelineError, OSError)):
         worker.execute(previous, output, IDENTITY, settings, "previews")
 
 

@@ -173,10 +173,14 @@ def execute(
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     with audio_first.exclusive(output):
         url = restore_analysis(previous, output, previous_id)
+        # The verified analysis names its transcript; later code changes to recognition do
+        # not orphan it, and no new recognition can start from here.
+        recorded = json.loads((output / "asr-receipt.json").read_text())["key"]
         settings = settings.model_copy(
             update={
                 "transcript_cache": str(output / "transcripts"),
                 "require_transcript_cache": True,
+                "transcript_key": recorded,
             }
         )
         source = output / "audio.m4a"
