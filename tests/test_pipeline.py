@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from clipforge import media, pipeline, selection, signals
+from clipforge import hardware, media, pipeline, selection, signals
 from clipforge.models import SelectedClip
 from clipforge.storage import PipelineError, digest, write_json
 
@@ -88,6 +88,27 @@ def test_full_orchestration_and_exact_resume(job, settings):
     assert counts == before
     assert digest(source) == original
     assert not list((output / ".analysis").glob("*.mp4"))
+
+
+def test_render_threads_do_not_change_job_or_render_reuse(job, settings, monkeypatch):
+    source, output, counts = job
+    settings.threads = 2
+    monkeypatch.setattr(hardware.os, "sched_getaffinity", lambda pid: set(range(8)))
+    first = pipeline.run(source, output, settings)
+    original_input = json.loads((output / "input.json").read_text())
+    before = dict(counts)
+    for cores, explicit in [(4, 0), (8, 6)]:
+        monkeypatch.setattr(
+            hardware.os, "sched_getaffinity", lambda pid, n=cores: set(range(n))
+        )
+        settings.encode_threads = explicit
+        resumed = pipeline.run(source, output, settings, resume=True)
+        saved_input = json.loads((output / "input.json").read_text())
+        assert saved_input["key"] == original_input["key"]
+        assert saved_input["settings"]["encode_threads"] == explicit
+        assert resumed["rendered"][0]["key"] == first["rendered"][0]["key"]
+        assert resumed["transcript_cache"]["key"] == first["transcript_cache"]["key"]
+        assert counts == before
 
 
 def test_analysis_stops_before_previews_models_and_renders(job, settings, tmp_path):

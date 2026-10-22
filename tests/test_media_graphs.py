@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from clipforge import media
+from clipforge import hardware, media
 from clipforge.models import SelectedClip, Settings, SoundEffect, Zoom
 from clipforge.storage import PipelineError
 
@@ -257,10 +257,13 @@ def test_measure_loudness_parses_the_first_pass_json(monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", stderr)
 
     monkeypatch.setattr(media.subprocess, "run", fake)
-    values = media.measure_loudness("/in.mp4", CLIP, make(), KEEP, 8.0)
+    values = media.measure_loudness(
+        "/in.mp4", CLIP, make(threads=2, encode_threads=6), KEEP, 8.0
+    )
     assert values["input_i"] == -20.5 and values["target_offset"] == 0.25
     assert "-n" in seen["command"]
     assert seen["command"][-3:] == ["-f", "null", "-"]
+    assert seen["command"][seen["command"].index("-filter_complex_threads") + 1] == "6"
 
 
 @pytest.mark.parametrize(
@@ -370,6 +373,62 @@ def probed(monkeypatch):
         "probe",
         lambda path: {"duration": 10, "width": 404, "height": 720, "audio": True},
     )
+
+
+@pytest.mark.parametrize("explicit,expected", [(0, "8"), (6, "6")])
+@pytest.mark.parametrize("encoder", ["libx264", "h264_nvenc"])
+def test_render_passes_render_thread_budget_to_ffmpeg(
+    monkeypatch, tmp_path, probed, explicit, expected, encoder
+):
+    seen = {}
+
+    def fake(command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(hardware.os, "sched_getaffinity", lambda pid: set(range(8)))
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: True)
+    monkeypatch.setattr(media.subprocess, "run", fake)
+    media.render(
+        "/in.mp4",
+        tmp_path / "out.mp4",
+        clip_for_render(),
+        make(
+            height=720,
+            threads=2,
+            encode_threads=explicit,
+            video_encoder=encoder,
+            loudness_two_pass=False,
+        ),
+    )
+    command = seen["command"]
+    assert command.count("-threads") == 2  # input decoder and output encoder
+    for i, option in enumerate(command):
+        if option in {"-threads", "-filter_threads", "-filter_complex_threads"}:
+            assert command[i + 1] == expected
+    assert "-filter_threads" in command and "-filter_complex_threads" in command
+
+
+def test_preview_passes_render_thread_budget_to_ffmpeg(monkeypatch, tmp_path, probed):
+    seen = {}
+
+    def fake(command, **kwargs):
+        seen["command"] = command
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(media, "process", fake)
+    media.preview(
+        "/in.mp4",
+        tmp_path / "preview.mp4",
+        CLIP,
+        make(threads=2, encode_threads=6, video_encoder="libx264"),
+    )
+    command = seen["command"]
+    assert command.count("-threads") == 2
+    assert "-filter_threads" in command
+    for i, option in enumerate(command):
+        if option in {"-threads", "-filter_threads"}:
+            assert command[i + 1] == "6"
 
 
 @pytest.mark.parametrize(

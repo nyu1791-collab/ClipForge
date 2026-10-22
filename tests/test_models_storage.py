@@ -35,6 +35,8 @@ def test_invalid_spans(start, end):
         {"clips": 4, "candidates": 3},
         {"threads": -1},
         {"threads": 1025},
+        {"encode_threads": -1},
+        {"encode_threads": 1025},
         {"aspect": "4:3"},
         {"height": 1000},
         {"framing": "face-track"},

@@ -11,6 +11,15 @@ from .storage import PipelineError
 def cpu_threads(settings):
     if settings.threads:
         return settings.threads
+    return _available_cpu_threads()
+
+
+def encode_threads(settings):
+    """Rendering uses this machine's available cores, independently of ASR."""
+    return settings.encode_threads or _available_cpu_threads()
+
+
+def _available_cpu_threads():
     try:
         return max(1, len(os.sched_getaffinity(0)))
     except (AttributeError, OSError):
@@ -119,5 +128,5 @@ def video_options(settings, quality):
         "-pix_fmt",
         "yuv420p",
         "-threads",
-        str(cpu_threads(settings)),
+        str(encode_threads(settings)),
     ]

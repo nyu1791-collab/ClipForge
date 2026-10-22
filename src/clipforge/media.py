@@ -8,7 +8,7 @@ import re
 import shutil
 import subprocess
 
-from .hardware import cpu_threads, video_options
+from .hardware import encode_threads, video_options
 from .storage import PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
@@ -39,7 +39,7 @@ def final_video_options(settings):
         "-pix_fmt",
         "yuv420p",
         "-threads",
-        str(cpu_threads(settings)),
+        str(encode_threads(settings)),
     ]
 
 
@@ -165,9 +165,9 @@ def preview(source, destination, candidate, settings):
             "-ss",
             f"{candidate.start:.6f}",
             "-threads",
-            str(cpu_threads(settings)),
+            str(encode_threads(settings)),
             "-filter_threads",
-            str(cpu_threads(settings)),
+            str(encode_threads(settings)),
             *PROTOCOLS,
             *FORMATS,
             "-i",
@@ -480,6 +480,8 @@ def measure_loudness(source, clip, settings, keep, duration):
         "-v",
         "info",
         "-n",
+        "-filter_complex_threads",
+        str(encode_threads(settings)),
         "-ss",
         f"{clip.start:.6f}",
         *PROTOCOLS,
@@ -565,9 +567,11 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
         "-ss",
         f"{clip.start:.6f}",
         "-threads",
-        str(cpu_threads(settings)),
+        str(encode_threads(settings)),
         "-filter_threads",
-        str(cpu_threads(settings)),
+        str(encode_threads(settings)),
+        "-filter_complex_threads",
+        str(encode_threads(settings)),
         *PROTOCOLS,
         *FORMATS,
         "-i",

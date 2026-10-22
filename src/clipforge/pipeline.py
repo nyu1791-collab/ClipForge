@@ -73,7 +73,10 @@ def prepare(source, output, resume, settings):
             "version": __version__,
             "implementation": implementation,
         }
-        key = fingerprint(identity)
+        # Render thread budgets do not change clip reuse, even across machines.
+        key = fingerprint(
+            {**identity, "settings": settings.model_dump(exclude={"encode_threads"})}
+        )
         old = output / "input.json"
         if old.exists():
             try:

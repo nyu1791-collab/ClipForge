@@ -164,6 +164,8 @@ class Settings(Record):
     ] = "auto"
     video_encoder: Literal["auto", "libx264", "h264_nvenc"] = "auto"
     threads: int = Field(default=0, ge=0, le=1024)
+    # Rendering only; 0 uses all cores available on the machine doing the render.
+    encode_threads: int = Field(default=0, ge=0, le=1024)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
     # Frame height in pixels. Unset means the standard size for the aspect: 1920 for 9:16

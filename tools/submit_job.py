@@ -31,6 +31,7 @@ SETTINGS_FIELDS = {
     "asr_batch_size",
     "language",
     "threads",
+    "encode_threads",
     "transcript_key",
     "whisper_device",
     "whisper_compute_type",
