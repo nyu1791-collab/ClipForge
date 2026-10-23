@@ -84,23 +84,21 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
         if not isinstance(data, dict):
             raise PipelineError("Kick chat response has no data")
         rows = data.get("messages") or []
-        known, latest, last = len(seen), cursor, None
+        known, latest = len(seen), cursor
         for row in rows:
             if not isinstance(row, dict):
                 continue
             when = _parse_time(row.get("created_at"))
             if when is None:
                 continue
-            last = when
             latest = max(latest, when)
             seen.setdefault(_message_key(row, when), (when, row))
         if len(rows) >= PAGE_LIMIT:
             if len(seen) > known:
-                cursor = max(cursor, last.replace(microsecond=0))
+                cursor = max(cursor, latest.replace(microsecond=0))
             else:
-                # Nothing new came back: step past the last message so paging moves on.
-                base = cursor if last is None else max(cursor, last)
-                cursor = base + NEXT_STEP
+                # Nothing new came back: step past the newest message so paging moves on.
+                cursor = max(cursor, latest) + NEXT_STEP
         else:
             cursor = max(cursor + CHAT_STEP, latest + NEXT_STEP)
 
