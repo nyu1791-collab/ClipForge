@@ -528,23 +528,25 @@ def transcript_key(source, info, settings):
     return settings.transcript_key or transcript_identity(source, info, settings)
 
 
-def transcript_identity(source, info, settings):
+def transcript_identity(source, info, settings, split=None):
+    """split is the cut of a 2-part ASR plan; a different cut is a different transcript."""
     code = {name: digest(Path(__file__).parent / name) for name in TRANSCRIPT_CODE}
-    return fingerprint(
-        {
-            "source_sha256": digest(source),
-            "duration": info["duration"],
-            "audio": info["audio"],
-            "audio_start": info.get("audio_start", 0.0),
-            "code": code,
-            "whisper_model": settings.whisper_model,
-            "whisper_revision": settings.whisper_revision,
-            "language": settings.language,
-            **asr_identity(settings),
-            "asr_batch_size": settings.asr_batch_size,
-            "asr_parts": settings.asr_parts,
-        }
-    )
+    value = {
+        "source_sha256": digest(source),
+        "duration": info["duration"],
+        "audio": info["audio"],
+        "audio_start": info.get("audio_start", 0.0),
+        "code": code,
+        "whisper_model": settings.whisper_model,
+        "whisper_revision": settings.whisper_revision,
+        "language": settings.language,
+        **asr_identity(settings),
+        "asr_batch_size": settings.asr_batch_size,
+        "asr_parts": settings.asr_parts,
+    }
+    if split is not None:
+        value["split"] = split
+    return fingerprint(value)
 
 
 def saved_transcript(source, info, settings):

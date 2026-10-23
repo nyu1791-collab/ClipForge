@@ -163,6 +163,8 @@ class Settings(Record):
     asr_batch_size: int = Field(default=0, ge=0, le=16)
     # URL jobs may recognise two overlapping parts on separate Colab runtimes.
     asr_parts: Literal[1, 2] = 1
+    # 2-part ASR: cut at the longest silence within this many seconds of the middle (0 cuts at the middle).
+    asr_split_search_seconds: int = Field(default=1800, ge=0, le=3600)
     # Explicit hosted-runner audio acquisition route; not an automatic fallback.
     youtube_audio_transport: Literal["standard", "warp"] = "standard"
     # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.

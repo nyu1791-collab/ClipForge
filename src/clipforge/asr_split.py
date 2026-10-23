@@ -1,8 +1,10 @@
 """Two independently recognised audio parts, joined on the original audio clock."""
 
 import hashlib
+import importlib
 import math
 import re
+import time
 import wave
 
 from . import media, pipeline
@@ -19,16 +21,88 @@ from .storage import (
 OVERLAP_SECONDS = 5
 
 
-def part_id(parent, index):
+def part_id(parent, index, split):
     if (
         not re.fullmatch(r"[a-f0-9]{32}", parent)
         or type(index) is not int
         or index not in (0, 1)
+        or not isinstance(split, str)
+        or not re.fullmatch(r"[a-f0-9]{64}", split)
     ):
-        raise PipelineError("invalid ASR parent or part index")
+        raise PipelineError("invalid ASR parent, part index or split identity")
     return hashlib.sha256(
-        f"clipforge-asr-part-v1:{parent}:{index}".encode()
+        f"clipforge-asr-part-v2:{parent}:{index}:{split}".encode()
     ).hexdigest()[:32]
+
+
+def split_identity(split):
+    """What decides the cut, and so the audio and transcript; reasons and timings are excluded."""
+    return {
+        key: split[key]
+        for key in ("method", "search_seconds", "window", "silence", "sample")
+    }
+
+
+def split_key(split):
+    return fingerprint(split_identity(split))
+
+
+def choose_boundary(handle, rate, frames, offset, search_seconds):
+    """Cut at the longest silence within search_seconds of the middle, else at the middle.
+
+    Only the search window is read from the decoded 16 kHz WAV, once. The window stays at least
+    a quarter of the audio away from both ends, so each part keeps at least a quarter.
+    Silences are the gaps between VAD speech spans; ties go to the one nearest the middle.
+    """
+    started = time.monotonic()
+    middle = frames // 2
+    reach = search_seconds * rate
+    lo = max(frames // 4, middle - reach)
+    hi = min(frames - frames // 4, middle + reach)
+
+    def finish(method, reason, sample, silence=None):
+        return {
+            "method": method,
+            "reason": reason,
+            "search_seconds": search_seconds,
+            "window": [lo / rate + offset, hi / rate + offset],
+            "silence": silence,
+            "sample": sample,
+            "elapsed_seconds": round(time.monotonic() - started, 2),
+        }
+
+    if search_seconds == 0:
+        return finish("middle", "search_disabled", middle)
+    try:
+        from faster_whisper import vad
+        import numpy as np
+
+        importlib.import_module("onnxruntime")
+    except ImportError:
+        return finish("middle", "vad_unavailable", middle)
+    handle.setpos(lo)
+    pcm = handle.readframes(hi - lo)
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    try:
+        spans = vad.get_speech_timestamps(samples, vad.VadOptions(), sampling_rate=rate)
+    except Exception:
+        return finish("middle", "vad_failed", middle)
+    gaps = [
+        (after["start"] - before["end"], lo + before["end"], lo + after["start"])
+        for before, after in zip(spans, spans[1:])
+        if after["start"] > before["end"]
+    ]
+    if not gaps:
+        return finish("middle", "no_silence", middle)
+    _, start, end = max(
+        gaps, key=lambda gap: (gap[0], -abs((gap[1] + gap[2]) / 2 - middle))
+    )
+    return finish(
+        "vad",
+        "longest_silence",
+        (start + end) // 2,
+        silence=[start / rate + offset, end / rate + offset],
+    )
 
 
 def prepare(source, root, request, settings, info):
@@ -52,23 +126,30 @@ def prepare(source, root, request, settings, info):
                 raise PipelineError(
                     "split audio must contain at least two samples at 16 kHz"
                 )
-        middle = frames // 2
-        offset = float(info.get("audio_start", 0))
-        boundary = middle / rate + offset
+            offset = float(info.get("audio_start", 0))
+            split = choose_boundary(
+                handle, rate, frames, offset, settings.asr_split_search_seconds
+            )
+        cut = split["sample"]
+        boundary = cut / rate + offset
         if not 0 < boundary < info["duration"]:
             raise PipelineError("split audio has an invalid midpoint")
+        identity = split_identity(split)
         plan = {
-            "version": 1,
+            "version": 2,
             "request": request,
             "settings": settings.model_dump(),
             "info": info,
-            "transcript_key": pipeline.transcript_identity(source, info, settings),
+            "transcript_key": pipeline.transcript_identity(
+                source, info, settings, split=identity
+            ),
             "boundary": boundary,
+            "split": split,
             "parts": [],
         }
         context = OVERLAP_SECONDS * rate
         for index, (first, last) in enumerate(
-            ((0, min(frames, middle + context)), (max(0, middle - context), frames))
+            ((0, min(frames, cut + context)), (max(0, cut - context), frames))
         ):
             directory = root / f"part-{index}"
             directory.mkdir(mode=0o700)
@@ -111,10 +192,11 @@ def prepare(source, root, request, settings, info):
                 "core_start": 0 if index == 0 else boundary,
                 "core_end": boundary if index == 0 else info["duration"],
                 "source_duration": info["duration"],
+                "split_key": split_key(split),
             }
             child = {
                 **request,
-                "request_id": part_id(request["request_id"], index),
+                "request_id": part_id(request["request_id"], index, part["split_key"]),
                 "video_sha256": digest(audio),
                 "video_bytes": audio.stat().st_size,
                 "settings": settings.model_copy(update={"asr_parts": 1}).model_dump(),
@@ -136,6 +218,7 @@ def validate_part(part):
         "count",
         "source_sha256",
         "transcript_key",
+        "split_key",
         "offset",
         "duration",
         "core_start",
@@ -144,14 +227,14 @@ def validate_part(part):
     }
     if not isinstance(part, dict) or set(part) != fields:
         raise PipelineError("invalid ASR part descriptor")
-    part_id(part["parent_request_id"], part["index"])
+    part_id(part["parent_request_id"], part["index"], part.get("split_key"))
     if (
         type(part["count"]) is not int
         or part["count"] != 2
         or any(
             not isinstance(part.get(key), str)
             or not re.fullmatch(r"[a-f0-9]{64}", part[key])
-            for key in ("source_sha256", "transcript_key")
+            for key in ("source_sha256", "transcript_key", "split_key")
         )
     ):
         raise PipelineError("invalid ASR part identity")

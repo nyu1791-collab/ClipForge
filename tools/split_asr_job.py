@@ -80,12 +80,15 @@ def finish(source, output, plan, part_directories, workflow_run):
         raise PipelineError("ASR split plan changed")
     request = plan["request"]
     settings = Settings.model_validate(plan["settings"])
+    split = plan["split"]
     if (
         settings.asr_parts != 2
         or len(plan["parts"]) != 2
         or len(part_directories) != 2
         or digest(source) != request["video_sha256"]
-        or pipeline.transcript_identity(source, plan["info"], settings)
+        or pipeline.transcript_identity(
+            source, plan["info"], settings, split=asr_split.split_identity(split)
+        )
         != plan["transcript_key"]
     ):
         raise PipelineError("ASR split source or recognition identity changed")
@@ -94,13 +97,17 @@ def finish(source, output, plan, part_directories, workflow_run):
         zip(plan["parts"], part_directories, strict=True)
     ):
         if (
-            child["request_id"] != asr_split.part_id(request["request_id"], index)
+            child["request_id"]
+            != asr_split.part_id(
+                request["request_id"], index, asr_split.split_key(split)
+            )
             or child["source_ref"] != request["source_ref"]
             or child["audio_source_url"] != request["audio_source_url"]
             or child["settings"]
             != settings.model_copy(update={"asr_parts": 1}).model_dump()
             or child["asr_part"]["source_sha256"] != request["video_sha256"]
             or child["asr_part"]["transcript_key"] != plan["transcript_key"]
+            or child["asr_part"]["split_key"] != asr_split.split_key(split)
         ):
             raise PipelineError("ASR split plan has inconsistent part identities")
         parts.append((child["asr_part"], verify_part(directory, child, workflow_run)))
@@ -125,6 +132,8 @@ def finish(source, output, plan, part_directories, workflow_run):
             parts=2,
             overlap_seconds=asr_split.OVERLAP_SECONDS,
             part_requests=[child["request_id"] for child in plan["parts"]],
+            split=split,
+            split_key=asr_split.split_key(split),
         )
         write_json(output / "asr-receipt.json", cache)
         write_json(
