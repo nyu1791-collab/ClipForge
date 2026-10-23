@@ -513,6 +513,231 @@ def test_existing_clip_without_receipt_is_not_trusted(tmp_path, transcript):
     assert key
 
 
+def _chat_clip_render(tmp_path, monkeypatch, japanese_font, transcript, chat, layout):
+    """Renders clip 1 with a chat panel and a fixed layout; media and planning are synthetic."""
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"source")
+    root = tmp_path / "clips"
+    root.mkdir()
+    settings = make(aspect="16:9", height=1080, chat_panel=True)
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+    )
+
+    def fake_render(source, destination, clip, settings, **options):
+        destination.write_bytes(b"video")
+        return {
+            "duration": 10,
+            "width": 1920,
+            "height": 1080,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
+
+    def fake_captions(
+        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
+    ):
+        pysubs2.SSAFile().save(str(directory / "captions.ass"))
+        pysubs2.SSAFile().save(str(directory / "captions.srt"))
+        return {"events": 0, "heading": False, "missing_glyphs": []}
+
+    monkeypatch.setattr(pipeline, "cut_regions", lambda *args: [])
+    monkeypatch.setattr(pipeline, "landscape_layout", lambda *args, **kwargs: layout)
+    monkeypatch.setattr(pipeline.media, "render", fake_render)
+    monkeypatch.setattr(pipeline, "create_captions", fake_captions)
+    result = pipeline.render_clip(
+        source, root, 1, clip, transcript, settings, "job", chat=chat
+    )
+    return source, root, settings, clip, result
+
+
+def _forbidden(*args, **kwargs):
+    raise AssertionError("a rendered clip must not be planned or rendered again")
+
+
+def test_rerun_returns_a_rendered_clip_without_planning_or_fetching_again(
+    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
+):
+    chat = {
+        "ass": "[Script Info]\nPlayResX: 1920\n",
+        "messages": 0,
+        "reason": None,
+        "error": None,
+    }
+    layout = {
+        "anchor": "right",
+        "requested": "auto",
+        "x": 0.25,
+        "lifts": [0.2, 0.12],
+        "static": None,
+        "reason": None,
+    }
+    source, root, settings, clip, first = _chat_clip_render(
+        tmp_path, monkeypatch, japanese_font, transcript, chat, layout
+    )
+    receipt = root / "clip-001" / "render.json"
+    assert json.loads(receipt.read_text())["render_inputs"] == {
+        "chat": {"ass_sha256": fingerprint(chat["ass"]), "reason": None},
+        "layout": {"x": 0.25, "lifts": [0.2, 0.12], "requested": "auto"},
+    }
+    monkeypatch.setattr(pipeline, "cut_regions", _forbidden)
+    monkeypatch.setattr(pipeline, "landscape_layout", _forbidden)
+    monkeypatch.setattr(pipeline.media, "render", _forbidden)
+    again = pipeline.render_clip(
+        source,
+        root,
+        1,
+        clip,
+        transcript,
+        make(aspect="16:9", height=1080, chat_panel=True),
+        "job",
+    )
+    assert again["sha256"] == first["sha256"]
+    assert again["directory"] == "clips/clip-001"
+    # The chat was read again and came out different; the stored render still stands.
+    changed = dict(chat, ass="[Script Info]\nPlayResX: 1280\n")
+    again = pipeline.render_clip(
+        source,
+        root,
+        1,
+        clip,
+        transcript,
+        make(aspect="16:9", height=1080, chat_panel=True),
+        "job",
+        chat=changed,
+    )
+    assert again["sha256"] == first["sha256"]
+    with pytest.raises(PipelineError, match="differs from the saved render receipt"):
+        pipeline.render_clip(
+            source,
+            root,
+            1,
+            clip,
+            transcript,
+            make(aspect="16:9", height=1080, chat_panel=True),
+            "other-job",
+        )
+    (root / "clip-001" / "video.mp4").write_bytes(b"tampered")
+    with pytest.raises(PipelineError, match="differs from the saved render receipt"):
+        pipeline.render_clip(
+            source,
+            root,
+            1,
+            clip,
+            transcript,
+            make(aspect="16:9", height=1080, chat_panel=True),
+            "job",
+        )
+
+
+def test_render_key_is_the_key_earlier_receipts_were_made_with(
+    transcript,
+):
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    chat_inputs = {"ass_sha256": fingerprint("ASS"), "reason": "chat_unavailable"}
+    layout_inputs = {"x": 0.25, "lifts": [0.2], "requested": "right", "floor": 0.1}
+    earlier = fingerprint(
+        {
+            "job": "job",
+            "clip": clip.model_dump(),
+            "transcript": transcript.model_dump(),
+            "chat": {"ass": fingerprint("ASS"), "reason": "chat_unavailable"},
+            "layout": {
+                "x": 0.25,
+                "lifts": [0.2],
+                "requested": "right",
+                "floor": 0.1,
+            },
+        }
+    )
+    key = pipeline._render_key("job", clip, transcript, chat_inputs, layout_inputs)
+    assert key == earlier
+    plain = fingerprint(
+        {
+            "job": "job",
+            "clip": clip.model_dump(),
+            "transcript": transcript.model_dump(),
+        }
+    )
+    assert pipeline._render_key("job", clip, transcript, None, None) == plain
+
+
+def test_receipt_without_saved_inputs_is_matched_as_before(
+    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
+):
+    chat = {
+        "ass": "[Script Info]\nPlayResX: 1920\n",
+        "messages": 0,
+        "reason": None,
+        "error": None,
+    }
+    layout = {
+        "anchor": "right",
+        "requested": "auto",
+        "x": 0.25,
+        "lifts": [0.2, 0.12],
+        "static": None,
+        "reason": None,
+    }
+    source, root, settings, clip, first = _chat_clip_render(
+        tmp_path, monkeypatch, japanese_font, transcript, chat, layout
+    )
+    receipt = root / "clip-001" / "render.json"
+    stored = json.loads(receipt.read_text())
+    del stored["render_inputs"]
+    receipt.write_text(json.dumps(stored), encoding="utf-8")
+    # Without saved inputs the clip is planned again; the same plan and chat give the same key.
+    monkeypatch.setattr(pipeline, "cut_regions", lambda *args: [])
+    monkeypatch.setattr(pipeline, "landscape_layout", lambda *args, **kwargs: layout)
+    monkeypatch.setattr(pipeline.media, "render", _forbidden)
+    again = pipeline.render_clip(
+        source, root, 1, clip, transcript, settings, "job", chat=chat
+    )
+    assert again["sha256"] == first["sha256"]
+    # A receipt of a plain render (no chat, no layout) is matched without any analysis.
+    plain = make()
+    plain_root = tmp_path / "plain"
+    plain_root.mkdir()
+
+    def plain_render(source, destination, clip, settings, **options):
+        destination.write_bytes(b"video")
+        return {
+            "duration": 10,
+            "width": 404,
+            "height": 720,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
+
+    monkeypatch.setattr(pipeline.media, "render", plain_render)
+
+    def plain_captions(
+        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
+    ):
+        pysubs2.SSAFile().save(str(directory / "captions.ass"))
+        pysubs2.SSAFile().save(str(directory / "captions.srt"))
+        return {"events": 0, "heading": False, "missing_glyphs": []}
+
+    monkeypatch.setattr(pipeline, "create_captions", plain_captions)
+    monkeypatch.setattr(pipeline, "landscape_layout", lambda *args, **kwargs: None)
+    rendered = pipeline.render_clip(
+        source, plain_root, 1, clip, transcript, plain, "job"
+    )
+    stored = json.loads((plain_root / "clip-001" / "render.json").read_text())
+    assert stored["render_inputs"] == {"chat": None, "layout": None}
+    del stored["render_inputs"]
+    (plain_root / "clip-001" / "render.json").write_text(
+        json.dumps(stored), encoding="utf-8"
+    )
+    monkeypatch.setattr(pipeline, "landscape_layout", _forbidden)
+    monkeypatch.setattr(pipeline, "cut_regions", _forbidden)
+    again = pipeline.render_clip(source, plain_root, 1, clip, transcript, plain, "job")
+    assert again["sha256"] == rendered["sha256"]
+
+
 # --- models ---------------------------------------------------------------
 
 
