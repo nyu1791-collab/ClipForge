@@ -446,7 +446,7 @@ jobs:
   url-probe:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
@@ -484,38 +484,45 @@ jobs:
       - name: Install locked metadata dependencies without credentials
         timeout-minutes: 3
         run: uv sync --locked --extra media-fetch --no-dev
-      - name: Install pinned PO Token provider for anonymous comparison
-        timeout-minutes: 3
+      - name: Install current prerelease yt-dlp and pinned Docker PO Token provider
+        timeout-minutes: 4
         run: |
-          uv pip install --python .venv/bin/python bgutil-ytdlp-pot-provider==2.0.2
-          git clone --no-checkout https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$RUNNER_TEMP/bgutil"
-          git -C "$RUNNER_TEMP/bgutil" checkout --detach 26475e9d3665b972c4aeb83b4dbaafcf64b88438
-          cd "$RUNNER_TEMP/bgutil/server"
-          npm ci --ignore-scripts
-          npx --no-install tsc
-          node build/main.js --host 127.0.0.1 --port 4416 > "$RUNNER_TEMP/bgutil.log" 2>&1 &
-          echo "$!" > "$RUNNER_TEMP/bgutil.pid"
-          for attempt in {1..20}; do
+          uv pip install --python .venv/bin/python --upgrade --prerelease allow 'yt-dlp[default,curl-cffi]' bgutil-ytdlp-pot-provider==2.0.2
+          docker pull brainicism/bgutil-ytdlp-pot-provider:2.0.2
+          docker image inspect --format '{{json .RepoDigests}}' brainicism/bgutil-ytdlp-pot-provider:2.0.2 > "$RUNNER_TEMP/bgutil-image.json"
+          docker run -d --init --network host --name clipforge-bgutil brainicism/bgutil-ytdlp-pot-provider:2.0.2 --host 127.0.0.1
+          for attempt in {1..30}; do
             if curl --fail --silent http://127.0.0.1:4416/ping >/dev/null; then exit 0; fi
             sleep 1
           done
-          echo "PO Token service did not become ready" >&2
+          echo "Docker PO Token service did not become ready" >&2
           exit 1
-      - name: Compare anonymous clients, impersonation and PO Token with precise timing
-        timeout-minutes: 11
-        run: uv run --no-sync python tools/probe_youtube.py --url "$AUDIO_URL"
-      - name: Remove temporary PO Token service
+      - name: Probe Docker provider with web,mweb before WARP
+        timeout-minutes: 6
+        run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network direct --output probe-result/docker-direct.json
+      - name: Connect official Cloudflare WARP and verify the actual route
+        id: warp
+        continue-on-error: true
+        timeout-minutes: 4
+        run: bash tools/connect_probe_warp.sh
+      - name: Probe Docker provider with web,mweb through verified WARP
+        if: steps.warp.outcome == 'success'
+        timeout-minutes: 6
+        run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
+      - name: Disconnect WARP and remove the temporary Docker provider
         timeout-minutes: 1
         if: always()
         run: |
-          if [ -f "$RUNNER_TEMP/bgutil.pid" ]; then kill "$(cat "$RUNNER_TEMP/bgutil.pid")" 2>/dev/null || true; fi
-          rm -f "$RUNNER_TEMP/bgutil.log" "$RUNNER_TEMP/bgutil.pid"
+          if command -v warp-cli >/dev/null; then timeout 15 warp-cli --accept-tos disconnect || true; fi
+          sudo systemctl stop clipforge-warp-rollback.timer 2>/dev/null || true
+          docker rm -f clipforge-bgutil >/dev/null 2>&1 || true
+          if [ -f "$RUNNER_TEMP/bgutil-image.json" ]; then cp "$RUNNER_TEMP/bgutil-image.json" probe-result/bgutil-image.json; fi
       - uses: actions/upload-artifact@v4
         timeout-minutes: 2
         if: always()
         with:
           name: clipforge-url-probe-${{ github.run_id }}
-          path: probe-result/metadata.json
+          path: probe-result/
           retention-days: 7
           if-no-files-found: warn
 
