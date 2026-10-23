@@ -562,6 +562,7 @@ def test_chat_panel_moves_caption_margins_into_the_video_area(tmp_path, settings
                 "aspect": "16:9",
                 "height": 1080,
                 "chat_panel": chat_panel,
+                "chat_panel_fit": "crop",
             }
         )
         captions.create(transcript, clip, directory, chat, credits=["作者 / CC0"])
@@ -585,6 +586,7 @@ def test_chat_panel_caption_lines_fit_inside_the_video_area(
             "aspect": "16:9",
             "height": 1080,
             "chat_panel": True,
+            "chat_panel_fit": "crop",
             "horizontal_line_chars": 13,
         }
     )
@@ -605,3 +607,70 @@ def test_chat_panel_caption_lines_fit_inside_the_video_area(
     assert subtitles.styles["Default"].marginr == captions.margin_px(1080) + 480
     # The quality check measures lines against the margins written in the file.
     assert quality.overflowing_lines(tmp_path / "captions.ass") == []
+
+
+def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
+    tmp_path, settings, japanese_font
+):
+    text = (
+        "これは横画面の字幕の行の長さを確かめるための、少し長い日本語の文章です。" * 2
+    )
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=0, end=6, text=text, words=[Word(start=0, end=6, text=text)])
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    chat = Settings.model_validate(
+        {
+            **settings.model_dump(),
+            "aspect": "16:9",
+            "height": 1080,
+            "chat_panel": True,
+        }
+    )
+    assert chat.chat_panel_fit == "top" and chat.caption_line_chars() == 18
+    captions.create(transcript, clip, tmp_path, chat, credits=["作者 / CC0"])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    style = subtitles.styles["Default"]
+    assert style.fontsize == 72
+    # The band under the 810 px picture is 270 px; two 72 px lines are centred in it.
+    assert style.marginv == 63
+    assert style.marginl == captions.margin_px(1080)
+    assert style.marginr == captions.margin_px(1080) + 480
+    # The credit stays on the picture: its bottom edge is 16 px above the picture's bottom.
+    assert subtitles.styles["Credit"].marginv == 270 + 16
+    for event in subtitles:
+        for line in event.plaintext.splitlines():
+            assert len(line) <= 18
+
+
+def test_caption_scale_one_keeps_the_landscape_caption_style(tmp_path, settings):
+    text = "横画面の字幕の文字の大きさを確かめます。" * 2
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=0, end=6, text=text, words=[Word(start=0, end=6, text=text)])
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    for scale, size in ((1.0, 52), (1.5, 78)):
+        directory = tmp_path / str(scale)
+        directory.mkdir()
+        landscape = Settings.model_validate(
+            {
+                **settings.model_dump(),
+                "aspect": "16:9",
+                "height": 1080,
+                "caption_scale": scale,
+            }
+        )
+        captions.create(transcript, clip, directory, landscape)
+        style = pysubs2.load(str(directory / "captions.ass")).styles["Default"]
+        # Without the chat panel the margins and the bottom placement are as before.
+        assert (style.fontsize, style.marginv, style.marginr) == (size, 130, 38)

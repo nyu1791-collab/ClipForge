@@ -32,6 +32,12 @@ from .caption_breaks import (
     _balanced_break,
     _word_cut,
 )
+from .models import (
+    CAPTION_LINE_EM,
+    CAPTION_MARGIN,
+    CAPTION_OUTLINE_ALLOWANCE,
+    CAPTION_REFERENCE_HEIGHT,
+)
 from .caption_sentences import (
     _tagger,
     _ends_sentence,
@@ -69,16 +75,17 @@ __all__ = [
     "sentence_ends",
     "orphan_start",
 ]
-REFERENCE_HEIGHT = 720  # the margins below are in pixels at this height
+# The margins below are in pixels at this height; models.py holds the values.
+REFERENCE_HEIGHT = CAPTION_REFERENCE_HEIGHT
 # Side margin of captions and headings. Narrower than before: the caption line is then long
 # enough that fewer captions split words or end up as fragments (measured on the sample).
-MARGIN = 25
+MARGIN = CAPTION_MARGIN
 MIN_EVENT_MS = 100
 # Reading speed in characters a second. A caption faster than the target stays on screen
 # into the silence after it; one still faster than the maximum is reported as a warning.
 TARGET_CAPTION_CPS = 10
 MAX_CAPTION_CPS = 15
-OUTLINE_ALLOWANCE = 8
+OUTLINE_ALLOWANCE = CAPTION_OUTLINE_ALLOWANCE
 # Horizontal (landscape) line length and reading speed are defined only in Settings
 # (horizontal_line_chars, horizontal_target_cps); this module reads them from the settings.
 # A pause this long ends a caption. Shorter captions are joined to a neighbour across
@@ -393,7 +400,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     margin = margin_px(height)
     numerator, denominator = map(int, settings.aspect.split(":"))
     frame_width = round(height * numerator / denominator / 2) * 2
-    font_size = round(height * 0.048)
+    font_size = settings.caption_font_size()
     font_path = fonts.resolve(settings.font)
     measure = fonts.Measure(font_path, font_size)
     # With the chat panel, text stays in the video area left of the column: the right margin
@@ -401,6 +408,8 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     panel = settings.chat_panel_pixels()
     area = frame_width - panel
     margin_right = margin + panel
+    # With fit top the picture is shorter than the frame; the rest is the caption band.
+    band = height - settings.chat_video_height()
     line_px = area - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
     landscape = frame_width > height
     if landscape:
@@ -436,6 +445,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         marginr=margin_right,
         marginv=round(height * 0.12),
     )
+    if band:
+        # Two lines centred in the caption band below the picture.
+        base["marginv"] = round((band - 2 * font_size * CAPTION_LINE_EM) / 2)
     subtitles.styles["Default"] = pysubs2.SSAStyle(
         secondarycolor=pysubs2.Color(*YELLOW), **base
     )
@@ -483,7 +495,8 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             alignment=pysubs2.Alignment.BOTTOM_RIGHT,
             marginl=margin,
             marginr=margin_right,
-            marginv=round(height * 0.015),
+            # Credits stay on the picture, above the bottom edge of the picture.
+            marginv=band + round(height * 0.015),
         )
         credit_text = safe(" / ".join(credits))
         breaks = wrap_breaks(

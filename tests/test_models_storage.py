@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -265,6 +266,26 @@ def test_chat_panel_rejects_vertical_cut_and_out_of_range_widths(settings, updat
         Settings.model_validate({**settings.model_dump(), **updates})
 
 
+def test_caption_scale_and_the_landscape_chat_config_are_valid(settings):
+    landscape = {**settings.model_dump(), "aspect": "16:9", "height": 1080}
+    default = Settings.model_validate(landscape)
+    assert default.caption_scale == 1.0 and default.caption_font_size() == 52
+    scaled = Settings.model_validate({**landscape, "caption_scale": 1.5})
+    assert scaled.caption_font_size() == 78
+    for value in (0.7, 2.1):
+        with pytest.raises(ValidationError):
+            Settings.model_validate({**landscape, "caption_scale": value})
+    # With the top picture the two lines must fit 80 percent of the band: 108 px at most here.
+    large = Settings.model_validate(
+        {**landscape, "chat_panel": True, "caption_scale": 2.0}
+    )
+    assert large.caption_font_size() == 108 and large.caption_line_chars() == 12
+    path = Path(__file__).resolve().parents[1] / "config.landscape-chat.example.json"
+    example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert example.chat_panel is True and example.chat_panel_fit == "top"
+    assert example.silence_cut is False and example.aspect == "16:9"
+
+
 def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
     landscape = {**settings.model_dump(), "aspect": "16:9", "height": 1080}
     off = Settings.model_validate({**landscape, "horizontal_line_chars": 13})
@@ -274,9 +295,12 @@ def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
         {**landscape, "chat_panel": True, "horizontal_line_chars": 13}
     )
     assert on.chat_panel_pixels() == 480
-    assert on.chat_panel_fit == "crop" and on.chat_anonymize is False
+    assert on.chat_panel_fit == "top" and on.chat_anonymize is False
+    # Top: 1440 px of picture width at the 72 px caption font leaves room for 18 characters.
+    assert on.caption_font_size() == 72 and on.caption_line_chars() == 18
+    crop = Settings.model_validate({**on.model_dump(), "chat_panel_fit": "crop"})
     # 13 characters of a 1920 px frame become 9 in the 1440 px video area.
-    assert on.caption_line_chars() == 9
+    assert crop.caption_line_chars() == 9
     # 720 p landscape: 480 px is 37.5 percent of 1280, inside the allowed range.
     small = Settings.model_validate({**landscape, "height": 720, "chat_panel": True})
     assert small.chat_panel_pixels() == 480

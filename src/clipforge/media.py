@@ -324,7 +324,8 @@ def _layout(settings, width, height, src, out):
 def _chat_fit(settings, width, height, src, out):
     """Fit [src] into the video area left of the chat column (width is that area's width).
 
-    Used only with the chat panel, which replaces the layout and framing settings there.
+    Used only with the chat panel, which replaces the layout and framing settings there. With
+    fit top, [src] is the 16:9 picture box, so the letterbox branch fits it without bars.
     """
     if settings.chat_panel_fit == "crop":
         fit = (
@@ -356,9 +357,11 @@ def _video_graph(
 
     With the chat panel, the picture and its overlays use the video area left of the chat
     column. The column is padded on after them, so their positions are relative to the area.
+    With fit top the picture is shorter than the frame; overlays and progress use its height.
     """
     panel = settings.chat_panel_pixels()
     area = width - panel
+    picture = settings.chat_video_height() if panel else height
     zooms = settings.zoom
     labels = [f"b{i}" for i in range(1 + len(zooms))]
     chain = [_video_timeline(clip, keep)]
@@ -370,13 +373,15 @@ def _video_graph(
     else:
         base = "vin"
     if panel:
-        chain.append(_chat_fit(settings, area, height, base, "lay0"))
+        chain.append(_chat_fit(settings, area, picture, base, "lay0"))
     else:
         chain.append(_layout(settings, width, height, base, "lay0"))
     previous = "lay0"
     for index, zoom in enumerate(zooms):
         # Enlarged face shown over the frame while the zoom interval is active.
-        hh = min(round(height * 0.8 / 2) * 2, round(height * 0.3 * zoom.scale / 2) * 2)
+        hh = min(
+            round(picture * 0.8 / 2) * 2, round(picture * 0.3 * zoom.scale / 2) * 2
+        )
         chain.append(
             f"[{labels[index + 1]}]{_box(settings.face_box)},"
             f"scale=w='min({area},trunc(iw*{hh}/ih/2)*2)':h={hh},setsar=1[z{index}]"
@@ -387,9 +392,9 @@ def _video_graph(
             f"enable='between(t,{zoom.start:.3f},{zoom.end:.3f})'[{nxt}]"
         )
         previous = nxt
-    margin = round(height * 0.04)
+    margin = round(picture * 0.04)
     # A top overlay sits below the heading when one is shown, so the title stays readable.
-    top = round(height * 0.14) if settings.heading else margin
+    top = round(picture * 0.14) if settings.heading else margin
     for index, visual in enumerate(visuals):
         max_w = round(area * visual["max_fraction"])
         # An overlay fades in and out over its own interval; a short one fades by half.
@@ -425,12 +430,17 @@ def _video_graph(
             f"geq=r={PROGRESS_RGB[0]}:g={PROGRESS_RGB[1]}:b={PROGRESS_RGB[2]}:"
             f"a='if(lte(X\\,{area}*T/{duration:.6f})\\,230\\,0)'[pbar]"
         )
-        chain.append(f"[{previous}][pbar]overlay=0:{height - 8}:shortest=1[pb]")
+        chain.append(f"[{previous}][pbar]overlay=0:{picture - 8}:shortest=1[pb]")
         previous = "pb"
     tail = []
     if panel:
         tail.append(f"pad={width}:{height}:0:0:color={CHAT_BACKGROUND}")
         tail.append(f"drawbox=x={area}:y=0:w=2:h={height}:color={CHAT_BORDER}:t=fill")
+        if picture < height:
+            # The caption band is separated from the picture by a line of the same colour.
+            tail.append(
+                f"drawbox=x=0:y={picture}:w={area}:h=2:color={CHAT_BORDER}:t=fill"
+            )
     if ass:
         # Captions are copied to a fixed basename beside the generated MP4.
         tail.append("ass=filename=captions.ass")

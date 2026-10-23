@@ -8,6 +8,7 @@ import pysubs2
 import pytest
 
 from clipforge import quality
+from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
 SUMMARY = """\
@@ -581,3 +582,29 @@ def test_japanese_style_checks_only_warn_and_do_not_use_font_width(
         warning.startswith("1 caption line(s) exceed 13")
         for warning in report["warnings"]
     )
+
+
+def test_top_chat_layout_limits_caption_lines_to_the_picture(settings, japanese_font):
+    top = Settings.model_validate(
+        {**settings.model_dump(), "aspect": "16:9", "height": 1080, "chat_panel": True}
+    )
+    events = [(0, 2000, "あ" * 18), (2000, 4000, "あ" * 19)]
+    warnings = quality.japanese_style_warnings(events, True, top)
+    assert len(warnings) == 1
+    assert warnings[0].startswith("1 caption line(s) exceed 18 fullwidth characters")
+
+
+def test_top_chat_caption_overflow_is_measured_inside_the_picture(
+    tmp_path, japanese_font
+):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=72, marginl=38, marginr=518
+    )
+    # The picture is 1440 px wide; 18 characters at 72 px fit, 19 do not.
+    subtitles.append(pysubs2.SSAEvent(start=0, end=1000, text="あ" * 18))
+    subtitles.append(pysubs2.SSAEvent(start=1000, end=2000, text="あ" * 19))
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == ["あ" * 19]
