@@ -17,7 +17,7 @@ CENTER_MARGIN = 0.02
 # Pixels below this value count as dark (a black chat panel, a night scene).
 DARK_LEVEL = 32
 # A column whose share of dark pixels reaches this is background: its energy counts as 0.
-DARK_SHARE = 0.55
+DARK_SHARE = 0.45
 # A dark run at a frame edge is an overlay only up to this share of the width (a night scene is not).
 OVERLAY_MAX_SHARE = 0.40
 # Candidate crop offsets are evaluated in steps of this share of the source width.
