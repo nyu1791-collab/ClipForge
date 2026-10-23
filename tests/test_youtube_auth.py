@@ -64,3 +64,23 @@ def test_symlink_rejected(tmp_path):
     link.symlink_to(original)
     with pytest.raises(PipelineError):
         cookie_copy(link)
+
+
+def test_nonregular_file_rejected_without_blocking(tmp_path):
+    import os
+
+    fifo = tmp_path / "fifo"
+    os.mkfifo(fifo)
+    with pytest.raises(PipelineError):
+        cookie_copy(fifo)
+
+
+def test_explicit_cookie_for_kick_rejected_before_factory(tmp_path):
+    from clipforge.media_sources import open_source
+
+    with pytest.raises(PipelineError, match="requires a YouTube source"):
+        open_source(
+            "https://kick.com/test/videos/01234567-89ab-cdef-0123-456789abcdef",
+            tmp_path,
+            cookies_file=tmp_path / "cookies",
+        )

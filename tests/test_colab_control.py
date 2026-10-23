@@ -551,7 +551,11 @@ class ControlTests(unittest.TestCase):
                     stack.enter_context(
                         patch.dict(
                             os.environ,
-                            {"GEMINI_API_KEY": key, "CLIPFORGE_NO_MODEL_API": "1"},
+                            {
+                                "GEMINI_API_KEY": key,
+                                "CLIPFORGE_NO_MODEL_API": "1",
+                                "YOUTUBE_COOKIES_B64": "private-cookie-test",
+                            },
                         )
                     )
                     contents = stack.enter_context(
@@ -560,6 +564,8 @@ class ControlTests(unittest.TestCase):
                     contents.return_value.upload.side_effect = upload
                     controller.run(Path(temporary) / "output")
                 self.assertNotIn("audio_url", uploaded[0])
+                self.assertNotIn("youtube_cookies_b64", uploaded[0])
+                self.assertNotIn("private-cookie-test", json.dumps(uploaded))
                 self.assertEqual(uploaded[0]["gemini_api_key"], "")
                 self.assertEqual(events, ["stop", "restore"])
 

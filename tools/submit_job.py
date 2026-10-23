@@ -119,6 +119,8 @@ def preflight_audio_url(url, settings, cookies_file=None):
     from clipforge.storage import PipelineError
     from pydantic import ValidationError
 
+    if cookies_file is not None and source_kind(url) != "youtube":
+        raise PipelineError("--cookies-file requires a YouTube source")
     try:
         settings = Settings.model_validate(settings)
     except ValidationError as error:

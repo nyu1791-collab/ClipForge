@@ -23,7 +23,9 @@ def cookie_copy(cookies_file=None):
         return None, None
     try:
         if cookies_file is not None:
-            descriptor = os.open(cookies_file, os.O_RDONLY | os.O_NOFOLLOW)
+            descriptor = os.open(
+                cookies_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            )
             with os.fdopen(descriptor, "rb") as handle:
                 if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
                     raise ValueError

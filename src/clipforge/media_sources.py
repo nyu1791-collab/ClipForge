@@ -105,6 +105,8 @@ def audio_only_url(url):
 
 
 def open_source(url, cache, *, kick_factory=KickVOD, **budgets):
+    if source_kind(url) != "youtube" and budgets.get("cookies_file") is not None:
+        raise PipelineError("--cookies-file requires a YouTube source")
     factory = kick_factory if source_kind(url) == "kick" else RemoteMedia
     return factory(url, cache, **budgets)
 
