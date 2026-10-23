@@ -148,7 +148,7 @@ def code_identity(settings=None):
     return result
 
 
-def summarize_delivery(manifest, output, expected):
+def summarize_delivery(manifest, output, expected, height=1080):
     """Verify retained receipts before reporting numeric delivery results."""
     receipt = manifest.get("selection_receipt", {})
     if (
@@ -169,8 +169,8 @@ def summarize_delivery(manifest, output, expected):
             raise PipelineError("landscape output receipt or files changed")
         info = row["media"]
         if (info["width"], info["height"], info.get("audio_sample_rate")) != (
-            1920,
-            1080,
+            round(height * 16 / 9 / 2) * 2,
+            height,
             media.AUDIO_RATE,
         ):
             raise PipelineError("landscape output dimensions or audio rate differ")

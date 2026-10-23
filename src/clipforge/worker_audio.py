@@ -507,7 +507,9 @@ def merge_parts(parts, output, settings, source_ref, config_file=None):
         "transcript_cache": loaded[0]["cache"],
         "timings": timings,
     }
-    summary = landscape.summarize_delivery(manifest, delivery, settings.clips)
+    summary = landscape.summarize_delivery(
+        manifest, delivery, settings.clips, settings.height
+    )
     summary["topic_content_review"] = "attested_in_selection_file"
     # Merge uses stored quality/media receipts; do not resolve fonts or invoke ffmpeg.
     summary["reproducibility"] = landscape.code_identity()
@@ -691,10 +693,11 @@ def main(argv=None):
         ):
             raise PipelineError("invalid private worker identity")
         settings = Settings.model_validate_json(args.config.read_text())
-        if (settings.aspect, settings.height, settings.quality_gate) != (
-            "16:9",
-            1080,
-            "strict",
+        # 360p is the fast review and delivery size; 1080p is rendered on request.
+        if (
+            settings.aspect != "16:9"
+            or settings.height not in (360, 1080)
+            or settings.quality_gate != "strict"
         ):
             raise PipelineError("horizontal worker settings are required")
         if args.stage == "merge":

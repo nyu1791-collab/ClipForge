@@ -530,7 +530,7 @@ def merge_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         worker.landscape,
         "summarize_delivery",
-        lambda manifest, output, expected: {
+        lambda manifest, output, expected, height=1080: {
             "status": "complete",
             "rendered_clips": len(manifest["rendered"]),
         },
@@ -694,7 +694,7 @@ def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
     monkeypatch.setattr(
         worker.landscape,
         "summarize_delivery",
-        lambda manifest, output, expected: {"status": "complete"},
+        lambda manifest, output, expected, height=1080: {"status": "complete"},
     )
     monkeypatch.setattr(
         worker.landscape,

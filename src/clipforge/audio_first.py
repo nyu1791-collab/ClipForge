@@ -653,7 +653,9 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
         "transcript_cache": json.loads((root / "asr-receipt.json").read_text()),
         "timings": timings,
     }
-    summary = landscape.summarize_delivery(manifest, output, settings.clips)
+    summary = landscape.summarize_delivery(
+        manifest, output, settings.clips, settings.height
+    )
     summary["topic_content_review"] = "attested_in_selection_file"
     summary["reproducibility"] = landscape.code_identity(settings)
     write_json(output / "manifest.json", manifest)
