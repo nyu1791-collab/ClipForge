@@ -22,6 +22,7 @@ Kick / YouTube / Twitch / 直接HTTPSメディア URL → runner で音声取得
 - 描画（ffmpeg グラフ）: `media.py`／工程の管理: `pipeline.py`／URL 経路の段階: `audio_first.py`・`worker_audio.py`
 - チャット欄（Kick チャットの取得と ASS 描画）: `kick_chat.py`（設定 `chat_panel`、説明は `docs/AUDIO_FIRST.md` の「チャット欄」）
 - 音声・信号: `signals.py`・`kick_media.py`・`silence.py`／話題: `topics.py`・`topic_hints.py`・`review_draft.py`
+- 字幕用の文字起こし（Parakeet）: 変換 `parakeet_captions.py`・詰め込み `caption_pack.py`、投入 `tools/submit_captions.py`、承認ファイルへの差し込み `tools/attach_captions.py`、workflow 原本 `deploy/captions.yml`
 - 字幕: `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py`
 - 品質検査: `quality.py`／ローカル動画の Gemini 選定: `selection.py`
 - 図表・素材・サムネイル: `diagrams.py`・`tables.py`・`assets.py`・`thumbnail.py`

@@ -1478,3 +1478,28 @@ def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():
             module.require_video_review(
                 {"clips": [{"video_reviewed": True, "caption_floor": floor}]}
             )
+
+
+def test_captions_run_reaches_every_parallel_render(stage_submitter, tmp_path):
+    module, control, args = stage_submitter
+    control["runs"] = [{"workflow": module.WORKFLOW, "status": "completed"}]
+    argv = render_args(
+        args, tmp_path, "--worker", "colab-auto", "--clips", "3", "--captions-run", "42"
+    )
+    assert module.main(argv) == 0
+    assert {post["inputs"]["captions_run_id"] for post in control["posts"]} == {"42"}
+
+
+@pytest.mark.parametrize("value", ["abc", "1;2", ""])
+def test_captions_run_must_be_a_numeric_run(stage_submitter, tmp_path, value):
+    module, control, args = stage_submitter
+    with pytest.raises(RuntimeError, match="captions-run"):
+        module.main(render_args(args, tmp_path, "--captions-run", value))
+    assert not control["posts"]
+
+
+def test_captions_run_applies_to_render_only(stage_submitter):
+    module, control, args = stage_submitter
+    with pytest.raises(RuntimeError, match="captions-run"):
+        module.main(["--stage", "previews"] + args[2:] + ["--captions-run", "42"])
+    assert not control["posts"]

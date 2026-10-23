@@ -22,6 +22,7 @@ from .kick_media import RANGE_FORMAT, KickVOD
 from .media_sources import canonical, open_source
 from pydantic import ValidationError
 
+from .caption_pack import pack_captions  # noqa: F401  (re-exported for callers)
 from .models import Transcript
 from .storage import (
     TIME_TOLERANCE,
@@ -325,22 +326,6 @@ def caption_floors(value):
 # base64 zlib JSON: [[start_cs, end_cs, text, [[word, start_cs, end_cs], ...]], ...] in
 # source centiseconds. They replace the full-source ASR for that clip only.
 MAX_CAPTION_BYTES = 2 * 1024 * 1024
-
-
-def pack_captions(segments):
-    """Pack Transcript-shaped segments (source seconds) for a reviewed clip's captions."""
-    cs = lambda seconds: round(seconds * 100)  # noqa: E731
-    rows = [
-        [
-            cs(s["start"]),
-            cs(s["end"]),
-            s["text"],
-            [[w["text"], cs(w["start"]), cs(w["end"])] for w in s.get("words", [])],
-        ]
-        for s in segments
-    ]
-    raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()
-    return base64.b64encode(zlib.compress(raw, 9)).decode()
 
 
 def caption_overrides(value, language):

@@ -598,6 +598,11 @@ def main(argv=None):
     parser.add_argument(
         "--part-runs", help="merge: comma-separated RUN_ID:REQUEST_ID of clip renders"
     )
+    parser.add_argument(
+        "--captions-run",
+        help="render only: a successful clipforge-captions run whose captions "
+        "replace the shared ASR for the reviewed clips",
+    )
     parser.add_argument("--previous-run")
     parser.add_argument("--previous-request")
     parser.add_argument("--source-ref")
@@ -670,6 +675,10 @@ def main(argv=None):
         raise AudioStageError("only clip rendering runs on Colab")
     if args.config_file is not None and args.stage != "render":
         raise AudioStageError("--config-file applies to render only")
+    if args.captions_run is not None and (
+        args.stage != "render" or not re.fullmatch(r"[0-9]{1,20}", args.captions_run)
+    ):
+        raise AudioStageError("--captions-run is a render-only numeric run ID")
     if args.stage == "merge":
         config_file = part_config_file(
             Path.home() / ".local/state/clipforge", part_runs
@@ -695,6 +704,8 @@ def main(argv=None):
         "part_runs": part_runs,
         "config_file": config_file,
     }
+    if args.captions_run is not None:
+        base["captions_run_id"] = args.captions_run
     if len(base["review_json"].encode()) > 60000:
         raise AudioStageError("review metadata is oversized")
     requests = []

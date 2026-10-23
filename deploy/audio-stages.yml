@@ -42,6 +42,10 @@ on:
         description: Committed config.NAME.example.json at source_ref (render; merge uses the parts' file)
         type: string
         default: 'config.landscape.example.json'
+      captions_run_id:
+        description: For render, a successful clipforge-captions run whose captions replace the shared ASR
+        type: string
+        default: ''
 permissions:
   contents: write
   actions: read
@@ -100,6 +104,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Attach separately recognised captions to the review
+        if: inputs.audio_stage == 'render' && inputs.captions_run_id != ''
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CAPTIONS_RUN: ${{ inputs.captions_run_id }}
+        run: |
+          set -euo pipefail
+          [[ $CAPTIONS_RUN =~ ^[0-9]{1,20}$ ]] || { echo 'invalid captions run'; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CAPTIONS_RUN" --jq '[.path, .conclusion] | @tsv')
+          [[ $run == $'.github/workflows/clipforge-captions.yml\tsuccess' ]] || { echo 'captions run is not a successful captions run'; exit 1; }
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CAPTIONS_RUN/artifacts" \
+            --jq ".artifacts[] | select(.name == \"clipforge-captions-$CAPTIONS_RUN\") | .id")
+          [[ $id =~ ^[0-9]+$ ]] || { echo 'captions artifact missing'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/captions.zip"
+          unzip -q -o "$RUNNER_TEMP/captions.zip" captions.json -d "$RUNNER_TEMP/captions"
+          python tools/attach_captions.py "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/captions/captions.json"
       - name: Install pinned uv
         run: python -m pip install uv==0.12.23
       - name: Prepare CPU package cache
@@ -210,6 +231,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Attach separately recognised captions to the review
+        if: inputs.audio_stage == 'render' && inputs.captions_run_id != ''
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CAPTIONS_RUN: ${{ inputs.captions_run_id }}
+        run: |
+          set -euo pipefail
+          [[ $CAPTIONS_RUN =~ ^[0-9]{1,20}$ ]] || { echo 'invalid captions run'; exit 1; }
+          run=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CAPTIONS_RUN" --jq '[.path, .conclusion] | @tsv')
+          [[ $run == $'.github/workflows/clipforge-captions.yml\tsuccess' ]] || { echo 'captions run is not a successful captions run'; exit 1; }
+          id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CAPTIONS_RUN/artifacts" \
+            --jq ".artifacts[] | select(.name == \"clipforge-captions-$CAPTIONS_RUN\") | .id")
+          [[ $id =~ ^[0-9]+$ ]] || { echo 'captions artifact missing'; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" > "$RUNNER_TEMP/captions.zip"
+          unzip -q -o "$RUNNER_TEMP/captions.zip" captions.json -d "$RUNNER_TEMP/captions"
+          python clipforge-source/tools/attach_captions.py "$RUNNER_TEMP/review.json" "$RUNNER_TEMP/captions/captions.json"
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.12.23'

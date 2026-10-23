@@ -15,6 +15,7 @@
 | S1 分析＋プレビュー | `submit_job.py --audio-analysis-url` を `--worker colab-auto --asr-parts 4 --auto-previews --wait` で投入。音声取得 → 4部分のASR（T4 2台・L4 2台）→ 話題分割 → 同じrunのCPUジョブでプレビュー・未承認の下書き | Actions | `topics.json`・`review-draft.json`・`preview-contact-sheet.jpg`・`asr-receipt.json` |
 | S2 確認 | 話題・下書き・静止画シートを読み、候補を決める。採用する候補だけ映像を確認する | 私 | 採用候補の一覧 |
 | S3 承認ファイル | 採用候補だけを残し、`video_reviewed: true` と確認した根拠を書く。確認していない候補は含めない | 私 | 承認ファイル（JSON） |
+| S3.5 字幕用の文字起こし | `submit_captions.py --previous-run ANALYSIS_RUN_ID --source-ref "$SHA" --review-file 承認ファイル --wait` で、承認した区間だけを Parakeet（Colab GPU 1台）で起こし直し、字幕データを `clipforge-captions-RUN_ID` artifact に保存 | Actions（Colab GPU） | 字幕のrun ID |
 | S4 描画 | `submit_audio_stage.py --stage render --worker colab-auto --clips N --config-file config.landscape-chat.example.json` を承認ファイルで投入。1本ずつ並列に描画 | Actions（Colab CPU） | 各クリップの依頼ID・run ID |
 | S5 結合 | 全クリップの run が成功したことを確認し、`--stage merge --local` で制御VMに結合 | 私 | `merged-*/delivery/` |
 | S6 検査 | `e2e-summary.json`・各 `quality.json`・フレームを確認。1920×1080・30fps、音量、真ピーク、字幕の位置 | 私 | 合否の記録 |
@@ -58,7 +59,7 @@ python tools/submit_audio_stage.py --stage render --worker colab-auto --clips N 
   --source-ref "$SHA" --review-file /home/user/private/NAME-approved.json
 ```
 
-`--previous-run` と `--previous-request` は S1 の run とその依頼ID。描画は各クリップが別の依頼IDになり、並列に走る。`--clip-index` を1本ずつ同時に投入すると、手元の多重投入防止で2本目以降が止まる。並列描画は `--clips N` の1回で投入する。
+`--previous-run` と `--previous-request` は S1 の run とその依頼ID。描画は各クリップが別の依頼IDになり、並列に走る。S3.5 の字幕を使うときは `--captions-run 字幕のrun ID` を加える。描画の workflow がその artifact を承認ファイルへ差し込み、全編の Whisper の代わりに Parakeet の字幕で描画する（区間・話題・分析キーが一致しないと止まる）。最終確認で直した字幕は、承認ファイルの各クリップの `captions` に詰め直して、`--captions-run` なしで描画し直す。`--clip-index` を1本ずつ同時に投入すると、手元の多重投入防止で2本目以降が止まる。並列描画は `--clips N` の1回で投入する。
 配信画面にコメント欄が映っている配信で話題を長く取るときは、S1 の `--config` と S4 の `--config-file` の両方に `config.landscape-long.example.json` を渡す（[AUDIO_FIRST.md](AUDIO_FIRST.md) の「長めの話題と左上の見出し」）。
 
 ## S5 結合（制御VM）
