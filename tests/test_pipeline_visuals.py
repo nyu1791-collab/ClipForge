@@ -786,7 +786,7 @@ def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch)
     transcript, clip, settings = _fill_clip_case()
 
     def broken(*args):
-        raise RuntimeError("no frames")
+        raise PipelineError("no video frames in the layout sample window")
 
     monkeypatch.setattr(pipeline, "_auto_layout_plan", broken)
     monkeypatch.setattr(pipeline, "_auto_layout_window", broken)
@@ -796,7 +796,7 @@ def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch)
         "x": None,
         "lifts": None,
         "static": None,
-        "reason": "RuntimeError",
+        "reason": "no video frames in the layout sample window",
     }
     fixed = pipeline.chat_layout("in.mp4", clip, transcript, settings, "right")
     assert fixed == {
@@ -805,7 +805,7 @@ def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch)
         "x": 0.25,
         "lifts": None,
         "static": None,
-        "reason": "RuntimeError",
+        "reason": "no video frames in the layout sample window",
     }
 
 
@@ -820,7 +820,33 @@ def test_chat_layout_refuses_a_lift_for_some_captions_only(monkeypatch):
         },
     )
     layout = pipeline.chat_layout("in.mp4", clip, transcript, settings)
-    assert layout["lifts"] is None and layout["reason"] == "PipelineError"
+    assert layout["lifts"] is None
+    assert layout["reason"] == "auto layout gave one lift per caption"
+
+
+def test_layout_bugs_are_raised_not_hidden_as_the_base_margin(monkeypatch):
+    transcript, clip, settings = _fill_clip_case()
+
+    def bug(*args, **kwargs):
+        raise TypeError("bug in the layout planner")
+
+    monkeypatch.setattr(pipeline, "_auto_layout_plan", bug)
+    with pytest.raises(TypeError, match="bug in the layout planner"):
+        pipeline.chat_layout("in.mp4", clip, transcript, settings)
+
+
+def test_standard_layout_raises_a_bug_instead_of_keeping_the_margin(monkeypatch):
+    transcript, clip, settings = _standard_clip_case()
+    monkeypatch.setattr(
+        pipeline.media, "probe", lambda path: {"width": 1920, "height": 1080}
+    )
+
+    def bug(*args):
+        raise TypeError("bug in the layout planner")
+
+    monkeypatch.setattr(pipeline, "_auto_layout_window", bug)
+    with pytest.raises(TypeError, match="bug in the layout planner"):
+        pipeline.standard_layout("in.mp4", clip, transcript, settings, None)
 
 
 def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
@@ -1009,7 +1035,7 @@ def test_standard_layout_failure_and_unmodelled_cases_keep_the_base_margin(monke
     )
 
     def broken(*args):
-        raise RuntimeError("no frames")
+        raise PipelineError("no video frames in the layout sample window")
 
     monkeypatch.setattr(pipeline, "_auto_layout_window", broken)
     assert pipeline.standard_layout("in.mp4", clip, transcript, settings, None) == {
@@ -1018,7 +1044,7 @@ def test_standard_layout_failure_and_unmodelled_cases_keep_the_base_margin(monke
         "x": None,
         "lifts": None,
         "static": None,
-        "reason": "RuntimeError",
+        "reason": "no video frames in the layout sample window",
     }
     panels = make(aspect="16:9", height=1080, layout="panels", face_box=(0, 0, 1, 1))
     assert (

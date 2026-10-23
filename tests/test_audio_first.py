@@ -755,7 +755,7 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
         "ass": "[Script Info]\n",
         "messages": 0,
         "reason": "chat_unavailable",
-        "error": "PipelineError",
+        "error": "chat service refused",
     }
 
 
@@ -763,6 +763,31 @@ def test_crop_anchors_default_to_auto_and_refuse_other_words():
     assert af.crop_anchors({"clips": [{}, {"crop_anchor": "left"}]}) == ["auto", "left"]
     with pytest.raises(PipelineError, match="crop_anchor must be"):
         af.crop_anchors({"clips": [{"crop_anchor": "centre"}]})
+
+
+def test_chat_failure_is_recorded_and_a_bug_is_not_hidden(audio_job, monkeypatch):
+    from types import SimpleNamespace
+
+    vod, _, settings, _, _ = audio_job
+    clip = SimpleNamespace(start=120, end=175)
+
+    def refused(slug, uuid, start, end, **options):
+        raise PipelineError("chat service refused")
+
+    fake_kick_chat(monkeypatch, refused)
+    chat = af.chat_panel_for_clip(vod, clip, chat_settings(settings))
+    assert (chat["messages"], chat["reason"], chat["error"]) == (
+        0,
+        "chat_unavailable",
+        "chat service refused",
+    )
+
+    def broken(slug, uuid, start, end, **options):
+        raise TypeError("bug in the chat reader")
+
+    fake_kick_chat(monkeypatch, broken)
+    with pytest.raises(TypeError, match="bug in the chat reader"):
+        af.chat_panel_for_clip(vod, clip, chat_settings(settings))
 
 
 def test_chat_panel_clip_passes_its_reviewed_crop_side(audio_job, monkeypatch):

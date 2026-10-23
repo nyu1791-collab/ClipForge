@@ -391,8 +391,8 @@ def chat_panel_for_clip(vod, clip, settings):
     messages, reason, error = [], None, None
     try:
         messages = kick_chat.fetch_messages(slug, uuid, clip.start, clip.end)
-    except Exception as failure:
-        reason, error = "chat_unavailable", type(failure).__name__
+    except PipelineError as failure:
+        reason, error = "chat_unavailable", str(failure)[:200]
     width, height = media.frame_size(settings)
     ass = kick_chat.panel_ass(
         messages,

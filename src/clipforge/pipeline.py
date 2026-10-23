@@ -404,7 +404,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "static": plan.get("bands") if enabled else None,
             "reason": None if enabled else "disabled",
         }
-    except Exception as failure:
+    except PipelineError as failure:
         fixed = crop_anchor != "auto"
         return {
             "anchor": crop_anchor if fixed else "center",
@@ -412,7 +412,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "x": _crop_fractions(keep)[crop_anchor] if fixed else None,
             "lifts": None,
             "static": None,
-            "reason": type(failure).__name__,
+            "reason": str(failure)[:200],
         }
 
 
@@ -474,8 +474,8 @@ def standard_layout(source, clip, transcript, settings, keep):
             "static": plan["bands"],
             "reason": None,
         }
-    except Exception as failure:
-        return {**base, "reason": type(failure).__name__}
+    except PipelineError as failure:
+        return {**base, "reason": str(failure)[:200]}
 
 
 def _with_floor(layout, count, floor):
