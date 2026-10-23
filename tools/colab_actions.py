@@ -111,6 +111,13 @@ def print_units(label, units):
         )
 
 
+def host_text(host):
+    """Cores and memory of the runtime, so a log shows which shape actually did the work."""
+    if not isinstance(host, dict) or not isinstance(host.get("cpu_count"), int):
+        return ""
+    return f" host: {host['cpu_count']} cores, {host.get('memory_gib')} GiB"
+
+
 def colab_shape():
     """The runtime shape named by CLIPFORGE_COLAB_SHAPE: standard (default) or high-ram."""
     from colab_cli.client import Shape
@@ -373,6 +380,7 @@ class Controller:
         # Persist ownership immediately, before kernel setup or any job execution.
         record.update(
             status="allocated",
+            allocated_at=round(time.time(), 1),
             endpoint=assignment.endpoint,
             url=assignment.runtime_proxy_info.url,
             token=assignment.runtime_proxy_info.token,
@@ -515,7 +523,8 @@ del _clipforge_bootstrap
                 + " error: "
                 + str(receipt.get("error_type"))
                 + " timings: "
-                + str(receipt.get("timings", {})),
+                + str(receipt.get("timings", {}))
+                + host_text(receipt.get("host")),
                 flush=True,
             )
             worker_error = receipt.get("worker_error")
@@ -689,18 +698,36 @@ del _clipforge_bootstrap
             key: value for key, value in record.items() if key not in {"url", "token"}
         }
         record["status"] = "stopped"
+        record["released_at"] = round(time.time(), 1)
         # The balance may lag the release by a moment; the difference is a lower bound.
         record["units_after"] = after = compute_units(client)
         write_private(self.state_path, record)
         self.credentials_path.unlink(missing_ok=True)
         print("Owned Colab runtime released; no owned assignment remains.")
+        if isinstance(record.get("allocated_at"), (int, float)):
+            print(
+                f"Runtime held: {record.get('accelerator')} {record.get('shape')} "
+                f"for {record['released_at'] - record['allocated_at']:.0f} s",
+                flush=True,
+            )
         print_units("after release", after)
         before = record.get("units_before")
         if before and after:
-            print(
-                f"Compute units used by this job: {before['balance'] - after['balance']:.2f}",
-                flush=True,
-            )
+            change = before["balance"] - after["balance"]
+            if (
+                after["assignments"]
+                or os.environ.get("CLIPFORGE_SHARED_BALANCE") == "1"
+            ):
+                # Runtimes running alongside, such as the other ASR part, draw from the same
+                # balance, so the difference is not this runtime's own use.
+                print(
+                    f"Compute units changed account-wide by {change:.2f} "
+                    f"({after['assignments']} other runtime(s) still active); "
+                    "not this runtime's own use",
+                    flush=True,
+                )
+            else:
+                print(f"Compute units used by this job: {change:.2f}", flush=True)
 
 
 def probe(accelerator_name, hold_seconds=0):

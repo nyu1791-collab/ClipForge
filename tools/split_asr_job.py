@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import threading
 
 from clipforge import asr_split, audio_first, github_cli, pipeline
 from clipforge.models import Settings
@@ -161,6 +162,64 @@ def finish(source, output, plan, part_directories, workflow_run):
         )
 
 
+def read_record(path):
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
+def part_summary(plan, state_root, part_directories):
+    """Per-part shape, held time and stage timings, then the compute units of both at once.
+
+    Both runtimes draw from one account balance, so the total is the balance before the
+    first allocation minus the balance after the last release, and only when nothing else
+    of the account was still running. Colab may lag a moment, so it is a lower bound.
+    """
+    lines, before, after = [], [], []
+    for index, directory in enumerate(part_directories):
+        state = read_record(state_root / f"control-{index}" / "state.json")
+        receipt = read_record(directory / "gpu-receipt.json")
+        timings = (
+            receipt.get("timings") if isinstance(receipt.get("timings"), dict) else {}
+        )
+        line = (
+            f"ASR part {index + 1}: {plan['parts'][index]['asr_part']['duration']:.0f} s "
+            f"of audio on {state.get('accelerator', '?')} {state.get('shape', '?')}"
+        )
+        if all(
+            isinstance(state.get(key), (int, float))
+            for key in ("allocated_at", "released_at")
+        ):
+            line += f", held {state['released_at'] - state['allocated_at']:.0f} s"
+        stages = [
+            f"{name} {timings[name]:.0f} s"
+            for name in ("setup", "prepare", "pipeline")
+            if isinstance(timings.get(name), (int, float))
+        ]
+        if stages:
+            line += " (" + ", ".join(stages) + ")"
+        host = receipt.get("host")
+        if isinstance(host, dict) and isinstance(host.get("cpu_count"), int):
+            line += f", {host['cpu_count']} cores"
+        lines.append(line)
+        if isinstance(state.get("units_before"), dict):
+            before.append(state["units_before"])
+        if isinstance(state.get("units_after"), dict):
+            after.append((state.get("released_at") or 0, state["units_after"]))
+    if len(before) == 2 and len(after) == 2:
+        last = max(after, key=lambda item: item[0])[1]
+        if last.get("assignments") == 0:
+            first = max(units["balance"] for units in before)
+            lines.append(
+                f"Compute units used by both ASR parts: {first - last['balance']:.2f}"
+            )
+            return lines
+    lines.append("Compute units used by both ASR parts: not determinable")
+    return lines
+
+
 def run(args):
     if (
         os.environ.get("GITHUB_REPOSITORY") != PRIVATE_REPO
@@ -213,6 +272,15 @@ def run(args):
                 timeout=600,
             )
 
+        # The longer part allocates first. Colab has granted only one T4 high-memory
+        # runtime at a time, so the faster setup goes to the part with more audio and
+        # the other part falls back to the next shape in the pool.
+        leader = max(
+            range(2), key=lambda index: plan["parts"][index]["asr_part"]["duration"]
+        )
+        leader_allocated = threading.Event()
+        leader_failed = threading.Event()
+
         def recognise(index):
             child = plan["parts"][index]
             environment = {
@@ -220,14 +288,27 @@ def run(args):
                 "REQUEST_ID": child["request_id"],
                 "INPUT_TAG": "clipforge-input-" + child["request_id"],
                 "CLIPFORGE_NO_MODEL_API": "1",
+                "CLIPFORGE_SHARED_BALANCE": "1",
             }
             environment.pop("GEMINI_API_KEY", None)
             state, output = (
                 args.state_root / f"control-{index}",
                 part_directories[index],
             )
+            if index != leader:
+                leader_allocated.wait()
+                if leader_failed.is_set():
+                    raise PipelineError("the other ASR part could not start")
             try:
-                control(args.control_python, state, "start", output, environment)
+                try:
+                    control(args.control_python, state, "start", output, environment)
+                except BaseException:
+                    if index == leader:
+                        leader_failed.set()
+                    raise
+                finally:
+                    if index == leader:
+                        leader_allocated.set()
                 control(args.control_python, state, "run", output, environment)
             finally:
                 if (state / "state.json").exists():
@@ -241,10 +322,16 @@ def run(args):
                     future.result()
                 except Exception as error:
                     errors.append(error)
-            if errors:
-                raise PipelineError(
-                    "split ASR failed; private part outputs were retained"
-                ) from None
+        try:
+            for line in part_summary(plan, args.state_root, part_directories):
+                print(line, flush=True)
+        except Exception as error:
+            # The summary only reports; it never decides whether the split succeeded.
+            print("ASR part summary unavailable: " + type(error).__name__, flush=True)
+        if errors:
+            raise PipelineError(
+                "split ASR failed; private part outputs were retained"
+            ) from None
         finish(source, args.output, plan, part_directories, os.environ["GITHUB_RUN_ID"])
         print("Both ASR parts verified and merged; topics allocated once.", flush=True)
     finally:

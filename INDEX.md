@@ -11,7 +11,7 @@
 Kick / YouTube / Twitch / 直接HTTPSメディア URL → runner で音声取得（`tools/acquire_audio_url.py`）→ Colab GPU で2分割ASR → 結合・話題分割 → previews と未承認の下書き → 承認 → Colab CPU で描画 → 制御 VM で `merge --local`。音声のみのURLは解析まで。
 - 投入と回収: `tools/submit_job.py`（`--auto-previews`）、段階ごとの依頼: `tools/submit_audio_stage.py`
 - Colab 制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`・`tools/colab_cache.py`
-- 2分割ASR: `src/clipforge/asr_split.py`・`tools/split_asr_job.py`／手順: `docs/ASR_SPLIT.md`
+- 2分割ASR: `src/clipforge/asr_split.py`・`tools/split_asr_job.py`／手順: `docs/ASR_SPLIT.md`／連続ASRとの比較: `tools/compare_asr.py`
 - URL検証・取得の振り分け: `src/clipforge/media_sources.py`（追加経路はyt-dlp、Kickは従来どおり）
 - 非公開 worker の workflow 原本: `deploy/*.yml`（実行先は非公開リポジトリ）
 

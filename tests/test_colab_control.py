@@ -239,6 +239,65 @@ class ControlTests(unittest.TestCase):
         client.get_consumption_user_info.side_effect = RuntimeError("not reported")
         self.assertIsNone(control.compute_units(client))
 
+    def test_shared_balance_is_not_reported_as_this_runtime_use(self):
+        for shared, active, expected in (
+            ("1", 0, "changed account-wide by 0.18 (0 other runtime(s) still active)"),
+            ("", 1, "changed account-wide by 0.18 (1 other runtime(s) still active)"),
+            ("", 0, "Compute units used by this job: 0.18"),
+        ):
+            with (
+                self.subTest(shared=shared, active=active),
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {
+                        **REQUEST,
+                        "COLAB_ADC_JSON": '{"type":"authorized_user"}',
+                        "CLIPFORGE_SHARED_BALANCE": shared,
+                    },
+                ),
+                patch("builtins.print") as printed,
+            ):
+                client = Mock()
+                client.list_assignments.return_value = []
+                client.get_consumption_user_info.side_effect = [
+                    SimpleNamespace(
+                        paid_compute_units_balance=184.11,
+                        consumption_rate_hourly=0.0,
+                        assignments_count=0,
+                    ),
+                    SimpleNamespace(
+                        paid_compute_units_balance=183.93,
+                        consumption_rate_hourly=1.07 * active,
+                        assignments_count=active,
+                    ),
+                ]
+                client.assign.return_value = SimpleNamespace(
+                    endpoint="owned-session",
+                    runtime_proxy_info=SimpleNamespace(
+                        url="https://test.invalid", token="t"
+                    ),
+                )
+                with patch.object(control, "authenticated_client", return_value=client):
+                    controller = control.Controller(temporary)
+                    controller.start()
+                    controller.stop()
+                state = controller.state()
+                self.assertGreaterEqual(state["released_at"], state["allocated_at"])
+                lines = " ".join(str(call.args[0]) for call in printed.call_args_list)
+                self.assertIn(expected, lines)
+                self.assertIn("Runtime held: T4 ", lines)
+                if expected.startswith("changed"):
+                    self.assertNotIn("used by this job", lines)
+
+    def test_stage_line_names_the_cores_that_did_the_work(self):
+        self.assertEqual(
+            control.host_text({"cpu_count": 8, "memory_gib": 51.0}),
+            " host: 8 cores, 51.0 GiB",
+        )
+        self.assertEqual(control.host_text(None), "")
+        self.assertEqual(control.host_text({"cpu_count": "8"}), "")
+
     def test_high_ram_shape_is_requested_and_unknown_shapes_stop_before_access(self):
         from colab_cli.client import Shape
 

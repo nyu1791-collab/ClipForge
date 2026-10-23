@@ -342,7 +342,7 @@ def test_coordinator_runs_both_parts_concurrently_and_stops_each_owned_runtime(
     monkeypatch.setenv("REQUEST_ID", plan["request"]["request_id"])
     monkeypatch.setenv("CLIPFORGE_SOURCE_REF", plan["request"]["source_ref"])
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    operations, stopped, active = [], [], set()
+    operations, stopped, started, active = [], [], [], set()
     barrier = threading.Barrier(2)
 
     def gh(*arguments, **kwargs):
@@ -356,14 +356,18 @@ def test_coordinator_runs_both_parts_concurrently_and_stops_each_owned_runtime(
         child = plan["parts"][index]
         assert environment["REQUEST_ID"] == child["request_id"]
         assert "GEMINI_API_KEY" not in environment
+        assert environment["CLIPFORGE_SHARED_BALANCE"] == "1"
         if command == "start":
+            # Allocation is ordered: the longer part asks first for the faster shape.
+            started.append(index)
             write_json(state / "state.json", {"status": "allocated"})
-            active.add(index)
-            barrier.wait(timeout=5)
-            assert active == {0, 1}
         elif command == "stop":
             stopped.append(index)
         else:
+            # Recognition itself still runs on both runtimes at once.
+            active.add(index)
+            barrier.wait(timeout=5)
+            assert active == {0, 1}
             if index == failed_index:
                 raise PipelineError("synthetic part failure")
             write_json(
@@ -408,8 +412,106 @@ def test_coordinator_runs_both_parts_concurrently_and_stops_each_owned_runtime(
         with pytest.raises(PipelineError, match="split ASR failed"):
             split_asr_job.run(args)
         assert not (args.output / "topics.json").exists()
+    longer = max(
+        range(2), key=lambda index: plan["parts"][index]["asr_part"]["duration"]
+    )
+    assert started == [longer, 1 - longer]
     assert sorted(stopped) == [0, 1]
     assert len([row for row in operations if row[:2] == ("release", "delete")]) == 2
+
+
+def test_failed_leader_allocation_keeps_the_other_part_from_allocating(
+    prepared, monkeypatch
+):
+    source, plan, root = prepared
+    directory = root / "parent"
+    directory.mkdir()
+    (directory / "input-video.bin").write_bytes(source.read_bytes())
+    write_json(directory / "request.json", plan["request"])
+    monkeypatch.setattr(asr_split, "prepare", lambda *a: plan)
+    monkeypatch.setenv("GITHUB_REPOSITORY", split_asr_job.PRIVATE_REPO)
+    monkeypatch.setenv("REQUEST_ID", plan["request"]["request_id"])
+    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", plan["request"]["source_ref"])
+    monkeypatch.setenv("GITHUB_RUN_ID", "123")
+    monkeypatch.setattr(
+        split_asr_job.github_cli,
+        "run",
+        lambda *arguments, **kwargs: "true" if arguments[0] == "api" else "",
+    )
+    calls = []
+
+    def control(python, state, command, output, environment):
+        calls.append((int(state.name[-1]), command))
+        raise PipelineError("synthetic refusal")
+
+    monkeypatch.setattr(split_asr_job, "control", control)
+    args = SimpleNamespace(
+        directory=directory,
+        output=root / "combined",
+        control_python="python",
+        state_root=root / "coordinator",
+    )
+    with pytest.raises(PipelineError, match="split ASR failed"):
+        split_asr_job.run(args)
+    longer = max(
+        range(2), key=lambda index: plan["parts"][index]["asr_part"]["duration"]
+    )
+    assert calls == [(longer, "start")]
+
+
+def test_part_summary_reports_shapes_timings_and_one_total(prepared, tmp_path):
+    _, plan, _ = prepared
+    root = tmp_path / "coordinator"
+    directories = [tmp_path / "result-0", tmp_path / "result-1"]
+    for index, (shape, held, after) in enumerate(
+        [
+            ("HIGH_RAM", (100.0, 437.0), (183.93, 1)),
+            ("STANDARD", (103.0, 460.0), (183.93, 0)),
+        ]
+    ):
+        write_json(
+            root / f"control-{index}" / "state.json",
+            {
+                "accelerator": "T4",
+                "shape": shape,
+                "allocated_at": held[0],
+                "released_at": held[1],
+                "units_before": {
+                    "balance": 184.11,
+                    "hourly_rate": 0.0,
+                    "assignments": 0,
+                },
+                "units_after": {
+                    "balance": after[0],
+                    "hourly_rate": 0.0,
+                    "assignments": after[1],
+                },
+            },
+        )
+        write_json(
+            directories[index] / "gpu-receipt.json",
+            {
+                "timings": {"setup": 33.5, "prepare": 5.1, "pipeline": 290.2},
+                "host": {"cpu_count": 8, "memory_gib": 51.0},
+            },
+        )
+    lines = split_asr_job.part_summary(plan, root, directories)
+    assert lines[0].startswith("ASR part 1: ")
+    assert (
+        "on T4 HIGH_RAM, held 337 s (setup 34 s, prepare 5 s, pipeline 290 s), 8 cores"
+        in lines[0]
+    )
+    assert "on T4 STANDARD, held 357 s" in lines[1]
+    assert lines[2] == "Compute units used by both ASR parts: 0.18"
+    # A runtime still active at the last release makes the account balance ambiguous.
+    state = json.loads((root / "control-1" / "state.json").read_text())
+    state["units_after"]["assignments"] = 1
+    write_json(root / "control-1" / "state.json", state)
+    assert split_asr_job.part_summary(plan, root, directories)[2].endswith(
+        "not determinable"
+    )
+    # Missing receipts never break the summary.
+    assert len(split_asr_job.part_summary(plan, tmp_path / "missing", directories)) == 3
 
 
 @pytest.mark.parametrize(
