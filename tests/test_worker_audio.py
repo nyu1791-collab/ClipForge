@@ -1154,3 +1154,85 @@ def test_render_reuses_chained_clipforge_run_on_main(previous_analysis, monkeypa
     assert (
         downloads[0][downloads[0].index("--name") + 1] == "clipforge-result-" + IDENTITY
     )
+
+
+CHAT_CONFIG = "config.landscape-chat.example.json"
+
+
+def test_merge_refuses_parts_rendered_with_different_configurations(merge_env):
+    tmp_path, settings = merge_env
+    parts = local_parts(tmp_path)
+    edit_receipt(parts[0][0], lambda value: value.update(config_file=CHAT_CONFIG))
+    with pytest.raises(PipelineError, match="different configuration files"):
+        worker.merge_parts(parts, tmp_path / "out", settings, SOURCE_REF)
+    assert not (tmp_path / "out").exists()
+
+
+def test_merge_requires_the_configuration_its_parts_used(merge_env):
+    tmp_path, settings = merge_env
+    with pytest.raises(PipelineError, match="another configuration file"):
+        worker.merge_parts(
+            local_parts(tmp_path),
+            tmp_path / "out",
+            settings,
+            SOURCE_REF,
+            config_file=CHAT_CONFIG,
+        )
+    assert not (tmp_path / "out").exists()
+
+
+def test_receipt_configuration_name_defaults_and_must_be_a_config_file(merge_env):
+    tmp_path, settings = merge_env
+    parts = local_parts(tmp_path)
+    assert worker.receipt_config_file(parts[0][0]) == "config.landscape.example.json"
+    edit_receipt(parts[0][0], lambda value: value.update(config_file="../x.json"))
+    with pytest.raises(PipelineError, match="configuration is invalid"):
+        worker.receipt_config_file(parts[0][0])
+
+
+def test_write_receipt_records_the_configuration_name(tmp_path):
+    output = tmp_path / "out"
+    (output / "delivery").mkdir(parents=True)
+    (output / "delivery/manifest.json").write_text("{}")
+    result = {
+        "status": "complete",
+        "source_url": "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5",
+    }
+    worker.write_receipt(
+        output,
+        result,
+        {"previous_request_id": IDENTITY},
+        "e" * 32,
+        SOURCE_REF,
+        "previews",
+        "7",
+        config_file=CHAT_CONFIG,
+    )
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    assert receipt["config_file"] == CHAT_CONFIG
+
+
+def test_main_rejects_a_configuration_outside_the_repository_root(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
+    code = worker.main(
+        [
+            "--stage",
+            "previews",
+            "--previous-run",
+            "7",
+            "--previous-request",
+            IDENTITY,
+            "--request-id",
+            "e" * 32,
+            "--source-ref",
+            SOURCE_REF,
+            "--output",
+            str(tmp_path / "out"),
+            "--config",
+            "sub/config.landscape.example.json",
+        ]
+    )
+    assert code == 1
+    assert "invalid private worker identity" in capsys.readouterr().err

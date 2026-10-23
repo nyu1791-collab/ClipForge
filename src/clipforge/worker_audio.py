@@ -28,6 +28,9 @@ PART_RUN = re.compile(r"([0-9]{1,20}):([a-f0-9]{32})")
 RUN_FIELDS = "status,conclusion,displayTitle,event,workflowName,headBranch"
 STAGE_WORKFLOWS = {"ClipForge audio-first stages", "ClipForge"}
 STAGE_BRANCHES = {"main"}
+# Configuration files at the repository root; receipts without the field predate the choice.
+DEFAULT_CONFIG_FILE = "config.landscape.example.json"
+CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
 
 
 def gh(*args):
@@ -305,6 +308,15 @@ def clip_index_argument(text):
     return value
 
 
+def receipt_config_file(root):
+    """The configuration file a private part was rendered with."""
+    receipt = json.loads(private_member(root, "request-receipt.json").read_text())
+    name = receipt.get("config_file", DEFAULT_CONFIG_FILE)
+    if not isinstance(name, str) or not re.fullmatch(CONFIG_FILE_PATTERN, name):
+        raise PipelineError("private clip part configuration is invalid")
+    return name
+
+
 def private_member(root, name):
     """A receipt name must be a plain relative path to a regular file inside its part."""
     path = Path(name)
@@ -372,6 +384,7 @@ def load_part(root, expected_request, source_ref):
     ):
         raise PipelineError("private clip part does not hold exactly its own clip")
     cache = json.loads(private_member(root, "asr-receipt.json").read_text())
+    config_file = receipt_config_file(root)
     identity = {
         "previous_request_id": receipt.get("previous_request_id"),
         "analysis_key": manifest.get("analysis_key"),
@@ -390,15 +403,21 @@ def load_part(root, expected_request, source_ref):
         "timings": timings,
         "cache": cache,
         "identity": identity,
+        "config_file": config_file,
     }
 
 
-def merge_parts(parts, output, settings, source_ref):
+def merge_parts(parts, output, settings, source_ref, config_file=None):
     """Join verified single-clip renders into the delivery a whole-video render writes."""
     loaded = [load_part(path, request, source_ref) for path, request in parts]
     identity = loaded[0]["identity"]
     if any(item["identity"] != identity for item in loaded):
         raise PipelineError("clip renders belong to different analyses or selections")
+    part_configs = {item["config_file"] for item in loaded}
+    if len(part_configs) != 1:
+        raise PipelineError("clip renders use different configuration files")
+    if config_file is not None and config_file not in part_configs:
+        raise PipelineError("clip renders were made with another configuration file")
     if identity["clip_count"] != settings.clips:
         raise PipelineError("clip count does not match the plan")
     by_index = {}
@@ -511,6 +530,7 @@ def write_receipt(
     stage,
     workflow_run,
     clip_index=None,
+    config_file=None,
 ):
     """Receipt the retained files identically for hosted stages and local merge."""
     hashes = {
@@ -533,6 +553,8 @@ def write_receipt(
     }
     if clip_index is not None:
         receipt["clip_index"] = clip_index
+    if config_file is not None:
+        receipt["config_file"] = config_file
     write_json(output / "request-receipt.json", receipt)
 
 
@@ -584,9 +606,7 @@ def main(argv=None):
     parser.add_argument("--clip-index", type=clip_index_argument)
     parser.add_argument("--part-dir", type=Path, action="append", default=[])
     parser.add_argument("--part-runs", default="")
-    parser.add_argument(
-        "--config", type=Path, default=Path("config.landscape.example.json")
-    )
+    parser.add_argument("--config", type=Path, default=Path(DEFAULT_CONFIG_FILE))
     args = parser.parse_args(argv)
     try:
         os.umask(0o077)
@@ -601,6 +621,8 @@ def main(argv=None):
                 args.same_run_analysis is not None
                 and (args.stage != "previews" or args.review_file is not None)
             )
+            or args.config.parent != Path(".")
+            or not re.fullmatch(CONFIG_FILE_PATTERN, args.config.name)
         ):
             raise PipelineError("invalid private worker identity")
         if args.stage != "merge" and (
@@ -620,7 +642,11 @@ def main(argv=None):
                 parts = [(path, None) for path in args.part_dir]
                 parts += download_parts(args.part_runs, Path(temporary))
                 result, lineage = merge_parts(
-                    parts, args.output, settings, args.source_ref
+                    parts,
+                    args.output,
+                    settings,
+                    args.source_ref,
+                    config_file=args.config.name,
                 )
         elif args.same_run_analysis is not None:
             verify_same_run_analysis(
@@ -692,6 +718,7 @@ def main(argv=None):
             args.stage,
             os.environ.get("GITHUB_RUN_ID"),
             args.clip_index,
+            config_file=args.config.name,
         )
         summary = {
             "status": result["status"],

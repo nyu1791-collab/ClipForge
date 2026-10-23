@@ -38,6 +38,10 @@ on:
         description: For merge, comma-separated RUN_ID:REQUEST_ID of the clip renders
         type: string
         default: ''
+      config_file:
+        description: Committed config.NAME.example.json at source_ref (render; merge uses the parts' file)
+        type: string
+        default: 'config.landscape.example.json'
 permissions:
   contents: write
   actions: read
@@ -60,6 +64,7 @@ jobs:
       REVIEW_JSON: ${{ inputs.review_json }}
       CLIP_INDEX: ${{ inputs.clip_index }}
       PART_RUNS: ${{ inputs.part_runs }}
+      CONFIG_FILE: ${{ inputs.config_file }}
       CPU_PACKAGES: ffmpeg fontconfig fonts-noto-cjk libcairo2
       PYTHONUNBUFFERED: '1'
     steps:
@@ -76,6 +81,7 @@ jobs:
           parts=os.environ['PART_RUNS']
           assert (os.environ['AUDIO_STAGE']=='merge')==bool(parts)
           assert parts=='' or re.fullmatch(r'[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}',parts)
+          assert re.fullmatch(r'config\.[a-z0-9-]+\.example\.json',os.environ['CONFIG_FILE'])
           text=os.environ['REVIEW_JSON']
           assert len(text.encode())<=32768
           if os.environ['AUDIO_STAGE']=='render':
@@ -138,11 +144,13 @@ jobs:
             # The clip renders are verified private artifacts; merge checks every hash again.
             uv run --no-sync python tools/run_audio_stage.py --stage merge \
               --part-runs "$PART_RUNS" --previous-request "$PREVIOUS_REQUEST" \
-              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" --output artifacts/audio-stage
+              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" --output artifacts/audio-stage \
+              --config "$CONFIG_FILE"
           else
             set -- --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
               --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" \
-              --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage
+              --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage \
+              --config "$CONFIG_FILE"
             if [ -n "$CLIP_INDEX" ]; then set -- "$@" --clip-index "$CLIP_INDEX"; fi
             uv run --no-sync python tools/run_audio_stage.py --stage "$AUDIO_STAGE" "$@"
           fi
@@ -167,6 +175,7 @@ jobs:
       PREVIOUS_REQUEST: ${{ inputs.previous_request_id }}
       CLIP_INDEX: ${{ inputs.clip_index }}
       REVIEW_JSON: ${{ inputs.review_json }}
+      CONFIG_FILE: ${{ inputs.config_file }}
       PYTHONUNBUFFERED: '1'
     steps:
       - name: Validate the clip render request
@@ -180,6 +189,7 @@ jobs:
           assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']
           assert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])
           assert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])
+          assert re.fullmatch(r'config\.[a-z0-9-]+\.example\.json',os.environ['CONFIG_FILE'])
           text=os.environ['REVIEW_JSON']
           assert text and len(text.encode())<=32768
           json.loads(text)

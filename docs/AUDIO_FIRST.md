@@ -141,7 +141,10 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
   --source-ref REVIEWED_COMMIT_SHA --review-file /private/reviewed-topics.json
 ```
 
-同一stage・前段run・選定内容・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。
+描画の設定は `--config-file NAME`（既定 `config.landscape.example.json`）で選ぶ。NAMEは `config.英小文字・数字・ハイフン.example.json` の形で、`--source-ref` のコミットに存在するものだけ受け付ける。依頼IDに設定名を含むため、同じ選定でも設定が違えば別依頼になる。`merge` は部分の設定名がすべて同じことを確認し、混在すれば停止する。
+例: `--config-file config.landscape-chat.example.json` を上の `--stage render` に追加する。
+
+同一stage・前段run・選定内容・設定名・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。
 生成物は非公開`clipforge-result-REQUEST_ID`artifactに7日保存する。公開側のActionsで実配信を処理しない。
 
 完了後の回収・検証は [OPERATIONS.md](OPERATIONS.md#結果の回収と再開) を参照する。描画はColab CPUで実行する。
