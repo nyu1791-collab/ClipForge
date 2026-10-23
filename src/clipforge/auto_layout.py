@@ -345,7 +345,22 @@ def _region_profile(persistent, left, right, mask):
     return persistent[:, left:right][:, mask].mean(axis=1)
 
 
-def caption_lifts(
+def _busy_runs(busy, height, region):
+    """Runs of busy rows as [bottom, top, region], shares of the height counted from the bottom."""
+    runs, first = [], None
+    for row in range(len(busy) + 1):
+        flagged = row < len(busy) and bool(busy[row])
+        if flagged and first is None:
+            first = row
+        elif not flagged and first is not None:
+            bottom = (height - row) / height
+            top = (height - first) / height
+            runs.append([round(bottom, 4), round(top, 4), region])
+            first = None
+    return runs
+
+
+def caption_analysis(
     times,
     frames,
     events,
@@ -356,7 +371,7 @@ def caption_lifts(
     base=None,
     pad=LIFT_PAD,
 ):
-    """Bottom margin of each caption, as a share of the height ("lift"), from persistent detail.
+    """Bottom margin of each caption ("lift", a share of the height) and its static bands.
 
     For each caption, the gradient is the temporal median over the frames near it, so only detail
     that stays in place counts (a HUD, a wipe, a border; not the moving game world). A row is busy
@@ -366,6 +381,9 @@ def caption_lifts(
     bottom edge (searched up to `search` of the height) and the band's top is above the base; then
     the caption's bottom edge sits `pad` above that top, capped at `max_lift`. Captions less than
     GROUP_GAP apart share the largest lift of their run.
+
+    Returns (lifts, bands). bands[i] lists every run of busy rows that caption i was judged on, as
+    [bottom, top, region] with region "whole", "left" or "right"; the quality check uses them.
     """
     import numpy as np
 
@@ -383,33 +401,74 @@ def caption_lifts(
     left, right = _window(width, crop["x"], crop["keep"])
     columns = _window_columns(crop, width, left, right)
     if not columns.any():
-        return [base] * len(events)
+        return [base] * len(events), [[] for _ in events]
     span = right - left
     position = np.arange(span)
     middle = span // 2
-    masks = [columns, columns & (position < middle), columns & (position >= middle)]
-    masks = [mask for mask in masks if mask.any()]
+    regions = [
+        ("whole", columns),
+        ("left", columns & (position < middle)),
+        ("right", columns & (position >= middle)),
+    ]
+    regions = [(name, mask) for name, mask in regions if mask.any()]
 
     whole = _persistent_gradient(frames, _subsample(np.arange(len(times))))
     references = [
-        float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
+        float(np.median(_region_profile(whole, left, right, mask)))
+        for _, mask in regions
     ]
     tolerance = round(BAND_GAP * height)
 
-    lifts = []
+    lifts, bands = [], []
     for start, end in events:
         indices = _caption_frames(times, start, end)
         persistent = _persistent_gradient(frames, indices)
         lift = base
-        for mask, reference in zip(masks, references):
+        found = []
+        for (name, mask), reference in zip(regions, references):
             profile = _region_profile(persistent, left, right, mask)
-            top = _band_top(profile > BUSY_RATIO * reference, search, tolerance)
+            busy = profile > BUSY_RATIO * reference
+            found.extend(_busy_runs(busy, height, name))
+            top = _band_top(busy, search, tolerance)
             if top is not None:
                 edge = (height - top) / height
                 if edge > base:
                     lift = max(lift, edge + pad)
         lifts.append(min(lift, max_lift))
-    return [round(lift, 4) for lift in _shared_max(events, lifts)]
+        bands.append(sorted(found, key=lambda run: (run[0], run[1], run[2])))
+    return [round(lift, 4) for lift in _shared_max(events, lifts)], bands
+
+
+def caption_lifts(
+    times,
+    frames,
+    events,
+    crop,
+    *,
+    search=SEARCH,
+    max_lift=MAX_LIFT,
+    base=None,
+    pad=LIFT_PAD,
+):
+    """The lifts of caption_analysis, without the bands."""
+    lifts, _ = caption_analysis(
+        times,
+        frames,
+        events,
+        crop,
+        search=search,
+        max_lift=max_lift,
+        base=base,
+        pad=pad,
+    )
+    return lifts
+
+
+def apply_floor(lifts, floor):
+    """Each lift raised to at least `floor`, a caption floor reviewed for one clip (wipes the detector misses)."""
+    if not 0 <= floor <= MAX_LIFT:
+        raise ValueError("caption floor must be from 0 to MAX_LIFT")
+    return [round(min(max(lift, floor), MAX_LIFT), 4) for lift in lifts]
 
 
 def plan(source, start, end, events, *, keep=0.75):
@@ -417,10 +476,11 @@ def plan(source, start, end, events, *, keep=0.75):
     began = time.monotonic()
     times, frames = sample_frames(source, start, end)
     crop = choose_crop(frames, keep=keep)
-    lifts = caption_lifts(times, frames, events, crop)
+    lifts, bands = caption_analysis(times, frames, events, crop)
     return {
         "crop": crop,
         "lifts": lifts,
+        "bands": bands,
         "frames": len(times),
         "seconds": round(time.monotonic() - began, 3),
     }

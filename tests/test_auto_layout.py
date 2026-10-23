@@ -309,3 +309,28 @@ def test_plan_combines_the_steps(monkeypatch):
     assert result["lifts"] == [pytest.approx(captions.FILL_BOTTOM_SHARE)]
     assert result["frames"] == 4
     assert result["seconds"] >= 0
+
+
+def test_caption_analysis_reports_the_busy_runs_it_judged_on():
+    frames = frame_with([(slice(140, HEIGHT), slice(0, WIDTH), 255)])
+    lifts, bands = auto_layout.caption_analysis(TIMES, frames, [(0.0, 0.5)], CROP)
+    assert lifts == auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP)
+    whole = [run for run in bands[0] if run[2] == "whole"]
+    # One run from the bottom edge up to the band's top row (139 or 140, as above).
+    assert len(whole) == 1 and whole[0][0] == 0.0
+    assert whole[0][1] == pytest.approx((HEIGHT - 140) / HEIGHT, abs=0.01)
+
+
+def test_quiet_frames_report_no_bands():
+    frames = frame_with([])
+    lifts, bands = auto_layout.caption_analysis(TIMES, frames, [(0.0, 0.5)], CROP)
+    assert lifts == [captions.FILL_BOTTOM_SHARE] and bands == [[]]
+
+
+def test_apply_floor_raises_lifts_to_the_reviewed_floor_only():
+    assert auto_layout.apply_floor([0.12, 0.2, 0.3], 0.25) == [0.25, 0.25, 0.3]
+    assert auto_layout.apply_floor([0.12], 0.0) == [0.12]
+    assert auto_layout.apply_floor([0.12], auto_layout.MAX_LIFT) == [0.32]
+    for floor in (-0.01, 0.33):
+        with pytest.raises(ValueError):
+            auto_layout.apply_floor([0.12], floor)

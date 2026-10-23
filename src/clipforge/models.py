@@ -186,6 +186,9 @@ class Settings(Record):
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
     # Scales the caption font: 1.0 is 4.8 percent of the frame height.
     caption_scale: float = Field(default=1.0, ge=0.8, le=2.0)
+    # Landscape only (aspect 16:9; ignored for 9:16). A caption is lifted above a busy static band
+    # touching the bottom edge (auto_layout). False keeps every caption at the base margin.
+    caption_lift: bool = True
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
     horizontal_target_cps: float = Field(default=7, ge=1, le=20)
     horizontal_warn_cps: float = Field(default=7, ge=1, le=20)

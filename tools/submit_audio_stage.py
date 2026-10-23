@@ -485,6 +485,13 @@ def require_video_review(value):
     # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
     if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
         raise RuntimeError("crop_anchor must be auto, left, center or right")
+    # Same range as pipeline.MAX_CAPTION_FLOOR; a missing floor means none is set.
+    for row in clips:
+        floor = row.get("caption_floor")
+        if floor is not None and (
+            type(floor) not in (int, float) or not 0 <= floor <= 0.32
+        ):
+            raise RuntimeError("caption_floor must be from 0 to 0.32")
 
 
 def clip_indices(args, worker):

@@ -1351,3 +1351,24 @@ def test_review_refuses_an_unknown_crop_side_before_dispatch():
         module.require_video_review(
             {"clips": [{"video_reviewed": True, "crop_anchor": "middle"}]}
         )
+
+
+def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():
+    spec = importlib.util.spec_from_file_location(
+        "submit_audio_stage", Path("tools/submit_audio_stage.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.require_video_review(
+        {
+            "clips": [
+                {"video_reviewed": True, "caption_floor": 0.32},
+                {"video_reviewed": True},
+            ]
+        }
+    )
+    for floor in (0.4, -0.01):
+        with pytest.raises(RuntimeError, match="caption_floor"):
+            module.require_video_review(
+                {"clips": [{"video_reviewed": True, "caption_floor": floor}]}
+            )

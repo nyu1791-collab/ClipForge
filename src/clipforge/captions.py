@@ -464,9 +464,10 @@ def _lift_margins(lifts, count, height):
 def create(transcript, clip, directory, settings, keep=None, credits=None, lifts=None):
     """Write captions.ass and captions.srt.
 
-    lifts gives the bottom margin of each caption as a share of the height, in order. It is used
-    only with the chat panel's fill fit, where every caption is bottom centre (alignment 2); a
-    list that does not match the captions gives every caption the base margin.
+    lifts gives the bottom margin of each caption as a share of the height, in order. Given lifts
+    place every caption bottom centre (alignment 2) at its own margin; a list that does not match
+    the captions gives every caption the base margin. Without lifts, only fill places captions
+    this way, as before.
     """
     height = settings.height
     margin = margin_px(height)
@@ -575,10 +576,14 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
         transcript, clip, settings, keep, measure, line_px, landscape
     )
     style = "Sequential" if settings.caption == "sequential" else "Default"
-    margins = _lift_margins(lifts, len(groups), height) if fill else [0] * len(groups)
+    # Fill always places captions by their own MarginV. Elsewhere, lifts place them only without the
+    # chat column (the chat's crop, letterbox and top fits keep the base margin); without lifts the
+    # output is what it was before.
+    placed = fill or (lifts is not None and not settings.chat_panel)
+    margins = _lift_margins(lifts, len(groups), height) if placed else [0] * len(groups)
     for items, (start, end), margin in zip(groups, spans, margins):
         text = group_text(items, measure, line_px, settings.caption)
-        if fill:
+        if placed:
             # Bottom centre (\an2); the event's own MarginV sets how high the caption sits.
             event = pysubs2.SSAEvent(
                 start=start,

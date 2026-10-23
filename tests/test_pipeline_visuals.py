@@ -730,6 +730,7 @@ def test_chat_layout_takes_the_planned_crop_and_caption_lifts(monkeypatch):
         "requested": "auto",
         "x": 0.25,
         "lifts": [0.2, 0.12],
+        "static": None,
         "reason": None,
     }
     # Caption times are the file's own; the kept share is the area of the 1920 px frame.
@@ -794,6 +795,7 @@ def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch)
         "requested": "auto",
         "x": None,
         "lifts": None,
+        "static": None,
         "reason": "RuntimeError",
     }
     fixed = pipeline.chat_layout("in.mp4", clip, transcript, settings, "right")
@@ -802,6 +804,7 @@ def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch)
         "requested": "right",
         "x": 0.25,
         "lifts": None,
+        "static": None,
         "reason": "RuntimeError",
     }
 
@@ -916,6 +919,8 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
         "lift_max": max(lifts),
         "lifted": sum(lift > 0.12 for lift in lifts),
         "reason": None,
+        "floor": None,
+        "static": None,
     }
     assert fixed["layout"] == {
         "anchor": "left",
@@ -925,6 +930,8 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
         "lift_max": max(lifts),
         "lifted": sum(lift > 0.12 for lift in lifts),
         "reason": None,
+        "floor": None,
+        "static": None,
     }
     assert seen == [lifts, 0.25, lifts, 0.0]
     # A different requested side is a different render, so its receipt has its own key.
@@ -941,3 +948,226 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
             chat=chat,
             crop_anchor="middle",
         )
+
+
+def _standard_clip_case():
+    """The two-caption transcript of the chat cases, on a 16:9 1080 render without the chat column."""
+    transcript, clip, _ = _fill_clip_case()
+    return transcript, clip, make(aspect="16:9", height=1080)
+
+
+def test_standard_layout_takes_the_crop_of_a_wide_source_and_its_lifts(monkeypatch):
+    transcript, clip, _ = _standard_clip_case()
+    settings = make(aspect="16:9", height=1080, framing="center-crop")
+    windows = []
+    monkeypatch.setattr(
+        pipeline.media, "probe", lambda path: {"width": 2560, "height": 1080}
+    )
+
+    def window(source, start, end, events, anchor, keep):
+        windows.append((anchor, keep))
+        return {
+            "crop": {"anchor": anchor, "x": 0.125, "keep": keep},
+            "lifts": [0.2, 0.12],
+            "bands": [[[0.0, 0.2, "whole"]], []],
+        }
+
+    monkeypatch.setattr(pipeline, "_auto_layout_window", window)
+    layout = pipeline.standard_layout("in.mp4", clip, transcript, settings, None)
+    # A 16:9 frame of a 2560 wide source is a centred crop keeping three quarters of its width.
+    assert windows == [("center", 0.75)]
+    assert layout == {
+        "anchor": "center",
+        "requested": "auto",
+        "x": 0.125,
+        "lifts": [0.2, 0.12],
+        "static": [[[0.0, 0.2, "whole"]], []],
+        "reason": None,
+    }
+
+
+def test_standard_layout_of_a_16_9_source_keeps_the_whole_picture(monkeypatch):
+    transcript, clip, settings = _standard_clip_case()
+    windows = []
+    monkeypatch.setattr(
+        pipeline.media, "probe", lambda path: {"width": 1920, "height": 1080}
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_auto_layout_window",
+        lambda source, start, end, events, anchor, keep: windows.append(keep)
+        or {"crop": {"x": 0.0}, "lifts": [0.12, 0.12], "bands": [[], []]},
+    )
+    layout = pipeline.standard_layout("in.mp4", clip, transcript, settings, None)
+    assert windows == [1.0] and layout["anchor"] == "full"
+
+
+def test_standard_layout_failure_and_unmodelled_cases_keep_the_base_margin(monkeypatch):
+    transcript, clip, settings = _standard_clip_case()
+    monkeypatch.setattr(
+        pipeline.media, "probe", lambda path: {"width": 1920, "height": 1080}
+    )
+
+    def broken(*args):
+        raise RuntimeError("no frames")
+
+    monkeypatch.setattr(pipeline, "_auto_layout_window", broken)
+    assert pipeline.standard_layout("in.mp4", clip, transcript, settings, None) == {
+        "anchor": "full",
+        "requested": "auto",
+        "x": None,
+        "lifts": None,
+        "static": None,
+        "reason": "RuntimeError",
+    }
+    panels = make(aspect="16:9", height=1080, layout="panels", face_box=(0, 0, 1, 1))
+    assert (
+        pipeline.standard_layout("in.mp4", clip, transcript, panels, None)["reason"]
+        == "panels"
+    )
+    off = make(aspect="16:9", height=1080, caption_lift=False)
+    assert (
+        pipeline.standard_layout("in.mp4", clip, transcript, off, None)["reason"]
+        == "disabled"
+    )
+    assert make().caption_lift is True
+
+
+def test_caption_times_map_back_to_the_source_after_silence_cuts():
+    clip = SelectedClip(
+        start=5, end=20, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    keep = [(10.0, 12.0), (20.0, 25.0)]
+    assert pipeline._source_time(1.5, clip, keep) == pytest.approx(11.5)
+    assert pipeline._source_time(2.5, clip, keep) == pytest.approx(20.5)
+    assert pipeline._source_time(1.5, clip, None) == pytest.approx(6.5)
+
+
+def test_landscape_layout_refusals_and_floor_without_lifts(monkeypatch):
+    transcript, clip, settings = _standard_clip_case()
+    with pytest.raises(PipelineError, match="landscape 16:9"):
+        pipeline.landscape_layout("in.mp4", clip, transcript, make(), None, "auto", 0.2)
+    top = make(aspect="16:9", height=1080, chat_panel=True, chat_panel_fit="top")
+    with pytest.raises(PipelineError, match="chat fill"):
+        pipeline.landscape_layout("in.mp4", clip, transcript, top, None, "auto", 0.2)
+    assert (
+        pipeline.landscape_layout("in.mp4", clip, transcript, top, None, "auto", None)
+        is None
+    )
+    off = make(aspect="16:9", height=1080, caption_lift=False)
+    assert (
+        pipeline.landscape_layout("in.mp4", clip, transcript, off, None, "auto", None)
+        is None
+    )
+    floored = pipeline.landscape_layout(
+        "in.mp4", clip, transcript, off, None, "auto", 0.2
+    )
+    assert floored["lifts"] == [0.2, 0.2]
+    assert floored["floor"] == 0.2 and floored["reason"] == "disabled"
+
+
+def test_render_clip_applies_the_reviewed_caption_floor(
+    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
+):
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"source")
+    settings = make(aspect="16:9", height=1080)
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    count = len(captions.event_spans(transcript, clip, settings))
+    seen = []
+
+    def fake_render(
+        source,
+        destination,
+        clip,
+        settings,
+        ass=None,
+        keep=None,
+        visuals=(),
+        chat_ass=None,
+        crop_x=None,
+    ):
+        seen.append(("crop_x", crop_x))
+        destination.write_bytes(b"video")
+        return {
+            "duration": 10,
+            "width": 1920,
+            "height": 1080,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
+
+    def fake_captions(
+        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
+    ):
+        seen.append(("lifts", lifts))
+        pysubs2.SSAFile().save(str(directory / "captions.ass"))
+        pysubs2.SSAFile().save(str(directory / "captions.srt"))
+        return {"events": 0, "heading": False, "missing_glyphs": []}
+
+    monkeypatch.setattr(pipeline.media, "render", fake_render)
+    monkeypatch.setattr(pipeline, "create_captions", fake_captions)
+    monkeypatch.setattr(
+        pipeline.media, "probe", lambda path: {"width": 1920, "height": 1080}
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_auto_layout_window",
+        lambda source, start, end, events, anchor, keep: {
+            "crop": {"anchor": anchor, "x": 0.0, "keep": keep},
+            "lifts": [0.12] * len(events),
+            "bands": [[] for _ in events],
+        },
+    )
+    with pytest.raises(PipelineError, match="caption_floor must be"):
+        pipeline.render_clip(
+            source,
+            tmp_path / "bad",
+            1,
+            clip,
+            transcript,
+            settings,
+            "job",
+            caption_floor=0.4,
+        )
+    for name in ("bad", "plain", "floored"):
+        (tmp_path / name).mkdir()
+    plain = pipeline.render_clip(
+        source, tmp_path / "plain", 1, clip, transcript, settings, "job"
+    )
+    floored = pipeline.render_clip(
+        source,
+        tmp_path / "floored",
+        1,
+        clip,
+        transcript,
+        settings,
+        "job",
+        caption_floor=0.25,
+    )
+    assert plain["layout"]["floor"] is None and plain["layout"]["lift_max"] == 0.12
+    assert floored["layout"]["floor"] == 0.25
+    assert floored["layout"]["lift_min"] == 0.25
+    assert floored["layout"]["static"] == [[] for _ in range(count)]
+    assert plain["key"] != floored["key"]
+    assert ("lifts", [0.25] * count) in seen
+    assert ("lifts", [0.12] * count) in seen
+    # Render receipts are per clip directory; the crop is not a chat crop here.
+    assert all(value is None for name, value in seen if name == "crop_x")
+    # With caption_lift off and no floor, the render has no layout and its captions use the margin.
+    seen.clear()
+    (tmp_path / "off").mkdir()
+    off = pipeline.render_clip(
+        source,
+        tmp_path / "off",
+        1,
+        clip,
+        transcript,
+        make(aspect="16:9", height=1080, caption_lift=False),
+        "job",
+    )
+    assert "layout" not in off
+    assert ("lifts", None) in seen
