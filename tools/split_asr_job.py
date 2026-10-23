@@ -171,6 +171,21 @@ def read_record(path):
     return record if isinstance(record, dict) else {}
 
 
+# Four parts run on two L4 and two T4 runtimes, the two L4 going to the two longest parts.
+# The account's concurrent limits are two T4 and two L4 (measured 2026-10-22).
+MIXED_POOLS = {"L4": "L4", "T4": "T4:high-ram,T4:standard"}
+
+
+def accelerator_pool(plan, index):
+    """The Colab pool for one part; None keeps the default pool for the chosen shape."""
+    count = len(plan["parts"])
+    if count != 4:
+        return None
+    durations = [child["asr_part"]["duration"] for child in plan["parts"]]
+    longest = sorted(range(count), key=lambda item: durations[item], reverse=True)[:2]
+    return MIXED_POOLS["L4" if index in longest else "T4"]
+
+
 def part_summary(plan, state_root, part_directories):
     """Per-part shape, held time and stage timings, then the compute units of both at once.
 
@@ -299,6 +314,11 @@ def run(args):
                 "CLIPFORGE_SHARED_BALANCE": "1",
             }
             environment.pop("GEMINI_API_KEY", None)
+            pool = accelerator_pool(plan, index)
+            if pool is None:
+                environment.pop("CLIPFORGE_COLAB_POOL", None)
+            else:
+                environment["CLIPFORGE_COLAB_POOL"] = pool
             state, output = (
                 args.state_root / f"control-{index}",
                 part_directories[index],

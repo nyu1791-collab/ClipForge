@@ -161,3 +161,22 @@ def test_split_children_receive_colab_credential_and_never_the_model_key(
         "start",
         "stop",
     ]
+
+
+def test_four_parts_use_two_l4_for_the_longest_and_two_t4_for_the_rest():
+    from tools.split_asr_job import accelerator_pool
+
+    plan = {
+        "parts": [
+            {"asr_part": {"duration": value}} for value in (3000, 4000, 2500, 3500)
+        ]
+    }
+    pools = [accelerator_pool(plan, index) for index in range(4)]
+    assert pools == [
+        "T4:high-ram,T4:standard",
+        "L4",
+        "T4:high-ram,T4:standard",
+        "L4",
+    ]
+    two = {"parts": plan["parts"][:2]}
+    assert [accelerator_pool(two, index) for index in range(2)] == [None, None]
