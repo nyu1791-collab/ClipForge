@@ -288,7 +288,7 @@ class KickVOD:
                 except (PipelineError, UnicodeError, ValueError) as page_error:
                     reasons = {"api": api_reason, "page": _metadata_reason(page_error)}
                     failure = PipelineError(
-                        "Kick VOD metadata failed (api="
+                        "Kick VOD identity/metadata failed (api="
                         + reasons["api"]
                         + "; page="
                         + reasons["page"]

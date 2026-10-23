@@ -70,7 +70,11 @@ def _lexical_spans(text):
         cursor = end
     protected = list(spans)
     for index, word in enumerate(words):
-        if 0 < index < len(words) - 1 and word.surface == "の":
+        if (
+            0 < index < len(words) - 1
+            and word.surface == "の"
+            and len(words[index + 1].surface) == 1
+        ):
             if all(
                 getattr(words[j].feature, "pos1", "") == "名詞"
                 for j in (index - 1, index + 1)
@@ -87,7 +91,7 @@ def _lexical_spans(text):
 def _unbreakable(text):
     """Positions that may not start a line because they are inside a number, term or URL."""
     blocked = set()
-    for pattern in (NUMBER, LATIN, URL):
+    for pattern in (NUMBER, LATIN, URL, re.compile(r"[ァ-ヿー]+")):
         for match in pattern.finditer(text):
             blocked.update(range(match.start() + 1, match.end()))
     for start, end in _lexical_spans(text):

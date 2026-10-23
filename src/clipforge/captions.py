@@ -458,7 +458,14 @@ def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscap
         round(duration * 1000),
         settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
         floor_ms=round(MIN_CAPTION_SECONDS * 1000),
-        lead_ms=500 if landscape else 0,
+        lead_ms=500
+        if landscape
+        and any(
+            _is_kanji(c) or _is_hiragana(c) or _is_katakana(c)
+            for text in plain_lines
+            for c in text
+        )
+        else 0,
     )
     return groups, spans, plain_lines, cleanup, approximate
 

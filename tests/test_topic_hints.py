@@ -394,3 +394,27 @@ def test_one_loud_window_alone_does_not_reach_full_score():
     )
     assert hint["topics"][0]["volume_bump_db"] == pytest.approx(10.0)
     assert 0.0 < hint["topics"][0]["volume_score"] < 1.0
+
+
+def test_chat_bump_is_bounded_text_free_and_only_uses_observed_windows():
+    analysis = {
+        "duration": 1000,
+        "topics": [topic("a", 300, 310, 5), topic("b", 700, 710, 5, "別の話題です")],
+    }
+    chat = [(i, 9 if i in (304, 305, 306) else 0) for i in range(300, 310)]
+    base = {x["id"]: x for x in th.hint_topics(analysis)["topics"]}
+    hints = {x["id"]: x for x in th.hint_topics(analysis, chat=chat)["topics"]}
+    assert hints["a"]["score"] - base["a"]["score"] == pytest.approx(th.CHAT_WEIGHT)
+    assert hints["a"]["chat_messages"] == 27
+    assert hints["b"]["chat_score"] is None
+    assert hints["b"]["score"] == base["b"]["score"]
+    assert "text" not in hints["a"]
+    assert th.hint_topics(analysis, chat=None) == th.hint_topics(analysis)
+
+
+@pytest.mark.parametrize(
+    "chat", [[(0, -1)], [(0, True)], [(0, 1.2)], [(0, 1), (0, 2)], [(float("nan"), 1)]]
+)
+def test_chat_windows_reject_invalid_counts_and_overlapping_samples(chat):
+    with pytest.raises(ValueError):
+        th.hint_topics({"duration": 100, "topics": []}, chat=chat)

@@ -48,6 +48,10 @@ PENALTY = {
 # so it cannot overturn a clear difference in speech density or text.
 VOLUME_WINDOW_SECONDS = 1.0
 VOLUME_WEIGHT = 0.05
+CHAT_WEIGHT = 0.05
+CHAT_BASELINE_SECONDS = 60
+CHAT_TOP_WINDOWS = 3
+CHAT_FULL_BUMP_RATIO = 3.0
 # Windows below this level are silence. They are not used as a reference, and they
 # never count as a bump themselves.
 VOLUME_SILENCE_DB = -50.0
@@ -213,6 +217,50 @@ def _volume_bump(index, topic):
     return bump, min(1.0, max(0.0, (bump - VOLUME_MIN_BUMP_DB) / span))
 
 
+def _chat_index(chat):
+    """Observed (second, message count) windows; gaps are unobserved, not silence."""
+    if chat is None:
+        return None
+    if not isinstance(chat, (list, tuple)):
+        raise ValueError("chat series must be a list")
+    times, counts = [], []
+    for row in chat:
+        if not isinstance(row, (list, tuple)) or len(row) != 2:
+            raise ValueError("invalid chat window")
+        moment, count = _number(row[0]), row[1]
+        if moment is None or type(count) is not int or count < 0:
+            raise ValueError("invalid chat window")
+        if times and moment - times[-1] < 1 - 1e-6:
+            raise ValueError("chat windows must not overlap")
+        times.append(moment)
+        counts.append(count)
+    excess = []
+    for index, count in enumerate(counts):
+        lo = bisect.bisect_left(times, times[index] - CHAT_BASELINE_SECONDS / 2)
+        hi = bisect.bisect_right(times, times[index] + CHAT_BASELINE_SECONDS / 2)
+        baseline = statistics.median(counts[lo:hi])
+        excess.append(max(0.0, (count - baseline) / max(1.0, baseline)))
+    return times, counts, excess
+
+
+def _chat_bump(index, topic):
+    if index is None:
+        return None
+    times, counts, excess = index
+    lo = bisect.bisect_right(times, topic["start"] - 1)
+    hi = bisect.bisect_left(times, topic["end"])
+    if lo >= hi:
+        return None
+    loudest = sorted(excess[lo:hi], reverse=True)[:CHAT_TOP_WINDOWS]
+    score = min(1.0, sum(loudest) / len(loudest) / CHAT_FULL_BUMP_RATIO)
+    return {
+        "chat_messages": sum(counts[lo:hi]),
+        "chat_coverage_seconds": hi - lo,
+        "chat_messages_per_second": round(sum(counts[lo:hi]) / (hi - lo), 3),
+        "chat_score": round(score, 4),
+    }
+
+
 def _hint(topic, duration, terms, volume_score=None):
     text = topic["text"]
     start, end = topic["start"], topic["end"]
@@ -259,7 +307,7 @@ def _hint(topic, duration, terms, volume_score=None):
     }
 
 
-def hint_topics(analysis, *, profanity_terms=None, volume=None):
+def hint_topics(analysis, *, profanity_terms=None, volume=None, chat=None):
     """Return flags and numbers per topic, highest score first.
 
     ``profanity_terms`` is an optional iterable of terms supplied by the caller.
@@ -272,6 +320,7 @@ def hint_topics(analysis, *, profanity_terms=None, volume=None):
         raise ValueError("topics list is required")
     terms = None if profanity_terms is None else _terms(profanity_terms)
     index = _volume_index(volume)
+    chat_index = _chat_index(chat)
     topics = [_topic(row) for row in rows]
     duration = _stream_duration(analysis, topics)
     hints = []
@@ -281,6 +330,21 @@ def hint_topics(analysis, *, profanity_terms=None, volume=None):
         if index is not None:
             hint["volume_bump_db"] = None if bump is None else round(bump, 2)
             hint["volume_score"] = round(volume_score, 4)
+        activity = _chat_bump(chat_index, topic)
+        if chat_index is not None:
+            hint.update(
+                activity
+                or {
+                    "chat_messages": None,
+                    "chat_coverage_seconds": 0,
+                    "chat_messages_per_second": None,
+                    "chat_score": None,
+                }
+            )
+        if activity is not None:
+            hint["score"] = round(
+                hint["score"] + CHAT_WEIGHT * activity["chat_score"], 4
+            )
         hints.append(hint)
     _mark_near_duplicates(topics, hints)
     hints.sort(key=lambda hint: (-hint["score"], hint["start"]))
@@ -291,6 +355,8 @@ def hint_topics(analysis, *, profanity_terms=None, volume=None):
     }
     if index is not None:
         result["volume_weight"] = VOLUME_WEIGHT
+    if chat_index is not None:
+        result["chat_weight"] = CHAT_WEIGHT
     return result
 
 
@@ -311,6 +377,11 @@ def main(argv=None):
         type=Path,
         help="audio file whose loudness adds a small bump score; its time 0 is the topic clock's 0",
     )
+    parser.add_argument(
+        "--chat-windows",
+        type=Path,
+        help="private JSON list of observed [source second, message count] windows",
+    )
     args = parser.parse_args(argv)
     try:
         analysis = json.loads(args.topics_json.read_text(encoding="utf-8"))
@@ -320,7 +391,8 @@ def main(argv=None):
             from .audio_volume import loudness_series
 
             volume = loudness_series(args.audio)
-        result = hint_topics(analysis, profanity_terms=terms, volume=volume)
+        chat = json.loads(args.chat_windows.read_text()) if args.chat_windows else None
+        result = hint_topics(analysis, profanity_terms=terms, volume=volume, chat=chat)
     except (OSError, ValueError, KeyError, TypeError, PipelineError):
         print("topic hints failed: invalid input", file=sys.stderr)
         return 1
