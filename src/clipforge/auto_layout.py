@@ -18,6 +18,8 @@ CENTER_MARGIN = 0.02
 DARK_LEVEL = 32
 # A column whose share of dark pixels reaches this is background: its energy counts as 0.
 DARK_SHARE = 0.55
+# A dark run at a frame edge is an overlay only up to this share of the width (a night scene is not).
+OVERLAY_MAX_SHARE = 0.40
 # Candidate crop offsets are evaluated in steps of this share of the source width.
 OFFSET_STEP = 1 / 32
 # Captions this close (seconds) in sequence share one band, so the band does not flicker.
@@ -101,12 +103,35 @@ def sample_frames(source, start, end, *, fps=2.0, width=320, height=180):
     return times, frames
 
 
+def _overlay_block(dark, width):
+    """The dark run touching the left or right edge that may be ignored, or None.
+
+    Returns (side, start_px, end_px). The run must be contiguous from the edge and at most
+    OVERLAY_MAX_SHARE of the width, so a night scene or a dark spot in the middle is kept.
+    """
+    left = 0
+    while left < width and dark[left]:
+        left += 1
+    right = width
+    while right > 0 and dark[right - 1]:
+        right -= 1
+    blocks = []
+    if 0 < left and left / width <= OVERLAY_MAX_SHARE:
+        blocks.append(("left", 0, left))
+    if 0 < width - right and (width - right) / width <= OVERLAY_MAX_SHARE:
+        blocks.append(("right", right, width))
+    if not blocks:
+        return None
+    return max(blocks, key=lambda block: block[2] - block[1])
+
+
 def choose_crop(frames, *, keep=0.75):
     """Pick the crop offset whose kept-width window holds the most detail.
 
-    Detail is gradient energy per column, except that columns which are mostly dark
-    (a black chat panel, its text included) count as 0. The window is searched on a grid
-    of OFFSET_STEP from 0 to (1 - keep). A best window within CENTER_MARGIN of the center
+    Detail is gradient energy per column. An overlay (a dark block at the left or right
+    edge, such as a black chat panel with its text) counts as 0 and the window is moved
+    clear of it when the window's range allows. The window is searched on a grid of
+    OFFSET_STEP from 0 to (1 - keep). A best window within CENTER_MARGIN of the center
     gives "center". Ties go to the offset nearest the center.
     """
     import numpy as np
@@ -124,8 +149,13 @@ def choose_crop(frames, *, keep=0.75):
         dark += (block < DARK_LEVEL).sum(axis=(0, 1))
     profile /= count
     dark /= count * height
-    corrected = np.where(dark >= DARK_SHARE, 0.0, profile)
     raw_total = float(profile.sum())
+
+    overlay = _overlay_block(dark >= DARK_SHARE, width)
+    corrected = profile.copy()
+    if overlay is not None:
+        _, start_px, end_px = overlay
+        corrected[start_px:end_px] = 0.0
     total = float(corrected.sum())
 
     slack = 1 - keep
@@ -148,6 +178,26 @@ def choose_crop(frames, *, keep=0.75):
         ties = [x for x, value in scored if value >= peak - 1e-12]
         x = min(ties, key=lambda candidate: abs(candidate - center_x))
 
+    # Move the window clear of the overlay when the window's range allows it.
+    overlay_info = {"side": None, "start": 0.0, "end": 0.0}
+    if overlay is not None:
+        side, start_px, end_px = overlay
+        overlay_info = {
+            "side": side,
+            "start": round(start_px / width, 4),
+            "end": round(end_px / width, 4),
+        }
+        win = round(keep * width)
+        left_px = round(x * width)
+        if side == "right" and left_px + win > start_px:
+            target = start_px - win
+            if 0 <= target <= width - win:
+                x = target / width
+        elif side == "left" and left_px < end_px:
+            target = end_px
+            if target + win <= width:
+                x = target / width
+
     if abs(x - center_x) < 1e-9:
         anchor = "center"
     elif abs(x) < 1e-9:
@@ -166,6 +216,7 @@ def choose_crop(frames, *, keep=0.75):
         "raw_kept": {
             a: round(share(profile, raw_total, anchor_x[a]), 4) for a in ANCHORS
         },
+        "overlay": overlay_info,
     }
 
 

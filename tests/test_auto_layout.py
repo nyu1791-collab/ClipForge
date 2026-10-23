@@ -79,6 +79,53 @@ def test_dark_column_with_sparse_text_is_not_detail():
     assert crop["kept"]["right"] < 0.1
 
 
+def test_dark_run_away_from_the_edge_is_not_an_overlay():
+    rng = np.random.default_rng(3)
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, :, 0:80] = rng.integers(100, 150, size=(4, HEIGHT, 80), dtype=np.uint8)
+    frames[:, :, 120:160] = 0
+    crop = auto_layout.choose_crop(frames)
+    assert crop["overlay"]["side"] is None
+    assert crop["kept"] == crop["raw_kept"]
+
+
+def test_dark_run_wider_than_the_limit_is_not_an_overlay():
+    # A dark run covering 140 of 320 columns (over 40%) reads as a dark scene, not an overlay.
+    rng = np.random.default_rng(4)
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, :, 0:100] = rng.integers(100, 150, size=(4, HEIGHT, 100), dtype=np.uint8)
+    frames[:, :, 180:WIDTH] = 0
+    crop = auto_layout.choose_crop(frames)
+    assert crop["overlay"]["side"] is None
+    assert crop["kept"] == crop["raw_kept"]
+
+
+def test_window_moves_clear_of_an_edge_overlay():
+    # Detail spans columns 40..200 and a black panel fills columns 240..320. Every window
+    # containing the detail ties, so the center is chosen; its right edge (280) reaches the
+    # panel, so the window moves to end at the panel's edge (x = 0).
+    rng = np.random.default_rng(5)
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, :, 40:200] = rng.integers(0, 256, size=(4, HEIGHT, 160), dtype=np.uint8)
+    frames[:, :, 240:WIDTH] = 0
+    crop = auto_layout.choose_crop(frames)
+    assert crop["overlay"] == {"side": "right", "start": 0.75, "end": 1.0}
+    assert crop["x"] == 0.0
+    assert crop["anchor"] == "left"
+
+
+def test_window_stays_when_the_overlay_cannot_be_cleared():
+    # A 30% panel at the right edge starts at column 224: a 240-column window cannot end
+    # before it, so the window is not moved.
+    rng = np.random.default_rng(6)
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, :, 40:200] = rng.integers(0, 256, size=(4, HEIGHT, 160), dtype=np.uint8)
+    frames[:, :, 224:WIDTH] = 0
+    crop = auto_layout.choose_crop(frames)
+    assert crop["overlay"]["side"] == "right"
+    assert crop["x"] == pytest.approx(0.125)
+
+
 def test_detail_between_the_edges_gives_an_offset_window():
     rng = np.random.default_rng(2)
     frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
