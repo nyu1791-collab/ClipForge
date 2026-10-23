@@ -12,7 +12,7 @@
 | 段 | 内容 | 担当 | 主な出力 |
 | --- | --- | --- | --- |
 | S0 前提確認 | SHAを固定し、origin に push 済みか確認。作業ツリーが clean か確認。worker の workflow が ClipForge の `deploy/` と一致するか確認 | 私 | 固定したSHA |
-| S1 分析＋プレビュー | `submit_job.py --audio-analysis-url` を `--worker colab-auto --asr-parts 2 --auto-previews --wait` で投入。音声取得 → 2分割ASR → 話題分割 → 同じrunのCPUジョブでプレビュー・未承認の下書き | Actions | `topics.json`・`review-draft.json`・`preview-contact-sheet.jpg`・`asr-receipt.json` |
+| S1 分析＋プレビュー | `submit_job.py --audio-analysis-url` を `--worker colab-auto --asr-parts 4 --auto-previews --wait` で投入。音声取得 → 4部分のASR（T4 2台・L4 2台）→ 話題分割 → 同じrunのCPUジョブでプレビュー・未承認の下書き | Actions | `topics.json`・`review-draft.json`・`preview-contact-sheet.jpg`・`asr-receipt.json` |
 | S2 確認 | 話題・下書き・静止画シートを読み、候補を決める。採用する候補だけ映像を確認する | 私 | 採用候補の一覧 |
 | S3 承認ファイル | 採用候補だけを残し、`video_reviewed: true` と確認した根拠を書く。確認していない候補は含めない | 私 | 承認ファイル（JSON） |
 | S4 描画 | `submit_audio_stage.py --stage render --worker colab-auto --clips N --config-file config.landscape-chat.example.json` を承認ファイルで投入。1本ずつ並列に描画 | Actions（Colab CPU） | 各クリップの依頼ID・run ID |
@@ -36,7 +36,7 @@ workflow の一致は、非公開 worker の `clipforge.yml` と `clipforge-stag
 
 ```bash
 python tools/submit_job.py --audio-analysis-url 'URL' \
-  --worker colab-auto --ref "$SHA" --asr-parts 2 --auto-previews \
+  --worker colab-auto --ref "$SHA" --asr-parts 4 --auto-previews \
   --wait --wait-timeout 18000 --output /home/user/private/NAME-previews
 ```
 

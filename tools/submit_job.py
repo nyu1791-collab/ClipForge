@@ -903,8 +903,8 @@ def main():
     parser.add_argument(
         "--asr-parts",
         type=int,
-        choices=(1, 2),
-        help="URL-only ASR runtimes (default: 2); use 1 for continuous recognition",
+        choices=(1, 2, 3, 4),
+        help="URL-only ASR runtimes (default: 2, up to 4); use 1 for continuous recognition",
     )
     parser.add_argument(
         "--public-cache",
@@ -1110,10 +1110,10 @@ def dispatch(args, state_root):
         settings.setdefault("asr_parts", 2)
     if getattr(args, "asr_parts", None) is not None:
         settings["asr_parts"] = args.asr_parts
-    if settings.get("asr_parts", 1) == 2 and (
+    if settings.get("asr_parts", 1) > 1 and (
         not url_only or args.worker != "colab-auto"
     ):
-        raise RuntimeError("two-part ASR requires URL-only analysis on colab-auto")
+        raise RuntimeError("split ASR requires URL-only analysis on colab-auto")
     if getattr(args, "youtube_audio_transport", None) is not None:
         settings["youtube_audio_transport"] = args.youtube_audio_transport
     if settings.get("youtube_audio_transport") == "warp" and (

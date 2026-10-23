@@ -98,7 +98,12 @@ def main():
         validate_part(part)
         if (
             request["request_id"]
-            != part_id(part["parent_request_id"], part["index"], part["split_key"])
+            != part_id(
+                part["parent_request_id"],
+                part["index"],
+                part["count"],
+                part["split_key"],
+            )
             or not request.get("audio_source_url")
             or settings.asr_parts != 1
         ):

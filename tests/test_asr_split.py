@@ -75,7 +75,7 @@ def results(plan):
 
 def test_lossless_split_has_overlap_and_preserves_parent_identity(prepared):
     source, plan, root = prepared
-    assert plan["boundary"] == 20
+    assert plan["boundaries"][0] == 20
     assert [child["asr_part"]["offset"] for child in plan["parts"]] == [0, 15]
     assert [child["asr_part"]["duration"] for child in plan["parts"]] == [25, 25]
     assert not (root / "parts/audio.wav").exists()
@@ -502,7 +502,7 @@ def test_part_summary_reports_shapes_timings_and_one_total(prepared, tmp_path):
         in lines[0]
     )
     assert "on T4 STANDARD, held 357 s" in lines[1]
-    assert lines[2] == "Compute units used by both ASR parts: 0.18"
+    assert lines[2] == "Compute units used by all ASR parts: 0.18"
     # A runtime still active at the last release makes the account balance ambiguous.
     state = json.loads((root / "control-1" / "state.json").read_text())
     state["units_after"]["assignments"] = 1
@@ -562,7 +562,7 @@ def test_url_submission_defaults_to_two_parts_and_respects_explicit_choice(
     )
 
 
-@pytest.mark.parametrize("value", [True, False, 0, 3, 2.0, "2"])
+@pytest.mark.parametrize("value", [True, False, 0, 5, 2.0, "2"])
 def test_asr_parts_requires_an_exact_supported_integer(value):
     with pytest.raises(ValueError, match="asr_parts"):
         Settings(gemini_model="manual-no-api", asr_parts=value)
@@ -634,10 +634,10 @@ def test_split_cuts_at_longest_silence_inside_the_search_window(tmp_path, monkey
         origin=10,
     )
     plan = cut(tmp_path, "longest", 1800)
-    split = plan["split"]
+    split = plan["split"]["cuts"][0]
     assert (split["method"], split["reason"]) == ("vad", "longest_silence")
     assert split["silence"] == [14.0, 16.0]
-    assert plan["boundary"] == 15.0
+    assert plan["boundaries"][0] == 15.0
     assert seen == [20 * SPEECH_RATE]
     assert split["elapsed_seconds"] >= 0
 
@@ -662,7 +662,7 @@ def test_split_scales_pcm_in_place_to_the_same_float_samples(tmp_path, monkeypat
         faster_whisper.vad, "get_speech_timestamps", get_speech_timestamps
     )
     with wave.open(str(source), "rb") as handle:
-        asr_split.choose_boundary(handle, SPEECH_RATE, handle.getnframes(), 0, 1800)
+        asr_split.choose_cuts(handle, SPEECH_RATE, handle.getnframes(), 0, 1800, 2)
     # Window is 10 s to 30 s, the same as the scaled PCM read from the file.
     expected = values[10 * SPEECH_RATE : 30 * SPEECH_RATE].astype(np.float32) / 32768.0
     assert captured[0].dtype == np.float32
@@ -674,38 +674,38 @@ def test_split_ignores_long_silence_outside_the_search_window(tmp_path, monkeypa
     # With 3 s of search, the window is 17 s to 23 s; the 8 s silence before it is out of reach.
     fake_vad(monkeypatch, [(5, 6), (14, 14.5), (17, 17.5), (18.5, 19)], origin=17)
     plan = cut(tmp_path, "outside", 3)
-    assert plan["split"]["window"] == [17.0, 23.0]
-    assert plan["split"]["silence"] == [17.5, 18.5]
-    assert plan["boundary"] == 18.0
+    assert plan["split"]["cuts"][0]["window"] == [17.0, 23.0]
+    assert plan["split"]["cuts"][0]["silence"] == [17.5, 18.5]
+    assert plan["boundaries"][0] == 18.0
 
 
 def test_equal_silences_prefer_the_one_nearest_the_middle(tmp_path, monkeypatch):
     # Both gaps are 2 s; the one at 22.5-24.5 s (centre 23.5) is nearer the middle at 20 s.
     fake_vad(monkeypatch, [(11, 15), (17, 22.5), (24.5, 25)], origin=10)
     plan = cut(tmp_path, "nearest", 1800)
-    assert plan["split"]["silence"] == [22.5, 24.5]
-    assert plan["boundary"] == 23.5
+    assert plan["split"]["cuts"][0]["silence"] == [22.5, 24.5]
+    assert plan["boundaries"][0] == 23.5
 
 
 def test_search_window_is_kept_inside_the_middle_half(tmp_path, monkeypatch):
     # A 3600 s search would reach past the ends; the window stops at a quarter of the audio.
     seen = fake_vad(monkeypatch, [(11, 12), (13, 14)], origin=10)
     plan = cut(tmp_path, "quarter", 3600)
-    assert plan["split"]["window"] == [10.0, 30.0]
+    assert plan["split"]["cuts"][0]["window"] == [10.0, 30.0]
     assert seen == [20 * SPEECH_RATE]
-    assert 10 <= plan["boundary"] <= 30
-    assert plan["boundary"] == 12.5
+    assert 10 <= plan["boundaries"][0] <= 30
+    assert plan["boundaries"][0] == 12.5
 
 
 def test_no_silence_falls_back_to_the_middle_with_a_reason(tmp_path, monkeypatch):
     fake_vad(monkeypatch, [(10, 30)], origin=10)
     plan = cut(tmp_path, "continuous", 1800)
-    assert (plan["split"]["method"], plan["split"]["reason"]) == (
+    assert (plan["split"]["cuts"][0]["method"], plan["split"]["cuts"][0]["reason"]) == (
         "middle",
         "no_silence",
     )
-    assert plan["split"]["silence"] is None
-    assert plan["boundary"] == 20
+    assert plan["split"]["cuts"][0]["silence"] is None
+    assert plan["boundaries"][0] == 20
 
 
 @pytest.mark.parametrize("module", ["faster_whisper.vad", "onnxruntime"])
@@ -715,11 +715,11 @@ def test_missing_vad_falls_back_to_the_middle_with_a_reason(
     monkeypatch.delattr(faster_whisper, "vad", raising=False)
     monkeypatch.setitem(sys.modules, module, None)
     plan = cut(tmp_path, "novad", 1800)
-    assert (plan["split"]["method"], plan["split"]["reason"]) == (
+    assert (plan["split"]["cuts"][0]["method"], plan["split"]["cuts"][0]["reason"]) == (
         "middle",
         "vad_unavailable",
     )
-    assert plan["boundary"] == 20
+    assert plan["boundaries"][0] == 20
 
 
 def test_failing_vad_falls_back_to_the_middle_with_a_reason(tmp_path, monkeypatch):
@@ -728,34 +728,39 @@ def test_failing_vad_falls_back_to_the_middle_with_a_reason(tmp_path, monkeypatc
 
     monkeypatch.setattr(faster_whisper.vad, "get_speech_timestamps", broken)
     plan = cut(tmp_path, "broken", 1800)
-    assert (plan["split"]["method"], plan["split"]["reason"]) == (
+    assert (plan["split"]["cuts"][0]["method"], plan["split"]["cuts"][0]["reason"]) == (
         "middle",
         "vad_failed",
     )
-    assert plan["boundary"] == 20
+    assert plan["boundaries"][0] == 20
 
 
 def test_zero_search_never_runs_vad(tmp_path, monkeypatch):
     seen = fake_vad(monkeypatch, [(11, 12), (13, 14)], origin=10)
     plan = cut(tmp_path, "zero", 0)
-    assert (plan["split"]["method"], plan["split"]["reason"]) == (
+    assert (plan["split"]["cuts"][0]["method"], plan["split"]["cuts"][0]["reason"]) == (
         "middle",
         "search_disabled",
     )
     assert seen == []
-    assert plan["boundary"] == 20
+    assert plan["boundaries"][0] == 20
 
 
 def test_cut_identity_separates_caches_and_part_ids_but_not_timings(prepared):
     source, plan, _ = prepared
     settings = Settings.model_validate(plan["settings"])
     base = plan["split"]
-    moved = {**base, "sample": base["sample"] + SPEECH_RATE, "method": "vad"}
+    cut = base["cuts"][0]
+
+    def with_cut(**changes):
+        return {**base, "cuts": [{**cut, **changes}]}
+
+    moved = with_cut(sample=cut["sample"] + SPEECH_RATE, method="vad")
     variants = [
         base,
         moved,
         {**base, "search_seconds": 600},
-        {**base, "silence": [1.0, 2.0]},
+        with_cut(silence=[1.0, 2.0]),
     ]
     keys = [
         pipeline.transcript_identity(
@@ -766,10 +771,63 @@ def test_cut_identity_separates_caches_and_part_ids_but_not_timings(prepared):
     assert len(set(keys)) == len(variants)
     assert keys[0] == plan["transcript_key"]
     assert pipeline.transcript_identity(source, plan["info"], settings) not in keys
-    timed = {**base, "elapsed_seconds": 99.0, "reason": "other"}
+    timed = {**base, "cuts": [{**cut, "elapsed_seconds": 99.0, "reason": "other"}]}
     assert asr_split.split_key(timed) == asr_split.split_key(base)
     parent = "a" * 32
-    assert asr_split.part_id(parent, 0, asr_split.split_key(base)) != asr_split.part_id(
-        parent, 0, asr_split.split_key(moved)
-    )
+    assert asr_split.part_id(
+        parent, 0, 2, asr_split.split_key(base)
+    ) != asr_split.part_id(parent, 0, 2, asr_split.split_key(moved))
     assert plan["parts"][0]["asr_part"]["split_key"] == asr_split.split_key(base)
+
+
+@pytest.mark.parametrize("count", [3, 4])
+def test_more_parts_cover_the_audio_once_and_merge_each_word_once(tmp_path, count):
+    source = tmp_path / "audio.wav"
+    with wave.open(str(source), "wb") as handle:
+        handle.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        handle.writeframes(b"\0\0" * 16000 * 40)
+    settings = Settings(
+        gemini_model="manual-no-api",
+        asr_parts=count,
+        asr_split_search_seconds=0,
+        whisper_device="cuda",
+        whisper_compute_type="float16",
+        min_seconds=3,
+        max_seconds=10,
+    )
+    request = {
+        "request_id": "a" * 32,
+        "source_ref": "b" * 40,
+        "video_sha256": digest(source),
+        "video_bytes": source.stat().st_size,
+        "settings": settings.model_dump(),
+        "audio_source_url": URL,
+        "chat_sha256": None,
+    }
+    plan = asr_split.prepare(
+        source,
+        tmp_path / "parts",
+        request,
+        settings,
+        audio_first.audio_info(source),
+    )
+    assert len(plan["parts"]) == count
+    assert len(plan["boundaries"]) == count - 1
+    assert len({child["request_id"] for child in plan["parts"]}) == count
+    truth = [(t, t + 0.5, f"w{t}") for t in range(1, 40, 2)]
+    parts = []
+    for child in plan["parts"]:
+        descriptor = child["asr_part"]
+        start, stop = (
+            descriptor["offset"],
+            descriptor["offset"] + descriptor["duration"],
+        )
+        words = [
+            (s - start, e - start, text)
+            for s, e, text in truth
+            if s >= start and e <= stop
+        ]
+        parts.append((descriptor, transcript(words)))
+    merged = asr_split.merge(parts, plan["info"]["duration"])
+    got = [word["text"] for segment in merged["segments"] for word in segment["words"]]
+    assert got == [text for _, _, text in truth]

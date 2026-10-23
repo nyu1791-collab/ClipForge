@@ -31,7 +31,7 @@ def test_colab_credential_is_scoped_to_steps_that_start_or_split_runtimes():
     assert holders == [
         "Validate request and one-time Colab OAuth setup",
         "Allocate a dedicated T4 for the verified Google account",
-        "Run two owned ASR runtimes and merge before topic allocation",
+        "Run owned ASR runtimes in parallel and merge before topic allocation",
     ]
     for step in steps:
         if step.get("name") in holders:
@@ -44,7 +44,7 @@ def test_two_part_run_gets_credential_without_model_key():
     split = next(
         step
         for step in steps
-        if step.get("if") == "steps.request.outputs.asr_parts == '2'"
+        if step.get("if") == "steps.request.outputs.asr_parts != '1'"
     )
     assert "split_asr_job.py" in split["run"]
     assert split["env"]["COLAB_ADC_JSON"] == "${{ secrets.COLAB_ADC_JSON }}"
@@ -54,7 +54,9 @@ def test_two_part_run_gets_credential_without_model_key():
 def test_two_part_release_step_follows_split_and_needs_no_credential_secret():
     _, steps = colab_steps()
     names = [step.get("name") for step in steps]
-    split = names.index("Run two owned ASR runtimes and merge before topic allocation")
+    split = names.index(
+        "Run owned ASR runtimes in parallel and merge before topic allocation"
+    )
     release = names.index("Release and verify removal of the dedicated Colab runtime")
     assert split < release
     # colab_actions.py stop reads adc.json saved in each state directory and never

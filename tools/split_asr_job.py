@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coordinate two owned Colab recognisers and publish one ordinary analysis result."""
+"""Coordinate two to four owned Colab recognisers and publish one ordinary analysis result."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -82,10 +82,11 @@ def finish(source, output, plan, part_directories, workflow_run):
     request = plan["request"]
     settings = Settings.model_validate(plan["settings"])
     split = plan["split"]
+    count = len(plan["parts"])
     if (
-        settings.asr_parts != 2
-        or len(plan["parts"]) != 2
-        or len(part_directories) != 2
+        not asr_split.MIN_PARTS <= count <= asr_split.MAX_PARTS
+        or settings.asr_parts != count
+        or len(part_directories) != count
         or digest(source) != request["video_sha256"]
         or pipeline.transcript_identity(
             source, plan["info"], settings, split=asr_split.split_identity(split)
@@ -100,7 +101,7 @@ def finish(source, output, plan, part_directories, workflow_run):
         if (
             child["request_id"]
             != asr_split.part_id(
-                request["request_id"], index, asr_split.split_key(split)
+                request["request_id"], index, count, asr_split.split_key(split)
             )
             or child["source_ref"] != request["source_ref"]
             or child["audio_source_url"] != request["audio_source_url"]
@@ -130,7 +131,7 @@ def finish(source, output, plan, part_directories, workflow_run):
         cache.update(
             source="split_asr",
             reused=False,
-            parts=2,
+            parts=len(plan["parts"]),
             overlap_seconds=asr_split.OVERLAP_SECONDS,
             part_requests=[child["request_id"] for child in plan["parts"]],
             split=split,
@@ -208,15 +209,16 @@ def part_summary(plan, state_root, part_directories):
             before.append(state["units_before"])
         if isinstance(state.get("units_after"), dict):
             after.append((state.get("released_at") or 0, state["units_after"]))
-    if len(before) == 2 and len(after) == 2:
+    count = len(part_directories)
+    if len(before) == count and len(after) == count:
         last = max(after, key=lambda item: item[0])[1]
         if last.get("assignments") == 0:
             first = max(units["balance"] for units in before)
             lines.append(
-                f"Compute units used by both ASR parts: {first - last['balance']:.2f}"
+                f"Compute units used by all ASR parts: {first - last['balance']:.2f}"
             )
             return lines
-    lines.append("Compute units used by both ASR parts: not determinable")
+    lines.append("Compute units used by all ASR parts: not determinable")
     return lines
 
 
@@ -241,10 +243,13 @@ def run(args):
     info = audio_first.audio_info(source)
     plan = asr_split.prepare(source, args.state_root / "input", request, settings, info)
     staged = []
-    part_directories = [args.state_root / f"result-{index}" for index in range(2)]
+    count = len(plan["parts"])
+    part_directories = [args.state_root / f"result-{index}" for index in range(count)]
     try:
-        for index, child in enumerate(plan["parts"]):
-            tag = "clipforge-input-" + child["request_id"]
+
+        def stage(index):
+            # The private inputs are independent; create and upload them side by side.
+            tag = "clipforge-input-" + plan["parts"][index]["request_id"]
             github_cli.run(
                 "release",
                 "create",
@@ -272,11 +277,14 @@ def run(args):
                 timeout=600,
             )
 
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            list(executor.map(stage, range(count)))
+
         # The longer part allocates first. Colab has granted only one T4 high-memory
         # runtime at a time, so the faster setup goes to the part with more audio and
         # the other part falls back to the next shape in the pool.
         leader = max(
-            range(2), key=lambda index: plan["parts"][index]["asr_part"]["duration"]
+            range(count), key=lambda index: plan["parts"][index]["asr_part"]["duration"]
         )
         leader_allocated = threading.Event()
         leader_failed = threading.Event()
@@ -314,8 +322,8 @@ def run(args):
                 if (state / "state.json").exists():
                     control(args.control_python, state, "stop", output, environment)
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(recognise, index) for index in range(2)]
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            futures = [executor.submit(recognise, index) for index in range(count)]
             errors = []
             for future in futures:
                 try:
@@ -333,7 +341,7 @@ def run(args):
                 "split ASR failed; private part outputs were retained"
             ) from None
         finish(source, args.output, plan, part_directories, os.environ["GITHUB_RUN_ID"])
-        print("Both ASR parts verified and merged; topics allocated once.", flush=True)
+        print("All ASR parts verified and merged; topics allocated once.", flush=True)
     finally:
         for tag in staged:
             try:

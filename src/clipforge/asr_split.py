@@ -1,4 +1,4 @@
-"""Two independently recognised audio parts, joined on the original audio clock."""
+"""Two to four independently recognised audio parts, joined on the original audio clock."""
 
 import hashlib
 import importlib
@@ -20,27 +20,34 @@ from .storage import (
 
 OVERLAP_SECONDS = 5
 BOUNDARY_RESCUE = 1.0
+MIN_PARTS, MAX_PARTS = 2, 4
 
 
-def part_id(parent, index, split):
+def part_id(parent, index, count, split):
     if (
         not re.fullmatch(r"[a-f0-9]{32}", parent)
+        or type(count) is not int
+        or not MIN_PARTS <= count <= MAX_PARTS
         or type(index) is not int
-        or index not in (0, 1)
+        or not 0 <= index < count
         or not isinstance(split, str)
         or not re.fullmatch(r"[a-f0-9]{64}", split)
     ):
         raise PipelineError("invalid ASR parent, part index or split identity")
     return hashlib.sha256(
-        f"clipforge-asr-part-v2:{parent}:{index}:{split}".encode()
+        f"clipforge-asr-part-v3:{parent}:{count}:{index}:{split}".encode()
     ).hexdigest()[:32]
 
 
 def split_identity(split):
-    """What decides the cut, and so the audio and transcript; reasons and timings are excluded."""
+    """What decides the cuts, and so the audio and transcript; reasons and timings are excluded."""
     return {
-        key: split[key]
-        for key in ("method", "search_seconds", "window", "silence", "sample")
+        "parts": split["parts"],
+        "search_seconds": split["search_seconds"],
+        "cuts": [
+            {key: cut[key] for key in ("method", "window", "silence", "sample")}
+            for cut in split["cuts"]
+        ],
     }
 
 
@@ -48,18 +55,31 @@ def split_key(split):
     return fingerprint(split_identity(split))
 
 
-def choose_boundary(handle, rate, frames, offset, search_seconds):
-    """Cut at the longest silence within search_seconds of the middle, else at the middle.
+def choose_cuts(handle, rate, frames, offset, search_seconds, count):
+    """One cut per boundary between neighbouring parts, each at the longest silence near its share.
 
-    Only the search window is read from the decoded 16 kHz WAV, once. The window stays at least
-    a quarter of the audio away from both ends, so each part keeps at least a quarter.
-    Silences are the gaps between VAD speech spans; ties go to the one nearest the middle.
+    Cut k aims at k/count of the audio and searches search_seconds either side. Its window keeps
+    at least half of an even share from the previous cut and from the end, so every part keeps
+    at least half its share. Cuts are chosen in order, so each window sees the previous cut.
     """
-    started = time.monotonic()
-    middle = frames // 2
+    if not MIN_PARTS <= count <= MAX_PARTS:
+        raise PipelineError("split ASR supports 2 to 4 parts")
+    minimum = frames // (2 * count)
     reach = search_seconds * rate
-    lo = max(frames // 4, middle - reach)
-    hi = min(frames - frames // 4, middle + reach)
+    cuts, previous = [], 0
+    for index in range(1, count):
+        aim = frames * index // count
+        lo = max(aim - reach, previous + minimum)
+        hi = min(aim + reach, frames - (count - index) * minimum)
+        cut = _cut_near(handle, rate, offset, search_seconds, aim, lo, hi)
+        cuts.append(cut)
+        previous = cut["sample"]
+    return {"parts": count, "search_seconds": search_seconds, "cuts": cuts}
+
+
+def _cut_near(handle, rate, offset, search_seconds, aim, lo, hi):
+    """The longest silence between speech spans in [lo, hi), else the aim."""
+    started = time.monotonic()
 
     def finish(method, reason, sample, silence=None):
         return {
@@ -73,14 +93,16 @@ def choose_boundary(handle, rate, frames, offset, search_seconds):
         }
 
     if search_seconds == 0:
-        return finish("middle", "search_disabled", middle)
+        return finish("middle", "search_disabled", aim)
+    if lo >= hi:
+        return finish("middle", "no_window", aim)
     try:
         from faster_whisper import vad
         import numpy as np
 
         importlib.import_module("onnxruntime")
     except ImportError:
-        return finish("middle", "vad_unavailable", middle)
+        return finish("middle", "vad_unavailable", aim)
     handle.setpos(lo)
     pcm = handle.readframes(hi - lo)
     samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
@@ -89,16 +111,16 @@ def choose_boundary(handle, rate, frames, offset, search_seconds):
     try:
         spans = vad.get_speech_timestamps(samples, vad.VadOptions(), sampling_rate=rate)
     except Exception:
-        return finish("middle", "vad_failed", middle)
+        return finish("middle", "vad_failed", aim)
     gaps = [
         (after["start"] - before["end"], lo + before["end"], lo + after["start"])
         for before, after in zip(spans, spans[1:])
         if after["start"] > before["end"]
     ]
     if not gaps:
-        return finish("middle", "no_silence", middle)
+        return finish("middle", "no_silence", aim)
     _, start, end = max(
-        gaps, key=lambda gap: (gap[0], -abs((gap[1] + gap[2]) / 2 - middle))
+        gaps, key=lambda gap: (gap[0], -abs((gap[1] + gap[2]) / 2 - aim))
     )
     return finish(
         "vad",
@@ -109,9 +131,10 @@ def choose_boundary(handle, rate, frames, offset, search_seconds):
 
 
 def prepare(source, root, request, settings, info):
-    """Decode once on the hosted CPU; each lossless part includes boundary context."""
-    if settings.asr_parts != 2 or not info["audio"]:
-        raise PipelineError("split ASR requires audio and asr_parts=2")
+    """Decode once on the hosted CPU; each lossless part includes context around its cuts."""
+    count = settings.asr_parts
+    if not MIN_PARTS <= count <= MAX_PARTS or not info["audio"]:
+        raise PipelineError("split ASR requires audio and 2 to 4 parts")
     if (
         digest(source) != request["video_sha256"]
         or source.stat().st_size != request["video_bytes"]
@@ -125,35 +148,45 @@ def prepare(source, root, request, settings, info):
         media.audio(source, wav, info["duration"])
         with wave.open(str(wav), "rb") as handle:
             rate, frames = handle.getframerate(), handle.getnframes()
-            if rate != media.ASR_SAMPLE_RATE or frames < 2:
+            if rate != media.ASR_SAMPLE_RATE or frames < 2 * count:
                 raise PipelineError(
-                    "split audio must contain at least two samples at 16 kHz"
+                    "split audio must contain at least two samples per part at 16 kHz"
                 )
             offset = float(info.get("audio_start", 0))
-            split = choose_boundary(
-                handle, rate, frames, offset, settings.asr_split_search_seconds
+            split = choose_cuts(
+                handle,
+                rate,
+                frames,
+                offset,
+                settings.asr_split_search_seconds,
+                count,
             )
-        cut = split["sample"]
-        boundary = cut / rate + offset
-        if not 0 < boundary < info["duration"]:
-            raise PipelineError("split audio has an invalid midpoint")
+        cuts = [cut["sample"] for cut in split["cuts"]]
+        boundaries = [cut / rate + offset for cut in cuts]
+        if (
+            not 0 < boundaries[0]
+            or not boundaries[-1] < info["duration"]
+            or any(b >= c for b, c in zip(boundaries, boundaries[1:]))
+        ):
+            raise PipelineError("split audio has an invalid cut")
         identity = split_identity(split)
         plan = {
-            "version": 2,
+            "version": 3,
             "request": request,
             "settings": settings.model_dump(),
             "info": info,
             "transcript_key": pipeline.transcript_identity(
                 source, info, settings, split=identity
             ),
-            "boundary": boundary,
+            "boundaries": boundaries,
             "split": split,
             "parts": [],
         }
         context = OVERLAP_SECONDS * rate
-        for index, (first, last) in enumerate(
-            ((0, min(frames, cut + context)), (max(0, cut - context), frames))
-        ):
+        edges = [0, *cuts, frames]
+        for index in range(count):
+            first = max(0, edges[index] - context)
+            last = min(frames, edges[index + 1] + context)
             directory = root / f"part-{index}"
             directory.mkdir(mode=0o700)
             audio = directory / "input-video.bin"
@@ -187,19 +220,23 @@ def prepare(source, root, request, settings, info):
             part = {
                 "parent_request_id": request["request_id"],
                 "index": index,
-                "count": 2,
+                "count": count,
                 "source_sha256": request["video_sha256"],
                 "transcript_key": plan["transcript_key"],
                 "offset": first / rate + offset,
                 "duration": (last - first) / rate,
-                "core_start": 0 if index == 0 else boundary,
-                "core_end": boundary if index == 0 else info["duration"],
+                "core_start": 0 if index == 0 else boundaries[index - 1],
+                "core_end": (
+                    info["duration"] if index == count - 1 else boundaries[index]
+                ),
                 "source_duration": info["duration"],
                 "split_key": split_key(split),
             }
             child = {
                 **request,
-                "request_id": part_id(request["request_id"], index, part["split_key"]),
+                "request_id": part_id(
+                    request["request_id"], index, count, part["split_key"]
+                ),
                 "video_sha256": digest(audio),
                 "video_bytes": audio.stat().st_size,
                 "settings": settings.model_copy(update={"asr_parts": 1}).model_dump(),
@@ -230,15 +267,20 @@ def validate_part(part):
     }
     if not isinstance(part, dict) or set(part) != fields:
         raise PipelineError("invalid ASR part descriptor")
-    part_id(part["parent_request_id"], part["index"], part.get("split_key"))
     if (
-        type(part["count"]) is not int
-        or part["count"] != 2
-        or any(
-            not isinstance(part.get(key), str)
-            or not re.fullmatch(r"[a-f0-9]{64}", part[key])
-            for key in ("source_sha256", "transcript_key", "split_key")
-        )
+        type(part.get("count")) is not int
+        or not MIN_PARTS <= part["count"] <= MAX_PARTS
+        or type(part.get("index")) is not int
+        or not 0 <= part["index"] < part["count"]
+    ):
+        raise PipelineError("invalid ASR part index or count")
+    part_id(
+        part["parent_request_id"], part["index"], part["count"], part.get("split_key")
+    )
+    if any(
+        not isinstance(part.get(key), str)
+        or not re.fullmatch(r"[a-f0-9]{64}", part[key])
+        for key in ("source_sha256", "transcript_key", "split_key")
     ):
         raise PipelineError("invalid ASR part identity")
     if any(
@@ -257,21 +299,24 @@ def validate_part(part):
 def merge(parts, duration):
     """Keep each word once, by the half-open ownership interval of its midpoint.
 
-    A word whose midpoint lies just outside its own part, within BOUNDARY_RESCUE of the cut, is
-    only a candidate. It is kept when no accepted word of the other part overlaps it, so a word
-    recognised on one side alone is not lost; the first part's candidate wins a clash.
+    A word whose midpoint lies just outside its own part, within BOUNDARY_RESCUE of one of that
+    part's cuts, is only a candidate. It is kept when no accepted word of another part overlaps
+    it, so a word recognised on one side alone is not lost; an earlier part's candidate wins a
+    clash. At each cut, the next part's first words yield to the previous part's last word.
     """
-    if len(parts) != 2:
-        raise PipelineError("both ASR parts are required")
+    count = len(parts)
+    if not MIN_PARTS <= count <= MAX_PARTS:
+        raise PipelineError("all ASR parts are required")
     ordered = sorted(parts, key=lambda row: row[0]["index"])
     for descriptor, _ in ordered:
         validate_part(descriptor)
-    first, second = (row[0] for row in ordered)
+    descriptors = [row[0] for row in ordered]
     if (
-        first["index"] != 0
-        or second["index"] != 1
+        [row["index"] for row in descriptors] != list(range(count))
+        or any(row["count"] != count for row in descriptors)
         or any(
-            first[key] != second[key]
+            descriptors[0][key] != row[key]
+            for row in descriptors
             for key in (
                 "parent_request_id",
                 "source_sha256",
@@ -279,15 +324,17 @@ def merge(parts, duration):
                 "source_duration",
             )
         )
-        or first["core_start"] != 0
-        or first["core_end"] != second["core_start"]
-        or second["core_end"] != duration
+        or descriptors[0]["core_start"] != 0
+        or any(
+            left["core_end"] != right["core_start"]
+            for left, right in zip(descriptors, descriptors[1:])
+        )
+        or descriptors[-1]["core_end"] != duration
     ):
         raise PipelineError("ASR parts do not cover the same source exactly once")
-    boundary = first["core_end"]
     languages, results = set(), []
     # Per part: (segment position, word, accepted) for every word inside or near its interval.
-    timed = {0: [], 1: []}
+    timed = {index: [] for index in range(count)}
     for descriptor, raw in ordered:
         index = descriptor["index"]
         transcript = Transcript.model_validate(raw)
@@ -295,6 +342,14 @@ def merge(parts, duration):
         lo, hi, offset = (
             descriptor[key] for key in ("core_start", "core_end", "offset")
         )
+        cuts = [
+            value
+            for value, present in (
+                (descriptor["core_start"], index > 0),
+                (descriptor["core_end"], index < count - 1),
+            )
+            if present
+        ]
         for position, segment in enumerate(transcript.segments):
             if segment.end > descriptor["duration"] + 0.3:
                 raise PipelineError("ASR part transcript exceeds its audio")
@@ -314,7 +369,7 @@ def merge(parts, duration):
                 item = Word(start=start, end=end, text=word.text)
                 if lo <= midpoint < hi:
                     timed[index].append((position, item, True))
-                elif abs(midpoint - boundary) <= BOUNDARY_RESCUE:
+                elif any(abs(midpoint - cut) <= BOUNDARY_RESCUE for cut in cuts):
                     timed[index].append((position, item, False))
             if not segment.words and segment.text.strip():
                 start, end = (
@@ -332,12 +387,15 @@ def merge(parts, duration):
         return any(item.start < peer.end and item.end > peer.start for peer in peers)
 
     owned = {
-        index: [item for _, item, kept in timed[index] if kept] for index in (0, 1)
+        index: [item for _, item, kept in timed[index] if kept]
+        for index in range(count)
     }
-    rescued = {0: [], 1: []}
-    for index in (0, 1):
-        # The second part's candidates also yield to the first part's adopted candidates.
-        peers = owned[1 - index] + [item for _, item in rescued[0]]
+    rescued = {index: [] for index in range(count)}
+    for index in range(count):
+        # Candidates yield to words other parts own, and to earlier parts' rescued words.
+        peers = [
+            item for other in range(count) if other != index for item in owned[other]
+        ] + [item for earlier in range(index) for _, item in rescued[earlier]]
         rescued[index] = [
             (position, item)
             for position, item, kept in timed[index]
@@ -349,13 +407,15 @@ def merge(parts, duration):
             + rescued[index],
             key=lambda pair: (pair[1].start, pair[1].end),
         )
-        for index in (0, 1)
+        for index in range(count)
     }
-    # The boundary check runs on the final word lists, so it also covers rescued words.
-    if accepted[0]:
-        boundary_word = accepted[0][-1][1]
+    # The cut checks run on the final word lists, so they also cover rescued words.
+    for left in range(count - 1):
+        if not accepted[left]:
+            continue
+        boundary_word = accepted[left][-1][1]
         checked = []
-        for position, item in accepted[1]:
+        for position, item in accepted[left + 1]:
             if item.start < boundary_word.end:
                 if item.text.strip() == boundary_word.text.strip():
                     continue
@@ -364,8 +424,8 @@ def merge(parts, duration):
                         "ambiguous ASR split boundary; use --asr-parts 1"
                     )
             checked.append((position, item))
-        accepted[1] = checked
-    for index in (0, 1):
+        accepted[left + 1] = checked
+    for index in range(count):
         grouped = {}
         for position, item in accepted[index]:
             grouped.setdefault(position, []).append(item)

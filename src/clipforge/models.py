@@ -161,8 +161,8 @@ class Settings(Record):
     whisper_revision: str | None = None
     # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
     asr_batch_size: int = Field(default=0, ge=0, le=16)
-    # URL jobs may recognise two overlapping parts on separate Colab runtimes.
-    asr_parts: Literal[1, 2] = 1
+    # URL jobs may recognise overlapping parts on separate Colab runtimes (up to four).
+    asr_parts: Literal[1, 2, 3, 4] = 1
     # 2-part ASR: cut at the longest silence within this many seconds of the middle (0 cuts at the middle).
     asr_split_search_seconds: int = Field(default=1800, ge=0, le=3600)
     # Explicit hosted-runner audio acquisition route; not an automatic fallback.
@@ -322,8 +322,8 @@ class Settings(Record):
     @field_validator("asr_parts", mode="before")
     @classmethod
     def integer_parts(cls, value):
-        if type(value) is not int or value not in (1, 2):
-            raise ValueError("asr_parts must be the integer 1 or 2")
+        if type(value) is not int or value not in (1, 2, 3, 4):
+            raise ValueError("asr_parts must be the integer 1, 2, 3 or 4")
         return value
 
     @model_validator(mode="after")
