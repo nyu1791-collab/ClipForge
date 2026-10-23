@@ -58,19 +58,19 @@ python tools/submit_audio_stage.py --stage render --worker colab-auto --clips N 
   --source-ref "$SHA" --review-file /home/user/private/NAME-approved.json
 ```
 
-`--previous-run` と `--previous-request` は S1 の run とその依頼ID。描画は各クリップが別の依頼IDになり、並列に走る。
+`--previous-run` と `--previous-request` は S1 の run とその依頼ID。描画は各クリップが別の依頼IDになり、並列に走る。`--clip-index` を1本ずつ同時に投入すると、手元の多重投入防止で2本目以降が止まる。並列描画は `--clips N` の1回で投入する。
+配信画面にコメント欄が映っている配信で話題を長く取るときは、S1 の `--config` と S4 の `--config-file` の両方に `config.landscape-long.example.json` を渡す（[AUDIO_FIRST.md](AUDIO_FIRST.md) の「長めの話題と左上の見出し」）。
 
 ## S5 結合（制御VM）
 
 ```bash
 git worktree add --detach /tmp/merge-SHORT "$SHA"    # 描画と同じSHAを用意
 cd /tmp/merge-SHORT
-python tools/submit_audio_stage.py --stage merge --local \
-  --config-file config.landscape-chat.example.json --source-ref "$SHA" \
+python tools/submit_audio_stage.py --stage merge --local --source-ref "$SHA" \
   --part-runs RUN1:REQ1,RUN2:REQ2,RUN3:REQ3 --output /home/user/private/merged-NAME
 ```
 
-`--local` の結合は、描画に使ったSHAをチェックアウトした作業ツリーで行う。手元のコードが違うと `local merge code differs from source_ref` で停止する。
+`--local` の結合は、描画に使ったSHAをチェックアウトした作業ツリーで行う。`--config-file` は付けない（付けると引数エラーで止まる）。手元のコードが違うと `local merge code differs from source_ref` で停止する。
 
 ## S6 検査の基準
 
