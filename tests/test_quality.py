@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pysubs2
 import pytest
 
-from clipforge import quality
+from clipforge import caption_sentences, quality
 from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
@@ -295,7 +295,8 @@ def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
 
 
 def test_a_line_break_inside_a_word_is_a_counted_warning(tmp_path, on_target_loudness):
-    folder = write_ass(tmp_path, [(0, 2000, "情報\\N処理")])
+    # 情報 is one morpheme, so the break after 情 is inside a word (情報|処理 is a morpheme edge).
+    folder = write_ass(tmp_path, [(0, 2000, "情\\N報処理")])
     report = quality.check_clip(folder, RENDERED, [], [])
     assert report["passed"] is True
     assert report["metrics"]["word_splits"] == 1
@@ -337,6 +338,44 @@ def test_a_kanji_break_inside_a_phrase_is_still_a_split():
     assert quality.word_splits([(0, 2000, "国際連\n合安全保障")]) == ["国際連|合安全"]
     split_captions = [(0, 1000, "国際連"), (1000, 2000, "合安全保障")]
     assert quality.word_splits(split_captions) == ["国際連|合安全"]
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [(0, 2000, "すげー村山優人\n俺マイクラやりますね")],
+        [(0, 2000, "あの人がこの君\nこの豆を食べる")],
+        [(0, 1000, "大人の人"), (1000, 2000, "大人の子")],
+    ],
+)
+def test_breaks_between_morphemes_are_not_splits(events):
+    # BudouX reads each of these as one phrase, but fugashi divides 村山|優|人|俺, 君|この
+    # and 人|大人, so the break is between words and is not reported.
+    assert quality.word_splits(events) == []
+
+
+def test_a_break_inside_a_morpheme_is_still_a_split():
+    # 奪わ is one morpheme, so 奪|われ is inside a word.
+    split_captions = [(0, 1000, "彼は奪"), (1000, 2000, "われた")]
+    assert quality.word_splits(split_captions) == ["彼は奪|われた"]
+
+
+def test_without_fugashi_only_the_budoux_edges_count(monkeypatch):
+    def no_tagger():
+        raise ImportError("fugashi is not installed")
+
+    monkeypatch.setattr(caption_sentences, "_tagger", no_tagger)
+    assert quality.word_splits([(0, 2000, "すげー村山優人\n俺マイクラやりますね")]) == [
+        "山優人|俺マイ"
+    ]
+    assert quality.word_splits([(0, 2000, "あの人がこの君\nこの豆を食べる")]) == [
+        "この君|この豆"
+    ]
+    assert quality.word_splits([(0, 1000, "大人の人"), (1000, 2000, "大人の子")]) == [
+        "人の人|大人の"
+    ]
+    # A break on a BudouX phrase edge is still not a split without fugashi.
+    assert quality.word_splits([(0, 1000, "地方"), (1000, 2000, "自治体の")]) == []
 
 
 def write_framed_ass(folder, events):

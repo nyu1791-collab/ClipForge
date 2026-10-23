@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pysubs2
 
-from . import fonts
+from . import caption_sentences, fonts
 from .caption_breaks import MIN_DISPLAY_SECONDS, parser
 from .captions import (
     MAX_CAPTION_CPS,
@@ -141,14 +141,16 @@ def word_splits(events):
     """Places where a line or a caption starts inside a word, shown as text like 'ぐ奪|われ'.
 
     Checked between the lines of each caption and between consecutive captions. A break on a
-    BudouX phrase edge of the whole clip is not a split. The check is a warning: it works from
-    character scripts, so a rare legitimate break can be flagged.
+    BudouX phrase edge or a morpheme edge (fugashi) of the whole clip is not a split. Without
+    fugashi only the BudouX edges count. The check is a warning: it works from character
+    scripts, so a rare legitimate break can be flagged.
     """
     full = "".join(text.replace("\n", "") for _, _, text in events)
     phrase_ends, position = set(), 0
     for phrase in parser().parse(full):
         position += len(phrase)
         phrase_ends.add(position)
+    morpheme_ends = _morpheme_ends(full)
     found, offset = [], 0
     for index, (_, _, text) in enumerate(events):
         lines = text.split("\n")
@@ -163,9 +165,25 @@ def word_splits(events):
             cuts.append((lines[-1], following, offset))
         for before, after, cut in cuts:
             if before and after and inside_word(before[-1], after[0]):
-                if cut not in phrase_ends:
+                if cut not in phrase_ends and cut not in morpheme_ends:
                     found.append(f"{before[-3:]}|{after[:3]}")
     return found
+
+
+def _morpheme_ends(text):
+    """Character positions where a morpheme of the text ends (fugashi); empty without fugashi."""
+    try:
+        tagger = caption_sentences._tagger()
+    except ImportError:
+        return set()
+    ends, position = set(), 0
+    for morpheme in tagger(text):
+        start = text.find(morpheme.surface, position)
+        if start < 0:
+            continue
+        position = start + len(morpheme.surface)
+        ends.add(position)
+    return ends
 
 
 def _caption_style(subtitles, event):
