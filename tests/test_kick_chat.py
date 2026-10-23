@@ -2,6 +2,8 @@
 
 import datetime as dt
 import re
+import sys
+import types
 
 import pytest
 
@@ -11,10 +13,12 @@ from clipforge.storage import PipelineError
 CHANNEL = "testchan"
 CHANNEL_ID = 77
 VOD = "vod-uuid"
+API_LIMIT = 25  # messages the replay API returns per request, as observed
 ORIGIN = dt.datetime(2026, 10, 20, 12, 0, 0, tzinfo=dt.timezone.utc)
 BASE = f"{kick_chat.KICK_V2}/{CHANNEL}"
 VIDEOS = f"{BASE}/videos"
 MESSAGES = f"{kick_chat.KICK_V2}/{CHANNEL_ID}/messages"
+WRAP = (480 - 22) / 34  # default 1080p panel: wrap width in full-width characters
 EVENT = re.compile(
     r"Dialogue: 0,([\d:.]+),([\d:.]+),(Chat|Head),,0,0,0,,"
     r"\{\\an\d\\pos\(([\d.]+),(\d+)\)\}(.*)"
@@ -22,7 +26,8 @@ EVENT = re.compile(
 
 
 def iso(seconds):
-    return (ORIGIN + dt.timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    moment = ORIGIN + dt.timedelta(seconds=seconds)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{moment.microsecond // 1000:03d}Z"
 
 
 def row(mid, seconds, *, content="hi", name="alice", color="#112233"):
@@ -35,9 +40,10 @@ def row(mid, seconds, *, content="hi", name="alice", color="#112233"):
 
 
 class Response:
-    def __init__(self, status_code=200, payload=None):
+    def __init__(self, status_code=200, payload=None, headers=None):
         self.status_code = status_code
         self._payload = payload
+        self.headers = headers or {}
 
     def json(self):
         if self._payload is None:
@@ -45,8 +51,19 @@ class Response:
         return self._payload
 
 
+@pytest.fixture(autouse=True)
+def fresh_cache():
+    kick_chat._reset_cache()
+    yield
+    kick_chat._reset_cache()
+
+
 class FakeSession:
-    """Serves channel, VOD list and chat replay from a list; plan queues failures per URL."""
+    """Serves channel, VOD list and chat replay from a list; plan queues failures per URL.
+
+    Chat works like the real replay: the 5 seconds from start_time, in time order,
+    cut off at API_LIMIT messages.
+    """
 
     def __init__(self, messages, *, plan=None):
         self.messages = messages
@@ -60,7 +77,7 @@ class FakeSession:
             item = queued.pop(0)
             if isinstance(item, Exception):
                 raise item
-            return Response(item)
+            return item if isinstance(item, Response) else Response(item)
         if url == BASE:
             return Response(200, {"id": CHANNEL_ID, "slug": CHANNEL})
         if url == VIDEOS:
@@ -76,12 +93,14 @@ class FakeSession:
                 params["start_time"], kick_chat.TIME_FORMAT
             ).replace(tzinfo=dt.timezone.utc)
             window = dt.timedelta(seconds=5)
-            rows = [
-                m
-                for m in self.messages
-                if cursor <= kick_chat._parse_time(m["created_at"]) < cursor + window
-            ]
-            return Response(200, {"data": {"messages": rows}})
+            when = {
+                id(m): kick_chat._parse_time(m["created_at"]) for m in self.messages
+            }
+            rows = sorted(
+                (m for m in self.messages if cursor <= when[id(m)] < cursor + window),
+                key=lambda m: when[id(m)],
+            )
+            return Response(200, {"data": {"messages": rows[:API_LIMIT]}})
         return Response(404)
 
 
@@ -336,3 +355,129 @@ def test_long_messages_are_capped_with_an_ellipsis():
 def test_empty_clip_is_rejected():
     with pytest.raises(ValueError):
         kick_chat.panel_ass([], 10.0, 10.0)
+
+
+def chat_calls(session):
+    return [params for url, params in session.calls if url == MESSAGES]
+
+
+def lookups(session):
+    return sum(1 for url, _ in session.calls if url in (BASE, VIDEOS))
+
+
+def test_dense_chat_is_collected_past_the_page_limit(no_sleep):
+    # 20 messages a second over [10, 40): each page of 25 covers only about 1.25 seconds.
+    msgs = [row(i, 10 + i * 0.05, content=f"m{i}") for i in range(600)]
+
+    got = fetch(FakeSession(msgs), start=20, end=40, lead=10)
+
+    assert {m["text"] for m in got} == {f"m{i}" for i in range(600)}
+    assert len(got) == 600
+
+
+def test_full_pages_without_new_messages_still_move_on(no_sleep):
+    # Every request answers with the same 25 messages whatever the cursor.
+    class StuckSession(FakeSession):
+        def get(self, url, *, params=None, timeout=None):
+            if url != MESSAGES:
+                return super().get(url, params=params, timeout=timeout)
+            self.calls.append((url, params))
+            return Response(
+                200, {"data": {"messages": [row(i, 12) for i in range(25)]}}
+            )
+
+    session = StuckSession([])
+    got = fetch(session, start=20, end=40, lead=10)
+
+    assert len(got) == 25
+    assert len(chat_calls(session)) <= 31  # one repeat, then one request per second
+
+
+def test_burst_longer_than_a_page_does_not_stop_paging(no_sleep):
+    msgs = (
+        [row(0, 10.0, content="early")]
+        + [row(i, 11.5, content=f"burst{i}") for i in range(1, 31)]
+        + [row(31, 12.5, content="late")]
+    )
+
+    texts = [m["text"] for m in fetch(FakeSession(msgs), start=20, end=40, lead=10)]
+
+    assert texts[0] == "early"
+    assert "late" in texts
+    assert len(texts) == len(set(texts))
+
+
+def test_first_line_with_name_fits_the_wrap_width(no_sleep):
+    msgs = [{"t": 1.0, "name": "a", "color": "#FFFFFF", "text": "あ" * 30}]
+    ass = kick_chat.panel_ass(msgs, 0.0, 10.0)
+
+    first = next(r["text"] for r in chat_rows(ass) if r["text"].startswith("a  "))
+    width = sum(kick_chat._char_width(ch) for ch in first)
+
+    assert width <= WRAP + 1e-9
+    assert first == "a  " + "あ" * 11
+
+
+@pytest.mark.parametrize(
+    ("header", "pause"),
+    [
+        ("7", 7.0),
+        ("999", 30.0),
+        ("Fri, 01 Jan 2100 00:00:00 GMT", 30.0),
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 0.0),
+        ("soon", 1.0),
+    ],
+)
+def test_429_honours_retry_after_up_to_30_seconds(header, pause, no_sleep):
+    session = FakeSession(
+        [row(1, 30)],
+        plan={MESSAGES: [Response(429, headers={"Retry-After": header})]},
+    )
+
+    assert len(fetch(session)) == 1
+    assert no_sleep == [pause]
+
+
+def test_channel_and_vod_lookups_are_cached_per_vod(no_sleep):
+    msgs = [row(1, 30)]
+    first = FakeSession(msgs)
+    fetch(first)
+    again = FakeSession(msgs)
+    fetch(again)
+    upper = FakeSession(msgs)
+    kick_chat.fetch_messages(CHANNEL.upper(), VOD, 20, 60, lead=10, session=upper)
+
+    assert lookups(first) == 2
+    assert lookups(again) == 0
+    assert lookups(upper) == 0
+
+    kick_chat._reset_cache()
+    fresh = FakeSession(msgs)
+    fetch(fresh)
+    assert lookups(fresh) == 2
+
+
+def test_default_session_is_created_once_and_reused(monkeypatch, no_sleep):
+    made = []
+
+    class Session(FakeSession):
+        def __init__(self, impersonate=None):
+            super().__init__([row(1, 30)])
+            self.impersonate = impersonate
+            made.append(self)
+
+    fake_module = types.SimpleNamespace(requests=types.SimpleNamespace(Session=Session))
+    monkeypatch.setitem(sys.modules, "curl_cffi", fake_module)
+
+    first = kick_chat.fetch_messages(CHANNEL, VOD, 20, 60, lead=10)
+    second = kick_chat.fetch_messages(CHANNEL, VOD, 20, 60, lead=10)
+
+    assert first == second and len(first) == 1
+    assert len(made) == 1
+    assert made[0].impersonate == "chrome"
+    assert lookups(made[0]) == 2
+
+    kick_chat._reset_cache()
+    kick_chat.fetch_messages(CHANNEL, VOD, 20, 60, lead=10)
+    assert len(made) == 2
+    assert lookups(made[1]) == 2

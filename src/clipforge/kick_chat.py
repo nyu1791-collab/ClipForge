@@ -8,6 +8,7 @@ import unicodedata
 from dataclasses import dataclass
 from urllib.parse import quote
 
+from .kick_media import retry_after
 from .storage import PipelineError
 
 KICK_V1 = "https://kick.com/api/v1"
@@ -15,8 +16,10 @@ KICK_V2 = "https://kick.com/api/v2/channels"
 REQUEST_TIMEOUT = 30
 ATTEMPTS = 4
 MAX_BACKOFF = 8.0
+MAX_RETRY_AFTER = 30.0
 CHAT_STEP = dt.timedelta(seconds=5)
 NEXT_STEP = dt.timedelta(seconds=1)
+PAGE_LIMIT = 25  # the replay API returns at most this many messages per request
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.000Z"
 DEFAULT_COLOR = "#FFFFFF"
 
@@ -51,18 +54,21 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
     if end <= start:
         raise ValueError("end must be later than start")
     if session is None:
-        from curl_cffi import requests
-
-        session = requests.Session(impersonate="chrome")
+        session = _shared_session()
     channel = f"{KICK_V2}/{quote(channel_slug, safe='')}"
-    channel_id = _dict(_get_json(session, channel)).get("id")
-    if channel_id is None:
-        raise PipelineError("Kick channel id not found")
-    origin = _vod_origin(session, channel, vod_uuid)
+    key = (channel_slug.lower(), vod_uuid)
+    if key not in _cache:
+        channel_id = _dict(_get_json(session, channel)).get("id")
+        if channel_id is None:
+            raise PipelineError("Kick channel id not found")
+        _cache[key] = (channel_id, _vod_origin(session, channel, vod_uuid))
+    channel_id, origin = _cache[key]
     messages_url = f"{KICK_V2}/{quote(str(channel_id), safe='')}/messages"
 
-    # Each request returns the chat just after start_time; the cursor only moves forward.
-    budget = int((end - start + lead) // 5) + 20
+    # Each request returns up to PAGE_LIMIT messages from start_time on, so a full page
+    # may have been cut short. The cursor then resumes from its last message; repeats
+    # are dropped by id. The cursor only moves forward.
+    budget = 2 * int((end - start + lead) // 5) + 40
     cursor = origin + dt.timedelta(seconds=max(0.0, start - lead))
     stop = origin + dt.timedelta(seconds=end)
     seen = {}
@@ -77,16 +83,26 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             raise PipelineError("Kick chat response has no data")
-        latest = cursor
-        for row in data.get("messages") or []:
+        rows = data.get("messages") or []
+        known, latest, last = len(seen), cursor, None
+        for row in rows:
             if not isinstance(row, dict):
                 continue
             when = _parse_time(row.get("created_at"))
             if when is None:
                 continue
+            last = when
             latest = max(latest, when)
             seen.setdefault(_message_key(row, when), (when, row))
-        cursor = max(cursor + CHAT_STEP, latest + NEXT_STEP)
+        if len(rows) >= PAGE_LIMIT:
+            if len(seen) > known:
+                cursor = max(cursor, last.replace(microsecond=0))
+            else:
+                # Nothing new came back: step past the last message so paging moves on.
+                base = cursor if last is None else max(cursor, last)
+                cursor = base + NEXT_STEP
+        else:
+            cursor = max(cursor + CHAT_STEP, latest + NEXT_STEP)
 
     lower = start - lead
     out = []
@@ -155,7 +171,8 @@ def panel_ass(
         name_out, name_w = _clip_name(_ass_safe(name), 0.6 * wrap)
         color = _ass_color(_hex_color(row.get("color")))
         body = _ass_safe(_plain(row.get("text")))
-        lines = _wrap(body, name_w + 0.6, wrap)
+        # The name is followed by the two-space separator from the head.
+        lines = _wrap(body, name_w + 2 * _char_width(" "), wrap)
         if len(lines) > MAX_MESSAGE_LINES:
             lines = lines[:MAX_MESSAGE_LINES]
             lines[-1] = lines[-1][:-1] + "…"
@@ -254,9 +271,29 @@ def _stack(arrived, budget):
     return shown
 
 
+_session = None
+_cache = {}  # (slug, vod uuid) -> (channel id, VOD start); facts that do not change
+
+
+def _reset_cache():
+    global _session
+    _session = None
+    _cache.clear()
+
+
+def _shared_session():
+    global _session
+    if _session is None:
+        from curl_cffi import requests
+
+        _session = requests.Session(impersonate="chrome")
+    return _session
+
+
 def _get_json(session, url, params=None):
     status = None
     for attempt in range(ATTEMPTS):
+        wait = None
         try:
             response = session.get(url, params=params, timeout=REQUEST_TIMEOUT)
         except Exception:  # transport errors may carry the URL; never surface them
@@ -270,10 +307,18 @@ def _get_json(session, url, params=None):
                     raise PipelineError("Kick chat response was not JSON") from None
             if status != 429 and status < 500:
                 raise PipelineError(f"Kick chat request failed (HTTP {status})")
+            if status == 429:
+                wait = _retry_wait(response)
         if attempt + 1 < ATTEMPTS:
-            _pause(min(MAX_BACKOFF, 2.0**attempt))
+            _pause(wait if wait is not None else min(MAX_BACKOFF, 2.0**attempt))
     detail = f"HTTP {status}" if status is not None else "connection error"
     raise PipelineError(f"Kick chat request failed after retries ({detail})")
+
+
+def _retry_wait(response):
+    """Seconds the server asked us to wait after a 429, capped; None if it did not say."""
+    seconds = retry_after(getattr(response, "headers", None) or {}, None)
+    return None if seconds is None else min(MAX_RETRY_AFTER, seconds)
 
 
 def _pause(seconds):
