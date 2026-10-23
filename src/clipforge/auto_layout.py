@@ -12,8 +12,14 @@ from .storage import PipelineError
 
 
 ANCHORS = ("left", "center", "right")
-# The center window is kept unless a side window keeps at least this share more of the energy.
+# The center window is kept unless the best window keeps at least this share more of the energy.
 CENTER_MARGIN = 0.02
+# Pixels below this value count as dark (a black chat panel, a night scene).
+DARK_LEVEL = 32
+# A column whose share of dark pixels reaches this is background: its energy counts as 0.
+DARK_SHARE = 0.55
+# Candidate crop offsets are evaluated in steps of this share of the source width.
+OFFSET_STEP = 1 / 32
 # Captions this close (seconds) in sequence share one band, so the band does not flicker.
 GROUP_GAP = 2.0
 # Frames are processed in blocks so float32 temporaries stay small for long samples.
@@ -96,36 +102,70 @@ def sample_frames(source, start, end, *, fps=2.0, width=320, height=180):
 
 
 def choose_crop(frames, *, keep=0.75):
-    """Pick the anchor of the kept-width window that holds the most gradient energy."""
+    """Pick the crop offset whose kept-width window holds the most detail.
+
+    Detail is gradient energy per column, except that columns which are mostly dark
+    (a black chat panel, its text included) count as 0. The window is searched on a grid
+    of OFFSET_STEP from 0 to (1 - keep). A best window within CENTER_MARGIN of the center
+    gives "center". Ties go to the offset nearest the center.
+    """
     import numpy as np
 
     if not 0 < keep <= 1:
         raise ValueError("keep must be in (0, 1]")
     frames = np.asarray(frames)
     _check_frames(frames, "no frames to choose a crop from")
-    count, _, width = frames.shape
+    count, height, width = frames.shape
     profile = np.zeros(width, dtype=np.float64)
+    dark = np.zeros(width, dtype=np.float64)
     for block in _blocks(frames):
         # Sum rows (per column) and frames; divided by the frame count below.
         profile += _gradient(block).sum(axis=(0, 1))
+        dark += (block < DARK_LEVEL).sum(axis=(0, 1))
     profile /= count
-    total = float(profile.sum())
+    dark /= count * height
+    corrected = np.where(dark >= DARK_SHARE, 0.0, profile)
+    raw_total = float(profile.sum())
+    total = float(corrected.sum())
 
-    fractions = {"left": 0.0, "center": (1 - keep) / 2, "right": 1 - keep}
-    kept = {}
-    for anchor in ANCHORS:
-        left, right = _window(width, fractions[anchor], keep)
+    slack = 1 - keep
+    center_x = slack / 2
+
+    def share(values, whole, x):
+        left, right = _window(width, x, keep)
         # A flat sample has no energy to lose; treat every window as keeping its width.
-        kept[anchor] = float(profile[left:right].sum()) / total if total > 0 else keep
+        return float(values[left:right].sum()) / whole if whole > 0 else keep
 
-    best = max(ANCHORS, key=lambda anchor: kept[anchor])
-    if kept[best] - kept["center"] < CENTER_MARGIN:
-        best = "center"
+    steps = [
+        index * OFFSET_STEP for index in range(int(slack / OFFSET_STEP + 1e-9) + 1)
+    ]
+    candidates = sorted({round(x, 9) for x in steps + [slack, center_x]})
+    scored = [(x, share(corrected, total, x)) for x in candidates]
+    peak = max(value for _, value in scored)
+    if peak - share(corrected, total, center_x) < CENTER_MARGIN:
+        x = center_x
+    else:
+        ties = [x for x, value in scored if value >= peak - 1e-12]
+        x = min(ties, key=lambda candidate: abs(candidate - center_x))
+
+    if abs(x - center_x) < 1e-9:
+        anchor = "center"
+    elif abs(x) < 1e-9:
+        anchor = "left"
+    elif abs(x - slack) < 1e-9:
+        anchor = "right"
+    else:
+        anchor = "offset"
+
+    anchor_x = {"left": 0.0, "center": center_x, "right": slack}
     return {
-        "anchor": best,
-        "x": fractions[best],
+        "anchor": anchor,
+        "x": x,
         "keep": keep,
-        "kept": {anchor: round(kept[anchor], 4) for anchor in ANCHORS},
+        "kept": {a: round(share(corrected, total, anchor_x[a]), 4) for a in ANCHORS},
+        "raw_kept": {
+            a: round(share(profile, raw_total, anchor_x[a]), 4) for a in ANCHORS
+        },
     }
 
 

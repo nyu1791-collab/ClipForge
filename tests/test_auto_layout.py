@@ -64,6 +64,32 @@ def test_keep_one_leaves_no_choice():
     assert crop["keep"] == 1.0
 
 
+def test_dark_column_with_sparse_text_is_not_detail():
+    # Left: dense but low-contrast texture. Right: a black panel with sparse bright text.
+    rng = np.random.default_rng(1)
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, :, 0:80] = rng.integers(100, 150, size=(4, HEIGHT, 80), dtype=np.uint8)
+    panel = np.zeros((4, HEIGHT, 80), dtype=np.uint8)
+    panel[rng.random((4, HEIGHT, 80)) < 0.08] = 255
+    frames[:, :, 240:WIDTH] = panel
+    crop = auto_layout.choose_crop(frames)
+    # Raw energy prefers the text panel; the dark-column correction does not.
+    assert max(crop["raw_kept"], key=crop["raw_kept"].get) == "right"
+    assert crop["anchor"] == "left"
+    assert crop["kept"]["right"] < 0.1
+
+
+def test_detail_between_the_edges_gives_an_offset_window():
+    rng = np.random.default_rng(2)
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, :, 20:60] = rng.integers(0, 256, size=(4, HEIGHT, 40), dtype=np.uint8)
+    crop = auto_layout.choose_crop(frames)
+    assert crop["anchor"] == "offset"
+    assert 0 < crop["x"] < 1 - crop["keep"]
+    # Among equally good offsets, the one nearest the center is taken.
+    assert crop["x"] == pytest.approx(10 / WIDTH)
+
+
 def test_bottom_band_detail_moves_caption_to_top():
     frames = frame_with([(slice(137, HEIGHT), slice(0, WIDTH), 255)])
     # Only the caption's own frames are busy below; the rest of the clip is quiet.
