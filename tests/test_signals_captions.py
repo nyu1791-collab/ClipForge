@@ -914,3 +914,19 @@ def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
     assert captions.event_spans(transcript, clip, configured) == [
         (start / 1000, end / 1000) for start, end, _ in ass
     ]
+
+
+def test_batched_asr_is_refused_on_the_gpu_before_any_recognition(monkeypatch):
+    from clipforge import signals
+    from clipforge.models import Settings
+    from clipforge.storage import PipelineError
+
+    with pytest.raises(ValueError, match="GPU"):
+        Settings(gemini_model="manual-no-api", asr_batch_size=4, whisper_device="cuda")
+    settings = Settings(gemini_model="manual-no-api", asr_batch_size=4)
+    gpu = settings.model_copy(update={"whisper_device": "cuda"})
+    monkeypatch.setattr(
+        signals.media, "audio", lambda *a, **k: pytest.fail("audio decoded first")
+    )
+    with pytest.raises(PipelineError, match="CPU-only"):
+        signals.transcribe("source.mp4", {"audio": True, "duration": 10}, gpu)

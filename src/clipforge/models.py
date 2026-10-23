@@ -328,6 +328,11 @@ class Settings(Record):
 
     @model_validator(mode="after")
     def limits(self):
+        # Batched decoding changes silence merging and so topic boundaries; it is CPU-only.
+        if self.asr_batch_size and self.whisper_device == "cuda":
+            raise ValueError(
+                "asr_batch_size must be 0 when recognition runs on the GPU"
+            )
         if self.horizontal_target_cps > self.horizontal_warn_cps:
             raise ValueError("horizontal reading target must not exceed warning limit")
         if self.require_transcript_cache and not self.transcript_cache:

@@ -125,7 +125,7 @@ def test_a_clean_clip_passes_and_reports_its_metrics(tmp_path, on_target_loudnes
     assert report["metrics"]["true_peak_dbtp"] == -2.0
 
 
-def test_fast_captions_and_off_target_audio_are_warnings_only(
+def test_fast_captions_are_warnings_and_off_target_audio_fails(
     tmp_path, monkeypatch, on_target_loudness
 ):
     folder = write_ass(tmp_path, [(0, 1000, "あ" * 30)])
@@ -135,11 +135,12 @@ def test_fast_captions_and_off_target_audio_are_warnings_only(
         lambda video: {"integrated_lufs": -11.0, "true_peak_dbtp": 0.5},
     )
     report = quality.check_clip(folder, RENDERED, [], LEDGER)
-    assert report["passed"] is True
     assert report["metrics"]["captions_over_limit"] == 1
     assert any("faster than 15" in text for text in report["warnings"])
-    assert any("LUFS is outside" in text for text in report["warnings"])
-    assert any("true peak" in text for text in report["warnings"])
+    # Audio outside the delivery bar is a failure: the clip is refused, not merely noted.
+    assert report["passed"] is False
+    assert any("LUFS is outside" in text for text in report["failures"])
+    assert any("true peak" in text for text in report["failures"])
 
 
 def test_overlap_missing_glyph_and_unlicensed_visual_are_failures(
@@ -154,7 +155,7 @@ def test_overlap_missing_glyph_and_unlicensed_visual_are_failures(
     assert "no source credit or licence" in report["failures"][2]
 
 
-def test_silent_audio_is_a_warning_and_unmeasurable_audio_fails(
+def test_silent_audio_and_unmeasurable_audio_fail(
     tmp_path, monkeypatch, on_target_loudness
 ):
     folder = write_ass(tmp_path, [])
@@ -164,8 +165,8 @@ def test_silent_audio_is_a_warning_and_unmeasurable_audio_fails(
         lambda video: {"integrated_lufs": -math.inf, "true_peak_dbtp": -math.inf},
     )
     report = quality.check_clip(folder, RENDERED, [], [])
-    assert report["passed"] is True
-    assert report["warnings"] == ["the rendered audio is silent"]
+    assert report["passed"] is False
+    assert report["failures"] == ["the rendered audio is silent"]
     assert report["metrics"]["integrated_lufs"] is None
     json.dumps(report, allow_nan=False)
 

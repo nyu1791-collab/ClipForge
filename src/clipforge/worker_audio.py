@@ -249,7 +249,9 @@ def execute(
             url,
             output / "segments",
             kick_factory=KickVOD,
-            max_bytes=2 * 1024**3,
+            # The same transport bound as acquisition, so a later stage never refuses
+            # input that an earlier stage accepted.
+            max_bytes=settings.max_transport_bytes,
             max_seconds=settings.max_source_seconds,
         )
         try:

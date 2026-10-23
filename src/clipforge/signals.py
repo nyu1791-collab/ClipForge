@@ -137,6 +137,11 @@ class _no_journal:
 def transcribe(source, info, settings, journal=None):
     if not info["audio"]:
         return Transcript(language="und", segments=[]).model_dump()
+    if settings.asr_batch_size and settings.whisper_device == "cuda":
+        # Checked again here: model_copy does not run the settings validator.
+        raise PipelineError(
+            "batched ASR is CPU-only; GPU recognition runs sequentially"
+        )
     with tempfile.TemporaryDirectory(prefix="clipforge-asr-") as temporary:
         path = Path(temporary) / "audio.wav"
         media.audio(source, path, info["duration"])

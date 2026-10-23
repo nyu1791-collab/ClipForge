@@ -309,7 +309,8 @@ def static_overlaps(path, static, rendered, settings=None):
     return count
 
 
-def loudness_warnings(loudness):
+def loudness_failures(loudness):
+    """The delivery bar for audio: a clip outside it is refused, not merely noted."""
     lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
     found = []
     if not math.isfinite(lufs):
@@ -492,7 +493,7 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None, stati
         except PipelineError:
             failures.append("loudness of the rendered audio could not be measured")
         else:
-            warnings.extend(loudness_warnings(loudness))
+            failures.extend(loudness_failures(loudness))
     for entry in ledger:
         if not entry.get("source_credit") or not entry.get("license"):
             failures.append(f"{entry.get('file')} has no source credit or licence")

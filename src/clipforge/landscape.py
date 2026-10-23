@@ -134,7 +134,9 @@ def code_identity(settings=None):
             font_sha256=digest(fonts.resolve(settings.font)),
             asr_model=settings.whisper_model,
             asr_revision=signals.model_revision(settings),
-            asr_compute="cpu/int8",
+            # The recognition conditions this settings file requests. The render itself is
+            # CPU work and recognises nothing; the analysis receipt holds what ran.
+            asr_compute_requested=f"{settings.whisper_device}/{settings.whisper_compute_type}",
         )
         result["ffmpeg"] = subprocess.run(
             ["ffmpeg", "-version"],
