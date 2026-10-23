@@ -220,6 +220,24 @@ class Settings(Record):
     max_transport_bytes: int = Field(default=6 * 1024**3, ge=1024, le=16 * 1024**3)
     chat_url: str | None = None
     chat_offset_seconds: float = Field(default=0, ge=-300, le=300)
+    # Chat column beside the video of a landscape 16:9 render; the chat itself comes from a
+    # Kick VOD URL (kick_chat). Off by default, so existing renders are unchanged.
+    chat_panel: bool = False
+    chat_panel_width: int = Field(default=480, ge=1, le=2000)
+    chat_panel_fit: Literal["crop", "letterbox"] = "crop"
+    chat_anonymize: bool = False
+
+    def chat_panel_pixels(self):
+        """Width of the chat column at the right of the frame; 0 when the column is off."""
+        return self.chat_panel_width if self.chat_panel else 0
+
+    def caption_line_chars(self):
+        """Landscape caption line limit, scaled to the video area left of the chat column."""
+        if not self.chat_panel:
+            return self.horizontal_line_chars
+        frame = round(self.height * 16 / 9 / 2) * 2
+        area = frame - self.chat_panel_width
+        return max(8, math.floor(self.horizontal_line_chars * area / frame))
 
     @field_validator("gemini_model")
     @classmethod
@@ -258,6 +276,21 @@ class Settings(Record):
             raise ValueError("a pinned transcript key is read only; require the cache")
         if self.height == 1920 and self.aspect != "9:16":
             raise ValueError("height 1920 is only for the 9:16 aspect")
+        if self.chat_panel:
+            if self.aspect != "16:9":
+                raise ValueError("chat panel is only for landscape 16:9 output")
+            frame = round(self.height * 16 / 9 / 2) * 2
+            if self.chat_panel_width % 2 or not (
+                0.2 * frame <= self.chat_panel_width <= 0.4 * frame
+            ):
+                raise ValueError(
+                    "chat panel width must be an even 20 to 40 percent of the frame width"
+                )
+            if self.silence_cut:
+                # Kick chat is timed on the original video; cut silence would shift it.
+                raise ValueError(
+                    "chat panel cannot be combined with silence_cut: the chat would drift"
+                )
         if self.min_seconds >= self.max_seconds:
             raise ValueError("minimum duration must be less than maximum")
         if self.topic_max_seconds < 2 * self.topic_min_seconds:

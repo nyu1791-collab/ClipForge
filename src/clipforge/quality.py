@@ -274,7 +274,7 @@ def japanese_style_warnings(events, landscape, settings=None):
         )
     if landscape:
         line_chars = (
-            settings.horizontal_line_chars
+            settings.caption_line_chars()
             if settings
             else Settings.model_fields["horizontal_line_chars"].default
         )
@@ -400,7 +400,7 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             **(
                 horizontal_width_metrics(
                     directory / "captions.ass",
-                    settings.horizontal_line_chars
+                    settings.caption_line_chars()
                     if settings
                     else Settings.model_fields["horizontal_line_chars"].default,
                 )

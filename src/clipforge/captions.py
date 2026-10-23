@@ -396,11 +396,16 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     font_size = round(height * 0.048)
     font_path = fonts.resolve(settings.font)
     measure = fonts.Measure(font_path, font_size)
-    line_px = frame_width - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
+    # With the chat panel, text stays in the video area left of the column: the right margin
+    # grows by the column width, so ASS centres the text on that area.
+    panel = settings.chat_panel_pixels()
+    area = frame_width - panel
+    margin_right = margin + panel
+    line_px = area - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
     landscape = frame_width > height
     if landscape:
         line_px = min(
-            line_px, round(measure.width("あ" * settings.horizontal_line_chars))
+            line_px, round(measure.width("あ" * settings.caption_line_chars()))
         )
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
 
@@ -428,7 +433,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         bold=True,
         alignment=pysubs2.Alignment.BOTTOM_CENTER,
         marginl=margin,
-        marginr=margin,
+        marginr=margin_right,
         marginv=round(height * 0.12),
     )
     subtitles.styles["Default"] = pysubs2.SSAStyle(
@@ -443,7 +448,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     title = getattr(clip, "title", None)
     if settings.heading and title:
         heading_text = safe(title)
-        size = heading_size(heading_text, frame_width, height, font_path)
+        size = heading_size(heading_text, area, height, font_path)
         subtitles.styles["Heading"] = pysubs2.SSAStyle(
             fontname=settings.font,
             fontsize=size,
@@ -454,7 +459,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             bold=True,
             alignment=pysubs2.Alignment.TOP_CENTER,
             marginl=margin,
-            marginr=margin,
+            marginr=margin_right,
             marginv=round(height * 0.06),
         )
         subtitles.append(
@@ -477,12 +482,12 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             outline=1.5,
             alignment=pysubs2.Alignment.BOTTOM_RIGHT,
             marginl=margin,
-            marginr=margin,
+            marginr=margin_right,
             marginv=round(height * 0.015),
         )
         credit_text = safe(" / ".join(credits))
         breaks = wrap_breaks(
-            credit_text, fonts.Measure(font_path, credit_size), frame_width - 2 * margin
+            credit_text, fonts.Measure(font_path, credit_size), area - 2 * margin
         )
         subtitles.append(
             pysubs2.SSAEvent(

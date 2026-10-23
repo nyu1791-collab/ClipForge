@@ -1,7 +1,7 @@
 import pysubs2
 import pytest
 
-from clipforge import caption_breaks, captions, fonts, signals
+from clipforge import caption_breaks, captions, fonts, quality, signals
 from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
 from clipforge.storage import PipelineError
 
@@ -537,3 +537,71 @@ def test_held_caption_ends_stay_on_whole_centiseconds():
     assert all(start % 10 == 0 and end % 10 == 0 for start, end in spans)
     assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:]))
     assert spans[0][1] == 2950  # 12 characters at 7 per second: 1715 ms, rounded up
+
+
+def test_chat_panel_moves_caption_margins_into_the_video_area(tmp_path, settings):
+    text = (
+        "これは横画面の字幕の行の長さを確かめるための、少し長い日本語の文章です。" * 2
+    )
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=0, end=6, text=text, words=[Word(start=0, end=6, text=text)])
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    margin = captions.margin_px(1080)
+    for chat_panel in (False, True):
+        directory = tmp_path / str(chat_panel)
+        directory.mkdir()
+        chat = Settings.model_validate(
+            {
+                **settings.model_dump(),
+                "aspect": "16:9",
+                "height": 1080,
+                "chat_panel": chat_panel,
+            }
+        )
+        captions.create(transcript, clip, directory, chat, credits=["作者 / CC0"])
+        subtitles = pysubs2.load(str(directory / "captions.ass"))
+        column = 480 if chat_panel else 0
+        assert subtitles.styles["Default"].marginl == margin
+        assert subtitles.styles["Default"].marginr == margin + column
+        assert subtitles.styles["Credit"].marginr == margin + column
+        limit = 9 if chat_panel else 13
+        for event in subtitles:
+            for line in event.plaintext.splitlines():
+                assert len(line) <= limit
+
+
+def test_chat_panel_caption_lines_fit_inside_the_video_area(
+    tmp_path, settings, japanese_font
+):
+    chat = Settings.model_validate(
+        {
+            **settings.model_dump(),
+            "aspect": "16:9",
+            "height": 1080,
+            "chat_panel": True,
+            "horizontal_line_chars": 13,
+        }
+    )
+    assert chat.caption_line_chars() == 9
+    text = "長い字幕の行が映像の欄の外へはみ出さないことを確かめます" * 3
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(start=0, end=6, text=text, words=[Word(start=0, end=6, text=text)])
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    captions.create(transcript, clip, tmp_path, chat)
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    assert subtitles.info["PlayResX"] == "1920"
+    assert subtitles.styles["Default"].marginr == captions.margin_px(1080) + 480
+    # The quality check measures lines against the margins written in the file.
+    assert quality.overflowing_lines(tmp_path / "captions.ass") == []

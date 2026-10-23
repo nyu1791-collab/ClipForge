@@ -154,6 +154,14 @@ SHA-256一覧は除去後に作成し、manifestのクリップ別一覧も残�
 
 結合は制御VMで `merge --local` を使い、ASRや描画を再実行せず検証・コピーする。実行例・期待値の固定・receiptの扱いは [OPERATIONS.md](OPERATIONS.md#単一クリップ成果物のローカル結合) を参照する。
 
+## チャット欄
+
+設定 `chat_panel`（既定 false）を true にすると、横向き16:9の出力の右側に `chat_panel_width`（既定 480 px、出力幅の20〜40%、偶数）のチャット欄を置く。
+映像は左の欄に `chat_panel_fit`（`crop` は中央から左右を削る、`letterbox` は縮めて上下に帯）で収め、字幕は映像部分の中央下に出す。
+取得は Kick VOD の URL 経路だけで、各クリップの元の時刻 [start, end] のチャットを読む。
+無音カット（`silence_cut`）と縦型（9:16・1:1）は設定検証で拒否する。チャットは元動画の時刻で合わせるため、無音カットで時刻がずれると成立しない。
+取得に失敗したクリップは失敗にせず、欄は空のまま描き、`render.json` の `chat.reason` に `chat_unavailable` を記録する。`chat_anonymize` が true なら発言者名を匿名化する。
+
 ## 候補映像の判定と採用
 
 `--stage previews`で音声の話題候補（既定最大8件）の区間だけ低解像度映像を取得する。

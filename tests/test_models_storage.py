@@ -239,3 +239,44 @@ def test_a_pinned_transcript_key_requires_the_saved_transcript(settings):
         }
     )
     assert pinned.transcript_key == "a" * 64
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"chat_panel": True},  # the shared test settings are vertical
+        {"chat_panel": True, "aspect": "9:16", "height": 1920, "chat_panel_width": 480},
+        {"chat_panel": True, "aspect": "1:1", "height": 1080, "chat_panel_width": 432},
+        {"chat_panel": True, "aspect": "16:9", "height": 1080, "silence_cut": True},
+        {"chat_panel": True, "aspect": "16:9", "height": 1080, "chat_panel_width": 383},
+        {"chat_panel": True, "aspect": "16:9", "height": 1080, "chat_panel_width": 769},
+        {"chat_panel": True, "aspect": "16:9", "height": 1080, "chat_panel_width": 481},
+        {
+            "chat_panel": True,
+            "aspect": "16:9",
+            "height": 1080,
+            "chat_panel_width": 2001,
+        },
+        {"chat_panel_fit": "stretch"},
+    ],
+)
+def test_chat_panel_rejects_vertical_cut_and_out_of_range_widths(settings, updates):
+    with pytest.raises(ValidationError):
+        Settings.model_validate({**settings.model_dump(), **updates})
+
+
+def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
+    landscape = {**settings.model_dump(), "aspect": "16:9", "height": 1080}
+    off = Settings.model_validate({**landscape, "horizontal_line_chars": 13})
+    assert off.chat_panel is False and off.chat_panel_pixels() == 0
+    assert off.caption_line_chars() == 13
+    on = Settings.model_validate(
+        {**landscape, "chat_panel": True, "horizontal_line_chars": 13}
+    )
+    assert on.chat_panel_pixels() == 480
+    assert on.chat_panel_fit == "crop" and on.chat_anonymize is False
+    # 13 characters of a 1920 px frame become 9 in the 1440 px video area.
+    assert on.caption_line_chars() == 9
+    # 720 p landscape: 480 px is 37.5 percent of 1280, inside the allowed range.
+    small = Settings.model_validate({**landscape, "height": 720, "chat_panel": True})
+    assert small.chat_panel_pixels() == 480

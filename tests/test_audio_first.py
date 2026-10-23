@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -641,3 +642,97 @@ def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypa
     assert set(manifest["timings"]) == {"clip-002", "total"}
     assert set(manifest["timings"]["clip-002"]) == {"prefetch_wait", "fetch", "render"}
     assert not (root / "delivery/e2e-summary.json").exists()
+
+
+def chat_settings(settings):
+    from clipforge.models import Settings
+
+    return Settings.model_validate({**settings.model_dump(), "chat_panel": True})
+
+
+def fake_kick_chat(monkeypatch, fetch):
+    """Stands in for the separate kick_chat module; records what the panel was drawn from."""
+    drawn = []
+
+    def panel_ass(messages, clip_start, clip_end, **options):
+        drawn.append(
+            {"messages": messages, "start": clip_start, "end": clip_end, **options}
+        )
+        return "[Script Info]\n"
+
+    module = SimpleNamespace(fetch_messages=fetch, panel_ass=panel_ass)
+    monkeypatch.setitem(sys.modules, "clipforge.kick_chat", module)
+    return drawn
+
+
+def chat_review(audio_job):
+    vod, root, settings, _, _ = audio_job
+    af.previews(vod, root, settings)
+    analysis = json.loads((root / "topics.json").read_text())
+    value = make_review(analysis)
+    for clip, (start, end) in zip(value["clips"], [(0, 85), (120, 175), (210, 295)]):
+        clip.update(start=start, end=end)
+    review = root / "review.json"
+    write_json(review, value)
+    return review
+
+
+def test_chat_panel_clip_is_drawn_from_its_original_interval(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    fetched = []
+
+    def fetch(slug, uuid, start, end, **options):
+        fetched.append((slug, uuid, start, end))
+        return [{"t": start + 1.5, "name": "viewer", "color": "#ffffff", "text": "hi"}]
+
+    drawn = fake_kick_chat(monkeypatch, fetch)
+    rendered = []
+
+    def render(source, output, index, clip, transcript, settings, key, chat=None):
+        rendered.append(chat)
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, chat_settings(settings), review, only=2)
+    # The chat is read on the reviewed interval in original seconds, not the shifted clock.
+    assert fetched == [("example", URL.rsplit("/", 1)[1], 120, 175)]
+    assert drawn[0]["messages"][0]["t"] == 121.5
+    assert (drawn[0]["start"], drawn[0]["end"]) == (120, 175)
+    assert (drawn[0]["width"], drawn[0]["height"], drawn[0]["panel_x"]) == (
+        1920,
+        1080,
+        1440,
+    )
+    assert drawn[0]["anonymize"] is False
+    assert rendered[0] == {
+        "ass": "[Script Info]\n",
+        "messages": 1,
+        "reason": None,
+        "error": None,
+    }
+
+
+def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+
+    def fetch(*args, **options):
+        raise PipelineError("chat service refused")
+
+    drawn = fake_kick_chat(monkeypatch, fetch)
+    rendered = []
+
+    def render(source, output, index, clip, transcript, settings, key, chat=None):
+        rendered.append(chat)
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, chat_settings(settings), review, only=2)
+    assert drawn[0]["messages"] == []
+    assert rendered[0] == {
+        "ass": "[Script Info]\n",
+        "messages": 0,
+        "reason": "chat_unavailable",
+        "error": "PipelineError",
+    }

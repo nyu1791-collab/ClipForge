@@ -622,3 +622,68 @@ def test_a_silent_video_yields_non_overlapping_candidates_and_says_when_short():
     )
     # Eight 75 s windows cannot all fit in 300 s without overlapping by more than 45%.
     assert 5 <= len(raw) < 8
+
+
+def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
+    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
+):
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"source")
+    root = tmp_path / "out" / "clips"
+    root.mkdir(parents=True)
+    settings = make(aspect="16:9", height=1080, chat_panel=True)
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    chat = {
+        "ass": "[Script Info]\nPlayResX: 1920\n",
+        "messages": 0,
+        "reason": "chat_unavailable",
+        "error": "ChatError",
+    }
+    seen = {}
+
+    def fake_render(
+        source,
+        destination,
+        clip,
+        settings,
+        ass=None,
+        keep=None,
+        visuals=(),
+        chat_ass=None,
+    ):
+        seen["chat_ass"] = chat_ass
+        seen["chat_text"] = chat_ass.read_text(encoding="utf-8")
+        destination.write_bytes(b"video")
+        return {
+            "duration": 10,
+            "width": 1920,
+            "height": 1080,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
+
+    def fake_captions(transcript, clip, directory, settings, keep=None, credits=None):
+        pysubs2.SSAFile().save(str(directory / "captions.ass"))
+        pysubs2.SSAFile().save(str(directory / "captions.srt"))
+        return {"events": 0, "heading": False, "missing_glyphs": []}
+
+    monkeypatch.setattr(pipeline.media, "render", fake_render)
+    monkeypatch.setattr(pipeline, "create_captions", fake_captions)
+    result = pipeline.render_clip(
+        source, root, 1, clip, transcript, settings, "job-key", chat=chat
+    )
+    assert seen["chat_ass"].name == "chat.ass"
+    assert seen["chat_text"] == chat["ass"]
+    assert result["chat"] == {
+        "messages": 0,
+        "reason": "chat_unavailable",
+        "error": "ChatError",
+    }
+    assert "chat.ass" in result["sha256"]
+    assert result["quality"]["passed"] is True
+    # The panel needs its chat source; a clip without one is refused before any work.
+    with pytest.raises(PipelineError, match="Kick VOD URL"):
+        pipeline.render_clip(source, root, 2, clip, transcript, settings, "job-key")
