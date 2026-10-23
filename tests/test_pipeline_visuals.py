@@ -103,6 +103,63 @@ def test_collect_tokens_divides_a_word_cut_by_silence_removal():
     ]
 
 
+def _collect(words, language):
+    """Tokens from (start, end, text) words, all in one segment, with no silence cuts."""
+    transcript = Transcript(
+        language=language,
+        segments=[
+            Segment(
+                start=words[0][0],
+                end=words[-1][1],
+                text="".join(text for _, _, text in words),
+                words=[Word(start=a, end=b, text=t) for a, b, t in words],
+            )
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
+    )
+    tokens, _ = captions.collect_tokens(transcript, clip, None)
+    return tokens
+
+
+def test_japanese_marks_become_fullwidth_and_a_space_follows_before_more_text():
+    tokens = _collect(
+        [(0, 1, "本当?"), (1, 2, "すごい!"), (2, 3, "ね?")], language="ja"
+    )
+    assert tokens == [(0, 1, "本当？　"), (1, 2, "すごい！　"), (2, 3, "ね？")]
+
+
+@pytest.mark.parametrize("closer", list("」』）)］】〉》、。…‥？！"))
+def test_no_space_is_added_before_a_closing_mark(closer):
+    tokens = _collect([(0, 1, "あ!"), (1, 2, closer)], language="ja")
+    assert tokens == [(0, 1, "あ！"), (1, 2, closer)]
+
+
+def test_a_space_is_added_after_a_mark_when_the_next_token_continues():
+    tokens = _collect([(0, 1, "えっ?"), (1, 2, "まじ")], language="ja")
+    assert tokens[0] == (0, 1, "えっ？　")
+    tokens = _collect([(0, 1, "やった!"), (1, 2, "」")], language="ja")
+    assert tokens == [(0, 1, "やった！"), (1, 2, "」")]
+
+
+def test_a_mark_followed_by_an_ascii_space_keeps_the_text_from_being_flagged():
+    # " 次" starts with a space, so "？ 次" would still read as unspaced to the quality check.
+    tokens = _collect([(0, 1, "え?"), (1, 2, " 次")], language="ja")
+    assert tokens == [(0, 1, "え？　"), (1, 2, " 次")]
+
+
+def test_marks_outside_japanese_clips_are_left_alone():
+    tokens = _collect([(0, 1, "Wow!"), (1, 2, "really?")], language="en")
+    assert tokens == [(0, 1, "Wow!"), (1, 2, "really?")]
+
+
+def test_mark_conversion_keeps_the_timing_of_every_token():
+    words = [(0, 1.5, "本当?"), (1.5, 3, "すごい!"), (3, 4, "ね")]
+    ja = _collect(words, language="ja")
+    assert [(start, end) for start, end, _ in ja] == [(0, 1.5), (1.5, 3), (3, 4)]
+
+
 def test_heading_shrinks_then_refuses_titles_that_cannot_fit(japanese_font):
     assert captions.heading_size("短い題名", 404, 720, japanese_font) <= round(
         720 * 0.07

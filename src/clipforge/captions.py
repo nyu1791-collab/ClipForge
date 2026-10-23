@@ -151,9 +151,39 @@ def normalize_terms(text):
     )
 
 
+JAPANESE_MARKS = str.maketrans({"?": "？", "!": "！"})
+# A fullwidth space is needed after ？ or ！ unless the text after it closes a bracket or sentence.
+MARK_FOLLOWERS_NOT_SPACED = "」』）)］】〉》、。…‥？！"
+
+
+def japanese_marks(text):
+    """Halfwidth ? and ! become the fullwidth marks used in Japanese captions."""
+    return text.translate(JAPANESE_MARKS)
+
+
+def space_after_marks(tokens):
+    """Adds a fullwidth space to a token ending in ？ or ！ when more text continues after it.
+
+    Only the text is changed, so the timing of every token stays as it was.
+    """
+    spaced = list(tokens)
+    for index in range(len(spaced) - 1):
+        start, end, text = spaced[index]
+        if text.rstrip(" \t")[-1:] not in ("？", "！"):
+            continue
+        following = spaced[index + 1][2].lstrip(" \t")
+        if not following or following[0].isspace():
+            continue
+        if following[0] in MARK_FOLLOWERS_NOT_SPACED:
+            continue
+        spaced[index] = (start, end, text + "　")
+    return spaced
+
+
 def collect_tokens(transcript, clip, keep):
     """Word tokens (start, end, text) in output time, split where cuts removed audio."""
     tokens, approximate = [], 0
+    japanese = transcript.language == "ja"
     for segment in transcript.segments:
         if segment.end <= clip.start or segment.start >= clip.end:
             continue
@@ -162,6 +192,8 @@ def collect_tokens(transcript, clip, keep):
         ]
         for word in source:
             text = normalize_terms(safe(word.text))
+            if japanese:
+                text = japanese_marks(text)
             if not text.strip():
                 continue
             a, b = max(clip.start, word.start), min(clip.end, word.end)
@@ -192,7 +224,10 @@ def collect_tokens(transcript, clip, keep):
                 s, e, _ = spans[0]
                 tokens.append((s, e, text))
     tokens.sort(key=lambda token: (token[0], token[1]))
-    return join_phrases(tokens), approximate
+    tokens = join_phrases(tokens)
+    if japanese:
+        tokens = space_after_marks(tokens)
+    return tokens, approximate
 
 
 def join_phrases(tokens):
