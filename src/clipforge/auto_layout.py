@@ -23,7 +23,7 @@ DARK_SHARE = 0.45
 OVERLAY_MAX_SHARE = 0.40
 # Candidate crop offsets are evaluated in steps of this share of the source width.
 OFFSET_STEP = 1 / 32
-# Captions this close (seconds) in sequence share one lift, so the caption does not flicker.
+# Neighbouring captions this close (seconds, gap between them) share the higher lift, so a caption does not flicker.
 GROUP_GAP = 2.0
 # A row is busy when its density is above this multiple of the window's median row density.
 BUSY_RATIO = 1.6
@@ -236,29 +236,28 @@ def choose_crop(frames, *, keep=0.75):
     }
 
 
-def _groups(events):
-    """Runs of caption indices: a caption starting less than GROUP_GAP after the last run ends joins it."""
+def _neighbour_max(events, values):
+    """Each caption takes the largest value of itself and of the captions next to it in time.
+
+    Captions are taken in start order. The next caption is a neighbour when it starts less than
+    GROUP_GAP after the latest end so far (an overlap counts as a gap below it). Only the directly
+    adjacent captions are compared, so the rise does not spread along a long conversation.
+    """
     order = sorted(range(len(events)), key=lambda index: events[index])
-    groups, current, reach = [], [], 0.0
-    for index in order:
+    linked, reach = [], float("-inf")
+    for position, index in enumerate(order):
         start, end = events[index]
-        if current and start - reach >= GROUP_GAP:
-            groups.append(current)
-            current = []
-        reach = max(reach, end) if current else end
-        current.append(index)
-    if current:
-        groups.append(current)
-    return groups
-
-
-def _shared_max(events, values):
-    """Each caption takes the largest value of its run, so captions in one run do not flicker."""
+        if position:
+            linked.append(start - reach < GROUP_GAP)
+        reach = max(reach, end)
     result = list(values)
-    for group in _groups(events):
-        peak = max(values[index] for index in group)
-        for index in group:
-            result[index] = peak
+    for position, index in enumerate(order):
+        peers = [values[index]]
+        if position and linked[position - 1]:
+            peers.append(values[order[position - 1]])
+        if position < len(order) - 1 and linked[position]:
+            peers.append(values[order[position + 1]])
+        result[index] = max(peers)
     return result
 
 
@@ -380,7 +379,7 @@ def caption_analysis(
     found in any of them counts. A caption sits at the base margin unless a busy band touches the
     bottom edge (searched up to `search` of the height) and the band's top is above the base; then
     the caption's bottom edge sits `pad` above that top, capped at `max_lift`. Captions less than
-    GROUP_GAP apart share the largest lift of their run.
+    GROUP_GAP apart take the higher of their two lifts (only the adjacent caption counts).
 
     Returns (lifts, bands). bands[i] lists every run of busy rows that caption i was judged on, as
     [bottom, top, region] with region "whole", "left" or "right"; the quality check uses them.
@@ -436,7 +435,7 @@ def caption_analysis(
                     lift = max(lift, edge + pad)
         lifts.append(min(lift, max_lift))
         bands.append(sorted(found, key=lambda run: (run[0], run[1], run[2])))
-    return [round(lift, 4) for lift in _shared_max(events, lifts)], bands
+    return [round(lift, 4) for lift in _neighbour_max(events, lifts)], bands
 
 
 def caption_lifts(
