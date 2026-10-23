@@ -21,8 +21,12 @@ def test_url_probe_does_not_run_media_acquisition_or_pass_colab_credentials():
     assert "inputs.probe_only" in probe["if"]
     assert "secrets." not in json.dumps(probe)
     assert "colab_actions.py" not in json.dumps(probe)
-    assert "source.metadata()" in json.dumps(probe)
-    assert "time.monotonic()" in json.dumps(probe)
+    assert "tools/probe_youtube.py" in json.dumps(probe)
+    diagnostic = (ROOT / "tools/probe_youtube.py").read_text()
+    assert "--skip-download" in diagnostic
+    assert "--ignore-config" in diagnostic
+    assert 'environment.pop("YOUTUBE_COOKIES_B64", None)' in diagnostic
+    assert "time.monotonic()" in diagnostic
 
 
 @pytest.fixture

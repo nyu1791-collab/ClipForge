@@ -125,7 +125,15 @@ class HTTPSRedirects(HTTPRedirectHandler):
 
 
 class RemoteMedia:
-    def __init__(self, url, cache, max_bytes=2 * 1024**3, max_seconds=43200, workers=1):
+    def __init__(
+        self,
+        url,
+        cache,
+        max_bytes=2 * 1024**3,
+        max_seconds=43200,
+        workers=1,
+        cookies_file=None,
+    ):
         self.url = canonical(url)
         if (
             type(max_bytes) is not int
@@ -139,6 +147,15 @@ class RemoteMedia:
         self._lock = threading.RLock()
         self._downloads, self._temporaries = {}, []
         self.has_video = not audio_only_url(url)
+        self._cookiefile = None
+        if source_kind(url) == "youtube":
+            from .youtube_auth import cookie_copy
+
+            temporary, self._cookiefile = cookie_copy(cookies_file)
+            if temporary is not None:
+                self._temporaries.append(temporary)
+        elif cookies_file is not None:
+            raise PipelineError("--cookies-file requires a YouTube source")
 
     def close(self):
         for temporary in self._temporaries:
@@ -151,7 +168,7 @@ class RemoteMedia:
         pass
 
     def _options(self, audio_only, quality):
-        return {
+        options = {
             "quiet": True,
             "no_warnings": True,
             "logger": QuietLogger(),
@@ -176,6 +193,10 @@ class RemoteMedia:
             "merge_output_format": "mkv",
             "js_runtimes": {"node": {}},
         }
+
+        if self._cookiefile:
+            options["cookiefile"] = self._cookiefile
+        return options
 
     def _validate(self, info):
         if (

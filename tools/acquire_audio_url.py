@@ -25,6 +25,7 @@ def main(argv=None):
     parser.add_argument("--settings-json", required=True)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--require-video", action="store_true")
+    parser.add_argument("--cookies-file", type=Path)
     args = parser.parse_args(argv)
     canonical(args.url)
     if args.require_video and audio_only_url(args.url):
@@ -63,6 +64,7 @@ def main(argv=None):
             args.url,
             root / "segments",
             kick_factory=KickVOD,
+            **({"cookies_file": args.cookies_file} if args.cookies_file else {}),
             max_bytes=settings.max_transport_bytes,
             max_seconds=settings.max_source_seconds,
         )

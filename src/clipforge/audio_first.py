@@ -502,6 +502,7 @@ def main(argv=None):
         "--config", type=Path, default=Path("config.landscape.example.json")
     )
     parser.add_argument("--review-file", type=Path)
+    parser.add_argument("--cookies-file", type=Path)
     args = parser.parse_args(argv)
     vod = None
     try:
@@ -530,6 +531,7 @@ def main(argv=None):
                 args.url,
                 root / "segments",
                 kick_factory=KickVOD,
+                **({"cookies_file": args.cookies_file} if args.cookies_file else {}),
                 max_bytes=(
                     settings.max_transport_bytes
                     if args.stage in {"audio", "topics"}

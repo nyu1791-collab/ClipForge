@@ -135,6 +135,7 @@ jobs:
           node-version: '22'
       - name: Reuse verified ASR and execute only the requested stage
         env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$AUDIO_STAGE" = merge ]; then
@@ -225,6 +226,7 @@ jobs:
             clipforge-source/tools/colab_actions.py start --mode audio-stage
       - name: Render on Colab and retrieve verified private outputs
         env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
           GH_TOKEN: ${{ github.token }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run

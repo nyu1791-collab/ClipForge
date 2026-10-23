@@ -111,7 +111,7 @@ def parse_settings_json(value):
     return settings
 
 
-def preflight_audio_url(url, settings):
+def preflight_audio_url(url, settings, cookies_file=None):
     """Read metadata and the lowest playlist only, before a runner is dispatched."""
     from clipforge.kick_media import KickVOD
     from clipforge.media_sources import RemoteMedia, source_kind
@@ -133,6 +133,7 @@ def preflight_audio_url(url, settings):
                 source = RemoteMedia(
                     url,
                     Path(temporary) / "media",
+                    **({"cookies_file": cookies_file} if cookies_file else {}),
                     max_bytes=settings.max_transport_bytes,
                     max_seconds=settings.max_source_seconds,
                 )
@@ -825,6 +826,11 @@ def main():
     parser.add_argument("--worker", choices=["colab-auto", "cpu"], default="colab-auto")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
+    parser.add_argument(
+        "--cookies-file",
+        type=Path,
+        help="YouTube cookies for local preflight; configure YOUTUBE_COOKIES_B64 in worker Secrets separately",
+    )
     parser.add_argument("--clips", type=int)
     parser.add_argument("--chat-url")
     parser.add_argument("--wait", action="store_true")
@@ -1044,7 +1050,19 @@ def dispatch(args, state_root):
         raise RuntimeError("clip count must be between 1 and 10")
     if url_only:
         parse_settings_json(json.dumps(settings, ensure_ascii=False))
-        metadata = preflight_audio_url(args.audio_analysis_url, settings)
+        if getattr(args, "cookies_file", None):
+            print(
+                "Local preflight uses --cookies-file; remote retrieval requires the worker YOUTUBE_COOKIES_B64 Secret. Cookie contents are never uploaded."
+            )
+        metadata = preflight_audio_url(
+            args.audio_analysis_url,
+            settings,
+            **(
+                {"cookies_file": args.cookies_file}
+                if getattr(args, "cookies_file", None)
+                else {}
+            ),
+        )
         if (
             args.auto_previews
             and metadata is not None

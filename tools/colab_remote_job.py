@@ -222,7 +222,13 @@ def main():
     parts = release_parts()
     timings = {}
     environment = os.environ.copy()
-    for name in ("GH_TOKEN", "GITHUB_TOKEN", "GEMINI_API_KEY", "COLAB_ADC_JSON"):
+    for name in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GEMINI_API_KEY",
+        "COLAB_ADC_JSON",
+        "YOUTUBE_COOKIES_B64",
+    ):
         environment.pop(name, None)
     # Clip rendering may run on a CPU runtime; it needs no CUDA and no Whisper model.
     environment.update(
@@ -365,6 +371,8 @@ def main():
             if stage.get("clip_index"):
                 arguments += ["--clip-index", stage["clip_index"]]
             stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
+            if payload.get("youtube_cookies_b64"):
+                stage_env["YOUTUBE_COOKIES_B64"] = payload["youtube_cookies_b64"]
             invocation = 'source tools/colab_cache_env.sh && exec "$@"'
             try:
                 with timed(timings, "render"):

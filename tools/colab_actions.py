@@ -402,6 +402,8 @@ class Controller:
             "offline": os.environ.get("CLIPFORGE_OFFLINE") == "1",
             "public_cache": record.get("public_cache", "on"),
         }
+        if record["mode"] == "audio-stage":
+            payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
         # Google OAuth/Colab proxy credentials are NOT uploaded to the GPU worker.
         for name in ("url", "token", "endpoint", "status"):
             payload.pop(name, None)

@@ -75,6 +75,7 @@ jobs:
         timeout-minutes: 10
         env:
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -223,6 +224,7 @@ jobs:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           AUDIO_URL: ${{ inputs.audio_url }}
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
           python3 - <<'PY'
           import os, re
@@ -286,6 +288,7 @@ jobs:
           AUDIO_URL: ${{ inputs.audio_url }}
           SETTINGS_JSON: ${{ inputs.settings_json }}
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
           gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
             --title "$INPUT_TAG" --latest=false \
@@ -443,7 +446,7 @@ jobs:
   url-probe:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
     env:
@@ -481,30 +484,32 @@ jobs:
       - name: Install locked metadata dependencies without credentials
         timeout-minutes: 3
         run: uv sync --locked --extra media-fetch --no-dev
-      - name: Record provider metadata error and precise elapsed time
-        timeout-minutes: 2
+      - name: Install pinned PO Token provider for anonymous comparison
+        timeout-minutes: 3
         run: |
-          uv run --no-sync python - <<'PY'
-          from datetime import datetime, timezone
-          from importlib.metadata import version
-          import json, os, pathlib, tempfile, time
-          from clipforge.media_sources import RemoteMedia
-          from clipforge.storage import PipelineError, write_json
-          os.umask(0o077)
-          started = time.monotonic()
-          report = {'started_at': datetime.now(timezone.utc).isoformat(), 'yt_dlp_version': version('yt-dlp'), 'media_downloaded': False, 'gpu_allocated': False}
-          with tempfile.TemporaryDirectory(prefix='clipforge-url-probe-') as temporary:
-              source = RemoteMedia(os.environ['AUDIO_URL'], pathlib.Path(temporary))
-              try:
-                  report.update(status='metadata_available', metadata=source.metadata())
-              except PipelineError as error:
-                  report.update(status='metadata_failed', error=str(error))
-              finally:
-                  source.close()
-          report.update(ended_at=datetime.now(timezone.utc).isoformat(), elapsed_seconds=round(time.monotonic()-started, 3))
-          write_json(pathlib.Path('probe-result/metadata.json'), report)
-          print(json.dumps(report, ensure_ascii=False))
-          PY
+          uv pip install --python .venv/bin/python bgutil-ytdlp-pot-provider==2.0.2
+          git clone --no-checkout https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$RUNNER_TEMP/bgutil"
+          git -C "$RUNNER_TEMP/bgutil" checkout --detach 26475e9d3665b972c4aeb83b4dbaafcf64b88438
+          cd "$RUNNER_TEMP/bgutil/server"
+          npm ci --ignore-scripts
+          npx --no-install tsc
+          node build/main.js --host 127.0.0.1 --port 4416 > "$RUNNER_TEMP/bgutil.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/bgutil.pid"
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:4416/ping >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "PO Token service did not become ready" >&2
+          exit 1
+      - name: Compare anonymous clients, impersonation and PO Token with precise timing
+        timeout-minutes: 11
+        run: uv run --no-sync python tools/probe_youtube.py --url "$AUDIO_URL"
+      - name: Remove temporary PO Token service
+        timeout-minutes: 1
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/bgutil.pid" ]; then kill "$(cat "$RUNNER_TEMP/bgutil.pid")" 2>/dev/null || true; fi
+          rm -f "$RUNNER_TEMP/bgutil.log" "$RUNNER_TEMP/bgutil.pid"
       - uses: actions/upload-artifact@v4
         timeout-minutes: 2
         if: always()
@@ -592,6 +597,8 @@ jobs:
           PY
       - name: Verify this run's analysis and create previews and an unapproved draft
         timeout-minutes: 60
+        env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
           uv run --no-sync python tools/run_audio_stage.py --stage previews \
             --same-run-analysis "$RUNNER_TEMP/clipforge-analysis" \

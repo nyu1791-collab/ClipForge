@@ -210,3 +210,24 @@ uv run --no-sync python tools/kick_audio_first.py \
 ASR単語や単語時刻のない発話の途中切断は推測で補わず拒否する。全採用区間の字幕境界を確認してから、高画質取得を開始する。
 字幕7字/秒・音量・全復号等の品質規則は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md) を正とする。strict通過は警告0件や人の読みやすさの承認を意味しない。
 共有用 `delivery/e2e-summary.json` は数値・件数とコード/設定/フォント等の識別情報のみ。詳細警告中の発話例や素材パスをコピーしない。
+
+### YouTube の Cookie 入力と匿名診断
+
+ローカル取得は `tools/acquire_audio_url.py --cookies-file /private/cookies.txt ...`
+または `python -m clipforge.audio_first --cookies-file /private/cookies.txt ...` を使う。
+`YOUTUBE_COOKIES_B64` に Netscape 形式ファイルを Base64 化した値を渡す方法も使える。
+明示したファイルを優先し、YouTube/Google ドメイン以外を含むファイル、壊れた形式、1 MiB 超を拒否する。
+取得中だけ権限600のコピーを作り、終了・失敗時に削除する。元ファイルは変更しない。
+
+Actions では **非公開 worker リポジトリ** の Secret `YOUTUBE_COOKIES_B64` を設定する。
+例: `base64 -w0 /private/cookies.txt | gh secret set YOUTUBE_COOKIES_B64 --repo nyu1791-collab/ai-model-workers`。
+Cookie の内容をコマンド引数、request/settings JSON、Release、Artifact に入れない。
+音声取得と後段の映像取得にだけ渡し、ASR のランタイムには渡さない。
+Colab 描画時は既存の非公開ジョブペイロード経由で転送し、ペイロードと一時 Cookie を削除する。
+`submit_job.py --cookies-file` はローカル事前確認専用。Actions にファイルをアップロードしないため、
+remote 実行用 Secret は別途必要。Secret の有効期限や IP・アカウント判定によっては取得が拒否される。
+
+`probe_only` は Cookie を使わず、既定 / ios,mweb,tv_embedded / Chrome / 両方を、
+PO Token 無効・有効で比較する。bgutil 2.0.2 のプラグインと固定コミットのローカルサービスを使い、
+各条件の UTC 時刻・経過秒・メタデータの成否・PO provider 読込/生成試行を記録する。
+音声転送や GPU 割当は行わない。PO Token や Cookie による成功を保証しない。
