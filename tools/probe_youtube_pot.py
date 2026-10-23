@@ -142,6 +142,7 @@ def main():
             "network": args.network,
             "clients": ["web", "mweb"],
             "fetch_pot": policy,
+            "webpage_player_response_skipped": policy == "always",
             "started_at": datetime.now(timezone.utc).isoformat(),
             "yt_dlp_version": version("yt-dlp"),
             "provider_version": version("bgutil-ytdlp-pot-provider"),

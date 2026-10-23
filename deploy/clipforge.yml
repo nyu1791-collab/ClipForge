@@ -269,7 +269,7 @@ jobs:
         timeout-minutes: 10
         if: inputs.audio_url != ''
         with:
-          node-version: '22'
+          node-version: '22.23.3'
       - name: Ensure media tools for URL probing and lossless ASR splitting
         timeout-minutes: 10
         if: inputs.audio_url != ''
@@ -278,6 +278,14 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
+      - name: Initialize the pinned YouTube audio transport
+        id: youtube_transport
+        timeout-minutes: 12
+        if: inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'
+        working-directory: clipforge-source
+        env:
+          AUDIO_URL: ${{ inputs.audio_url }}
+        run: uv run --no-sync python tools/youtube_transport.py setup --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
       - name: Acquire audio and stage verified private input before GPU allocation
         timeout-minutes: 30
         if: inputs.audio_url != ''
@@ -300,6 +308,22 @@ jobs:
           gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
             "$RUNNER_TEMP/clipforge-input/input-video.bin" \
             "$RUNNER_TEMP/clipforge-input/request.json"
+      - name: Close YouTube audio transport before allocating a GPU
+        timeout-minutes: 2
+        if: always() && inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'
+        working-directory: clipforge-source
+        run: uv run --no-sync python tools/youtube_transport.py cleanup --state-dir "$RUNNER_TEMP/clipforge-youtube"
+      - name: Keep private URL acquisition and transport receipts
+        timeout-minutes: 2
+        if: always() && inputs.audio_url != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipforge-acquisition-${{ inputs.request_id }}
+          path: |
+            ${{ runner.temp }}/clipforge-youtube/
+            ${{ runner.temp }}/clipforge-input/acquisition-report.json
+          retention-days: 7
+          if-no-files-found: warn
       - name: Identify model API requirements from the staged request
         timeout-minutes: 10
         id: request
@@ -449,6 +473,7 @@ jobs:
       contents: read
     env:
       SOURCE_REF: ${{ inputs.source_ref }}
+      REQUEST_ID: ${{ inputs.request_id }}
       AUDIO_URL: ${{ inputs.audio_url }}
     steps:
       - name: Validate metadata probe input
@@ -478,44 +503,25 @@ jobs:
       - uses: actions/setup-node@v4
         timeout-minutes: 2
         with:
-          node-version: '22'
+          node-version: '22.23.3'
       - name: Install locked metadata dependencies without credentials
         timeout-minutes: 3
         run: uv sync --locked --extra media-fetch --no-dev
-      - name: Install current prerelease yt-dlp and pinned Docker PO Token provider
-        timeout-minutes: 4
-        run: |
-          uv pip install --python .venv/bin/python --upgrade --prerelease allow 'yt-dlp[default,curl-cffi]' bgutil-ytdlp-pot-provider==2.0.2
-          docker pull brainicism/bgutil-ytdlp-pot-provider:2.0.2
-          docker image inspect --format '{{json .RepoDigests}}' brainicism/bgutil-ytdlp-pot-provider:2.0.2 > "$RUNNER_TEMP/bgutil-image.json"
-          docker run -d --init --network host --name clipforge-bgutil brainicism/bgutil-ytdlp-pot-provider:2.0.2 --host 127.0.0.1
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:4416/ping >/dev/null; then exit 0; fi
-            sleep 1
-          done
-          echo "Docker PO Token service did not become ready" >&2
-          exit 1
+      - name: Prepare hash-locked YouTube dependencies and immutable Docker provider
+        timeout-minutes: 8
+        run: uv run --no-sync python tools/youtube_transport.py prepare --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
       - name: Probe Docker provider with web,mweb before WARP
         timeout-minutes: 6
         run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network direct --output probe-result/docker-direct.json
-      - name: Connect official Cloudflare WARP and verify the actual route
+      - name: Connect pinned WARP and reset the owned provider
         id: warp
         continue-on-error: true
-        timeout-minutes: 4
-        run: bash tools/connect_probe_warp.sh
+        timeout-minutes: 6
+        run: uv run --no-sync python tools/youtube_transport.py connect --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
       - name: Probe Docker provider with web,mweb through verified WARP
         if: steps.warp.outcome == 'success'
         timeout-minutes: 6
-        run: |
-          # Tokens may depend on the egress IP: drop all pre-WARP server caches.
-          docker restart clipforge-bgutil >/dev/null
-          ready=false
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:4416/ping >/dev/null; then ready=true; break; fi
-            sleep 1
-          done
-          test "$ready" = true
-          uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
+        run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
       - name: Verify actual audio acquisition through WARP without allocating a GPU
         id: audio_probe
         if: steps.warp.outcome == 'success'
@@ -526,21 +532,24 @@ jobs:
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
           uv run --no-sync python tools/probe_youtube_audio.py --url "$AUDIO_URL" --directory "$RUNNER_TEMP/clipforge-audio-probe"
-      - name: Disconnect WARP and remove the temporary Docker provider
-        timeout-minutes: 1
+      - name: Verify WARP disconnect and remove only the owned provider
+        id: transport_close
+        timeout-minutes: 2
         if: always()
-        run: |
-          if command -v warp-cli >/dev/null; then timeout 15 warp-cli --accept-tos disconnect || true; fi
-          sudo systemctl stop clipforge-warp-rollback.timer 2>/dev/null || true
-          docker rm -f clipforge-bgutil >/dev/null 2>&1 || true
-          if [ -f "$RUNNER_TEMP/bgutil-image.json" ]; then cp "$RUNNER_TEMP/bgutil-image.json" probe-result/bgutil-image.json; fi
+        run: uv run --no-sync python tools/youtube_transport.py cleanup --state-dir "$RUNNER_TEMP/clipforge-youtube"
+      - name: Verify audio reuse after the network transport is closed
+        if: steps.audio_probe.outputs.audio_acquired == 'true' && steps.transport_close.outcome == 'success'
+        timeout-minutes: 2
+        run: uv run --no-sync python tools/probe_youtube_reuse.py --url "$AUDIO_URL" --directory "$RUNNER_TEMP/clipforge-audio-probe" --output "$RUNNER_TEMP/clipforge-audio-reuse"
       - name: Keep verified audio privately for subsequent ASR
-        if: steps.audio_probe.outputs.audio_acquired == 'true'
+        if: always() && steps.audio_probe.outputs.audio_acquired == 'true'
         timeout-minutes: 10
         uses: actions/upload-artifact@v4
         with:
           name: clipforge-verified-audio-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-audio-probe/audio.m4a
+          path: |
+            ${{ runner.temp }}/clipforge-audio-probe/audio.m4a
+            ${{ runner.temp }}/clipforge-audio-probe/audio-source.json
           retention-days: 7
           compression-level: 0
           if-no-files-found: warn
@@ -549,7 +558,9 @@ jobs:
         if: always()
         with:
           name: clipforge-url-probe-${{ github.run_id }}
-          path: probe-result/
+          path: |
+            probe-result/
+            ${{ runner.temp }}/clipforge-youtube/
           retention-days: 7
           if-no-files-found: warn
 

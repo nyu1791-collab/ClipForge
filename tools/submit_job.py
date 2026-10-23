@@ -31,6 +31,7 @@ SETTINGS_FIELDS = {
     "whisper_revision",
     "asr_batch_size",
     "asr_parts",
+    "youtube_audio_transport",
     "language",
     "threads",
     "encode_threads",
@@ -129,6 +130,16 @@ def preflight_audio_url(url, settings, cookies_file=None):
             for row in error.errors(include_input=False)
         )
         raise RuntimeError("invalid audio URL settings: " + reasons) from None
+    kind = source_kind(url)
+    if settings.youtube_audio_transport == "warp":
+        if kind != "youtube":
+            raise PipelineError("YouTube WARP audio transport requires a YouTube URL")
+        # WARP is only installed on the disposable hosted runner; it performs the
+        # complete acquisition and validation before any GPU can be allocated.
+        print(
+            "YouTube metadata and audio will be verified on the hosted WARP runner before GPU allocation."
+        )
+        return None
     with tempfile.TemporaryDirectory(prefix="clipforge-preflight-") as temporary:
         try:
             if source_kind(url) != "kick":
@@ -833,6 +844,11 @@ def main():
         type=Path,
         help="YouTube cookies for local preflight; configure YOUTUBE_COOKIES_B64 in worker Secrets separately",
     )
+    parser.add_argument(
+        "--youtube-audio-transport",
+        choices=("standard", "warp"),
+        help="Explicit YouTube acquisition route; warp is verified on the hosted runner before GPU allocation",
+    )
     parser.add_argument("--clips", type=int)
     parser.add_argument("--chat-url")
     parser.add_argument("--wait", action="store_true")
@@ -1032,6 +1048,14 @@ def dispatch(args, state_root):
         not url_only or args.worker != "colab-auto"
     ):
         raise RuntimeError("two-part ASR requires URL-only analysis on colab-auto")
+    if getattr(args, "youtube_audio_transport", None) is not None:
+        settings["youtube_audio_transport"] = args.youtube_audio_transport
+    if settings.get("youtube_audio_transport") == "warp" and (
+        not url_only or args.worker != "colab-auto"
+    ):
+        raise RuntimeError(
+            "YouTube WARP transport requires URL-only audio analysis on colab-auto"
+        )
     settings["gemini_model"] = args.gemini_model
     if args.audio_analysis_url and (
         settings.get("image_search")

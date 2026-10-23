@@ -228,13 +228,18 @@ Colab 描画時は既存の非公開ジョブペイロード経由で転送し�
 remote 実行用 Secret は別途必要。Secret の有効期限や IP・アカウント判定によっては取得が拒否される。
 
 `probe_only` は Cookie を使わず、Docker 版 bgutil 2.0.2 と、その時点で取得した
-prerelease yt-dlp（実バージョンを結果に記録）で `web,mweb` を検証する。
+動作確認済みの固定版 yt-dlp（実バージョンも結果に記録）で `web,mweb` を検証する。
 既定の `fetch_pot=auto` と、`fetch_pot=always;webpage_skip=player_response` を比較し、
 後者は player API を再要求して Token の生成・付与を確かめる。Token の値は保存しない。
-公式 `warp-cli` を使い、`warp=on` の確認後に生成サーバーを再起動して、
+固定版の公式 `warp-cli` を使い、`warp=on` の確認後に生成サーバーを再起動して、
 IP 変更前のキャッシュを破棄してから同じ取得を比較する。
 WARP は使い捨て GitHub-hosted runner のみで使用し、終了時に切断してコンテナを削除する。
 メタデータ比較後に実際の全音声取得・ASR用変換も検証し、成功時のみ音声を private Artifact に7日間保存する。
 GPU 割当や ASR は行わない。成功・失敗、UTC 時刻、経過秒も private Artifact に残る。
 PO Token や Cookie、WARP による成功を保証しない。
 過去の匿名8条件の結果と追加検証は [YOUTUBE_DIAGNOSTICS.md](YOUTUBE_DIAGNOSTICS.md) を参照。
+
+通常のURL音声取得へWARP経路を明示する場合は、
+`submit_job.py --youtube-audio-transport warp`を使う。
+固定環境、失敗時停止、終了確認、音声Artifact再利用は
+[YOUTUBE_TRANSPORT.md](YOUTUBE_TRANSPORT.md) を参照。

@@ -156,6 +156,8 @@ class Settings(Record):
     asr_batch_size: int = Field(default=0, ge=0, le=16)
     # URL jobs may recognise two overlapping parts on separate Colab runtimes.
     asr_parts: Literal[1, 2] = 1
+    # Explicit hosted-runner audio acquisition route; not an automatic fallback.
+    youtube_audio_transport: Literal["standard", "warp"] = "standard"
     # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.
     transcript_cache: str | None = Field(default=None, max_length=1024)
     require_transcript_cache: bool = False

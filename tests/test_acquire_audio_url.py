@@ -22,10 +22,9 @@ def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     assert "secrets." not in json.dumps(probe)
     assert "colab_actions.py" not in json.dumps(probe)
     assert "tools/probe_youtube_pot.py" in json.dumps(probe)
-    diagnostic = (ROOT / "tools/probe_youtube.py").read_text()
-    assert "--skip-download" in diagnostic
-    assert "--ignore-config" in diagnostic
-    assert 'environment.pop("YOUTUBE_COOKIES_B64", None)' in diagnostic
+    diagnostic = (ROOT / "tools/probe_youtube_pot.py").read_text()
+    assert '"skip_download": True' in diagnostic
+    assert 'os.environ.pop("YOUTUBE_COOKIES_B64", None)' in diagnostic
     assert "time.monotonic()" in diagnostic
 
 
@@ -107,6 +106,7 @@ def test_acquisition_writes_prepare_input_and_preserves_settings(acquisition, ca
     assert {path.name for path in output.iterdir()} == {
         "input-video.bin",
         "request.json",
+        "acquisition-report.json",
     }
     audio = b"synthetic-audio"
     assert (output / "input-video.bin").read_bytes() == audio
@@ -173,7 +173,12 @@ def test_acquisition_closes_vod_and_removes_temporary_media_on_failure(acquisiti
     control["fail"] = True
     with pytest.raises(RuntimeError, match="synthetic acquisition"):
         invoke()
-    assert control["closed"] and not list(output.iterdir())
+    assert control["closed"]
+    assert {p.name for p in output.iterdir()} == {"acquisition-report.json"}
+    assert (
+        json.loads((output / "acquisition-report.json").read_text())["status"]
+        == "acquisition_failed"
+    )
     assert not list(output.parent.glob(".clipforge-acquire-*"))
 
 
@@ -183,7 +188,12 @@ def test_acquisition_refuses_empty_or_oversized_audio(acquisition, audio):
     control["audio"] = audio
     with pytest.raises(RuntimeError, match="size limit"):
         invoke()
-    assert control["closed"] and not list(output.iterdir())
+    assert control["closed"]
+    assert {p.name for p in output.iterdir()} == {"acquisition-report.json"}
+    assert (
+        json.loads((output / "acquisition-report.json").read_text())["status"]
+        == "acquisition_failed"
+    )
     assert not list(output.parent.glob(".clipforge-acquire-*"))
 
 
@@ -287,7 +297,7 @@ def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages(
         s
         for s in analysis
         if s.get("uses") == "actions/upload-artifact@v4"
-        and "partial" not in s["with"]["name"]
+        and s["with"]["name"].startswith("clipforge-${{ inputs.auto_previews")
     )
     assert (
         upload["with"]["name"]

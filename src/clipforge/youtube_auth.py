@@ -2,10 +2,13 @@
 
 import base64
 import binascii
+from http.cookiejar import LoadError, MozillaCookieJar
 import os
+import re
 from pathlib import Path
 import stat
 import tempfile
+import warnings
 
 from .storage import PipelineError
 
@@ -36,6 +39,8 @@ def cookie_copy(cookies_file=None):
             data = base64.b64decode(encoded, validate=True)
         if not data or len(data) > MAX_COOKIE_BYTES:
             raise ValueError
+        if re.search(rb"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", data):
+            raise ValueError
         content = data.decode("utf-8")
         if not content.startswith(
             ("# Netscape HTTP Cookie File", "# HTTP Cookie File")
@@ -56,6 +61,8 @@ def cookie_copy(cookies_file=None):
                 or fields[3] not in {"TRUE", "FALSE"}
             ):
                 raise ValueError
+            if (fields[1] == "TRUE") != fields[0].startswith("."):
+                raise ValueError
             int(fields[4])
             domain = fields[0].lstrip(".").lower()
             if not any(
@@ -73,6 +80,13 @@ def cookie_copy(cookies_file=None):
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(data)
+        try:
+            with warnings.catch_warnings(record=True):
+                MozillaCookieJar().load(path, ignore_discard=True, ignore_expires=True)
+        except (LoadError, OSError, ValueError, AssertionError):
+            raise PipelineError(
+                "invalid YouTube cookie jar; parser diagnostics suppressed"
+            ) from None
         return temporary, str(path)
     except BaseException:
         temporary.cleanup()

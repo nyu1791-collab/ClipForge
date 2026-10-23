@@ -5,11 +5,11 @@ import argparse
 from datetime import datetime, timezone
 from importlib.metadata import version
 import os
+import json
 from pathlib import Path
 import time
 
-from clipforge.audio_first import acquire, audio_info
-from clipforge.media_sources import RemoteMedia
+from clipforge.audio_first import audio_info
 from clipforge.storage import PipelineError, digest, write_json
 
 
@@ -31,34 +31,69 @@ def main():
         "asr_started": False,
     }
     started = time.monotonic()
-    source = RemoteMedia(
-        args.url,
-        args.directory / "segments",
-        max_bytes=512 * 1024**2,
-        max_seconds=21600,
-        youtube_web_clients=True,
-    )
     try:
+        from acquire_audio_url import main as acquire_input
+
+        settings = json.loads(
+            (
+                Path(__file__).resolve().parents[1] / "config.landscape.example.json"
+            ).read_text()
+        )
+        settings.update(
+            gemini_model="manual-no-api",
+            youtube_audio_transport="warp",
+            asr_parts=2,
+            max_transport_bytes=512 * 1024**2,
+            max_source_seconds=21600,
+        )
+        staged = args.directory / "staged"
         phase = time.monotonic()
-        report["metadata"] = source.metadata()
-        report["metadata_seconds"] = round(time.monotonic() - phase, 3)
-        phase = time.monotonic()
-        acquire(source, args.directory)
+        acquire_input(
+            [
+                "--url",
+                args.url,
+                "--request-id",
+                os.environ["REQUEST_ID"],
+                "--source-ref",
+                os.environ["SOURCE_REF"],
+                "--settings-json",
+                json.dumps(settings),
+                "--directory",
+                str(staged),
+            ]
+        )
         report["acquire_seconds"] = round(time.monotonic() - phase, 3)
+        (staged / "input-video.bin").replace(args.directory / "audio.m4a")
+        request = json.loads((staged / "request.json").read_text())
         audio = args.directory / "audio.m4a"
         report.update(
-            status="audio_acquired",
             media_downloaded=True,
             audio_bytes=audio.stat().st_size,
             audio_sha256=digest(audio),
             audio_info=audio_info(audio),
         )
+        acquisition = json.loads((staged / "acquisition-report.json").read_text())
+        write_json(Path("probe-result/canonical-acquisition.json"), acquisition)
+        write_json(
+            args.directory / "audio-source.json",
+            {
+                "schema": 1,
+                "request_id": request["request_id"],
+                "source_ref": request["source_ref"],
+                "workflow_run": int(os.environ["GITHUB_RUN_ID"]),
+                "source_url": args.url,
+                "audio_sha256": request["video_sha256"],
+                "audio_bytes": request["video_bytes"],
+                "audio_info": report["audio_info"],
+                "source_has_video": acquisition["source_has_video"],
+                "asr_started": False,
+            },
+        )
+        report["status"] = "audio_acquired"
     except PipelineError as error:
         report["error"] = str(error)
     except Exception as error:
         report["error"] = type(error).__name__
-    finally:
-        source.close()
     report.update(
         ended_at=datetime.now(timezone.utc).isoformat(),
         elapsed_seconds=round(time.monotonic() - started, 3),
@@ -67,8 +102,6 @@ def main():
     if os.environ.get("GITHUB_OUTPUT") and report["status"] == "audio_acquired":
         with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
             handle.write("audio_acquired=true\n")
-    import json
-
     print(json.dumps(report), flush=True)
 
 

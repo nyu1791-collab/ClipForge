@@ -84,3 +84,20 @@ def test_explicit_cookie_for_kick_rejected_before_factory(tmp_path):
             tmp_path,
             cookies_file=tmp_path / "cookies",
         )
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        COOKIES.replace(b".youtube.com\tTRUE", b".youtube.com\tFALSE"),
+        COOKIES.replace(b"private-test-value", b"private\x00test"),
+    ],
+)
+def test_cookie_parse_edge_cases_never_reach_downloader_or_logs(
+    monkeypatch, capsys, bad
+):
+    monkeypatch.setenv("YOUTUBE_COOKIES_B64", base64.b64encode(bad).decode())
+    with pytest.raises(PipelineError):
+        cookie_copy()
+    captured = capsys.readouterr()
+    assert not captured.out and not captured.err
