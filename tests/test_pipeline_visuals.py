@@ -2,11 +2,12 @@ import json
 import math
 
 import pysubs2
+import numpy as np
 import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from clipforge import captions, pipeline, signals, silence
+from clipforge import auto_layout, captions, pipeline, signals, silence
 from clipforge.models import (
     Diagram,
     Segment,
@@ -760,6 +761,24 @@ def test_chat_layout_fixed_side_places_captions_without_choosing_the_crop(monkey
         assert layout["anchor"] == anchor and layout["requested"] == anchor
         assert layout["x"] == pytest.approx(x) and layout["lifts"] == [0.12, 0.2]
     assert windows == ["left", "center", "right"] and auto_calls == []
+
+
+def test_fixed_side_window_keeps_the_overlay_out_of_the_captions(monkeypatch):
+    # Dark detail under the right 80 columns (the overlay) and a flat picture elsewhere.
+    frames = np.full((4, 180, 320), 128, dtype=np.uint8)
+    frames[:, :, 240:] = 0
+    dark = np.random.default_rng(3).integers(
+        0, 31, size=(180 - 140, 70), dtype=np.uint8
+    )
+    frames[:, 140:, 250:] = dark
+    monkeypatch.setattr(
+        auto_layout,
+        "sample_frames",
+        lambda *args, **kwargs: ([0.0, 0.5, 1.0, 1.5], frames),
+    )
+    window = pipeline._auto_layout_window("in.mp4", 0, 2, [(0.0, 0.5)], "right", 0.75)
+    assert window["crop"]["overlay"]["side"] == "right"
+    assert window["lifts"] == [pytest.approx(captions.FILL_BOTTOM_SHARE)]
 
 
 def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch):

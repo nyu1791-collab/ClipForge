@@ -351,11 +351,15 @@ def _auto_layout_window(source, start, end, events, anchor, keep):
     from . import auto_layout
 
     times, frames = auto_layout.sample_frames(source, start, end)
+    # The overlay (a dark chat block at an edge) is found as for an automatic crop; only the side
+    # is fixed, so the captions do not count detail under the overlay.
+    overlay = auto_layout.choose_crop(frames, keep=keep)["overlay"]
     crop = {
         "anchor": anchor,
         "x": _crop_fractions(keep)[anchor],
         "keep": keep,
         "kept": {},
+        "overlay": overlay,
     }
     return {
         "crop": crop,

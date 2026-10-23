@@ -180,6 +180,15 @@ def test_uniform_busy_rows_are_not_a_band():
     assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 1.0)], CROP) == [BASE]
 
 
+def test_detail_in_one_half_of_the_window_lifts_the_caption():
+    background = texture(HEIGHT, WIDTH, seed=9, amplitude=40)
+    frames = np.repeat(background[None], 4, axis=0)
+    # A moderate band in the right half only: the whole window's row density stays under the
+    # busy level, but the right half's crosses it (a wipe in the corner works this way).
+    frames[:, 140:, 200:280] = texture(HEIGHT - 140, 80, seed=4, amplitude=80)
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP)[0] > BASE
+
+
 def test_chat_overlay_columns_do_not_count_as_busy():
     background = texture(HEIGHT, WIDTH, seed=9, amplitude=40)
     frames = np.repeat(background[None], 4, axis=0)
@@ -194,23 +203,31 @@ def test_chat_overlay_columns_do_not_count_as_busy():
 
 
 def test_captions_close_in_sequence_share_the_largest_lift():
-    frames = np.full((6, HEIGHT, WIDTH), 128, dtype=np.uint8)
-    frames[0:2, 140:, :] = texture(HEIGHT - 140, WIDTH, seed=5)
-    times = [0.0, 0.5, 1.0, 1.5, 5.0, 5.5]
-    lifts = auto_layout.caption_lifts(
-        times, frames, [(0.0, 0.5), (1.0, 1.5), (5.0, 5.5)], CROP
-    )
-    # The second caption's own frames are quiet; it takes the first caption's lift.
+    # Detail in rows 140 and below only in the first 5 seconds (frames 0 to 9 of 40).
+    frames = np.full((40, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[0:10, 140:, :] = texture(HEIGHT - 140, WIDTH, seed=5)
+    times = [0.5 * index for index in range(40)]
+    # The first caption sees the detail in most of its frames; the second, 1.5 s later, does not.
+    events = [(3.0, 3.5), (5.0, 5.5), (15.0, 15.5)]
+    lifts = auto_layout.caption_lifts(times, frames, events, CROP)
     assert lifts[0] > BASE and lifts[1] == lifts[0] and lifts[2] == BASE
 
 
-def test_caption_outside_the_frames_uses_the_nearest_frame():
+def test_detail_in_few_frames_of_a_caption_is_not_persistent():
+    frames = np.full((10, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    # Detail in only 3 of the 8 frames near the caption: the median gradient is zero there.
+    frames[0:3, 140:, :] = texture(HEIGHT - 140, WIDTH, seed=6)
+    times = [0.5 * index for index in range(10)]
+    assert auto_layout.caption_lifts(times, frames, [(0.0, 0.5)], CROP) == [BASE]
+
+
+def test_caption_outside_the_frames_uses_the_nearest_frames():
     frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
-    frames[3, 137:, :] = texture(HEIGHT - 137, WIDTH, seed=3)
+    frames[:, 137:, :] = texture(HEIGHT - 137, WIDTH, seed=3)
     lifts = auto_layout.caption_lifts(
         TIMES, frames, [(100.0, 101.0), (-9.0, -8.0)], CROP
     )
-    assert lifts[0] > BASE and lifts[1] == BASE
+    assert lifts[0] > BASE and lifts[1] > BASE
 
 
 def test_lifts_need_one_frame_set_per_sample_and_a_crop_window():

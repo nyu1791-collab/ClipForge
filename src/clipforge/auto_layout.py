@@ -31,6 +31,11 @@ BUSY_RATIO = 1.6
 SEARCH = 0.40
 # Quiet rows inside a busy band are tolerated up to this share of the height.
 BAND_GAP = 0.015
+# A caption's persistent detail is the temporal median over the frames within this many seconds of
+# it, at least PERSIST_MIN frames (the nearest ones are added), at most PERSIST_MAX frames.
+PERSIST_MARGIN = 3.0
+PERSIST_MIN = 5
+PERSIST_MAX = 64
 # A caption's bottom edge sits this share of the height above the top of the busy band.
 LIFT_PAD = 0.015
 # No caption is lifted above this share of the height.
@@ -231,13 +236,6 @@ def choose_crop(frames, *, keep=0.75):
     }
 
 
-def _frames_for(times, start, end):
-    """Indices of the frames inside [start, end]; if none, the nearest frame(s) in time."""
-    distances = [max(start - moment, 0.0, moment - end) for moment in times]
-    nearest = min(distances)
-    return [index for index, distance in enumerate(distances) if distance == nearest]
-
-
 def _groups(events):
     """Runs of caption indices: a caption starting less than GROUP_GAP after the last run ends joins it."""
     order = sorted(range(len(events)), key=lambda index: events[index])
@@ -279,17 +277,6 @@ def _window_columns(crop, width, left, right):
     return columns
 
 
-def _row_density(frames, left, right, columns):
-    """Mean gradient of each row over the window's columns, per frame: shape [frames, height]."""
-    import numpy as np
-
-    rows = []
-    for block in _blocks(frames):
-        region = _gradient(block)[:, :, left:right][:, :, columns]
-        rows.append(region.mean(axis=2))
-    return np.concatenate(rows)
-
-
 def _band_top(busy, search, tolerance):
     """Top row of the busy band that touches the bottom edge, or None.
 
@@ -309,6 +296,55 @@ def _band_top(busy, search, tolerance):
     return top
 
 
+def _caption_frames(times, start, end):
+    """Indices of the frames near [start, end] for a caption's persistent detail.
+
+    Frames within PERSIST_MARGIN seconds of the caption count; if fewer than PERSIST_MIN, the
+    nearest frames in time are added. Long spans are subsampled to PERSIST_MAX frames.
+    """
+    import numpy as np
+
+    moments = np.asarray(times, dtype=np.float64)
+    distances = np.maximum.reduce(
+        [
+            start - PERSIST_MARGIN - moments,
+            moments - end - PERSIST_MARGIN,
+            np.zeros(len(moments)),
+        ]
+    )
+    inside = int((distances == 0).sum())
+    count = min(len(moments), max(PERSIST_MIN, inside))
+    order = np.argsort(distances, kind="stable")[:count]
+    return _subsample(np.sort(order))
+
+
+def _subsample(indices):
+    """At most PERSIST_MAX of the given frame indices, spread evenly."""
+    import numpy as np
+
+    indices = np.asarray(indices, dtype=np.int64)
+    if len(indices) <= PERSIST_MAX:
+        return indices
+    picks = np.linspace(0, len(indices) - 1, PERSIST_MAX).round().astype(int)
+    return indices[picks]
+
+
+def _persistent_gradient(frames, indices):
+    """Per-pixel temporal median of the gradient over the frames at `indices`.
+
+    Detail that stays in place (a HUD, a wipe's frame, a border) keeps its gradient; detail
+    that moves with the game world drops out of the median.
+    """
+    import numpy as np
+
+    return np.median(_gradient(frames[indices]), axis=0)
+
+
+def _region_profile(persistent, left, right, mask):
+    """Mean gradient of each row over the window columns selected by `mask`: shape [height]."""
+    return persistent[:, left:right][:, mask].mean(axis=1)
+
+
 def caption_lifts(
     times,
     frames,
@@ -320,13 +356,16 @@ def caption_lifts(
     base=None,
     pad=LIFT_PAD,
 ):
-    """Bottom margin of each caption, as a share of the height ("lift"), from the busy rows.
+    """Bottom margin of each caption, as a share of the height ("lift"), from persistent detail.
 
-    A row is busy when its gradient density, in the caption's frames, is above BUSY_RATIO times
-    the median row density of the whole window. A caption sits at the base margin unless a busy
-    band touches the bottom edge (searched up to `search` of the height) and the band's top is
-    above the base; then the caption's bottom edge sits `pad` above that top, capped at
-    `max_lift`. Captions less than GROUP_GAP apart share the largest lift of their run.
+    For each caption, the gradient is the temporal median over the frames near it, so only detail
+    that stays in place counts (a HUD, a wipe, a border; not the moving game world). A row is busy
+    when its persistent density is above BUSY_RATIO times the median of the window's rows, taken
+    over the whole sample. The window is measured whole and in its left and right halves; a band
+    found in any of them counts. A caption sits at the base margin unless a busy band touches the
+    bottom edge (searched up to `search` of the height) and the band's top is above the base; then
+    the caption's bottom edge sits `pad` above that top, capped at `max_lift`. Captions less than
+    GROUP_GAP apart share the largest lift of their run.
     """
     import numpy as np
 
@@ -345,22 +384,30 @@ def caption_lifts(
     columns = _window_columns(crop, width, left, right)
     if not columns.any():
         return [base] * len(events)
-    density = _row_density(frames, left, right, columns)
-    # The median of the rows, each averaged over every frame of the window.
-    reference = float(np.median(density.mean(axis=0)))
-    busy_level = BUSY_RATIO * reference
+    span = right - left
+    position = np.arange(span)
+    middle = span // 2
+    masks = [columns, columns & (position < middle), columns & (position >= middle)]
+    masks = [mask for mask in masks if mask.any()]
+
+    whole = _persistent_gradient(frames, _subsample(np.arange(len(times))))
+    references = [
+        float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
+    ]
     tolerance = round(BAND_GAP * height)
 
     lifts = []
     for start, end in events:
-        index = _frames_for(times, start, end)
-        busy = density[index].mean(axis=0) > busy_level
-        top = _band_top(busy, search, tolerance)
+        indices = _caption_frames(times, start, end)
+        persistent = _persistent_gradient(frames, indices)
         lift = base
-        if top is not None:
-            edge = (height - top) / height
-            if edge > base:
-                lift = edge + pad
+        for mask, reference in zip(masks, references):
+            profile = _region_profile(persistent, left, right, mask)
+            top = _band_top(profile > BUSY_RATIO * reference, search, tolerance)
+            if top is not None:
+                edge = (height - top) / height
+                if edge > base:
+                    lift = max(lift, edge + pad)
         lifts.append(min(lift, max_lift))
     return [round(lift, 4) for lift in _shared_max(events, lifts)]
 
