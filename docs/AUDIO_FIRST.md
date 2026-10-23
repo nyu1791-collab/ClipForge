@@ -32,7 +32,7 @@ Kickに加え、YouTubeの単一動画、Twitchのアーカイブ・クリップ
 
 追加経路のメタデータに長さがない場合は、runnerで取得・実測してからGPU割り当ての可否を決める。直接ファイルは音声抽出のためにも全体転送が必要な場合がある。追加経路の映像描画では元ファイル全体をremuxし、元時刻を保ったまま採用区間を描画する。Kickの区間取得だけに適用される通信量の説明と区別する。
 
-URLだけの投入は既定で2分割。境界前後5秒の文脈を付けたFLACを独立した2つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [ASR_SPLIT.md](ASR_SPLIT.md)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
+URLだけの投入は既定で4分割。境界前後5秒の文脈を付けたFLACを独立した4つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [ASR_SPLIT.md](ASR_SPLIT.md)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
 
 ```bash
 uv sync --locked --extra media-fetch --extra chat

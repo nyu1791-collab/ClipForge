@@ -489,7 +489,7 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
     assert request["settings"] == {
         **json.loads(Path("config.landscape.example.json").read_text()),
         "asr_batch_size": 8,
-        "asr_parts": 2,
+        "asr_parts": 4,
         "threads": 4,
     }
     assert control["playlists"] == ["lowest"] and control["preflight_closed"]
@@ -592,7 +592,7 @@ def test_url_settings_match_submission_acquisition_and_analysis(
     expected = Settings.model_validate(submitted)
     assert submitted == {
         **json.loads(Path("config.landscape.example.json").read_text()),
-        "asr_parts": 2,
+        "asr_parts": 4,
         **overrides,
     }
     assert control["preflight_budgets"][0]["max_bytes"] == expected.max_transport_bytes

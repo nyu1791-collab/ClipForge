@@ -1,6 +1,6 @@
 # URL音声を2つのColabランタイムで文字起こしする
 
-URLだけの `tools/submit_job.py --audio-analysis-url URL` は既定で `asr_parts=2`。`--asr-parts` で2〜4部分（4台まで同時）を選べる。設定ファイルの `asr_parts` またはCLIの `--asr-parts 1` で連続ASRへ変更できる。2分割は `colab-auto` のURLだけの投入に対応し、ローカル動画やCPU実行では指定を拒否する。モデルとバッチ設定は変更しない。
+URLだけの `tools/submit_job.py --audio-analysis-url URL` は既定で `asr_parts=4`（4台同時）。`--asr-parts` で1〜4部分を選べる。設定ファイルの `asr_parts` またはCLIの `--asr-parts 1` で連続ASRへ変更できる。2分割は `colab-auto` のURLだけの投入に対応し、ローカル動画やCPU実行では指定を拒否する。モデルとバッチ設定は変更しない。
 
 ## 処理
 

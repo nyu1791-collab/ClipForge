@@ -22,7 +22,7 @@ uv run --no-sync python tools/submit_job.py \
 
 GPUを使うURL経路（上の手順）の対象はKickの配信動画です。YouTube・Twitchのアーカイブ・クリップと直接のHTTPS **mp4・m4a・mp3・webm・HLS m3u8** URLは追加の経路で、実機での検証は完了していません。**あなたが権利を持つファイルを置いた場所の URL** を指定してください。署名付きURLも使えます。YouTube・Twitchはyt-dlpとNode.jsで取得し、ライブ・プレイリスト一括取得は受け付けません。
 
-MP3・M4Aなど音声だけの入力は `--auto-previews` を外して解析します。映像のプレビューや描画には映像を含む入力が必要です。URLだけの投入は既定で2つのColabランタイムへ音声を分け、元の時刻へ結合してから話題を分割します。`--asr-parts` で2〜4部分を選べます（4部分はL4 2台とT4 2台）。`--asr-parts 1` で従来の連続ASRを指定できます。詳細は [2分割ASR](docs/ASR_SPLIT.md)。
+MP3・M4Aなど音声だけの入力は `--auto-previews` を外して解析します。映像のプレビューや描画には映像を含む入力が必要です。URLだけの投入は既定で4つのColabランタイム（L4 2台とT4 2台）へ音声を分け、元の時刻へ結合してから話題を分割します。`--asr-parts` で2〜4部分を選べます。`--asr-parts 1` で従来の連続ASRを指定できます。詳細は [2分割ASR](docs/ASR_SPLIT.md)。
 
 ```bash
 uv run --no-sync python tools/submit_audio_stage.py --stage render \

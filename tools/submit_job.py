@@ -1109,7 +1109,7 @@ def dispatch(args, state_root):
         validate_settings(settings)
     settings.update(overrides)
     if url_only:
-        settings.setdefault("asr_parts", 2)
+        settings.setdefault("asr_parts", 4)
     if getattr(args, "asr_parts", None) is not None:
         settings["asr_parts"] = args.asr_parts
     if settings.get("asr_parts", 1) > 1 and (

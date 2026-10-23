@@ -518,9 +518,9 @@ def test_part_summary_reports_shapes_timings_and_one_total(prepared, tmp_path):
 
 @pytest.mark.parametrize(
     "explicit,configured,expected",
-    [(None, None, 2), (1, None, 1), (None, 1, 1), (2, 1, 2)],
+    [(None, None, 4), (1, None, 1), (None, 1, 1), (2, 1, 2)],
 )
-def test_url_submission_defaults_to_two_parts_and_respects_explicit_choice(
+def test_url_submission_defaults_to_four_parts_and_respects_explicit_choice(
     tmp_path, monkeypatch, explicit, configured, expected
 ):
     def gh(*arguments, **kwargs):
