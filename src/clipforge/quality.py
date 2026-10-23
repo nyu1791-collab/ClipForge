@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pysubs2
 
-from . import fonts
+from . import caption_sentences, fonts
 from .caption_breaks import MIN_DISPLAY_SECONDS, parser
 from .captions import (
     MAX_CAPTION_CPS,
@@ -24,7 +24,7 @@ from .captions import (
     spoken_length,
 )
 from .media import AUDIO_RATE
-from .models import Settings
+from .models import CAPTION_LINE_EM, Settings
 from .storage import PipelineError, write_json
 
 LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
@@ -141,14 +141,16 @@ def word_splits(events):
     """Places where a line or a caption starts inside a word, shown as text like 'ぐ奪|われ'.
 
     Checked between the lines of each caption and between consecutive captions. A break on a
-    BudouX phrase edge of the whole clip is not a split. The check is a warning: it works from
-    character scripts, so a rare legitimate break can be flagged.
+    BudouX phrase edge or a morpheme edge (fugashi) of the whole clip is not a split. Without
+    fugashi only the BudouX edges count. The check is a warning: it works from character
+    scripts, so a rare legitimate break can be flagged.
     """
     full = "".join(text.replace("\n", "") for _, _, text in events)
     phrase_ends, position = set(), 0
     for phrase in parser().parse(full):
         position += len(phrase)
         phrase_ends.add(position)
+    morpheme_ends = _morpheme_ends(full)
     found, offset = [], 0
     for index, (_, _, text) in enumerate(events):
         lines = text.split("\n")
@@ -163,39 +165,148 @@ def word_splits(events):
             cuts.append((lines[-1], following, offset))
         for before, after, cut in cuts:
             if before and after and inside_word(before[-1], after[0]):
-                if cut not in phrase_ends:
+                if cut not in phrase_ends and cut not in morpheme_ends:
                     found.append(f"{before[-3:]}|{after[:3]}")
     return found
+
+
+def _morpheme_ends(text):
+    """Character positions where a morpheme of the text ends (fugashi); empty without fugashi."""
+    try:
+        tagger = caption_sentences._tagger()
+    except ImportError:
+        return set()
+    ends, position = set(), 0
+    for morpheme in tagger(text):
+        start = text.find(morpheme.surface, position)
+        if start < 0:
+            continue
+        position = start + len(morpheme.surface)
+        ends.add(position)
+    return ends
+
+
+def _caption_style(subtitles, event):
+    """The style an event is drawn with; an unknown name falls back to Default."""
+    return subtitles.styles.get(event.style, subtitles.styles["Default"])
 
 
 def overflowing_lines(path):
     """Caption lines wider than the frame allows, measured again with the caption font.
 
     The frame width, margins and outline allowance are read from the file, so this checks the
-    rendered output rather than the layout that produced it.
+    rendered output rather than the layout that produced it. An event's own left and right
+    margins replace the style's when they are set (ASS: 0 means the style's).
     """
     subtitles = pysubs2.load(str(path))
     if not any(event.style in TEXT_STYLES for event in subtitles):
         return []
-    style = subtitles.styles["Default"]
     frame_width, height = (
         int(subtitles.info["PlayResX"]),
         int(subtitles.info["PlayResY"]),
     )
-    limit = (
-        frame_width
-        - int(style.marginl)
-        - int(style.marginr)
-        - round(OUTLINE_ALLOWANCE * scale(height))
-    )
-    measure = fonts.Measure(fonts.resolve(style.fontname), int(style.fontsize))
-    return [
-        line
-        for event in subtitles
-        if event.style in TEXT_STYLES
-        for line in event.plaintext.split("\n")
-        if measure.width(line) > limit
-    ]
+    measures = {}
+    found = []
+    for event in subtitles:
+        if event.style not in TEXT_STYLES:
+            continue
+        style = _caption_style(subtitles, event)
+        limit = (
+            frame_width
+            - int(event.marginl or style.marginl)
+            - int(event.marginr or style.marginr)
+            - round(OUTLINE_ALLOWANCE * scale(height))
+        )
+        if style.fontname not in measures:
+            measures[style.fontname] = fonts.Measure(
+                fonts.resolve(style.fontname), int(style.fontsize)
+            )
+        measure = measures[style.fontname]
+        found.extend(
+            line for line in event.plaintext.split("\n") if measure.width(line) > limit
+        )
+    return found
+
+
+BOTTOM_ALIGNMENTS = {
+    pysubs2.Alignment.BOTTOM_LEFT,
+    pysubs2.Alignment.BOTTOM_CENTER,
+    pysubs2.Alignment.BOTTOM_RIGHT,
+}
+
+
+def outside_frame_captions(path):
+    """Bottom-aligned captions whose text would rise above the top edge of the frame.
+
+    Each event's own MarginV sets its bottom edge, or the style's when the event's is 0. The
+    text is as tall as its lines; heading and credit styles, which are not bottom-aligned, are
+    not checked.
+    """
+    subtitles = pysubs2.load(str(path))
+    if not any(event.style in TEXT_STYLES for event in subtitles):
+        return []
+    height = int(subtitles.info["PlayResY"])
+    found = []
+    for event in subtitles:
+        if event.style not in TEXT_STYLES:
+            continue
+        style = _caption_style(subtitles, event)
+        if style.alignment not in BOTTOM_ALIGNMENTS:
+            continue
+        margin = event.marginv or style.marginv
+        lines = event.plaintext.split("\n")
+        block = len(lines) * style.fontsize * CAPTION_LINE_EM
+        if margin + block > height:
+            found.append(event.plaintext)
+    return found
+
+
+# Horizontal share of the picture each band region covers.
+STATIC_REGIONS = {"whole": (0.0, 1.0), "left": (0.0, 0.5), "right": (0.5, 1.0)}
+
+
+def static_overlaps(path, static, rendered, settings=None):
+    """Captions whose box meets a static band that auto_layout placed them by.
+
+    A caption's box is its MarginV (or the style's) up by its lines times the font height, and
+    its width is the widest line measured with the caption font, centred in the picture area
+    (the frame less the chat column). static[i] lists caption i's bands as [bottom, top, region],
+    shares of the height from the bottom edge, with region "whole", "left" or "right". Returns the
+    number of captions that overlap a band, or None when the captions and the bands do not
+    correspond one to one.
+    """
+    subtitles = pysubs2.load(str(path))
+    events = [event for event in subtitles if event.style in TEXT_STYLES]
+    if len(events) != len(static):
+        return None
+    height = rendered["height"]
+    panel = settings.chat_panel_pixels() if settings is not None else 0
+    area = rendered["width"] - panel
+    count = 0
+    for event, bands in zip(events, static):
+        style = _caption_style(subtitles, event)
+        lines = event.plaintext.split("\n")
+        if settings is not None:
+            measure = fonts.Measure(fonts.resolve(settings.font), style.fontsize)
+            width = max(measure.width(line) for line in lines)
+        else:
+            width = area
+        bottom = event.marginv or style.marginv
+        block = len(lines) * style.fontsize * CAPTION_LINE_EM
+        low, high = bottom / height, (bottom + block) / height
+        left = max(0.0, 0.5 - width / 2 / area)
+        right = min(1.0, 0.5 + width / 2 / area)
+        for band_bottom, band_top, region in bands:
+            region_left, region_right = STATIC_REGIONS[region]
+            if (
+                band_bottom < high
+                and low < band_top
+                and region_left < right
+                and left < region_right
+            ):
+                count += 1
+                break
+    return count
 
 
 def loudness_warnings(loudness):
@@ -301,7 +412,7 @@ def _finite(value):
     return value if value is not None and math.isfinite(value) else None
 
 
-def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
+def check_clip(directory, rendered, missing_glyphs, ledger, settings=None, static=None):
     """Quality report for a rendered clip folder; the caller decides what to do with it."""
     failures, warnings = [], []
     events = caption_events(directory / "captions.ass")
@@ -334,6 +445,20 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             f"{len(overflow)} caption line(s) are wider than the frame, for example "
             + overflow[0][:20]
         )
+    high = outside_frame_captions(directory / "captions.ass")
+    if high:
+        failures.append(
+            f"{len(high)} caption(s) rise above the top of the frame, for example "
+            + high[0][:20]
+        )
+    if static is not None:
+        overlapping = static_overlaps(
+            directory / "captions.ass", static, rendered, settings
+        )
+        if overlapping is None:
+            warnings.append("captions could not be checked against static elements")
+        elif overlapping:
+            warnings.append(f"{overlapping} caption(s) overlap static screen elements")
     starts = [orphan_start(text) for _, _, text in events]
     if "punctuation" in starts:
         failures.append("a caption starts with a punctuation mark")

@@ -630,6 +630,7 @@ def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
             "aspect": "16:9",
             "height": 1080,
             "chat_panel": True,
+            "chat_panel_fit": "top",
         }
     )
     assert chat.chat_panel_fit == "top" and chat.caption_line_chars() == 18
@@ -674,3 +675,148 @@ def test_caption_scale_one_keeps_the_landscape_caption_style(tmp_path, settings)
         style = pysubs2.load(str(directory / "captions.ass")).styles["Default"]
         # Without the chat panel the margins and the bottom placement are as before.
         assert (style.fontsize, style.marginv, style.marginr) == (size, 130, 38)
+
+
+def _fill_case(texts):
+    """Two caption groups, each in its own second of speech, for the chat fill layout."""
+    segments = []
+    for start, text in zip((0.5, 3.5), texts):
+        segments.append(
+            Segment(
+                start=start,
+                end=start + 2,
+                text=text,
+                words=[Word(start=start, end=start + 2, text=text)],
+            )
+        )
+    transcript = Transcript(language="ja", segments=segments)
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="manual", title="題", reason="r", confidence=1
+    )
+    return transcript, clip
+
+
+def _fill_settings(settings, **updates):
+    return Settings.model_validate(
+        {
+            **settings.model_dump(),
+            "aspect": "16:9",
+            "height": 1080,
+            "chat_panel": True,
+            **updates,
+        }
+    )
+
+
+def test_fill_captions_sit_bottom_centre_at_their_lifts(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    fill = _fill_settings(settings)
+    assert fill.chat_panel_fit == "fill"
+    captions.create(transcript, clip, tmp_path, fill, lifts=[0.2, 0.12])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    lifted, base = [event for event in subtitles if event.style == "Default"]
+    # Every fill caption is bottom centre; its own MarginV is its lift in pixels.
+    assert lifted.text.startswith(r"{\an2}") and lifted.marginv == round(1080 * 0.2)
+    assert base.text.startswith(r"{\an2}") and base.marginv == round(1080 * 0.12)
+    assert r"\an8" not in lifted.text + base.text
+    style = subtitles.styles["Default"]
+    assert style.fontsize == 72 and style.alignment == pysubs2.Alignment.BOTTOM_CENTER
+    assert style.marginv == round(1080 * 0.12)
+    assert style.marginr == captions.margin_px(1080) + 480
+    # Fill thickens the outline in proportion to the 72 px font: 2.5 px at 52 px.
+    assert style.outline == 3.5
+
+
+def test_fill_captions_take_the_base_margin_without_matching_lifts(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    fill = _fill_settings(settings)
+    # No list, or one that does not give a lift to every caption: all at the base margin.
+    for lifts in (None, [0.2], [0.2, 0.3, 0.1]):
+        captions.create(transcript, clip, tmp_path, fill, lifts=lifts)
+        subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+        events = [e for e in subtitles if e.style == "Default"]
+        assert len(events) == 2
+        assert all(e.marginv == round(1080 * 0.12) for e in events)
+        assert all(e.text.startswith(r"{\an2}") for e in events)
+
+
+def test_fill_heading_leaves_the_caption_margins_alone(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    fill = _fill_settings(settings, heading=True)
+    captions.create(transcript, clip, tmp_path, fill, lifts=[0.2, 0.2])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    texts = [e for e in subtitles if e.style == "Default"]
+    assert all(e.marginv == round(1080 * 0.2) for e in texts)
+    assert subtitles.styles["Heading"].alignment == pysubs2.Alignment.TOP_CENTER
+
+
+def test_top_fit_ignores_caption_lifts(tmp_path, settings, japanese_font):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    top = _fill_settings(settings, chat_panel_fit="top")
+    captions.create(transcript, clip, tmp_path, top, lifts=[0.2, 0.2])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    events = [e for e in subtitles if e.style == "Default"]
+    assert all(r"\an2" not in e.text and e.marginv == 0 for e in events)
+
+
+def test_event_spans_are_the_times_create_writes(tmp_path, settings, japanese_font):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    fill = _fill_settings(settings)
+    spans = captions.event_spans(transcript, clip, fill)
+    captions.create(transcript, clip, tmp_path, fill)
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    written = [
+        (e.start / 1000, e.end / 1000) for e in subtitles if e.style == "Default"
+    ]
+    assert spans == written and len(spans) == 2
+
+
+def test_landscape_lifts_place_each_caption_at_its_margin(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    plain = _fill_settings(settings, chat_panel=False)
+    captions.create(transcript, clip, tmp_path, plain, lifts=[0.2, 0.25])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    events = [e for e in subtitles if e.style == "Default"]
+    assert [e.marginv for e in events] == [216, 270]
+    assert all(r"{\an2}" in e.text for e in events)
+
+
+def test_landscape_without_lifts_keeps_the_style_margin(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    plain = _fill_settings(settings, chat_panel=False)
+    captions.create(transcript, clip, tmp_path, plain)
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    events = [e for e in subtitles if e.style == "Default"]
+    assert all(r"\an2" not in e.text and e.marginv == 0 for e in events)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"chat_panel": False},
+        {"chat_panel": True, "chat_panel_fit": "fill"},
+        {"chat_panel": True, "chat_panel_fit": "top"},
+        {"chat_panel": True, "chat_panel_fit": "crop"},
+        {"chat_panel": True, "chat_panel_fit": "letterbox"},
+    ],
+)
+def test_no_landscape_layout_places_captions_at_the_top(
+    tmp_path, settings, japanese_font, updates
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    layout = _fill_settings(settings, **updates)
+    captions.create(transcript, clip, tmp_path, layout, lifts=[0.2, 0.2])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    assert subtitles.styles["Default"].alignment == pysubs2.Alignment.BOTTOM_CENTER
+    assert all(r"\an8" not in e.text for e in subtitles if e.style == "Default")
+    assert r"\an8" not in (tmp_path / "captions.ass").read_text(encoding="utf-8")

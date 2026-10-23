@@ -34,8 +34,11 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
 
 ```bash
 uv run --no-sync python tools/submit_audio_stage.py --stage merge --local \
-  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 --output /private/merged-NEW
+  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 \
+  --source-ref RENDER_SOURCE_SHA --output /private/merged-NEW
 ```
+
+`--local` の結合は、描画に使ったコミット（`--source-ref` と同じ SHA）を制御VMでチェックアウトした状態で実行する。手元のコードが違うと `local merge code differs from source_ref` で停止する。例: `git worktree add --detach /tmp/merge-SHA SHA` で別の作業ツリーを作って、その中で実行する。
 
 横用設定は `config.landscape.example.json`。配信長は既定6時間・最大12時間、字幕の表示延長目標と警告基準は7字/秒です。ジョブの実行上限はローカルCPU動画90分、ColabのURL取得を含む全体180分です。結果の回収・再開は [OPERATIONS.md](docs/OPERATIONS.md#結果の回収と再開)、実素材の受入条件は [LANDSCAPE_PLAN.md](docs/LANDSCAPE_PLAN.md) を参照してください。
 

@@ -690,7 +690,17 @@ def test_chat_panel_clip_is_drawn_from_its_original_interval(audio_job, monkeypa
     drawn = fake_kick_chat(monkeypatch, fetch)
     rendered = []
 
-    def render(source, output, index, clip, transcript, settings, key, chat=None):
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
         rendered.append(chat)
         return {"directory": f"clips/clip-{index:03}"}
 
@@ -724,7 +734,17 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
     drawn = fake_kick_chat(monkeypatch, fetch)
     rendered = []
 
-    def render(source, output, index, clip, transcript, settings, key, chat=None):
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
         rendered.append(chat)
         return {"directory": f"clips/clip-{index:03}"}
 
@@ -735,7 +755,7 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
         "ass": "[Script Info]\n",
         "messages": 0,
         "reason": "chat_unavailable",
-        "error": "PipelineError",
+        "error": "chat service refused",
     }
 
 
@@ -751,3 +771,141 @@ def test_chat_panel_on_a_non_kick_source_is_drawn_empty(monkeypatch):
     assert calls == []
     assert drawn[0]["messages"] == []
     assert result["reason"] == "chat_unsupported_source"
+
+
+def test_crop_anchors_default_to_auto_and_refuse_other_words():
+    assert af.crop_anchors({"clips": [{}, {"crop_anchor": "left"}]}) == ["auto", "left"]
+    with pytest.raises(PipelineError, match="crop_anchor must be"):
+        af.crop_anchors({"clips": [{"crop_anchor": "centre"}]})
+
+
+def test_chat_failure_is_recorded_and_a_bug_is_not_hidden(audio_job, monkeypatch):
+    from types import SimpleNamespace
+
+    vod, _, settings, _, _ = audio_job
+    clip = SimpleNamespace(start=120, end=175)
+
+    def refused(slug, uuid, start, end, **options):
+        raise PipelineError("chat service refused")
+
+    fake_kick_chat(monkeypatch, refused)
+    chat = af.chat_panel_for_clip(vod, clip, chat_settings(settings))
+    assert (chat["messages"], chat["reason"], chat["error"]) == (
+        0,
+        "chat_unavailable",
+        "chat service refused",
+    )
+
+    def broken(slug, uuid, start, end, **options):
+        raise TypeError("bug in the chat reader")
+
+    fake_kick_chat(monkeypatch, broken)
+    with pytest.raises(TypeError, match="bug in the chat reader"):
+        af.chat_panel_for_clip(vod, clip, chat_settings(settings))
+
+
+def test_chat_panel_clip_passes_its_reviewed_crop_side(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][1]["crop_anchor"] = "right"
+    write_json(review, value)
+    fake_kick_chat(monkeypatch, lambda slug, uuid, start, end, **options: [])
+    anchors = []
+
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
+        anchors.append((index, crop_anchor))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, chat_settings(settings), review, only=2)
+    assert anchors == [(2, "right")]
+
+
+def test_a_rendered_clip_is_not_read_for_chat_again(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    fetched = []
+
+    def fetch(slug, uuid, start, end, **options):
+        fetched.append((start, end))
+        return []
+
+    fake_kick_chat(monkeypatch, fetch)
+    folder = root / "delivery" / "clips" / "clip-002"
+    folder.mkdir(parents=True)
+    write_json(
+        folder / "render.json", {"render_inputs": {"chat": None, "layout": None}}
+    )
+    rendered = []
+
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
+        rendered.append((index, chat, crop_anchor))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, chat_settings(settings), review, only=2)
+    assert fetched == []
+    assert rendered == [(2, None, "auto")]
+
+
+def test_render_refuses_an_unknown_crop_side_before_any_fetch(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][0]["crop_anchor"] = "middle"
+    write_json(review, value)
+    fetched = []
+    monkeypatch.setattr(
+        vod, "prefetch", lambda *args: fetched.append(args), raising=False
+    )
+    with pytest.raises(PipelineError, match="crop_anchor must be"):
+        af.render(vod, root, chat_settings(settings), review)
+    assert fetched == []
+
+
+def test_caption_floors_default_to_none_and_refuse_out_of_range():
+    assert af.caption_floors({"clips": [{}, {"caption_floor": 0.25}]}) == [None, 0.25]
+    for floor in (0.33, -0.1, True, "0.2", float("nan")):
+        with pytest.raises(PipelineError, match="caption_floor must be"):
+            af.caption_floors({"clips": [{"caption_floor": floor}]})
+
+
+def test_render_passes_a_reviewed_caption_floor_to_its_clip(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][1]["caption_floor"] = 0.25
+    review.write_text(json.dumps(value))
+    floors = []
+
+    def render(source, output, index, clip, transcript, settings, key, **options):
+        floors.append((index, options.get("caption_floor")))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    monkeypatch.setattr(
+        af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
+    )
+    af.render(vod, root, settings, review, only=2)
+    assert floors == [(2, 0.25)]

@@ -86,6 +86,9 @@ MIN_EVENT_MS = 100
 TARGET_CAPTION_CPS = 10
 MAX_CAPTION_CPS = 15
 OUTLINE_ALLOWANCE = CAPTION_OUTLINE_ALLOWANCE
+# Bottom margin of a caption, as a share of the height. With fit fill auto_layout may lift a
+# caption above a busy band; the base is what it returns when nothing needs room.
+FILL_BOTTOM_SHARE = 0.12
 # Horizontal (landscape) line length and reading speed are defined only in Settings
 # (horizontal_line_chars, horizontal_target_cps); this module reads them from the settings.
 # A pause this long ends a caption. Shorter captions are joined to a neighbour across
@@ -148,9 +151,45 @@ def normalize_terms(text):
     )
 
 
+JAPANESE_MARKS = str.maketrans({"?": "？", "!": "！"})
+# A fullwidth space is needed after ？ or ！ unless the text after it closes a bracket or sentence.
+MARK_FOLLOWERS_NOT_SPACED = "」』）)］】〉》、。…‥？！"
+
+
+def japanese_marks(text):
+    """Halfwidth ? and ! become the fullwidth marks used in Japanese captions."""
+    return text.translate(JAPANESE_MARKS)
+
+
+def space_after_marks(tokens):
+    """Adds a fullwidth space to a token ending in ？ or ！ when more text continues after it.
+
+    Only the text is changed, so the timing of every token stays as it was.
+    """
+    spaced = list(tokens)
+    for index in range(len(spaced) - 1):
+        start, end, text = spaced[index]
+        # A halfwidth space before the fullwidth one is replaced, so the result has no gap.
+        # A token already ending in a fullwidth space ends in neither mark, so it is skipped.
+        before = text.rstrip(" \t")
+        if before[-1:] not in ("？", "！"):
+            continue
+        next_start, next_end, next_text = spaced[index + 1]
+        following = next_text.lstrip(" \t")
+        if not following or following[0].isspace():
+            continue
+        if following[0] in MARK_FOLLOWERS_NOT_SPACED:
+            continue
+        spaced[index] = (start, end, before + "　")
+        # The leading halfwidth space of the next token would double the gap, so it goes.
+        spaced[index + 1] = (next_start, next_end, following)
+    return spaced
+
+
 def collect_tokens(transcript, clip, keep):
     """Word tokens (start, end, text) in output time, split where cuts removed audio."""
     tokens, approximate = [], 0
+    japanese = transcript.language == "ja"
     for segment in transcript.segments:
         if segment.end <= clip.start or segment.start >= clip.end:
             continue
@@ -159,6 +198,8 @@ def collect_tokens(transcript, clip, keep):
         ]
         for word in source:
             text = normalize_terms(safe(word.text))
+            if japanese:
+                text = japanese_marks(text)
             if not text.strip():
                 continue
             a, b = max(clip.start, word.start), min(clip.end, word.end)
@@ -189,7 +230,10 @@ def collect_tokens(transcript, clip, keep):
                 s, e, _ = spans[0]
                 tokens.append((s, e, text))
     tokens.sort(key=lambda token: (token[0], token[1]))
-    return join_phrases(tokens), approximate
+    tokens = join_phrases(tokens)
+    if japanese:
+        tokens = space_after_marks(tokens)
+    return tokens, approximate
 
 
 def join_phrases(tokens):
@@ -395,7 +439,8 @@ def heading_size(title, frame_width, height, font_path):
     raise PipelineError("heading does not fit the frame; shorten the clip title")
 
 
-def create(transcript, clip, directory, settings, keep=None, credits=None):
+def _caption_layout(settings):
+    """Font, measure and line width of the captions; shared by create and event_spans."""
     height = settings.height
     margin = margin_px(height)
     numerator, denominator = map(int, settings.aspect.split(":"))
@@ -403,6 +448,74 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     font_size = settings.caption_font_size()
     font_path = fonts.resolve(settings.font)
     measure = fonts.Measure(font_path, font_size)
+    # With the chat panel the video area is narrower than the frame.
+    area = frame_width - settings.chat_panel_pixels()
+    line_px = area - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
+    landscape = frame_width > height
+    if landscape:
+        line_px = min(
+            line_px, round(measure.width("あ" * settings.caption_line_chars()))
+        )
+    return font_size, font_path, measure, line_px, landscape
+
+
+def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscape):
+    """Caption groups, their (start, end) in ms on the output timeline, and cleanup info."""
+    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
+    segments, cleanup = clean_segments(transcript.segments)
+    caption_transcript = transcript.model_copy(update={"segments": segments})
+    tokens, approximate = collect_tokens(caption_transcript, clip, keep)
+    tokens, split = split_long(tokens, measure, line_px)
+    approximate += split
+    groups = group(tokens, measure, line_px)
+    plain_lines = ["".join(item[2] for item in items) for items in groups]
+    spans, previous_end = [], 0
+    for items in groups:
+        start = max(previous_end, round(items[0][0] * 1000))
+        # A group squeezed out by the previous one is kept for a moment, never dropped.
+        end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
+        spans.append([start, end])
+        previous_end = end
+    hold_for_reading(
+        spans,
+        plain_lines,
+        round(duration * 1000),
+        settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
+        floor_ms=round(MIN_CAPTION_SECONDS * 1000),
+    )
+    return groups, spans, plain_lines, cleanup, approximate
+
+
+def event_spans(transcript, clip, settings, keep=None):
+    """Start and end in seconds, on the output timeline, of each caption create() writes."""
+    _, _, measure, line_px, landscape = _caption_layout(settings)
+    groups, spans, _, _, _ = _caption_groups(
+        transcript, clip, settings, keep, measure, line_px, landscape
+    )
+    return [(start / 1000, end / 1000) for start, end in spans]
+
+
+def _lift_margins(lifts, count, height):
+    """MarginV in pixels for each caption; a list that does not match the captions gives the base."""
+    if lifts is None or len(lifts) != count:
+        lifts = [FILL_BOTTOM_SHARE] * count
+    return [round(lift * height) for lift in lifts]
+
+
+def create(transcript, clip, directory, settings, keep=None, credits=None, lifts=None):
+    """Write captions.ass and captions.srt.
+
+    lifts gives the bottom margin of each caption as a share of the height, in order. Given lifts
+    place every caption bottom centre (alignment 2) at its own margin; a list that does not match
+    the captions gives every caption the base margin. Without lifts, only fill places captions
+    this way, as before.
+    """
+    height = settings.height
+    margin = margin_px(height)
+    numerator, denominator = map(int, settings.aspect.split(":"))
+    frame_width = round(height * numerator / denominator / 2) * 2
+    font_size, font_path, measure, line_px, landscape = _caption_layout(settings)
+    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
     # With the chat panel, text stays in the video area left of the column: the right margin
     # grows by the column width, so ASS centres the text on that area.
     panel = settings.chat_panel_pixels()
@@ -410,20 +523,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
     margin_right = margin + panel
     # With fit top the picture is shorter than the frame; the rest is the caption band.
     band = height - settings.chat_video_height()
-    line_px = area - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
-    landscape = frame_width > height
-    if landscape:
-        line_px = min(
-            line_px, round(measure.width("あ" * settings.caption_line_chars()))
-        )
-    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
-
-    segments, cleanup = clean_segments(transcript.segments)
-    caption_transcript = transcript.model_copy(update={"segments": segments})
-    tokens, approximate = collect_tokens(caption_transcript, clip, keep)
-    tokens, split = split_long(tokens, measure, line_px)
-    approximate += split
-    groups = group(tokens, measure, line_px)
+    fill = settings.chat_panel and settings.chat_panel_fit == "fill"
+    # The outline is 2.5 px at the standard 4.8 percent font; fill scales it with its larger font.
+    outline = round(2.5 * font_size / round(height * 0.048), 1) if fill else 2.5
 
     subtitles = pysubs2.SSAFile()
     subtitles.info.update(
@@ -437,13 +539,13 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
         fontsize=font_size,
         primarycolor=pysubs2.Color(255, 255, 255),
         outlinecolor=pysubs2.Color(0, 0, 0),
-        outline=2.5,
+        outline=outline,
         shadow=0.7,
         bold=True,
         alignment=pysubs2.Alignment.BOTTOM_CENTER,
         marginl=margin,
         marginr=margin_right,
-        marginv=round(height * 0.12),
+        marginv=round(height * FILL_BOTTOM_SHARE),
     )
     if band:
         # Two lines centred in the caption band below the picture.
@@ -511,25 +613,29 @@ def create(transcript, clip, directory, settings, keep=None, credits=None):
             )
         )
 
-    style = "Sequential" if settings.caption == "sequential" else "Default"
-    plain_lines = ["".join(item[2] for item in items) for items in groups]
-    spans, previous_end = [], 0
-    for items in groups:
-        start = max(previous_end, round(items[0][0] * 1000))
-        # A group squeezed out by the previous one is kept for a moment, never dropped.
-        end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
-        spans.append([start, end])
-        previous_end = end
-    hold_for_reading(
-        spans,
-        plain_lines,
-        round(duration * 1000),
-        settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
-        floor_ms=round(MIN_CAPTION_SECONDS * 1000),
+    groups, spans, plain_lines, cleanup, approximate = _caption_groups(
+        transcript, clip, settings, keep, measure, line_px, landscape
     )
-    for items, (start, end) in zip(groups, spans):
+    style = "Sequential" if settings.caption == "sequential" else "Default"
+    # Fill always places captions by their own MarginV. Elsewhere, lifts place them only without the
+    # chat column (the chat's crop, letterbox and top fits keep the base margin); without lifts the
+    # output is what it was before.
+    placed = fill or (lifts is not None and not settings.chat_panel)
+    margins = _lift_margins(lifts, len(groups), height) if placed else [0] * len(groups)
+    for items, (start, end), margin in zip(groups, spans, margins):
         text = group_text(items, measure, line_px, settings.caption)
-        subtitles.append(pysubs2.SSAEvent(start=start, end=end, style=style, text=text))
+        if placed:
+            # Bottom centre (\an2); the event's own MarginV sets how high the caption sits.
+            event = pysubs2.SSAEvent(
+                start=start,
+                end=end,
+                style=style,
+                text=r"{\an2}" + text,
+                marginv=margin,
+            )
+        else:
+            event = pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
+        subtitles.append(event)
 
     corpus = "".join(plain_lines) + (heading_text or "") + "".join(credits or [])
     missing = fonts.missing_glyphs(font_path, corpus)

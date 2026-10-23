@@ -276,6 +276,35 @@ def previews(vod, root, settings, analysis_result=None, topic_ids=None):
     return value
 
 
+def crop_anchors(value):
+    """The crop side each reviewed clip requests; "auto" unless its row names one."""
+    anchors = []
+    for row in value["clips"]:
+        anchor = row.get("crop_anchor", "auto")
+        if anchor not in pipeline.CROP_ANCHORS:
+            raise PipelineError("crop_anchor must be auto, left, center or right")
+        anchors.append(anchor)
+    return anchors
+
+
+def caption_floors(value):
+    """The caption floor each reviewed clip requests (0 to 0.32 of the height); None if unnamed."""
+    floors = []
+    for row in value["clips"]:
+        floor = row.get("caption_floor")
+        if floor is None:
+            floors.append(None)
+            continue
+        if (
+            type(floor) not in (int, float)
+            or not math.isfinite(floor)
+            or not 0 <= floor <= pipeline.MAX_CAPTION_FLOOR
+        ):
+            raise PipelineError("caption_floor must be from 0 to 0.32")
+        floors.append(float(floor))
+    return floors
+
+
 def reviewed_clips(value, analysis, preview, settings):
     if (
         value.get("analysis_key") != analysis["analysis_key"]
@@ -284,9 +313,15 @@ def reviewed_clips(value, analysis, preview, settings):
         raise PipelineError("video review belongs to a different audio analysis")
     if not all(row.get("video_reviewed") is True for row in value["clips"]):
         raise PipelineError("each selected topic requires video review")
+    crop_anchors(value)
+    caption_floors(value)
     cleaned = {
         "clips": [
-            {k: v for k, v in row.items() if k != "video_reviewed"}
+            {
+                k: v
+                for k, v in row.items()
+                if k not in ("video_reviewed", "crop_anchor", "caption_floor")
+            }
             for row in value["clips"]
         ]
     }
@@ -364,8 +399,8 @@ def chat_panel_for_clip(vod, clip, settings):
     else:
         try:
             messages = kick_chat.fetch_messages(*kick.groups(), clip.start, clip.end)
-        except Exception as failure:
-            reason, error = "chat_unavailable", type(failure).__name__
+        except PipelineError as failure:
+            reason, error = "chat_unavailable", str(failure)[:200]
     width, height = media.frame_size(settings)
     ass = kick_chat.panel_ass(
         messages,
@@ -392,6 +427,8 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
     preview = json.loads((root / "previews.json").read_text())
     value = json.loads(review_file.read_text())
     clips = reviewed_clips(value, analysis, preview, settings)
+    anchors = crop_anchors(value)
+    floors = caption_floors(value)
     if only is not None and (type(only) is not int or not 1 <= only <= len(clips)):
         raise PipelineError("only must name one reviewed clip by its 1-based number")
     # Verify all previews before fetching even the first high-quality interval.
@@ -472,9 +509,15 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
             # Chat is timed on the clip's original interval, not the shifted local one.
             chat_options = {}
             if settings.chat_panel:
-                chat_options["chat"] = pipeline.timed(
-                    clip_timings, "chat", chat_panel_for_clip, vod, clip, settings
-                )
+                chat_options["crop_anchor"] = anchors[index - 1]
+                # A clip already rendered with its inputs saved reuses its stored chat, so the chat
+                # is not read again.
+                if pipeline.saved_render_inputs(output / "clips", index) is None:
+                    chat_options["chat"] = pipeline.timed(
+                        clip_timings, "chat", chat_panel_for_clip, vod, clip, settings
+                    )
+            if floors[index - 1] is not None:
+                chat_options["caption_floor"] = floors[index - 1]
             row = pipeline.timed(
                 clip_timings,
                 "render",

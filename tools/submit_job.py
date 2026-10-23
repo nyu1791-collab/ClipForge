@@ -46,6 +46,7 @@ SETTINGS_FIELDS = {
     "encode_preset",
     "caption",
     "caption_scale",
+    "caption_lift",
     "font",
     "horizontal_target_cps",
     "horizontal_warn_cps",

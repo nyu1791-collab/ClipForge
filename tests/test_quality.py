@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pysubs2
 import pytest
 
-from clipforge import quality
+from clipforge import caption_sentences, quality
 from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
@@ -295,7 +295,8 @@ def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
 
 
 def test_a_line_break_inside_a_word_is_a_counted_warning(tmp_path, on_target_loudness):
-    folder = write_ass(tmp_path, [(0, 2000, "情報\\N処理")])
+    # 情報 is one morpheme, so the break after 情 is inside a word (情報|処理 is a morpheme edge).
+    folder = write_ass(tmp_path, [(0, 2000, "情\\N報処理")])
     report = quality.check_clip(folder, RENDERED, [], [])
     assert report["passed"] is True
     assert report["metrics"]["word_splits"] == 1
@@ -337,6 +338,44 @@ def test_a_kanji_break_inside_a_phrase_is_still_a_split():
     assert quality.word_splits([(0, 2000, "国際連\n合安全保障")]) == ["国際連|合安全"]
     split_captions = [(0, 1000, "国際連"), (1000, 2000, "合安全保障")]
     assert quality.word_splits(split_captions) == ["国際連|合安全"]
+
+
+@pytest.mark.parametrize(
+    "events",
+    [
+        [(0, 2000, "すげー村山優人\n俺マイクラやりますね")],
+        [(0, 2000, "あの人がこの君\nこの豆を食べる")],
+        [(0, 1000, "大人の人"), (1000, 2000, "大人の子")],
+    ],
+)
+def test_breaks_between_morphemes_are_not_splits(events):
+    # BudouX reads each of these as one phrase, but fugashi divides 村山|優|人|俺, 君|この
+    # and 人|大人, so the break is between words and is not reported.
+    assert quality.word_splits(events) == []
+
+
+def test_a_break_inside_a_morpheme_is_still_a_split():
+    # 奪わ is one morpheme, so 奪|われ is inside a word.
+    split_captions = [(0, 1000, "彼は奪"), (1000, 2000, "われた")]
+    assert quality.word_splits(split_captions) == ["彼は奪|われた"]
+
+
+def test_without_fugashi_only_the_budoux_edges_count(monkeypatch):
+    def no_tagger():
+        raise ImportError("fugashi is not installed")
+
+    monkeypatch.setattr(caption_sentences, "_tagger", no_tagger)
+    assert quality.word_splits([(0, 2000, "すげー村山優人\n俺マイクラやりますね")]) == [
+        "山優人|俺マイ"
+    ]
+    assert quality.word_splits([(0, 2000, "あの人がこの君\nこの豆を食べる")]) == [
+        "この君|この豆"
+    ]
+    assert quality.word_splits([(0, 1000, "大人の人"), (1000, 2000, "大人の子")]) == [
+        "人の人|大人の"
+    ]
+    # A break on a BudouX phrase edge is still not a split without fugashi.
+    assert quality.word_splits([(0, 1000, "地方"), (1000, 2000, "自治体の")]) == []
 
 
 def write_framed_ass(folder, events):
@@ -608,3 +647,117 @@ def test_top_chat_caption_overflow_is_measured_inside_the_picture(
     path = tmp_path / "captions.ass"
     subtitles.save(str(path))
     assert quality.overflowing_lines(path) == ["あ" * 19]
+
+
+def test_fill_chat_layout_limits_caption_lines_to_the_video_area(
+    settings, japanese_font
+):
+    fill = Settings.model_validate(
+        {**settings.model_dump(), "aspect": "16:9", "height": 1080, "chat_panel": True}
+    )
+    assert fill.chat_panel_fit == "fill"
+    events = [(0, 2000, "あ" * 18), (2000, 4000, "あ" * 19)]
+    warnings = quality.japanese_style_warnings(events, True, fill)
+    assert len(warnings) == 1
+    assert warnings[0].startswith("1 caption line(s) exceed 18 fullwidth characters")
+
+
+def test_lifted_caption_is_measured_inside_the_video_area(tmp_path, japanese_font):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=72, marginl=38, marginr=518
+    )
+    # A lifted caption is bottom centre with its own MarginV; the width limit is the video area's.
+    subtitles.append(
+        pysubs2.SSAEvent(start=0, end=1000, text=r"{\an2}" + "あ" * 18, marginv=216)
+    )
+    subtitles.append(
+        pysubs2.SSAEvent(start=1000, end=2000, text=r"{\an2}" + "あ" * 19, marginv=216)
+    )
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == ["あ" * 19]
+
+
+def test_event_margins_replace_the_style_margins_for_the_width_limit(
+    tmp_path, japanese_font
+):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=72, marginl=38, marginr=518
+    )
+    # The first event keeps the style's right margin; the second sets its own, which is wide enough.
+    subtitles.append(pysubs2.SSAEvent(start=0, end=1000, text="あ" * 19))
+    subtitles.append(
+        pysubs2.SSAEvent(start=1000, end=2000, text="あ" * 19, marginr=100)
+    )
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == ["あ" * 19]
+    subtitles[0].marginr = 100
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == []
+
+
+def test_caption_rising_above_the_frame_is_reported(tmp_path, japanese_font):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP",
+        fontsize=72,
+        alignment=pysubs2.Alignment.BOTTOM_CENTER,
+        marginv=130,
+        marginl=38,
+        marginr=518,
+    )
+    # Two lines of 72 px at MarginV 1000 reach above the top; MarginV 216 and the style's 130 fit.
+    subtitles.append(
+        pysubs2.SSAEvent(start=0, end=1000, text=r"{\an2}あ\Nい", marginv=1000)
+    )
+    subtitles.append(
+        pysubs2.SSAEvent(start=1000, end=2000, text=r"{\an2}あ\Nい", marginv=216)
+    )
+    subtitles.append(pysubs2.SSAEvent(start=2000, end=3000, text="あ\\Nい"))
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.outside_frame_captions(path) == ["あ\nい"]
+
+
+def test_frame_check_ignores_files_without_captions(tmp_path):
+    path = tmp_path / "captions.ass"
+    pysubs2.SSAFile().save(str(path))
+    assert quality.outside_frame_captions(path) == []
+    assert quality.overflowing_lines(path) == []
+
+
+def _static_case(tmp_path, first_margin):
+    subtitles = pysubs2.SSAFile()
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontsize=52, alignment=pysubs2.Alignment.BOTTOM_CENTER, marginv=130
+    )
+    for start in (0, 1000):
+        subtitles.append(
+            pysubs2.SSAEvent(
+                start=start,
+                end=start + 1000,
+                style="Default",
+                text=r"{\an2}字幕",
+                marginv=first_margin if start == 0 else 130,
+            )
+        )
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    return path
+
+
+def test_static_overlaps_counts_captions_over_a_band_they_were_placed_by(tmp_path):
+    path = _static_case(tmp_path, 346)
+    rendered = {"width": 1920, "height": 1080}
+    # The first caption's box runs from 346 px (0.32) up about one line; the second sits at 130 px.
+    assert quality.static_overlaps(path, [[[0.3, 0.4, "whole"]], []], rendered) == 1
+    assert quality.static_overlaps(path, [[[0.5, 0.6, "whole"]], []], rendered) == 0
+    assert quality.static_overlaps(path, [[[0.0, 0.1, "left"]], []], rendered) == 0
+    # Captions and bands that do not correspond one to one cannot be checked.
+    assert quality.static_overlaps(path, [[]], rendered) is None

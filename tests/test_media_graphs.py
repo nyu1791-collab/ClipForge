@@ -223,7 +223,7 @@ def test_narration_only_mix_passes_through():
 
 
 def test_loudness_arguments_use_the_first_pass_measurement():
-    assert media._loudness_args(None) == "loudnorm=I=-16:TP=-1.5:LRA=11"
+    assert media._loudness_args(None) == "loudnorm=I=-16:TP=-2.0:LRA=11"
     measured = {
         "input_i": -20.1,
         "input_tp": -3.2,
@@ -232,9 +232,25 @@ def test_loudness_arguments_use_the_first_pass_measurement():
         "target_offset": 0.4,
     }
     assert media._loudness_args(measured) == (
-        "loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=-20.10:measured_TP=-3.20:"
+        "loudnorm=I=-16:TP=-2.0:LRA=11:measured_I=-20.10:measured_TP=-3.20:"
         "measured_LRA=5.00:measured_thresh=-30.00:offset=0.40:linear=true"
     )
+
+
+def test_peak_limiter_follows_loudnorm_and_resample_and_precedes_the_fades():
+    # 0.7943 is -2 dBFS as a linear amplitude.
+    assert media.PEAK_LIMIT == pytest.approx(10 ** (-2 / 20), abs=1e-4)
+    tail = media._audio_tail(make(fade_seconds=0.3), 10.0, None)
+    limiter = f"alimiter=limit={media.PEAK_LIMIT}:level=disabled:attack=5:release=50"
+    order = [
+        tail.index("loudnorm="),
+        tail.index(f",aresample={media.AUDIO_RATE},"),
+        tail.index(limiter),
+        tail.index("afade=t=in"),
+        tail.index("[aout]"),
+    ]
+    assert order == sorted(order)
+    assert limiter in media._audio_tail(make(fade_seconds=0), 10.0, None)
 
 
 def test_audio_tail_fades_only_when_the_clip_is_long_enough():
@@ -728,3 +744,85 @@ def test_chat_panel_renders_a_real_landscape_frame(tmp_path, fit):
     clip = SimpleNamespace(start=0.0, end=3.0)
     info = media.render(source, destination, clip, settings, chat_ass=chat)
     assert (info["width"], info["height"]) == (1920, 1080)
+
+
+FILL = {**CHAT_PANEL, "chat_panel_fit": "fill"}
+
+
+def test_chat_panel_fill_scales_the_picture_to_the_area_and_centres_the_crop():
+    settings = make(**FILL, progress_bar=False, fade_seconds=0)
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+    )
+    # The picture is scaled to the frame height and cut to the 1440 px area, centred.
+    assert (
+        "[vin]scale=1440:1080:force_original_aspect_ratio=increase:"
+        "force_divisible_by=2,crop=1440:1080:(iw-1440)/2:(ih-1080)/2,setsar=1[lay0]"
+    ) in graph
+    assert graph.endswith(
+        "[lay0]pad=1920:1080:0:0:color=0x111114,"
+        "drawbox=x=1440:y=0:w=2:h=1080:color=0x2a2a30:t=fill,"
+        "ass=filename=captions.ass,ass=filename=chat.ass[vout]"
+    )
+    # The picture has the full frame height, so the only border is the vertical column line.
+    assert graph.count("drawbox") == 1
+
+
+def test_chat_panel_fill_crops_from_the_planned_x_fraction():
+    settings = make(**FILL, progress_bar=False, fade_seconds=0)
+    graph = media._video_graph(
+        CLIP,
+        settings,
+        1920,
+        1080,
+        None,
+        10.0,
+        [],
+        "captions.ass",
+        "chat.ass",
+        crop_x=0.1,
+    )
+    assert "crop=1440:1080:iw*0.100000:(ih-1080)/2,setsar=1[lay0]" in graph
+
+
+def test_chat_panel_fill_accepts_the_whole_range_of_crop_positions():
+    settings = make(**FILL, progress_bar=False, fade_seconds=0)
+    for crop_x in (0.0, 0.25):
+        media._video_graph(
+            CLIP, settings, 1920, 1080, None, 10.0, [], None, "chat.ass", crop_x=crop_x
+        )
+    for crop_x in (-0.01, 0.26, 1.0):
+        with pytest.raises(PipelineError, match="crop position is outside"):
+            media._video_graph(
+                CLIP,
+                settings,
+                1920,
+                1080,
+                None,
+                10.0,
+                [],
+                None,
+                "chat.ass",
+                crop_x=crop_x,
+            )
+
+
+def test_crop_position_does_not_change_the_other_chat_fits():
+    for fit in ("crop", "letterbox", "top"):
+        settings = make(**{**CHAT_PANEL, "chat_panel_fit": fit}, progress_bar=False)
+        plain = media._video_graph(
+            CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+        )
+        moved = media._video_graph(
+            CLIP,
+            settings,
+            1920,
+            1080,
+            None,
+            10.0,
+            [],
+            "captions.ass",
+            "chat.ass",
+            crop_x=0.1,
+        )
+        assert moved == plain
