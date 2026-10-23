@@ -43,6 +43,14 @@ on:
         type: choice
         options: ['on', 'off']
         default: 'off'
+      verified_audio_run:
+        description: Optional producer run ID whose verified audio artifact is reused for a URL-only colab-auto request (the producer run must have concluded success)
+        type: string
+        default: ''
+      verified_audio_request:
+        description: Request ID of that verified audio artifact (32 lowercase hex characters); required with verified_audio_run
+        type: string
+        default: ''
       probe_only:
         description: Diagnose URL metadata and provider errors without downloading media or allocating Colab
         type: boolean
@@ -286,6 +294,35 @@ jobs:
         env:
           AUDIO_URL: ${{ inputs.audio_url }}
         run: uv run --no-sync python tools/youtube_transport.py setup --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
+      - name: Download the requested verified audio artifact from a successful producer run
+        timeout-minutes: 5
+        if: inputs.verified_audio_run != '' || inputs.verified_audio_request != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUDIO_URL: ${{ inputs.audio_url }}
+          VERIFIED_AUDIO_RUN: ${{ inputs.verified_audio_run }}
+          VERIFIED_AUDIO_REQUEST: ${{ inputs.verified_audio_request }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          assert os.environ['AUDIO_URL'], 'verified audio reuse requires a URL-only request'
+          run, request = os.environ['VERIFIED_AUDIO_RUN'], os.environ['VERIFIED_AUDIO_REQUEST']
+          assert re.fullmatch(r'[1-9][0-9]{0,18}', run), 'verified_audio_run must be a run ID'
+          assert re.fullmatch(r'[a-f0-9]{32}', request), 'verified_audio_request must be a request ID'
+          repository = os.environ['GITHUB_REPOSITORY']
+          producer = json.loads(subprocess.run(
+            ['gh', 'api', f'repos/{repository}/actions/runs/{run}'],
+            check=True, capture_output=True, text=True).stdout)
+          assert producer.get('conclusion') == 'success', 'producer run did not conclude success'
+          assert producer.get('display_title') == 'ClipForge ' + request, 'producer run is not this request'
+          destination = Path(os.environ['RUNNER_TEMP']) / 'clipforge-verified-audio'
+          destination.mkdir(parents=True, mode=0o700)
+          subprocess.run(
+            ['gh', 'run', 'download', run, '--repo', repository,
+             '--name', 'clipforge-verified-audio-' + request, '--dir', str(destination)],
+            check=True)
+          PY
       - name: Acquire audio and stage verified private input before GPU allocation
         timeout-minutes: 30
         if: inputs.audio_url != ''
@@ -294,6 +331,8 @@ jobs:
           AUDIO_URL: ${{ inputs.audio_url }}
           SETTINGS_JSON: ${{ inputs.settings_json }}
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
+          VERIFIED_AUDIO_RUN: ${{ inputs.verified_audio_run }}
+          VERIFIED_AUDIO_REQUEST: ${{ inputs.verified_audio_request }}
           YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
           gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
@@ -301,6 +340,12 @@ jobs:
             --notes 'Temporary private ClipForge URL input. Automatically cleaned after execution.'
           video_options=()
           if [ "$AUTO_PREVIEWS" = true ]; then video_options+=(--require-video); fi
+          # Reuse is opt-in: without a verified run the command line stays exactly as before.
+          if [ -n "$VERIFIED_AUDIO_RUN" ]; then
+            video_options+=(--verified-audio-dir "$RUNNER_TEMP/clipforge-verified-audio"
+              --verified-audio-run "$VERIFIED_AUDIO_RUN" --verified-audio-request "$VERIFIED_AUDIO_REQUEST"
+              --verified-audio-source-ref "$CLIPFORGE_SOURCE_REF")
+          fi
           clipforge-source/.venv/bin/python clipforge-source/tools/acquire_audio_url.py \
             --url "$AUDIO_URL" --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
             --settings-json "$SETTINGS_JSON" \

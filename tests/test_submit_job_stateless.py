@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 import sys
 
 import pytest
@@ -363,3 +364,139 @@ def test_input_cleanup_status_never_queries_an_unexpected_tag(monkeypatch):
         module, "gh", lambda *a, **k: pytest.fail("no query for a bad tag")
     )
     assert module.input_cleanup_status("clipforge-cache-gpu-x") == "UNKNOWN"
+
+
+def test_dispatch_forwards_verified_audio_reuse_only_when_requested(
+    tmp_path, monkeypatch
+):
+    module = load_tool("submit_job")
+    posted = []
+    repo, source = module.REPO, module.SOURCE
+
+    def gh(*args, body=None, timeout=None):
+        if args[0] == "api" and "--method" in args:
+            posted.append(json.loads(body))
+            return ""
+        if args[0] == "api" and args[1].startswith(f"repos/{source}/commits/"):
+            return json.dumps({"sha": REF})
+        if args[0] == "api" and args[1].startswith(f"repos/{repo}/actions/workflows/"):
+            return json.dumps({"state": "active"})
+        if args[0] == "run":
+            return "[]"
+        if args[0] == "secret":
+            return json.dumps([{"name": "COLAB_ADC_JSON"}, {"name": "GEMINI_API_KEY"}])
+        raise AssertionError(args)
+
+    monkeypatch.setattr(module, "gh", gh)
+    monkeypatch.setattr(
+        module, "preflight_audio_url", lambda *a, **k: {"has_video": True}
+    )
+
+    def submit_with(**reuse):
+        args = SimpleNamespace(
+            input=None,
+            config=None,
+            gemini_model="manual-no-api",
+            audio_analysis_url=URL,
+            chat_url=None,
+            chat_file=None,
+            clips=None,
+            ref="main",
+            worker="colab-auto",
+            public_cache="off",
+            auto_previews=False,
+            asr_parts=None,
+            youtube_audio_transport=None,
+            cookies_file=None,
+            workflow_ref=None,
+            **reuse,
+        )
+        return module.dispatch(args, tmp_path)
+
+    state, receipt = submit_with(reuse_audio_run=None, reuse_audio_request=None)
+    assert "verified_audio_run" not in receipt
+    assert "verified_audio_run" not in posted[-1]["inputs"]
+    assert "verified_audio_request" not in posted[-1]["inputs"]
+
+    verified = "c" * 32
+    state, receipt = submit_with(reuse_audio_run=123, reuse_audio_request=verified)
+    assert (
+        json.loads((state / "receipt.json").read_text())["verified_audio_run"] == "123"
+    )
+    assert receipt["verified_audio_request"] == verified
+    assert posted[-1]["inputs"]["verified_audio_run"] == "123"
+    assert posted[-1]["inputs"]["verified_audio_request"] == verified
+    assert posted[-1]["inputs"]["request_id"] == receipt["request_id"]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--reuse-audio-run", "123"],
+        ["--reuse-audio-request", "c" * 32],
+        ["--reuse-audio-run", "0", "--reuse-audio-request", "c" * 32],
+        ["--reuse-audio-run", "123", "--reuse-audio-request", "not-hex"],
+        [
+            "--reuse-audio-run",
+            "123",
+            "--reuse-audio-request",
+            "c" * 32,
+            "--worker",
+            "cpu",
+        ],
+        [
+            "--reuse-audio-run",
+            "123",
+            "--reuse-audio-request",
+            "c" * 32,
+            "--input",
+            "clip.mp4",
+        ],
+    ],
+)
+def test_reuse_arguments_are_refused_before_any_github_call(monkeypatch, extra):
+    module = load_tool("submit_job")
+    monkeypatch.setattr(module, "gh", lambda *a, **k: pytest.fail("gh was called"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            URL,
+            "--gemini-model",
+            "manual-no-api",
+            *extra,
+        ],
+    )
+    with pytest.raises(SystemExit):
+        module.main()
+
+
+def test_reuse_arguments_reach_submission(monkeypatch):
+    module = load_tool("submit_job")
+    seen = {}
+    monkeypatch.setattr(
+        module,
+        "gh",
+        lambda *a, **k: "nyu1791-collab" if a[1] == "user" else "true",
+    )
+    monkeypatch.setattr(module, "submit", lambda args: seen.update(vars(args)))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "submit_job",
+            "--audio-analysis-url",
+            URL,
+            "--gemini-model",
+            "manual-no-api",
+            "--reuse-audio-run",
+            "123",
+            "--reuse-audio-request",
+            REQUEST,
+        ],
+    )
+    module.main()
+    assert seen["reuse_audio_run"] == 123
+    assert seen["reuse_audio_request"] == REQUEST

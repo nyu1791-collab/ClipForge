@@ -1,4 +1,6 @@
 import hashlib
+import os
+import subprocess
 import importlib.util
 import json
 from pathlib import Path
@@ -14,7 +16,7 @@ URL = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 10 and inputs["probe_only"]["default"] is False
+    assert len(inputs) == 12 and inputs["probe_only"]["default"] is False
     for name in ("clip", "colab-auto"):
         assert "!inputs.probe_only" in workflow["jobs"][name]["if"]
     probe = workflow["jobs"]["url-probe"]
@@ -425,3 +427,206 @@ def test_cookie_secret_is_scoped_to_retrieval_steps():
                 assert step.get("name") in allowed
                 seen.add(step["name"])
     assert seen == allowed
+
+
+def colab_step(name):
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    steps = workflow["jobs"]["colab-auto"]["steps"]
+    return next(step for step in steps if step.get("name") == name)
+
+
+FETCH = "Download the requested verified audio artifact from a successful producer run"
+ACQUIRE = "Acquire audio and stage verified private input before GPU allocation"
+VERIFIED_REQUEST = "c" * 32
+
+
+def test_verified_audio_reuse_inputs_are_optional_and_wired_before_acquisition():
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    for name in ("verified_audio_run", "verified_audio_request"):
+        assert inputs[name]["type"] == "string" and inputs[name]["default"] == ""
+    steps = workflow["jobs"]["colab-auto"]["steps"]
+    names = [step.get("name") for step in steps]
+    assert names.index(FETCH) < names.index(ACQUIRE)
+    fetch = colab_step(FETCH)
+    assert (
+        fetch["if"]
+        == "inputs.verified_audio_run != '' || inputs.verified_audio_request != ''"
+    )
+    assert fetch["timeout-minutes"] == 5
+    assert "gh release download" not in fetch["run"]
+    assert "clipforge-verified-audio-' + request" in fetch["run"]
+    acquire = colab_step(ACQUIRE)
+    assert acquire["if"] == "inputs.audio_url != ''"
+    assert acquire["env"]["VERIFIED_AUDIO_RUN"] == "${{ inputs.verified_audio_run }}"
+    assert (
+        acquire["env"]["VERIFIED_AUDIO_REQUEST"]
+        == "${{ inputs.verified_audio_request }}"
+    )
+
+
+def run_step_script(script, cwd, env):
+    return subprocess.run(
+        ["bash", "-e", "-c", script],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.fixture
+def workflow_shell(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    gh = bin_dir / "gh"
+    gh.write_text(
+        '#!/bin/sh\necho "$@" >> "$GH_LOG"\n'
+        'if [ "$1" = api ]; then printf "%s" "$FAKE_RUN_JSON"; fi\n'
+    )
+    gh.chmod(0o755)
+    work = tmp_path / "work"
+    python = work / "clipforge-source/.venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$ARGV_LOG"\n')
+    python.chmod(0o755)
+    runner = tmp_path / "runner"
+    runner.mkdir()
+
+    def env(**values):
+        base = {
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "RUNNER_TEMP": str(runner),
+            "GITHUB_REPOSITORY": "nyu1791-collab/ai-model-workers",
+            "GH_LOG": str(tmp_path / "gh.log"),
+            "ARGV_LOG": str(tmp_path / "argv.log"),
+            "INPUT_TAG": "clipforge-input-" + "b" * 32,
+            "REQUEST_ID": "b" * 32,
+            "CLIPFORGE_SOURCE_REF": "a" * 40,
+            "AUDIO_URL": URL,
+            "SETTINGS_JSON": "{}",
+            "AUTO_PREVIEWS": "false",
+            "VERIFIED_AUDIO_RUN": "",
+            "VERIFIED_AUDIO_REQUEST": "",
+            "GH_TOKEN": "synthetic",
+            "FAKE_RUN_JSON": "{}",
+        }
+        base.update(values)
+        return base
+
+    return work, runner, env, tmp_path
+
+
+def test_acquire_command_is_unchanged_without_verified_audio(workflow_shell):
+    work, runner, env, tmp_path = workflow_shell
+    result = run_step_script(colab_step(ACQUIRE)["run"], work, env())
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "argv.log").read_text().splitlines() == [
+        "clipforge-source/tools/acquire_audio_url.py",
+        "--url",
+        URL,
+        "--request-id",
+        "b" * 32,
+        "--source-ref",
+        "a" * 40,
+        "--settings-json",
+        "{}",
+        "--directory",
+        f"{runner}/clipforge-input",
+    ]
+    assert "--verified-audio" not in (tmp_path / "argv.log").read_text()
+
+
+def test_acquire_passes_verified_audio_arguments_only_when_requested(workflow_shell):
+    work, runner, env, tmp_path = workflow_shell
+    result = run_step_script(
+        colab_step(ACQUIRE)["run"],
+        work,
+        env(VERIFIED_AUDIO_RUN="123", VERIFIED_AUDIO_REQUEST=VERIFIED_REQUEST),
+    )
+    assert result.returncode == 0, result.stderr
+    argv = (tmp_path / "argv.log").read_text().splitlines()
+    assert argv[argv.index("--verified-audio-dir") :] == [
+        "--verified-audio-dir",
+        f"{runner}/clipforge-verified-audio",
+        "--verified-audio-run",
+        "123",
+        "--verified-audio-request",
+        VERIFIED_REQUEST,
+        "--verified-audio-source-ref",
+        "a" * 40,
+    ]
+
+
+def fetch(workflow_shell, run, request, producer, audio_url=URL):
+    work, runner, env, tmp_path = workflow_shell
+    result = run_step_script(
+        colab_step(FETCH)["run"],
+        work,
+        env(
+            VERIFIED_AUDIO_RUN=run,
+            VERIFIED_AUDIO_REQUEST=request,
+            AUDIO_URL=audio_url,
+            FAKE_RUN_JSON=json.dumps(producer),
+        ),
+    )
+    log = (tmp_path / "gh.log").read_text() if (tmp_path / "gh.log").exists() else ""
+    return result, log, runner
+
+
+def test_fetch_downloads_only_a_successful_matching_producer_run(workflow_shell):
+    producer = {
+        "conclusion": "success",
+        "display_title": "ClipForge " + VERIFIED_REQUEST,
+    }
+    result, log, runner = fetch(workflow_shell, "123", VERIFIED_REQUEST, producer)
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"run download 123 --repo nyu1791-collab/ai-model-workers "
+        f"--name clipforge-verified-audio-{VERIFIED_REQUEST} "
+        f"--dir {runner}/clipforge-verified-audio"
+    ) in log
+    assert (runner / "clipforge-verified-audio").is_dir()
+
+
+@pytest.mark.parametrize(
+    ("run", "verified_request", "producer", "audio_url"),
+    [
+        (
+            "123",
+            VERIFIED_REQUEST,
+            {"conclusion": "failure", "display_title": "ClipForge " + VERIFIED_REQUEST},
+            URL,
+        ),
+        (
+            "123",
+            VERIFIED_REQUEST,
+            {"conclusion": "success", "display_title": "ClipForge " + "d" * 32},
+            URL,
+        ),
+        (
+            "0",
+            VERIFIED_REQUEST,
+            {"conclusion": "success", "display_title": "ClipForge " + VERIFIED_REQUEST},
+            URL,
+        ),
+        (
+            "123",
+            "not-hex",
+            {"conclusion": "success", "display_title": "ClipForge not-hex"},
+            URL,
+        ),
+        (
+            "123",
+            VERIFIED_REQUEST,
+            {"conclusion": "success", "display_title": "ClipForge " + VERIFIED_REQUEST},
+            "",
+        ),
+    ],
+)
+def test_fetch_refuses_unverified_or_mismatched_producers_before_download(
+    workflow_shell, run, verified_request, producer, audio_url
+):
+    result, log, _ = fetch(workflow_shell, run, verified_request, producer, audio_url)
+    assert result.returncode != 0
+    assert "run download" not in log

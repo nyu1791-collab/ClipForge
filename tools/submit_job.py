@@ -609,6 +609,15 @@ def send_dispatch(state, receipt):
                 "settings_json": settings_json,
                 "public_cache": receipt.get("public_cache", "off"),
                 **({"auto_previews": True} if receipt.get("auto_previews") else {}),
+                # Sent only when set, so ordinary dispatches keep their exact inputs.
+                **(
+                    {
+                        "verified_audio_run": receipt["verified_audio_run"],
+                        "verified_audio_request": receipt["verified_audio_request"],
+                    }
+                    if receipt.get("verified_audio_run")
+                    else {}
+                ),
             },
         }
     )
@@ -881,6 +890,15 @@ def main():
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--auto-previews", action="store_true")
     parser.add_argument(
+        "--reuse-audio-run",
+        type=int,
+        help="URL-only colab-auto: producer run whose verified audio artifact may be reused (with --reuse-audio-request)",
+    )
+    parser.add_argument(
+        "--reuse-audio-request",
+        help="URL-only colab-auto: request ID of that verified audio artifact (with --reuse-audio-run)",
+    )
+    parser.add_argument(
         "--asr-parts",
         type=int,
         choices=(1, 2),
@@ -944,6 +962,24 @@ def main():
     ):
         parser.error(
             "--auto-previews requires URL-only submission with --worker colab-auto"
+        )
+    if (args.reuse_audio_run is None) != (args.reuse_audio_request is None):
+        parser.error(
+            "--reuse-audio-run and --reuse-audio-request must be given together"
+        )
+    if args.reuse_audio_run is not None and (
+        args.reuse_audio_run < 1
+        or not re.fullmatch(r"[a-f0-9]{32}", args.reuse_audio_request)
+        or not args.audio_analysis_url
+        or args.input is not None
+        or args.worker != "colab-auto"
+        or args.collect
+        or args.status
+        or args.resume_audio
+        or args.cleanup_tag
+    ):
+        parser.error(
+            "audio reuse requires URL-only submission with --worker colab-auto and a valid request ID"
         )
     if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
         raise RuntimeError("use the authenticated owner VM connection")
@@ -1157,6 +1193,11 @@ def dispatch(args, state_root):
         receipt["workflow_ref"] = selected_workflow_ref
     if args.auto_previews:
         receipt.update(auto_previews=True, target_stage="previews")
+    if getattr(args, "reuse_audio_run", None) is not None:
+        receipt.update(
+            verified_audio_run=str(args.reuse_audio_run),
+            verified_audio_request=args.reuse_audio_request,
+        )
     receipt_path = state / "receipt.json"
     save(receipt_path, receipt)
     print("Private job receipt: " + str(receipt_path), flush=True)
