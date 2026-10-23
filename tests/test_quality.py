@@ -623,7 +623,25 @@ def test_fill_chat_layout_limits_caption_lines_to_the_video_area(
     assert warnings[0].startswith("1 caption line(s) exceed 18 fullwidth characters")
 
 
-def test_caption_moved_to_the_top_is_measured_inside_the_video_area(
+def test_lifted_caption_is_measured_inside_the_video_area(tmp_path, japanese_font):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=72, marginl=38, marginr=518
+    )
+    # A lifted caption is bottom centre with its own MarginV; the width limit is the video area's.
+    subtitles.append(
+        pysubs2.SSAEvent(start=0, end=1000, text=r"{\an2}" + "あ" * 18, marginv=216)
+    )
+    subtitles.append(
+        pysubs2.SSAEvent(start=1000, end=2000, text=r"{\an2}" + "あ" * 19, marginv=216)
+    )
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == ["あ" * 19]
+
+
+def test_event_margins_replace_the_style_margins_for_the_width_limit(
     tmp_path, japanese_font
 ):
     subtitles = pysubs2.SSAFile()
@@ -631,13 +649,45 @@ def test_caption_moved_to_the_top_is_measured_inside_the_video_area(
     subtitles.styles["Default"] = pysubs2.SSAStyle(
         fontname="Noto Sans CJK JP", fontsize=72, marginl=38, marginr=518
     )
-    # The override tag moves the caption to the top; the width limit is still the video area's.
+    # The first event keeps the style's right margin; the second sets its own, which is wide enough.
+    subtitles.append(pysubs2.SSAEvent(start=0, end=1000, text="あ" * 19))
     subtitles.append(
-        pysubs2.SSAEvent(start=0, end=1000, text=r"{\an8}" + "あ" * 18, marginv=43)
-    )
-    subtitles.append(
-        pysubs2.SSAEvent(start=1000, end=2000, text=r"{\an8}" + "あ" * 19, marginv=43)
+        pysubs2.SSAEvent(start=1000, end=2000, text="あ" * 19, marginr=100)
     )
     path = tmp_path / "captions.ass"
     subtitles.save(str(path))
     assert quality.overflowing_lines(path) == ["あ" * 19]
+    subtitles[0].marginr = 100
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == []
+
+
+def test_caption_rising_above_the_frame_is_reported(tmp_path, japanese_font):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP",
+        fontsize=72,
+        alignment=pysubs2.Alignment.BOTTOM_CENTER,
+        marginv=130,
+        marginl=38,
+        marginr=518,
+    )
+    # Two lines of 72 px at MarginV 1000 reach above the top; MarginV 216 and the style's 130 fit.
+    subtitles.append(
+        pysubs2.SSAEvent(start=0, end=1000, text=r"{\an2}あ\Nい", marginv=1000)
+    )
+    subtitles.append(
+        pysubs2.SSAEvent(start=1000, end=2000, text=r"{\an2}あ\Nい", marginv=216)
+    )
+    subtitles.append(pysubs2.SSAEvent(start=2000, end=3000, text="あ\\Nい"))
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.outside_frame_captions(path) == ["あ\nい"]
+
+
+def test_frame_check_ignores_files_without_captions(tmp_path):
+    path = tmp_path / "captions.ass"
+    pysubs2.SSAFile().save(str(path))
+    assert quality.outside_frame_captions(path) == []
+    assert quality.overflowing_lines(path) == []

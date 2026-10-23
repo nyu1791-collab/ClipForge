@@ -24,7 +24,7 @@ from .captions import (
     spoken_length,
 )
 from .media import AUDIO_RATE
-from .models import Settings
+from .models import CAPTION_LINE_EM, Settings
 from .storage import PipelineError, write_json
 
 LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
@@ -168,34 +168,79 @@ def word_splits(events):
     return found
 
 
+def _caption_style(subtitles, event):
+    """The style an event is drawn with; an unknown name falls back to Default."""
+    return subtitles.styles.get(event.style, subtitles.styles["Default"])
+
+
 def overflowing_lines(path):
     """Caption lines wider than the frame allows, measured again with the caption font.
 
     The frame width, margins and outline allowance are read from the file, so this checks the
-    rendered output rather than the layout that produced it.
+    rendered output rather than the layout that produced it. An event's own left and right
+    margins replace the style's when they are set (ASS: 0 means the style's).
     """
     subtitles = pysubs2.load(str(path))
     if not any(event.style in TEXT_STYLES for event in subtitles):
         return []
-    style = subtitles.styles["Default"]
     frame_width, height = (
         int(subtitles.info["PlayResX"]),
         int(subtitles.info["PlayResY"]),
     )
-    limit = (
-        frame_width
-        - int(style.marginl)
-        - int(style.marginr)
-        - round(OUTLINE_ALLOWANCE * scale(height))
-    )
-    measure = fonts.Measure(fonts.resolve(style.fontname), int(style.fontsize))
-    return [
-        line
-        for event in subtitles
-        if event.style in TEXT_STYLES
-        for line in event.plaintext.split("\n")
-        if measure.width(line) > limit
-    ]
+    measures = {}
+    found = []
+    for event in subtitles:
+        if event.style not in TEXT_STYLES:
+            continue
+        style = _caption_style(subtitles, event)
+        limit = (
+            frame_width
+            - int(event.marginl or style.marginl)
+            - int(event.marginr or style.marginr)
+            - round(OUTLINE_ALLOWANCE * scale(height))
+        )
+        if style.fontname not in measures:
+            measures[style.fontname] = fonts.Measure(
+                fonts.resolve(style.fontname), int(style.fontsize)
+            )
+        measure = measures[style.fontname]
+        found.extend(
+            line for line in event.plaintext.split("\n") if measure.width(line) > limit
+        )
+    return found
+
+
+BOTTOM_ALIGNMENTS = {
+    pysubs2.Alignment.BOTTOM_LEFT,
+    pysubs2.Alignment.BOTTOM_CENTER,
+    pysubs2.Alignment.BOTTOM_RIGHT,
+}
+
+
+def outside_frame_captions(path):
+    """Bottom-aligned captions whose text would rise above the top edge of the frame.
+
+    Each event's own MarginV sets its bottom edge, or the style's when the event's is 0. The
+    text is as tall as its lines; heading and credit styles, which are not bottom-aligned, are
+    not checked.
+    """
+    subtitles = pysubs2.load(str(path))
+    if not any(event.style in TEXT_STYLES for event in subtitles):
+        return []
+    height = int(subtitles.info["PlayResY"])
+    found = []
+    for event in subtitles:
+        if event.style not in TEXT_STYLES:
+            continue
+        style = _caption_style(subtitles, event)
+        if style.alignment not in BOTTOM_ALIGNMENTS:
+            continue
+        margin = event.marginv or style.marginv
+        lines = event.plaintext.split("\n")
+        block = len(lines) * style.fontsize * CAPTION_LINE_EM
+        if margin + block > height:
+            found.append(event.plaintext)
+    return found
 
 
 def loudness_warnings(loudness):
@@ -333,6 +378,12 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
         failures.append(
             f"{len(overflow)} caption line(s) are wider than the frame, for example "
             + overflow[0][:20]
+        )
+    high = outside_frame_captions(directory / "captions.ass")
+    if high:
+        failures.append(
+            f"{len(high)} caption(s) rise above the top of the frame, for example "
+            + high[0][:20]
         )
     starts = [orphan_start(text) for _, _, text in events]
     if "punctuation" in starts:

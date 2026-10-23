@@ -1,8 +1,9 @@
 """Choose the crop side and caption band for the landscape chat layout from frame content.
 
 The 16:9 source keeps `keep` of its width (the left 1440x1080 of a 1920x1080 frame). The
-crop side is the window that keeps the most detail (gradient energy). A caption moves to
-the top band only when the bottom band is busy and the caption is not a quiet moment.
+crop side is the window that keeps the most detail (gradient energy). Captions stay at the
+bottom; a caption is lifted just above a busy band (HUD, hotbar, overlay) that touches the
+bottom edge, up to MAX_LIFT of the height.
 """
 
 import time
@@ -22,8 +23,18 @@ DARK_SHARE = 0.45
 OVERLAY_MAX_SHARE = 0.40
 # Candidate crop offsets are evaluated in steps of this share of the source width.
 OFFSET_STEP = 1 / 32
-# Captions this close (seconds) in sequence share one band, so the band does not flicker.
+# Captions this close (seconds) in sequence share one lift, so the caption does not flicker.
 GROUP_GAP = 2.0
+# A row is busy when its density is above this multiple of the window's median row density.
+BUSY_RATIO = 1.6
+# Busy rows are searched from the bottom edge up to this share of the height.
+SEARCH = 0.40
+# Quiet rows inside a busy band are tolerated up to this share of the height.
+BAND_GAP = 0.015
+# A caption's bottom edge sits this share of the height above the top of the busy band.
+LIFT_PAD = 0.015
+# No caption is lifted above this share of the height.
+MAX_LIFT = 0.32
 # Frames are processed in blocks so float32 temporaries stay small for long samples.
 BLOCK = 256
 
@@ -220,19 +231,6 @@ def choose_crop(frames, *, keep=0.75):
     }
 
 
-def _band_densities(frames, left, right, rows):
-    """Mean gradient in the top and bottom bands of the window, per frame: (bottom, top)."""
-    import numpy as np
-
-    height = frames.shape[1]
-    bottom, top = [], []
-    for block in _blocks(frames):
-        region = _gradient(block)[:, :, left:right]
-        bottom.append(region[:, height - rows :, :].mean(axis=(1, 2)))
-        top.append(region[:, :rows, :].mean(axis=(1, 2)))
-    return np.concatenate(bottom), np.concatenate(top)
-
-
 def _frames_for(times, start, end):
     """Indices of the frames inside [start, end]; if none, the nearest frame(s) in time."""
     distances = [max(start - moment, 0.0, moment - end) for moment in times]
@@ -240,8 +238,8 @@ def _frames_for(times, start, end):
     return [index for index, distance in enumerate(distances) if distance == nearest]
 
 
-def _steady(events, raw):
-    """Captions less than GROUP_GAP apart in sequence take the majority band of their group."""
+def _groups(events):
+    """Runs of caption indices: a caption starting less than GROUP_GAP after the last run ends joins it."""
     order = sorted(range(len(events)), key=lambda index: events[index])
     groups, current, reach = [], [], 0.0
     for index in order:
@@ -253,52 +251,129 @@ def _steady(events, raw):
         current.append(index)
     if current:
         groups.append(current)
+    return groups
 
-    result = list(raw)
-    for group in groups:
-        tops = sum(1 for index in group if raw[index] == "top")
-        # A tie keeps the default band.
-        majority = "top" if tops * 2 > len(group) else "bottom"
+
+def _shared_max(events, values):
+    """Each caption takes the largest value of its run, so captions in one run do not flicker."""
+    result = list(values)
+    for group in _groups(events):
+        peak = max(values[index] for index in group)
         for index in group:
-            result[index] = majority
+            result[index] = peak
     return result
 
 
-def caption_positions(times, frames, events, crop, *, band=0.24, ratio=1.4, floor=None):
-    """Band ("top" or "bottom") per caption event, from the detail in the crop window's bands."""
+def _window_columns(crop, width, left, right):
+    """Mask of the window's columns that are not under the chat overlay (a dark block at an edge)."""
+    import numpy as np
+
+    columns = np.ones(right - left, dtype=bool)
+    overlay = crop.get("overlay") or {}
+    if overlay.get("side") is not None:
+        start = round(float(overlay["start"]) * width)
+        end = round(float(overlay["end"]) * width)
+        lo, hi = max(start, left) - left, min(end, right) - left
+        if hi > lo:
+            columns[lo:hi] = False
+    return columns
+
+
+def _row_density(frames, left, right, columns):
+    """Mean gradient of each row over the window's columns, per frame: shape [frames, height]."""
+    import numpy as np
+
+    rows = []
+    for block in _blocks(frames):
+        region = _gradient(block)[:, :, left:right][:, :, columns]
+        rows.append(region.mean(axis=2))
+    return np.concatenate(rows)
+
+
+def _band_top(busy, search, tolerance):
+    """Top row of the busy band that touches the bottom edge, or None.
+
+    Walks up from the bottom row through the bottom `search` share of the height. Quiet rows
+    up to `tolerance` rows in a row do not end the band; a quiet stretch longer than that does.
+    """
+    height = len(busy)
+    limit = height - round(search * height)
+    top, quiet = None, 0
+    for row in range(height - 1, limit - 1, -1):
+        if busy[row]:
+            top, quiet = row, 0
+        else:
+            quiet += 1
+            if quiet > tolerance:
+                break
+    return top
+
+
+def caption_lifts(
+    times,
+    frames,
+    events,
+    crop,
+    *,
+    search=SEARCH,
+    max_lift=MAX_LIFT,
+    base=None,
+    pad=LIFT_PAD,
+):
+    """Bottom margin of each caption, as a share of the height ("lift"), from the busy rows.
+
+    A row is busy when its gradient density, in the caption's frames, is above BUSY_RATIO times
+    the median row density of the whole window. A caption sits at the base margin unless a busy
+    band touches the bottom edge (searched up to `search` of the height) and the band's top is
+    above the base; then the caption's bottom edge sits `pad` above that top, capped at
+    `max_lift`. Captions less than GROUP_GAP apart share the largest lift of their run.
+    """
     import numpy as np
 
     frames = np.asarray(frames)
     _check_frames(frames, "no frames to place captions on")
     if len(times) != frames.shape[0]:
         raise ValueError("times and frames must have the same length")
+    if base is None:
+        from .captions import FILL_BOTTOM_SHARE
+
+        base = FILL_BOTTOM_SHARE
     times = [float(moment) for moment in times]
+    events = [(float(start), float(end)) for start, end in events]
     _, height, width = frames.shape
     left, right = _window(width, crop["x"], crop["keep"])
-    rows = max(1, round(band * height))
-    bottom, top = _band_densities(frames, left, right, rows)
-    if floor is None:
-        floor = float(bottom.mean())
+    columns = _window_columns(crop, width, left, right)
+    if not columns.any():
+        return [base] * len(events)
+    density = _row_density(frames, left, right, columns)
+    # The median of the rows, each averaged over every frame of the window.
+    reference = float(np.median(density.mean(axis=0)))
+    busy_level = BUSY_RATIO * reference
+    tolerance = round(BAND_GAP * height)
 
-    raw = []
+    lifts = []
     for start, end in events:
         index = _frames_for(times, start, end)
-        bottom_density = float(bottom[index].mean())
-        top_density = float(top[index].mean())
-        busy = bottom_density > ratio * top_density and bottom_density > floor
-        raw.append("top" if busy else "bottom")
-    return _steady([(float(start), float(end)) for start, end in events], raw)
+        busy = density[index].mean(axis=0) > busy_level
+        top = _band_top(busy, search, tolerance)
+        lift = base
+        if top is not None:
+            edge = (height - top) / height
+            if edge > base:
+                lift = edge + pad
+        lifts.append(min(lift, max_lift))
+    return [round(lift, 4) for lift in _shared_max(events, lifts)]
 
 
 def plan(source, start, end, events, *, keep=0.75):
-    """Crop side and caption bands for [start, end) of `source`; events are (start, end) seconds."""
+    """Crop side and caption lifts for [start, end) of `source`; events are (start, end) seconds."""
     began = time.monotonic()
     times, frames = sample_frames(source, start, end)
     crop = choose_crop(frames, keep=keep)
-    positions = caption_positions(times, frames, events, crop)
+    lifts = caption_lifts(times, frames, events, crop)
     return {
         "crop": crop,
-        "positions": positions,
+        "lifts": lifts,
         "frames": len(times),
         "seconds": round(time.monotonic() - began, 3),
     }
