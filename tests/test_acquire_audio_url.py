@@ -399,3 +399,19 @@ def test_maintenance_workflow_passes_cache_profile_to_allocation():
         if "colab_actions.py start" in step.get("run", "")
     )
     assert allocate["env"]["CLIPFORGE_CACHE_PROFILE"] == "${{ inputs.cache_profile }}"
+
+
+def test_cookie_secret_is_scoped_to_retrieval_steps():
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    allowed = {
+        "Acquire audio and stage verified private input before GPU allocation",
+        "Verify this run's analysis and create previews and an unapproved draft",
+    }
+    seen = set()
+    for job in workflow["jobs"].values():
+        assert "YOUTUBE_COOKIES_B64" not in job.get("env", {})
+        for step in job["steps"]:
+            if "YOUTUBE_COOKIES_B64" in step.get("env", {}):
+                assert step.get("name") in allowed
+                seen.add(step["name"])
+    assert seen == allowed

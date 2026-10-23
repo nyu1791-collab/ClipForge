@@ -75,7 +75,6 @@ jobs:
         timeout-minutes: 10
         env:
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         shell: bash
         run: |
           python3 - <<'PY'
@@ -224,7 +223,6 @@ jobs:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           AUDIO_URL: ${{ inputs.audio_url }}
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
           python3 - <<'PY'
           import os, re
@@ -528,16 +526,6 @@ jobs:
             sudo apt-get install -y --no-install-recommends ffmpeg
           fi
           uv run --no-sync python tools/probe_youtube_audio.py --url "$AUDIO_URL" --directory "$RUNNER_TEMP/clipforge-audio-probe"
-      - name: Keep verified audio privately for subsequent ASR
-        if: steps.audio_probe.outputs.audio_acquired == 'true'
-        timeout-minutes: 2
-        uses: actions/upload-artifact@v4
-        with:
-          name: clipforge-verified-audio-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-audio-probe/audio.m4a
-          retention-days: 7
-          compression-level: 0
-          if-no-files-found: warn
       - name: Disconnect WARP and remove the temporary Docker provider
         timeout-minutes: 1
         if: always()
@@ -546,6 +534,16 @@ jobs:
           sudo systemctl stop clipforge-warp-rollback.timer 2>/dev/null || true
           docker rm -f clipforge-bgutil >/dev/null 2>&1 || true
           if [ -f "$RUNNER_TEMP/bgutil-image.json" ]; then cp "$RUNNER_TEMP/bgutil-image.json" probe-result/bgutil-image.json; fi
+      - name: Keep verified audio privately for subsequent ASR
+        if: steps.audio_probe.outputs.audio_acquired == 'true'
+        timeout-minutes: 10
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipforge-verified-audio-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-audio-probe/audio.m4a
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: warn
       - uses: actions/upload-artifact@v4
         timeout-minutes: 2
         if: always()
