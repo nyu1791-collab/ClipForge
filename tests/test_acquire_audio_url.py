@@ -11,6 +11,20 @@ ROOT = Path(__file__).resolve().parents[1]
 URL = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
 
 
+def test_url_probe_does_not_run_media_acquisition_or_pass_colab_credentials():
+    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert len(inputs) == 10 and inputs["probe_only"]["default"] is False
+    for name in ("clip", "colab-auto"):
+        assert "!inputs.probe_only" in workflow["jobs"][name]["if"]
+    probe = workflow["jobs"]["url-probe"]
+    assert "inputs.probe_only" in probe["if"]
+    assert "secrets." not in json.dumps(probe)
+    assert "colab_actions.py" not in json.dumps(probe)
+    assert "source.metadata()" in json.dumps(probe)
+    assert "time.monotonic()" in json.dumps(probe)
+
+
 @pytest.fixture
 def acquisition(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "tools"))

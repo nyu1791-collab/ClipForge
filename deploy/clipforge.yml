@@ -43,6 +43,10 @@ on:
         type: choice
         options: ['on', 'off']
         default: 'off'
+      probe_only:
+        description: Diagnose URL metadata and provider errors without downloading media or allocating Colab
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -55,7 +59,7 @@ concurrency:
 
 jobs:
   clip:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'cpu'
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'cpu' && !inputs.probe_only
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -204,7 +208,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   colab-auto:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'colab-auto'
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'colab-auto' && !inputs.probe_only
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -435,6 +439,80 @@ jobs:
             echo '### Temporary private input remains'
             echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  url-probe:
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      SOURCE_REF: ${{ inputs.source_ref }}
+      AUDIO_URL: ${{ inputs.audio_url }}
+    steps:
+      - name: Validate metadata probe input
+        timeout-minutes: 1
+        run: |
+          python3 - <<'PY'
+          import os, re
+          from urllib.parse import urlsplit
+          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['SOURCE_REF'])
+          assert urlsplit(os.environ['AUDIO_URL']).scheme == 'https'
+          PY
+      - uses: actions/checkout@v4
+        timeout-minutes: 2
+        with:
+          repository: nyu1791-collab/ClipForge
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        timeout-minutes: 2
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        timeout-minutes: 2
+        with:
+          version: '0.12.23'
+          enable-cache: false
+      - uses: actions/setup-node@v4
+        timeout-minutes: 2
+        with:
+          node-version: '22'
+      - name: Install locked metadata dependencies without credentials
+        timeout-minutes: 3
+        run: uv sync --locked --extra media-fetch --no-dev
+      - name: Record provider metadata error and precise elapsed time
+        timeout-minutes: 2
+        run: |
+          uv run --no-sync python - <<'PY'
+          from datetime import datetime, timezone
+          from importlib.metadata import version
+          import json, os, pathlib, tempfile, time
+          from clipforge.media_sources import RemoteMedia
+          from clipforge.storage import PipelineError, write_json
+          os.umask(0o077)
+          started = time.monotonic()
+          report = {'started_at': datetime.now(timezone.utc).isoformat(), 'yt_dlp_version': version('yt-dlp'), 'media_downloaded': False, 'gpu_allocated': False}
+          with tempfile.TemporaryDirectory(prefix='clipforge-url-probe-') as temporary:
+              source = RemoteMedia(os.environ['AUDIO_URL'], pathlib.Path(temporary))
+              try:
+                  report.update(status='metadata_available', metadata=source.metadata())
+              except PipelineError as error:
+                  report.update(status='metadata_failed', error=str(error))
+              finally:
+                  source.close()
+          report.update(ended_at=datetime.now(timezone.utc).isoformat(), elapsed_seconds=round(time.monotonic()-started, 3))
+          write_json(pathlib.Path('probe-result/metadata.json'), report)
+          print(json.dumps(report, ensure_ascii=False))
+          PY
+      - uses: actions/upload-artifact@v4
+        timeout-minutes: 2
+        if: always()
+        with:
+          name: clipforge-url-probe-${{ github.run_id }}
+          path: probe-result/metadata.json
+          retention-days: 7
+          if-no-files-found: warn
 
   previews:
     needs: colab-auto

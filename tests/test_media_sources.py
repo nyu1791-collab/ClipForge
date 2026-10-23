@@ -306,3 +306,63 @@ def test_platform_metadata_uses_yt_dlp_without_downloading_or_forwarding_credent
     finally:
         source.close()
     assert calls == [(url, False)]
+
+
+def test_provider_errors_keep_reason_and_redact_urls_and_credentials():
+    detail = sources.provider_error(
+        Exception(
+            "\x1b[31mSign in to confirm you are not a bot: https://cdn.example/file?signature=secret token=hidden\nAuthorization: Bearer private-value\nCookie: session=private-cookie"
+        )
+    )
+    assert "Sign in to confirm you are not a bot" in detail
+    assert all(
+        secret not in detail
+        for secret in (
+            "secret",
+            "hidden",
+            "private-value",
+            "private-cookie",
+            "https://",
+        )
+    )
+
+
+@pytest.mark.parametrize("metadata_only", [True, False])
+def test_original_yt_dlp_failure_identifies_the_stage_without_a_second_attempt(
+    tmp_path, monkeypatch, metadata_only
+):
+    import yt_dlp
+    from yt_dlp.utils import DownloadError
+
+    calls = []
+
+    class Downloader:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def extract_info(self, url, download):
+            calls.append(download)
+            raise DownloadError(
+                "ERROR: [youtube] video: Sign in to confirm you are not a bot. https://example.test/?signature=private-value"
+            )
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Downloader)
+    source = sources.RemoteMedia("https://youtu.be/6ras3m-gFuc", tmp_path / "media")
+    try:
+        with pytest.raises(PipelineError, match="Sign in to confirm") as caught:
+            if metadata_only:
+                source.metadata()
+            else:
+                source.retrieve(tmp_path / "audio.m4a", audio_only=True)
+        assert "private-value" not in str(caught.value)
+        if not metadata_only:
+            assert "phase=metadata" in str(caught.value)
+    finally:
+        source.close()
+    assert calls == [False]

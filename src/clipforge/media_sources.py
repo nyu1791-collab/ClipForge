@@ -23,6 +23,21 @@ from .storage import TIME_TOLERANCE, PipelineError, digest, process
 MEDIA_SUFFIXES = {".mp4", ".m4a", ".mp3", ".webm", ".m3u8"}
 
 
+def provider_error(error):
+    """Keep the provider's reason, removing URLs and common credential assignments."""
+    detail = re.sub(r"\x1b\[[0-9;]*m", "", str(error))
+    detail = re.sub(r"https?://[^\s<>\"']+", "[URL]", detail)
+    detail = re.sub(
+        r"(?i)\b(cookie|authorization)\s*[:=][^\r\n]*", r"\1=[REDACTED]", detail
+    )
+    detail = re.sub(
+        r"(?i)\b(cookie|authorization|token|signature|password)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        detail,
+    )
+    return " ".join(detail.split())[:500]
+
+
 def source_kind(url):
     if (
         not isinstance(url, str)
@@ -255,8 +270,10 @@ class RemoteMedia:
                 return {"duration": info.get("duration"), "has_video": self.has_video}
         except PipelineError:
             raise
-        except DownloadError:
-            raise PipelineError("media metadata acquisition failed (yt-dlp)") from None
+        except DownloadError as error:
+            raise PipelineError(
+                "media metadata acquisition failed (yt-dlp): " + provider_error(error)
+            ) from None
 
     def _download(self, audio_only, quality):
         from yt_dlp import YoutubeDL
@@ -287,16 +304,23 @@ class RemoteMedia:
             max_filesize=self.max_bytes - self.used,
             restrictfilenames=True,
         )
+        phase = "metadata"
         try:
             with YoutubeDL(options) as downloader:
                 info = downloader.extract_info(self.url, download=False)
                 self._validate(info)
                 self._check_hls(info)
+                phase = "download"
                 downloader.process_ie_result(info, download=True)
         except PipelineError:
             raise
-        except DownloadError:
-            raise PipelineError("media download failed (yt-dlp)") from None
+        except DownloadError as error:
+            raise PipelineError(
+                "media download failed (yt-dlp; phase="
+                + phase
+                + "): "
+                + provider_error(error)
+            ) from None
         files = [
             path
             for path in directory.glob("source.*")
