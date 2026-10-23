@@ -1,0 +1,60 @@
+# 字幕・画面分析・チャット・運用の改善
+
+基準は `ccr-7cea37c1-n7u7zz` の `5252e072059cecde8fe1c86e4d04baa2e8bd3d14`。
+YouTube の取得経路・認証・ネットワーク変更は対象に含めない。
+
+## 実装
+
+- `merge --local` などの CLI は、自前の固定エラーメッセージを表示する。例は `local merge code differs from source_ref`。外部プロセス・JSON パーサなどの例外は型だけにし、URL・本文・資格情報を含み得る詳細を表示しない。
+- 字幕の改行は既存の fugashi/UniDic の語の内部と連続したカタカナを保護する。短い「名詞の一文字名詞」も保持する。幅を超える一語は分割が必要な場合がある。
+- 半角 `?` / `!` は字幕を作る際だけ全角化し、連続した記号の後ろに全角スペースを一つ付ける。元の ASR 本文・単語時刻は変更しない。
+- 日本語の横字幕が目標の読む速さを超える場合、後ろの無音に加え、直前の空きも最大 0.5 秒使う。他の字幕と重ねず、音声自体は変更しない。無音がない高速発話の警告を隠したり、本文を削ったりはしない。
+- 音声の正規化は TP=-2.5 dB を目標にし、最終段を 192 kHz でリミットしてから 48 kHz に戻す。AAC 後のピークを測る合成パルスの回帰テストを追加した。実配信の完成品を再描画したという確認ではない。
+- 画面の下側の隅にある、複数フレームで持続する閉じた矩形の境界を探す。検出したワイプが幅内に収まる場合、その矩形全体が残るよう crop を制約する。手動 `crop_anchor` は引き続き優先される。これは矩形境界の検出であり、顔・人物の識別ではない。
+- 字幕位置の上下判定から、元動画の端にあるチャット列を除く。除いた範囲の文字を画面内容の混雑として数えない。
+- 画面分析は 256 枚以下ずつ ffmpeg のパイプから読み、集計後に元のフレームを解放する。保持するのは列・帯ごとの集計値と時刻。320×180・2 fps では一時間分の元画像約 414 MB を保持せず、帯の集計値は約 18 MB となる。ffmpeg のタイムアウト・失敗も確認する。
+- 完成したクリップの `layout.json` に分析結果と入力識別子を保存し、render receipt の SHA-256 に含める。入力とハッシュが一致する再描画ではフレーム分析を実行しない。
+- Kick チャットは最後の投稿と同じ秒を再取得し、ID で重複を除く。進捗のないページではカーソルを進め、要求上限で無限ループを防ぐ。
+- Kick API とページ解析が両方失敗したとき、`api=http_403` / `page=invalid_metadata` のような両方の理由を保持する。レスポンス本文や URL は含めない。
+
+## チャット密度のヒント
+
+`hint_topics(..., chat=series)` の `series` は、観測した一秒窓の `(元動画の秒, 投稿数)` の列。窓の間の欠落は未観測として扱い、投稿ゼロとは見なさない。
+近傍の投稿数の中央値に対する増加を、最大 0.05 の小さな加点に使う。投稿本文・ユーザー名はヒントや診断へ含めない。
+`tools/topic_hints.py --chat-windows private-counts.json` でも同じ入力を指定できる。
+
+通常のプレビュー経路では、既に取得した上位候補の区間だけを問い合わせる。重複区間は先に結合する。全編のチャットは取得しない。
+取得に失敗した区間は加点せず、`review-draft-diagnostics.json` の `chat_hints` に不足を記録する。最終採用と映像確認の承認は従来どおり必要。
+
+## 検証と CI
+
+基準コードの全テストを GitHub-hosted runner で実施した。
+Python 3.11 は 1,271 件通過・13件スキップ、3.12 は locked Colab control SDK を導入するため 1,331 件通過・11件スキップだった。
+修正後の一回目の完走は Python 3.12 で 1,356 件通過・11件スキップ。
+
+`Quality` の workflow_dispatch で `full_repetitions=10` を選ぶと、Python 3.12 の全テストを10回実行する。各回は次のコマンドを使い、ログと JUnit XML を別々のファイルに保存する。一回失敗しても残りを実行し、最後に失敗を返す。
+
+```sh
+uv run --no-sync python -m pytest -q -p no:cacheprovider
+```
+
+`fonts-noto-cjk` と ffmpeg を runner に導入する。`video_checks=false` では ASR 用の実音声 fixture を作らず、GPU も起動しない。
+ruff は `check .` と変更ファイルの `format --check` を実施する。
+
+Trivy は固定 action commit で fs を走査し、`vuln,license` を JSON artifact に保存する。`.venv` は対象外。初期運用は報告だけとし、検出やスキャナ障害をアプリのテスト失敗と混同しないよう step outcome も summary に記録する。
+
+worker 側は `.github/clipforge-source.json` に40桁の公開 source SHA を記録する。
+一致検査 CI はその SHA を checkout し、`tools/check_worker_workflows.py` で次の両方を byte 単位で比較する。
+
+| worker | 公開 source |
+| --- | --- |
+| `.github/workflows/clipforge.yml` | `deploy/clipforge.yml` |
+| `.github/workflows/clipforge-stages.yml` | `deploy/audio-stages.yml` |
+
+更新時は2本のファイルと固定 SHA を一緒に見直す。main やブランチ名を指定した可変の比較にはしない。
+
+## 残る実機確認
+
+PR #12 の bundle 先頭 `33cea7e` は、この作業時点でリモートから取得できなかった。PR の head は `5887e6d`。
+そのため Silero の分割変更をこのブランチへ推測で移植せず、実配信の中央±30分での測定と一台 ASR との話題境界比較は未実施。
+bundle と対応する worker 更新が反映された後、同じ音声・モデル・設定で比較する。キャッシュ形式が変わる点も引き継ぐ。
