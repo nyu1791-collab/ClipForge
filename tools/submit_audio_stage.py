@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 from clipforge import github_cli
-from clipforge.storage import digest, write_json
+from clipforge.storage import PipelineError, digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "main"
@@ -732,19 +732,44 @@ def main(argv=None):
     return 0
 
 
-if __name__ == "__main__":
+RECEIPT_HINT = (
+    "依頼が作られた後の失敗なら ~/.local/state/clipforge/<依頼ID>/receipt.json を確認する。"
+    "自動の再送や代替は行っていない。"
+)
+
+
+def failure_text(error):
+    """Name the error type and a detail that never carries paths, command lines or URLs."""
+    name = type(error).__name__
+    if isinstance(error, subprocess.CalledProcessError):
+        return name + ": exit " + str(error.returncode)
+    if isinstance(error, subprocess.TimeoutExpired):
+        return name + ": timed out"
+    if isinstance(error, OSError):
+        return (name + ": " + error.strerror) if error.strerror else name
+    # Messages from this tool and clipforge.github_cli are fixed text without secrets.
+    text = " ".join(str(error).split())[:300]
+    return name + ": " + text if text else name
+
+
+def run_cli(argv=None):
     try:
-        raise SystemExit(main())
+        return main(argv)
     except (
         OSError,
         ValueError,
         KeyError,
         TypeError,
         RuntimeError,
+        PipelineError,
         subprocess.SubprocessError,
-    ):
+    ) as error:
         print(
-            "Audio stage command failed; inspect its private receipt. No retry or fallback was started.",
+            "Audio stage command failed: " + failure_text(error) + "\n" + RECEIPT_HINT,
             file=sys.stderr,
         )
-        raise SystemExit(1) from None
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_cli())
