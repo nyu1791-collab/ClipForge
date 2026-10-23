@@ -130,15 +130,16 @@ def main(argv=None):
                 from clipforge.audio_inputs import verify_audio_artifact
 
                 report["phase"] = "reuse_verify"
-                reused = verify_audio_artifact(
-                    args.verified_audio_dir,
-                    source_url=args.url,
-                    source_ref=args.verified_audio_source_ref,
-                    request_id=args.verified_audio_request,
-                    workflow_run=args.verified_audio_run,
-                    max_bytes=settings.max_input_bytes,
-                    max_seconds=settings.max_source_seconds,
-                )
+                with rejected(report, "invalid_reuse_artifact"):
+                    reused = verify_audio_artifact(
+                        args.verified_audio_dir,
+                        source_url=args.url,
+                        source_ref=args.verified_audio_source_ref,
+                        request_id=args.verified_audio_request,
+                        workflow_run=args.verified_audio_run,
+                        max_bytes=settings.max_input_bytes,
+                        max_seconds=settings.max_source_seconds,
+                    )
                 if args.require_video and not reused["source_has_video"]:
                     raise PipelineError(
                         "audio-only sources cannot produce automatic video previews"

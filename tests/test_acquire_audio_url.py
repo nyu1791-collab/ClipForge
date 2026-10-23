@@ -214,6 +214,42 @@ def test_refused_inputs_leave_a_reason_code_and_never_reach_the_network(
     refused(output, reason)
 
 
+def test_refused_reused_artifact_records_its_own_reason_code(
+    acquisition, monkeypatch, tmp_path
+):
+    from clipforge import audio_inputs
+    from clipforge.storage import PipelineError
+
+    def refuse(*args, **kwargs):
+        raise PipelineError("synthetic artifact mismatch")
+
+    monkeypatch.setattr(audio_inputs, "verify_audio_artifact", refuse)
+    _, output, control, invoke = acquisition
+    producer = tmp_path / "producer"
+    producer.mkdir()
+    with pytest.raises(PipelineError, match="synthetic artifact mismatch"):
+        invoke(
+            extra=[
+                "--verified-audio-dir",
+                str(producer),
+                "--verified-audio-run",
+                "7",
+                "--verified-audio-request",
+                "c" * 32,
+                "--verified-audio-source-ref",
+                "d" * 40,
+            ]
+        )
+    assert not control["created"]
+    assert {path.name for path in output.iterdir()} == {"acquisition-report.json"}
+    report = json.loads((output / "acquisition-report.json").read_text())
+    assert report["reason"] == "invalid_reuse_artifact"
+    assert report["phase"] == "reuse_verify"
+    assert report["status"] == "acquisition_failed"
+    assert report["gpu_allocated"] is False and report["asr_started"] is False
+    assert "https://" not in json.dumps(report)
+
+
 def test_successful_acquisition_report_keeps_identity_and_transport(acquisition):
     _, output, _, invoke = acquisition
     invoke()
