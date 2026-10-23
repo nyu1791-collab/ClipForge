@@ -1088,9 +1088,13 @@ def same_run_args(previous, output, monkeypatch):
     monkeypatch.setattr(
         worker, "gh", lambda *a: pytest.fail("same-run path queried an unfinished run")
     )
+    # As the workflow does: the submitted settings, written outside the checkout.
+    settings = output.parent / "runner-temp" / "preview-settings.json"
+    settings.parent.mkdir(exist_ok=True)
+    settings.write_text(Path(worker.DEFAULT_CONFIG_FILE).read_text())
     args = _previews_args(output)
     args[args.index("--request-id") + 1] = IDENTITY
-    return args + ["--same-run-analysis", str(previous)]
+    return args + ["--same-run-analysis", str(previous), "--config", str(settings)]
 
 
 @pytest.mark.parametrize(

@@ -641,8 +641,16 @@ def main(argv=None):
                 args.same_run_analysis is not None
                 and (args.stage != "previews" or args.review_file is not None)
             )
-            or args.config.parent != Path(".")
-            or not re.fullmatch(CONFIG_FILE_PATTERN, args.config.name)
+            # Stage requests name a committed configuration file. The chained previews
+            # job instead passes the settings submitted with the run, written by the
+            # workflow from its validated settings_json.
+            or (
+                args.same_run_analysis is None
+                and (
+                    args.config.parent != Path(".")
+                    or not re.fullmatch(CONFIG_FILE_PATTERN, args.config.name)
+                )
+            )
         ):
             raise PipelineError("invalid private worker identity")
         if args.stage != "merge" and (
@@ -738,7 +746,9 @@ def main(argv=None):
             args.stage,
             os.environ.get("GITHUB_RUN_ID"),
             args.clip_index,
-            config_file=args.config.name,
+            config_file=None
+            if args.same_run_analysis is not None
+            else args.config.name,
         )
         summary = {
             "status": result["status"],
