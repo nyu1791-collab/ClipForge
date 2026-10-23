@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -651,7 +650,7 @@ def chat_settings(settings):
 
 
 def fake_kick_chat(monkeypatch, fetch):
-    """Stands in for the separate kick_chat module; records what the panel was drawn from."""
+    """Replaces the kick_chat calls; records what the panel was drawn from."""
     drawn = []
 
     def panel_ass(messages, clip_start, clip_end, **options):
@@ -660,8 +659,10 @@ def fake_kick_chat(monkeypatch, fetch):
         )
         return "[Script Info]\n"
 
-    module = SimpleNamespace(fetch_messages=fetch, panel_ass=panel_ass)
-    monkeypatch.setitem(sys.modules, "clipforge.kick_chat", module)
+    from clipforge import kick_chat
+
+    monkeypatch.setattr(kick_chat, "fetch_messages", fetch)
+    monkeypatch.setattr(kick_chat, "panel_ass", panel_ass)
     return drawn
 
 
