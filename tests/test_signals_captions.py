@@ -851,12 +851,19 @@ def test_no_landscape_layout_places_captions_at_the_top(
 
 @pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
 @pytest.mark.parametrize("aspect", ["9:16", "16:9"])
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ("本当? これは本当!!", "はい! 次はどう?"),
+        (" Hello? next!!　", " Yes! and now?　"),
+    ],
+)
 def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
-    tmp_path, settings, japanese_font, mode, aspect
+    tmp_path, settings, japanese_font, mode, aspect, texts
 ):
     from clipforge import quality
 
-    transcript, clip = _fill_case(("本当? これは本当!!", "はい! 次はどう?"))
+    transcript, clip = _fill_case(texts)
     configured = _fill_settings(settings, chat_panel=False, caption=mode, aspect=aspect)
     captions.create(transcript, clip, tmp_path, configured)
     ass = quality.caption_events(tmp_path / "captions.ass")
@@ -865,7 +872,7 @@ def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
     text = "".join(event[2].replace("\n", "") for event in ass)
     assert "?" not in text and "!" not in text
     assert "？　" in text or "！　" in text
-    assert all(not event[2].endswith("　") for event in ass)
+    assert all(event[2] == event[2].strip() for event in ass)
 
 
 @pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])

@@ -16,6 +16,12 @@ from clipforge.models import (
 from clipforge.storage import digest, write_json
 
 
+@pytest.fixture(autouse=True)
+def fixture_render_size(settings):
+    # Integration pixel checks explicitly target 720p; production defaults may be taller.
+    settings.height = 720
+
+
 @pytest.fixture(scope="module")
 def source_video():
     value = os.environ.get("CLIPFORGE_FIXTURE_PATH")
