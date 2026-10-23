@@ -23,6 +23,9 @@ VIDEO_CRF = (
     18  # x264 quality: lower is sharper and larger; 18 is near visually lossless
 )
 PROGRESS_RGB = (255, 196, 0)
+# Chat column background and the thin divider between the video area and the column.
+CHAT_BACKGROUND = "0x111114"
+CHAT_BORDER = "0x2a2a30"
 STANDARD_FRAME_RATES = tuple(
     Fraction(rate)
     for rate in (
@@ -318,6 +321,26 @@ def _layout(settings, width, height, src, out):
     )
 
 
+def _chat_fit(settings, width, height, src, out):
+    """Fit [src] into the video area left of the chat column (width is that area's width).
+
+    Used only with the chat panel, which replaces the layout and framing settings there. With
+    fit top, [src] is the 16:9 picture box, so the letterbox branch fits it without bars.
+    """
+    if settings.chat_panel_fit == "crop":
+        fit = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:"
+            f"force_divisible_by=2,crop={width}:{height}"
+        )
+    else:
+        fit = (
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease:"
+            f"force_divisible_by=2,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:"
+            f"color={CHAT_BACKGROUND}"
+        )
+    return f"[{src}]{fit},setsar=1[{out}]"
+
+
 def _position(position, margin, top):
     return {
         "right": f"main_w-overlay_w-{margin}:(main_h-overlay_h)/2",
@@ -327,8 +350,18 @@ def _position(position, margin, top):
     }[position]
 
 
-def _video_graph(clip, settings, width, height, keep, duration, visuals, ass):
-    """Video chain from [0:V:0] to [vout]; visuals are inputs 1..len(visuals)."""
+def _video_graph(
+    clip, settings, width, height, keep, duration, visuals, ass, chat_ass=None
+):
+    """Video chain from [0:V:0] to [vout]; visuals are inputs 1..len(visuals).
+
+    With the chat panel, the picture and its overlays use the video area left of the chat
+    column. The column is padded on after them, so their positions are relative to the area.
+    With fit top the picture is shorter than the frame; overlays and progress use its height.
+    """
+    panel = settings.chat_panel_pixels()
+    area = width - panel
+    picture = settings.chat_video_height() if panel else height
     zooms = settings.zoom
     labels = [f"b{i}" for i in range(1 + len(zooms))]
     chain = [_video_timeline(clip, keep)]
@@ -339,14 +372,19 @@ def _video_graph(clip, settings, width, height, keep, duration, visuals, ass):
         base = labels[0]
     else:
         base = "vin"
-    chain.append(_layout(settings, width, height, base, "lay0"))
+    if panel:
+        chain.append(_chat_fit(settings, area, picture, base, "lay0"))
+    else:
+        chain.append(_layout(settings, width, height, base, "lay0"))
     previous = "lay0"
     for index, zoom in enumerate(zooms):
         # Enlarged face shown over the frame while the zoom interval is active.
-        hh = min(round(height * 0.8 / 2) * 2, round(height * 0.3 * zoom.scale / 2) * 2)
+        hh = min(
+            round(picture * 0.8 / 2) * 2, round(picture * 0.3 * zoom.scale / 2) * 2
+        )
         chain.append(
             f"[{labels[index + 1]}]{_box(settings.face_box)},"
-            f"scale=w='min({width},trunc(iw*{hh}/ih/2)*2)':h={hh},setsar=1[z{index}]"
+            f"scale=w='min({area},trunc(iw*{hh}/ih/2)*2)':h={hh},setsar=1[z{index}]"
         )
         nxt = f"lay{index + 1}"
         chain.append(
@@ -354,11 +392,11 @@ def _video_graph(clip, settings, width, height, keep, duration, visuals, ass):
             f"enable='between(t,{zoom.start:.3f},{zoom.end:.3f})'[{nxt}]"
         )
         previous = nxt
-    margin = round(height * 0.04)
+    margin = round(picture * 0.04)
     # A top overlay sits below the heading when one is shown, so the title stays readable.
-    top = round(height * 0.14) if settings.heading else margin
+    top = round(picture * 0.14) if settings.heading else margin
     for index, visual in enumerate(visuals):
-        max_w = round(width * visual["max_fraction"])
+        max_w = round(area * visual["max_fraction"])
         # An overlay fades in and out over its own interval; a short one fades by half.
         ramp = min(settings.fade_seconds, (visual["end"] - visual["start"]) / 2)
         fades = ""
@@ -388,17 +426,28 @@ def _video_graph(clip, settings, width, height, keep, duration, visuals, ass):
         # drawbox ignores the timestamp in its width, so the bar is a strip whose
         # alpha grows with T (seconds) across the frame width; only 8 rows are evaluated.
         chain.append(
-            f"color=c=black@0:s={width}x8:r=30:d={duration:.6f},format=rgba,"
+            f"color=c=black@0:s={area}x8:r=30:d={duration:.6f},format=rgba,"
             f"geq=r={PROGRESS_RGB[0]}:g={PROGRESS_RGB[1]}:b={PROGRESS_RGB[2]}:"
-            f"a='if(lte(X\\,{width}*T/{duration:.6f})\\,230\\,0)'[pbar]"
+            f"a='if(lte(X\\,{area}*T/{duration:.6f})\\,230\\,0)'[pbar]"
         )
-        chain.append(f"[{previous}][pbar]overlay=0:{height - 8}:shortest=1[pb]")
+        chain.append(f"[{previous}][pbar]overlay=0:{picture - 8}:shortest=1[pb]")
         previous = "pb"
+    tail = []
+    if panel:
+        tail.append(f"pad={width}:{height}:0:0:color={CHAT_BACKGROUND}")
+        tail.append(f"drawbox=x={area}:y=0:w=2:h={height}:color={CHAT_BORDER}:t=fill")
+        if picture < height:
+            # The caption band is separated from the picture by a line of the same colour.
+            tail.append(
+                f"drawbox=x=0:y={picture}:w={area}:h=2:color={CHAT_BORDER}:t=fill"
+            )
     if ass:
         # Captions are copied to a fixed basename beside the generated MP4.
-        chain.append(f"[{previous}]ass=filename=captions.ass[vout]")
-    else:
-        chain.append(f"[{previous}]null[vout]")
+        tail.append("ass=filename=captions.ass")
+    if chat_ass:
+        # The chat is copied beside the MP4 under the same fixed-name rule as captions.
+        tail.append("ass=filename=chat.ass")
+    chain.append(f"[{previous}]{','.join(tail) or 'null'}[vout]")
     return ";".join(chain)
 
 
@@ -552,7 +601,9 @@ def measure_loudness(source, clip, settings, keep, duration):
     return values
 
 
-def render(source, destination, clip, settings, ass=None, keep=None, visuals=()):
+def render(
+    source, destination, clip, settings, ass=None, keep=None, visuals=(), chat_ass=None
+):
     """Render one clip; visuals are dicts with file, start, end, position, max_fraction."""
     width, height = frame_size(settings)
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
@@ -572,6 +623,16 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
             )
         if not Path(ass).is_file():
             raise PipelineError("captions file is missing")
+    if chat_ass:
+        if not settings.chat_panel:
+            raise PipelineError("chat file needs the chat panel setting")
+        if (
+            Path(chat_ass).resolve()
+            != (Path(destination).parent / "chat.ass").resolve()
+        ):
+            raise PipelineError("chat must be chat.ass beside the rendered clip")
+        if not Path(chat_ass).is_file():
+            raise PipelineError("chat file is missing")
     if settings.bgm and not Path(settings.bgm).is_file():
         raise PipelineError("background music file is missing")
     if len(settings.sound_effects) > MAX_SOUND_EFFECTS:
@@ -586,7 +647,11 @@ def render(source, destination, clip, settings, ass=None, keep=None, visuals=())
     source_info = probe(source)
     has_audio = source_info["audio"]
     first_extra = 1 + len(visuals)
-    graph = [_video_graph(clip, settings, width, height, keep, duration, visuals, ass)]
+    graph = [
+        _video_graph(
+            clip, settings, width, height, keep, duration, visuals, ass, chat_ass
+        )
+    ]
     if has_audio or settings.bgm or settings.sound_effects:
         measured = (
             measure_loudness(source, clip, settings, keep, duration)

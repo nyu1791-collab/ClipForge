@@ -151,7 +151,7 @@ REQUIRED_FILES = {
     "ledger.json",
     "quality.json",
 }
-OPTIONAL_FILES = {"thumbnail.png"}
+OPTIONAL_FILES = {"thumbnail.png", "chat.ass"}  # chat.ass only with the chat panel
 VISUAL_DIR = "visuals"
 SUPPLIED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REPOSITORY_URL = "https://github.com/nyu1791-collab/ClipForge"
@@ -326,14 +326,23 @@ def cut_regions(source, transcript, clip, settings):
     return regions or None
 
 
-def render_clip(source, root, index, clip, transcript, settings, key):
+def render_clip(source, root, index, clip, transcript, settings, key, chat=None):
+    """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel."""
     name = f"clip-{index:03}"
     target = root / name
+    if settings.chat_panel and chat is None:
+        raise PipelineError("chat panel needs a Kick VOD URL source")
     render_key = fingerprint(
         {
             "job": key,
             "clip": clip.model_dump(),
             "transcript": transcript.model_dump(),
+            # Only chat-panel renders depend on chat; other keys stay as they were.
+            **(
+                {"chat": {"ass": fingerprint(chat["ass"]), "reason": chat["reason"]}}
+                if settings.chat_panel
+                else {}
+            ),
         }
     )
     receipt = target / "render.json"
@@ -348,6 +357,9 @@ def render_clip(source, root, index, clip, transcript, settings, key):
     keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
     with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
         directory = Path(temporary)
+        if settings.chat_panel:
+            # Written beside the MP4 under the fixed name the render graph uses.
+            (directory / "chat.ass").write_text(chat["ass"], encoding="utf-8")
         duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
         visuals, ledger = timed(
             timings, "visuals", prepare_visuals, clip, settings, directory, duration
@@ -375,6 +387,7 @@ def render_clip(source, root, index, clip, transcript, settings, key):
                 ass=directory / "captions.ass",
                 keep=keep,
                 visuals=visuals,
+                **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
             ),
         )
         # Checked before the thumbnail, so a strict refusal costs no extra work.
@@ -418,6 +431,13 @@ def render_clip(source, root, index, clip, transcript, settings, key):
             # Seconds per stage; not part of the render key or the hashed files.
             "timings": timings,
         }
+        if settings.chat_panel:
+            # Diagnostics: an unavailable chat leaves the column empty and records why.
+            saved["chat"] = {
+                "messages": chat["messages"],
+                "reason": chat["reason"],
+                "error": chat["error"],
+            }
         write_json(directory / "render.json", saved)
         # Commit the whole clip directory only when MP4 and captions are complete.
         if target.exists():

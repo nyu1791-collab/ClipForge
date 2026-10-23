@@ -169,6 +169,7 @@ def stage_request():
         "previous_run": os.environ.get("PREVIOUS_RUN", ""),
         "previous_request": os.environ.get("PREVIOUS_REQUEST", ""),
         "clip_index": os.environ.get("CLIP_INDEX") or None,
+        "config_file": os.environ.get("CONFIG_FILE") or None,
     }
     if (
         stage["audio_stage"] != "render"
@@ -177,6 +178,12 @@ def stage_request():
         or (
             stage["clip_index"] is not None
             and not re.fullmatch(r"[1-9][0-9]?", stage["clip_index"])
+        )
+        or (
+            stage["config_file"] is not None
+            and not re.fullmatch(
+                r"config\.[a-z0-9-]+\.example\.json", stage["config_file"]
+            )
         )
     ):
         raise ControlError("Invalid audio stage request")

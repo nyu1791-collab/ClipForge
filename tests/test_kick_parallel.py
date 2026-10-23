@@ -61,6 +61,13 @@ def make_vod(tmp_path, monkeypatch):
                     "stream": True,
                 }
                 if not url.endswith(".ts"):
+                    if url not in data:
+                        return SimpleNamespace(
+                            status_code=404,
+                            headers={},
+                            iter_content=lambda: [],
+                            close=lambda: None,
+                        )
                     return SimpleNamespace(
                         status_code=200,
                         iter_content=lambda: [data[url].encode()],

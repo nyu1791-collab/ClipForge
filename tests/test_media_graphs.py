@@ -493,3 +493,238 @@ def test_render_refuses_silence_cuts_with_too_many_regions(tmp_path, probed):
         media.render(
             "/in.mp4", tmp_path / "out.mp4", clip_for_render(), make(), keep=keep
         )
+
+
+CHAT_PANEL = {
+    "chat_panel": True,
+    "aspect": "16:9",
+    "height": 1080,
+    "chat_panel_width": 480,
+}
+
+
+def test_video_graph_without_the_chat_panel_is_unchanged():
+    settings = make(progress_bar=False, fade_seconds=0, layout="fit")
+    assert media._video_graph(
+        CLIP, settings, 404, 720, None, 10.0, [], "captions.ass"
+    ) == (
+        "[0:V:0]setpts=PTS-STARTPTS[vin];"
+        "[vin]scale=404:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
+        "pad=404:720:(ow-iw)/2:(oh-ih)/2,setsar=1[lay0];"
+        "[lay0]ass=filename=captions.ass[vout]"
+    )
+
+
+def test_chat_panel_crops_the_video_left_of_the_column_and_pads_the_right():
+    settings = make(
+        **CHAT_PANEL, chat_panel_fit="crop", progress_bar=False, fade_seconds=0
+    )
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+    )
+    assert (
+        "[vin]scale=1440:1080:force_original_aspect_ratio=increase:"
+        "force_divisible_by=2,crop=1440:1080,setsar=1[lay0]"
+    ) in graph
+    assert graph.endswith(
+        "[lay0]pad=1920:1080:0:0:color=0x111114,"
+        "drawbox=x=1440:y=0:w=2:h=1080:color=0x2a2a30:t=fill,"
+        "ass=filename=captions.ass,ass=filename=chat.ass[vout]"
+    )
+
+
+def test_chat_panel_letterbox_shrinks_the_video_between_bands():
+    settings = make(
+        **CHAT_PANEL, chat_panel_fit="letterbox", progress_bar=False, fade_seconds=0
+    )
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, [], None, "chat.ass"
+    )
+    assert (
+        "[vin]scale=1440:1080:force_original_aspect_ratio=decrease:"
+        "force_divisible_by=2,pad=1440:1080:(ow-iw)/2:(oh-ih)/2:color=0x111114,setsar=1[lay0]"
+    ) in graph
+    assert graph.endswith(
+        "[lay0]pad=1920:1080:0:0:color=0x111114,"
+        "drawbox=x=1440:y=0:w=2:h=1080:color=0x2a2a30:t=fill,"
+        "ass=filename=chat.ass[vout]"
+    )
+
+
+def test_chat_panel_overlays_and_progress_use_the_video_area():
+    settings = make(
+        **CHAT_PANEL,
+        chat_panel_fit="crop",
+        face_box=(0.1, 0.1, 0.5, 0.5),
+        zoom=[Zoom(start=1, end=3, scale=1.5)],
+        fade_seconds=0,
+    )
+    visuals = [
+        {
+            "file": "v.png",
+            "start": 1,
+            "end": 4,
+            "position": "right",
+            "max_fraction": 0.5,
+        }
+    ]
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, visuals, "captions.ass", "chat.ass"
+    )
+    # Zoomed face and the visual are sized to the 1440 px area; the visual sits at its right.
+    assert "scale=w='min(1440,trunc(iw*486/ih/2)*2)':h=486" in graph
+    assert "scale=w='min(iw,720)':h=-2" in graph
+    assert "overlay=main_w-overlay_w-43:(main_h-overlay_h)/2" in graph
+    assert "color=c=black@0:s=1440x8:r=30:d=10.000000" in graph
+    assert r"lte(X\,1440*T/10.000000)" in graph
+    assert "overlay=0:1072:shortest=1[pb]" in graph
+
+
+TOP = {**CHAT_PANEL, "chat_panel_fit": "top"}
+
+
+def test_chat_panel_top_puts_the_picture_above_a_caption_band():
+    settings = make(**TOP, progress_bar=False, fade_seconds=0)
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+    )
+    # The 16:9 picture is 1440x810 at the top left; the band under it has the column colour.
+    assert (
+        "[vin]scale=1440:810:force_original_aspect_ratio=decrease:"
+        "force_divisible_by=2,pad=1440:810:(ow-iw)/2:(oh-ih)/2:color=0x111114,setsar=1[lay0]"
+    ) in graph
+    assert graph.endswith(
+        "[lay0]pad=1920:1080:0:0:color=0x111114,"
+        "drawbox=x=1440:y=0:w=2:h=1080:color=0x2a2a30:t=fill,"
+        "drawbox=x=0:y=810:w=1440:h=2:color=0x2a2a30:t=fill,"
+        "ass=filename=captions.ass,ass=filename=chat.ass[vout]"
+    )
+
+
+def test_chat_panel_top_overlays_and_progress_use_the_picture():
+    settings = make(
+        **TOP,
+        face_box=(0.1, 0.1, 0.5, 0.5),
+        zoom=[Zoom(start=1, end=3, scale=1.5)],
+        fade_seconds=0,
+    )
+    visuals = [
+        {
+            "file": "v.png",
+            "start": 1,
+            "end": 4,
+            "position": "right",
+            "max_fraction": 0.5,
+        }
+    ]
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, visuals, "captions.ass", "chat.ass"
+    )
+    # Zoom, visual and progress are sized to the 1440x810 picture, not the 1080 frame.
+    assert "scale=w='min(1440,trunc(iw*364/ih/2)*2)':h=364" in graph
+    assert "scale=w='min(iw,720)':h=-2" in graph
+    assert "overlay=main_w-overlay_w-32:(main_h-overlay_h)/2" in graph
+    assert "color=c=black@0:s=1440x8:r=30:d=10.000000" in graph
+    assert "overlay=0:802:shortest=1[pb]" in graph
+    heading = media._video_graph(
+        CLIP,
+        make(**TOP, heading=True, fade_seconds=0),
+        1920,
+        1080,
+        None,
+        10.0,
+        [{**visuals[0], "position": "top"}],
+        "captions.ass",
+    )
+    # With a heading the top overlay starts below it, at 14 percent of the picture height.
+    assert "overlay=(main_w-overlay_w)/2:113:" in heading
+
+
+def test_chat_panel_top_scales_the_picture_with_the_column_width():
+    settings = make(**{**TOP, "chat_panel_width": 400}, fade_seconds=0)
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+    )
+    # The video area is 1520 px wide; its 16:9 picture is 856 px high (855 rounded to even).
+    assert "[vin]scale=1520:856:" in graph
+    assert "pad=1920:1080:0:0:color=0x111114,drawbox=x=1520:y=0" in graph
+    assert "drawbox=x=1520:y=0:w=2:h=1080" in graph
+    assert "drawbox=x=0:y=856:w=1520:h=2" in graph
+    assert "color=c=black@0:s=1520x8:r=30" in graph
+    assert "overlay=0:848:shortest=1[pb]" in graph
+
+
+def test_chat_ass_is_refused_without_the_setting_or_outside_its_name(tmp_path):
+    with pytest.raises(PipelineError, match="chat panel setting"):
+        media.render(
+            "/in.mp4",
+            tmp_path / "out.mp4",
+            clip_for_render(),
+            make(),
+            chat_ass=tmp_path / "chat.ass",
+        )
+    settings = make(**CHAT_PANEL)
+    with pytest.raises(PipelineError, match="chat.ass beside"):
+        media.render(
+            "/in.mp4",
+            tmp_path / "out.mp4",
+            clip_for_render(),
+            settings,
+            chat_ass=tmp_path / "other.ass",
+        )
+    with pytest.raises(PipelineError, match="chat file is missing"):
+        media.render(
+            "/in.mp4",
+            tmp_path / "out.mp4",
+            clip_for_render(),
+            settings,
+            chat_ass=tmp_path / "chat.ass",
+        )
+
+
+@pytest.mark.parametrize("fit", ["crop", "letterbox", "top"])
+def test_chat_panel_renders_a_real_landscape_frame(tmp_path, fit):
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg is not installed")
+    source = tmp_path / "source.mp4"
+    subprocess.run(
+        [
+            ffmpeg,
+            "-v",
+            "error",
+            "-n",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=640x480:rate=30:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+    destination = tmp_path / "video.mp4"
+    chat = tmp_path / "chat.ass"
+    chat.write_text(
+        "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n\n"
+        "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, Alignment\n"
+        "Style: Default,Noto Sans CJK JP,40,&H00FFFFFF,7\n\n"
+        "[Events]\nFormat: Layer, Start, End, Style, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,{\\pos(1500,200)}テスト\n",
+        encoding="utf-8",
+    )
+    settings = make(
+        **CHAT_PANEL,
+        chat_panel_fit=fit,
+        loudness_two_pass=False,
+        progress_bar=False,
+        fade_seconds=0,
+    )
+    clip = SimpleNamespace(start=0.0, end=3.0)
+    info = media.render(source, destination, clip, settings, chat_ass=chat)
+    assert (info["width"], info["height"]) == (1920, 1080)

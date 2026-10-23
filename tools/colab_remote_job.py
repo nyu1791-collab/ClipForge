@@ -370,6 +370,12 @@ def main():
             ]
             if stage.get("clip_index"):
                 arguments += ["--clip-index", stage["clip_index"]]
+            if stage.get("config_file"):
+                if not re.fullmatch(
+                    r"config\.[a-z0-9-]+\.example\.json", stage["config_file"]
+                ):
+                    raise RuntimeError("Invalid configuration file")
+                arguments += ["--config", stage["config_file"]]
             stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
             if payload.get("youtube_cookies_b64"):
                 stage_env["YOUTUBE_COOKIES_B64"] = payload["youtube_cookies_b64"]

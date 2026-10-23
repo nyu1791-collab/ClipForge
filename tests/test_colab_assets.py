@@ -1122,3 +1122,76 @@ class StreamedRestoreTests(unittest.TestCase):
                     (root / "restored/blob.bin").read_bytes(),
                     (source / "blob.bin").read_bytes(),
                 )
+
+
+class RemoteRenderConfigTests(unittest.TestCase):
+    def render_arguments(self, config_file):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        work = root / "job"
+        stage = {
+            "previous_run": "122",
+            "previous_request": "c" * 32,
+            "review": '{"clips": []}',
+            "clip_index": "1",
+        }
+        if config_file is not None:
+            stage["config_file"] = config_file
+        payload = {
+            "mode": "audio-stage",
+            "request_id": "a" * 32,
+            "source_ref": "b" * 40,
+            "workflow_run": "123",
+            "github_token": "test-only-github",
+            "accelerator": "NONE",
+            "stage": stage,
+        }
+        captured = []
+
+        def command(arguments, environment, name, **kwargs):
+            if name == "render":
+                captured.append(arguments)
+                (work / "out").mkdir(parents=True, exist_ok=True)
+                (work / "out/manifest.json").write_text('{"status": "clip_rendered"}')
+
+        bundles = Mock()
+        bundles.restore.return_value = False
+        with (
+            patch.object(remote_job, "ROOT", root),
+            patch.object(remote_job, "WORK", work),
+            patch.dict(os.environ, {}),
+            patch.object(remote_job, "Path") as paths,
+            patch.object(
+                remote_job,
+                "configuration",
+                return_value=("cache-key", root, root),
+            ),
+            patch.object(remote_job, "ReleaseBundles", return_value=bundles),
+            patch.object(remote_job, "host_info", return_value={}),
+            patch.object(remote_job, "gpu_info", return_value={}),
+            patch.object(remote_job, "read_setup_timings", return_value={}),
+            patch.object(remote_job, "publish_result", return_value=True),
+            patch.object(remote_job.os, "umask"),
+            patch.object(remote_job, "mark_restored"),
+            patch.object(remote_job, "command", side_effect=command),
+        ):
+            paths.return_value.read_text.return_value = json.dumps(payload)
+            try:
+                remote_job.main()
+            except RuntimeError:
+                pass
+        return captured
+
+    def test_render_passes_the_requested_configuration_to_the_worker(self):
+        (arguments,) = self.render_arguments("config.landscape-chat.example.json")
+        self.assertEqual(
+            arguments[-2:], ["--config", "config.landscape-chat.example.json"]
+        )
+
+    def test_render_without_a_configuration_keeps_the_worker_default(self):
+        (arguments,) = self.render_arguments(None)
+        self.assertNotIn("--config", arguments)
+
+    def test_render_rejects_a_configuration_outside_the_pattern(self):
+        self.assertEqual(self.render_arguments("../config.landscape.example.json"), [])

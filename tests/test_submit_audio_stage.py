@@ -25,6 +25,10 @@ def stage_submitter(tmp_path, monkeypatch):
         "posts": [],
         "post_args": [],
         "timeout": False,
+        "configs": {
+            "config.landscape.example.json",
+            "config.landscape-chat.example.json",
+        },
     }
 
     def gh(*args, body=None):
@@ -52,6 +56,13 @@ def stage_submitter(tmp_path, monkeypatch):
         return ""
 
     monkeypatch.setattr(module, "gh", gh)
+    # Fake refs have no committed files; the real check is tested separately.
+    control["real_config_in_source"] = module.config_in_source
+    monkeypatch.setattr(
+        module,
+        "config_in_source",
+        lambda source_ref, name: name in control["configs"],
+    )
     args = [
         "--stage",
         "previews",
@@ -982,8 +993,8 @@ def test_local_merge_does_not_publish_output_that_fails_collect_verification(
     module, worker, _, _, args = local_merge_env
     original = worker.write_receipt
 
-    def tamper(output, *args):
-        original(output, *args)
+    def tamper(output, *args, **kwargs):
+        original(output, *args, **kwargs)
         (output / "delivery/clips/clip-001/video.mp4").write_bytes(b"changed")
 
     monkeypatch.setattr(worker, "write_receipt", tamper)
@@ -1094,6 +1105,7 @@ def test_audio_stage_workflow_validates_worker_stage_combination(
         "CLIP_INDEX": "",
         "PART_RUNS": "123:" + "c" * 32 if stage == "merge" else "",
         "REVIEW_JSON": '{"clips": [{"video_reviewed": true}]}',
+        "CONFIG_FILE": "config.landscape.example.json",
         "RUNNER_TEMP": str(tmp_path),
     }.items():
         monkeypatch.setenv(name, value)
@@ -1121,3 +1133,201 @@ def test_video_workflow_uses_only_hosted_cpu_or_automatic_colab():
         assert job["runs-on"] == "ubuntu-24.04"
         assert f"inputs.worker == '{worker}'" in job["if"]
     assert workflow["jobs"]["clip"]["env"]["CLIPFORGE_REQUIRE_CUDA"] == "0"
+
+
+CHAT_CONFIG = "config.landscape-chat.example.json"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../config.landscape.example.json",
+        "config/landscape.example.json",
+        "config.Landscape.example.json",
+        "config.landscape.json",
+        "config.landscape.example.json.bak",
+        "config.a_b.example.json",
+        "config..example.json",
+    ],
+)
+def test_config_file_name_is_limited_before_any_dispatch(
+    stage_submitter, tmp_path, name
+):
+    module, control, args = stage_submitter
+    with pytest.raises(RuntimeError, match="name is not allowed"):
+        module.main([*render_args(args, tmp_path), "--config-file", name])
+    assert not control["posts"]
+
+
+def test_config_file_must_be_committed_at_the_source_ref(stage_submitter, tmp_path):
+    module, control, args = stage_submitter
+    control["configs"].discard(CHAT_CONFIG)
+    with pytest.raises(RuntimeError, match="not committed at --source-ref"):
+        module.main([*render_args(args, tmp_path), "--config-file", CHAT_CONFIG])
+    assert not control["posts"]
+
+
+def test_config_file_check_reads_the_real_commit(stage_submitter):
+    module, control, _ = stage_submitter
+    real = control["real_config_in_source"]
+    assert real("HEAD", "config.landscape.example.json")
+    assert not real("HEAD", "config.no-such-setting.example.json")
+    assert not real("0" * 40, "config.landscape.example.json")
+
+
+def test_config_file_is_part_of_the_request_identity_and_receipt(
+    stage_submitter, tmp_path
+):
+    module, control, args = stage_submitter
+    render = render_args(args, tmp_path)
+    assert module.main(render) == 0
+    assert module.main([*render, "--config-file", CHAT_CONFIG]) == 0
+    default_inputs, chat_inputs = (post["inputs"] for post in control["posts"])
+    assert default_inputs["config_file"] == "config.landscape.example.json"
+    assert chat_inputs["config_file"] == CHAT_CONFIG
+    assert default_inputs["request_id"] != chat_inputs["request_id"]
+    receipt_path = tmp_path / ".local/state/clipforge" / chat_inputs["request_id"]
+    receipt = json.loads((receipt_path / "receipt.json").read_text())
+    assert receipt["config_file"] == CHAT_CONFIG
+    assert json.loads((receipt_path / "request.json").read_text())["config_file"] == (
+        CHAT_CONFIG
+    )
+
+
+def test_config_file_applies_only_to_render(stage_submitter):
+    module, control, args = stage_submitter
+    with pytest.raises(RuntimeError, match="render only"):
+        module.main([*args, "--config-file", CHAT_CONFIG])
+    assert not control["posts"]
+
+
+def write_part_receipt(state, request_id, config_file=None):
+    """A local dispatch receipt; receipts from before the option carry no config_file."""
+    path = state / request_id / "receipt.json"
+    path.parent.mkdir(parents=True)
+    value = {"request_id": request_id}
+    if config_file is not None:
+        value["config_file"] = config_file
+    path.write_text(json.dumps(value))
+
+
+def test_merge_inherits_the_configuration_its_parts_used(stage_submitter, tmp_path):
+    module, control, args = stage_submitter
+    state = tmp_path / ".local/state/clipforge"
+    write_part_receipt(state, "c" * 32, CHAT_CONFIG)
+    write_part_receipt(state, "d" * 32, CHAT_CONFIG)
+    parts = "11:" + "c" * 32 + ",12:" + "d" * 32
+    merge = ["--stage", "merge"] + args[2:] + ["--part-runs", parts]
+    assert module.main(merge) == 0
+    assert control["posts"][0]["inputs"]["config_file"] == CHAT_CONFIG
+
+
+def test_merge_refuses_mixed_part_configurations_before_dispatch(
+    stage_submitter, tmp_path
+):
+    module, control, args = stage_submitter
+    state = tmp_path / ".local/state/clipforge"
+    write_part_receipt(state, "c" * 32, CHAT_CONFIG)
+    write_part_receipt(state, "d" * 32)
+    parts = "11:" + "c" * 32 + ",12:" + "d" * 32
+    merge = ["--stage", "merge"] + args[2:] + ["--part-runs", parts]
+    with pytest.raises(RuntimeError, match="different configuration files"):
+        module.main(merge)
+    assert not control["posts"]
+
+
+def test_local_merge_refuses_mixed_part_configurations(local_merge_env, tmp_path):
+    module, worker, control, sources, args = local_merge_env
+    path = sources["2" * 32] / "request-receipt.json"
+    receipt = json.loads(path.read_text())
+    receipt["config_file"] = CHAT_CONFIG
+    path.write_text(json.dumps(receipt))
+    output = tmp_path / "local"
+    with pytest.raises(RuntimeError, match="different configuration files"):
+        module.main([*args, "--output", str(output)])
+    assert not output.exists()
+
+
+def test_local_merge_reads_the_configuration_its_parts_used(
+    local_merge_env, tmp_path, monkeypatch
+):
+    module, worker, _, sources, args = local_merge_env
+    for root in sources.values():
+        path = root / "request-receipt.json"
+        receipt = json.loads(path.read_text())
+        receipt["config_file"] = CHAT_CONFIG
+        path.write_text(json.dumps(receipt))
+    calls = []
+
+    def git(command, **kwargs):
+        calls.append(command)
+        if command == ["git", "rev-parse", "HEAD"]:
+            return subprocess.CompletedProcess(command, 0, stdout="9" * 40)
+        assert command == ["git", "show", SOURCE_REF + ":" + CHAT_CONFIG]
+        return subprocess.CompletedProcess(
+            command, 0, stdout=Path("config.landscape.example.json").read_text()
+        )
+
+    monkeypatch.setattr(subprocess, "run", git)
+    monkeypatch.setattr(
+        worker, "merge_parts", lambda *a, **k: pytest.fail("merged with different code")
+    )
+    with pytest.raises(RuntimeError, match="code differs from source_ref"):
+        module.main([*args, "--output", str(tmp_path / "local")])
+    assert len(calls) == 2
+
+
+def test_audio_stage_workflow_passes_a_validated_config_file_to_both_paths():
+    import yaml
+
+    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert inputs["config_file"]["default"] == "config.landscape.example.json"
+    for name in ("audio-stage", "colab-render"):
+        job = workflow["jobs"][name]
+        assert job["env"]["CONFIG_FILE"] == "${{ inputs.config_file }}"
+        assert "os.environ['CONFIG_FILE']" in job["steps"][0]["run"]
+    steps = workflow["jobs"]["audio-stage"]["steps"]
+    run = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Reuse verified ASR and execute only the requested stage"
+    )
+    assert run.count('--config "$CONFIG_FILE"') == 2
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../config.landscape.example.json",
+        "config.landscape.json",
+        "config.a.example.json;rm",
+    ],
+)
+def test_audio_stage_workflow_rejects_unlisted_config_files(
+    tmp_path, monkeypatch, name
+):
+    import yaml
+
+    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
+    code = (
+        workflow["jobs"]["audio-stage"]["steps"][0]["run"]
+        .split("python3 - <<'PY'\n", 1)[1]
+        .rsplit("\nPY", 1)[0]
+    )
+    for key, value in {
+        "SOURCE_REF": SOURCE_REF,
+        "REQUEST_ID": "d" * 32,
+        "INPUT_TAG": "clipforge-input-" + "d" * 32,
+        "PREVIOUS_RUN": str(PREVIOUS_RUN),
+        "PREVIOUS_REQUEST": PREVIOUS_REQUEST,
+        "AUDIO_STAGE": "render",
+        "CLIP_INDEX": "",
+        "PART_RUNS": "",
+        "CONFIG_FILE": name,
+        "REVIEW_JSON": '{"clips": [{"video_reviewed": true}]}',
+        "RUNNER_TEMP": str(tmp_path),
+    }.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(AssertionError):
+        exec(compile(code, "stage-validation", "exec"), {})

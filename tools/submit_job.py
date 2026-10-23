@@ -44,6 +44,7 @@ SETTINGS_FIELDS = {
     "height",
     "encode_preset",
     "caption",
+    "caption_scale",
     "font",
     "horizontal_target_cps",
     "horizontal_warn_cps",
@@ -78,6 +79,10 @@ SETTINGS_FIELDS = {
     "max_transport_bytes",
     "chat_url",
     "chat_offset_seconds",
+    "chat_panel",
+    "chat_panel_width",
+    "chat_panel_fit",
+    "chat_anonymize",
 }
 # These name files on the submitting machine; the remote worker cannot read them.
 LOCAL_FILE_FIELDS = {

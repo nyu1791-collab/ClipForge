@@ -1399,3 +1399,47 @@ class RenderedChecksumTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaisesRegex(control.ControlError, "Missing result file"):
                 self._collect(temporary, files, self._sha(self.FILES))
+
+
+class StageConfigFileTests(unittest.TestCase):
+    def stage_environment(self, review, **extra):
+        return {
+            "AUDIO_STAGE": "render",
+            "PREVIOUS_RUN": "123",
+            "PREVIOUS_REQUEST": "c" * 32,
+            "REVIEW_FILE": str(review),
+            **extra,
+        }
+
+    def test_stage_request_carries_a_config_name_only_when_given(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary) / "review.json"
+            review.write_text('{"clips": []}')
+            with patch.dict(os.environ, self.stage_environment(review)):
+                os.environ.pop("CONFIG_FILE", None)
+                self.assertIsNone(control.stage_request()["config_file"])
+            with patch.dict(
+                os.environ,
+                self.stage_environment(
+                    review, CONFIG_FILE="config.landscape-chat.example.json"
+                ),
+            ):
+                stage = control.stage_request()
+            self.assertEqual(stage["config_file"], "config.landscape-chat.example.json")
+
+    def test_stage_request_rejects_names_outside_the_pattern(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            review = Path(temporary) / "review.json"
+            review.write_text('{"clips": []}')
+            for name in (
+                "../config.landscape.example.json",
+                "config.Chat.example.json",
+            ):
+                with (
+                    self.subTest(name=name),
+                    patch.dict(
+                        os.environ, self.stage_environment(review, CONFIG_FILE=name)
+                    ),
+                ):
+                    with self.assertRaises(control.ControlError):
+                        control.stage_request()

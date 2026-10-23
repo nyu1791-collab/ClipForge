@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 import sys
 
-from . import landscape, pipeline, topics
+from . import landscape, media, pipeline, topics
 from .kick_media import RANGE_FORMAT, KickVOD
 from .media_sources import canonical, open_source
 from .models import Transcript
@@ -347,6 +347,44 @@ def prefetch_interval(vod, clip, target):
         vod.prefetch(clip.start, clip.end)
 
 
+def chat_panel_for_clip(vod, clip, settings):
+    """Chat ASS for one reviewed clip, timed on the original video.
+
+    A failed chat fetch does not fail the clip: the column is drawn empty and the reason is
+    returned for the clip's diagnostics.
+    """
+    # Imported here: only chat-panel renders need the chat module.
+    from . import kick_chat
+
+    kick = re.fullmatch(r"https://kick\.com/([A-Za-z0-9_-]+)/videos/([^/]+)", vod.url)
+    messages, reason, error = [], None, None
+    if kick is None:
+        # Chat replay is read from Kick only; other sources get an empty column.
+        reason = "chat_unsupported_source"
+    else:
+        try:
+            messages = kick_chat.fetch_messages(*kick.groups(), clip.start, clip.end)
+        except Exception as failure:
+            reason, error = "chat_unavailable", type(failure).__name__
+    width, height = media.frame_size(settings)
+    ass = kick_chat.panel_ass(
+        messages,
+        clip.start,
+        clip.end,
+        width=width,
+        height=height,
+        panel_x=width - settings.chat_panel_pixels(),
+        font=settings.font,
+        anonymize=settings.chat_anonymize,
+    )
+    return {
+        "ass": ass,
+        "messages": len(messages),
+        "reason": reason,
+        "error": error,
+    }
+
+
 def render(vod, root, settings, review_file, analysis_result=None, only=None):
     analysis, transcript = (
         analysis_result if analysis_result is not None else analyze(vod, root, settings)
@@ -431,17 +469,25 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
             local_transcript = shifted_transcript(
                 local_transcript, 0.0, clip.end - clip.start, offset=start_offset
             )
+            # Chat is timed on the clip's original interval, not the shifted local one.
+            chat_options = {}
+            if settings.chat_panel:
+                chat_options["chat"] = pipeline.timed(
+                    clip_timings, "chat", chat_panel_for_clip, vod, clip, settings
+                )
             row = pipeline.timed(
                 clip_timings,
                 "render",
-                pipeline.render_clip,
-                target,
-                output / "clips",
-                index,
-                local,
-                local_transcript,
-                settings,
-                fingerprint({"job": key, "source": receipt["sha256"]}),
+                lambda: pipeline.render_clip(
+                    target,
+                    output / "clips",
+                    index,
+                    local,
+                    local_transcript,
+                    settings,
+                    fingerprint({"job": key, "source": receipt["sha256"]}),
+                    **chat_options,
+                ),
             )
             row["source_interval"] = {
                 "start": clip.start,

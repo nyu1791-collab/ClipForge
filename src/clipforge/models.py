@@ -8,6 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .storage import TIME_TOLERANCE
 
+# Caption geometry in pixels at 720 px high; captions.py scales it with the frame height.
+CAPTION_REFERENCE_HEIGHT = 720
+CAPTION_MARGIN = 25
+CAPTION_OUTLINE_ALLOWANCE = 8
+# Line pitch of the caption font in em, measured on Noto Sans CJK JP (72 px lines at 72 px).
+CAPTION_LINE_EM = 1.0
+
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
@@ -181,6 +188,8 @@ class Settings(Record):
     # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
+    # Scales the caption font: 1.0 is 4.8 percent of the frame height.
+    caption_scale: float = Field(default=1.0, ge=0.8, le=2.0)
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
     horizontal_target_cps: float = Field(default=7, ge=1, le=20)
     horizontal_warn_cps: float = Field(default=7, ge=1, le=20)
@@ -224,6 +233,55 @@ class Settings(Record):
     max_transport_bytes: int = Field(default=6 * 1024**3, ge=1024, le=16 * 1024**3)
     chat_url: str | None = None
     chat_offset_seconds: float = Field(default=0, ge=-300, le=300)
+    # Chat column beside the video of a landscape 16:9 render; the chat itself comes from a
+    # Kick VOD URL (kick_chat). Off by default, so existing renders are unchanged.
+    chat_panel: bool = False
+    chat_panel_width: int = Field(default=480, ge=1, le=2000)
+    # top: the picture is a 16:9 frame above a caption band, and captions sit in that band.
+    chat_panel_fit: Literal["crop", "letterbox", "top"] = "top"
+    chat_anonymize: bool = False
+
+    def chat_panel_pixels(self):
+        """Width of the chat column at the right of the frame; 0 when the column is off."""
+        return self.chat_panel_width if self.chat_panel else 0
+
+    def chat_video_height(self):
+        """Picture height: the whole frame, or with fit top the 16:9 picture above the band."""
+        if not self.chat_panel or self.chat_panel_fit != "top":
+            return self.height
+        area = round(self.height * 16 / 9 / 2) * 2 - self.chat_panel_width
+        return round(area * 9 / 16 / 2) * 2
+
+    def caption_font_size(self):
+        """Caption font in pixels; caption_scale multiplies it.
+
+        With fit top the captions are in the band below the picture: the font is at most 6.7
+        percent of the height (72 px at 1080), and two lines must fit in 80 percent of the
+        band.
+        """
+        if not self.chat_panel or self.chat_panel_fit != "top":
+            return round(self.height * 0.048 * self.caption_scale)
+        band = self.height - self.chat_video_height()
+        fit = math.floor(band * 0.8 / (2 * CAPTION_LINE_EM))
+        return min(round(self.height * 0.0667 * self.caption_scale), fit)
+
+    def caption_line_chars(self):
+        """Landscape caption line limit, scaled to the video area left of the chat column."""
+        if not self.chat_panel:
+            return self.horizontal_line_chars
+        frame = round(self.height * 16 / 9 / 2) * 2
+        area = frame - self.chat_panel_width
+        if self.chat_panel_fit == "top":
+            # Characters that fit the picture width at the caption font, with the margins
+            # that captions.py uses.
+            scale = self.height / CAPTION_REFERENCE_HEIGHT
+            usable = (
+                area
+                - 2 * round(CAPTION_MARGIN * scale)
+                - round(CAPTION_OUTLINE_ALLOWANCE * scale)
+            )
+            return max(8, math.floor(usable / self.caption_font_size()))
+        return max(8, math.floor(self.horizontal_line_chars * area / frame))
 
     @field_validator("gemini_model")
     @classmethod
@@ -269,6 +327,21 @@ class Settings(Record):
             raise ValueError("a pinned transcript key is read only; require the cache")
         if self.height == 1920 and self.aspect != "9:16":
             raise ValueError("height 1920 is only for the 9:16 aspect")
+        if self.chat_panel:
+            if self.aspect != "16:9":
+                raise ValueError("chat panel is only for landscape 16:9 output")
+            frame = round(self.height * 16 / 9 / 2) * 2
+            if self.chat_panel_width % 2 or not (
+                0.2 * frame <= self.chat_panel_width <= 0.4 * frame
+            ):
+                raise ValueError(
+                    "chat panel width must be an even 20 to 40 percent of the frame width"
+                )
+            if self.silence_cut:
+                # Kick chat is timed on the original video; cut silence would shift it.
+                raise ValueError(
+                    "chat panel cannot be combined with silence_cut: the chat would drift"
+                )
         if self.min_seconds >= self.max_seconds:
             raise ValueError("minimum duration must be less than maximum")
         if self.topic_max_seconds < 2 * self.topic_min_seconds:

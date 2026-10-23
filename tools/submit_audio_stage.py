@@ -33,6 +33,8 @@ REQUIRED_FILES = {
     "topics.json",
 }
 MAX_LISTED_FILES = 500
+DEFAULT_CONFIG_FILE = "config.landscape.example.json"
+CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
 SUBMIT_OPTIONS = (
     "stage",
     "previous_run",
@@ -43,6 +45,7 @@ SUBMIT_OPTIONS = (
     "clips",
     "clip_index",
     "part_runs",
+    "config_file",
 )
 
 
@@ -256,6 +259,37 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     return len(listed)
 
 
+def config_in_source(source_ref, name):
+    """The configuration file must be committed at the reviewed source revision."""
+    repository = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{source_ref}:{name}"],
+        cwd=repository,
+        capture_output=True,
+        timeout=10,
+    )
+    return result.returncode == 0
+
+
+def part_config_file(root, part_runs):
+    """The configuration every requested clip render used, from this machine's receipts."""
+    names = set()
+    for item in part_runs.split(","):
+        path = root / item.split(":")[1] / "receipt.json"
+        if path.is_file():
+            names.add(
+                json.loads(path.read_text()).get("config_file", DEFAULT_CONFIG_FILE)
+            )
+    if not all(
+        isinstance(name, str) and re.fullmatch(CONFIG_FILE_PATTERN, name)
+        for name in names
+    ):
+        raise RuntimeError("invalid clip render configuration receipt")
+    if len(names) > 1:
+        raise RuntimeError("clip renders use different configuration files")
+    return names.pop() if names else DEFAULT_CONFIG_FILE
+
+
 def prepare_destination(destination):
     destination = Path(destination).absolute()
     if destination.exists() or any(
@@ -283,6 +317,10 @@ def local_merge(part_runs, destination, source_ref=None):
     ) as temporary:
         root = Path(temporary)
         parts = worker_audio.download_parts(part_runs, root / "parts")
+        configs = {worker_audio.receipt_config_file(path) for path, _ in parts}
+        if len(configs) != 1:
+            raise RuntimeError("clip renders use different configuration files")
+        config_file = configs.pop()
         receipt = json.loads(
             worker_audio.private_member(parts[0][0], "request-receipt.json").read_text()
         )
@@ -297,6 +335,7 @@ def local_merge(part_runs, destination, source_ref=None):
             "source_ref": source_ref,
             "part_runs": part_runs,
             "previous_request_id": first["identity"]["previous_request_id"],
+            "config_file": config_file,
         }
         if not re.fullmatch(r"[a-f0-9]{32}", str(request["previous_request_id"])):
             raise RuntimeError("invalid local merge analysis identity")
@@ -313,10 +352,10 @@ def local_merge(part_runs, destination, source_ref=None):
             timeout=10,
         ).stdout.strip()
         config = (
-            (repository / "config.landscape.example.json").read_text()
+            (repository / config_file).read_text()
             if head == source_ref
             else subprocess.run(
-                ["git", "show", source_ref + ":config.landscape.example.json"],
+                ["git", "show", source_ref + ":" + config_file],
                 cwd=repository,
                 check=True,
                 capture_output=True,
@@ -334,9 +373,18 @@ def local_merge(part_runs, destination, source_ref=None):
         # Parts retain no reviewed selection or previous request settings. Check the
         # source configuration's plan; never derive the expected count from the parts.
         staging = root / "result"
-        result, lineage = worker_audio.merge_parts(parts, staging, settings, source_ref)
+        result, lineage = worker_audio.merge_parts(
+            parts, staging, settings, source_ref, config_file=config_file
+        )
         worker_audio.write_receipt(
-            staging, result, lineage, identity, source_ref, "merge", "local"
+            staging,
+            result,
+            lineage,
+            identity,
+            source_ref,
+            "merge",
+            "local",
+            config_file=config_file,
         )
         count = verify_stage_artifact(staging, identity, "merge", request, "local")
         if destination.exists() or destination.is_symlink():
@@ -375,6 +423,7 @@ def collect(identity, destination):
         or receipt.get("audio_stage") != stage
         or receipt.get("source_ref") != request.get("source_ref")
         or receipt.get("previous_run_id") != request.get("previous_run_id")
+        or receipt.get("config_file") != request.get("config_file")
         or not re.fullmatch(r"[a-f0-9]{40}", str(request.get("source_ref")))
         or not re.fullmatch(r"[0-9]{1,20}", str(request.get("previous_run_id")))
         or not re.fullmatch(r"[a-f0-9]{32}", str(request.get("previous_request_id")))
@@ -467,6 +516,7 @@ def dispatch(root, inputs, args):
         "audio_stage": args.stage,
         "previous_run_id": args.previous_run,
         "worker": inputs["worker"],
+        "config_file": inputs["config_file"],
         "clip_index": inputs["clip_index"] or None,
         "job_submitted": None,
     }
@@ -512,6 +562,11 @@ def main(argv=None):
         "--clips", type=int, help="render clips 1..N as separate parallel requests"
     )
     parser.add_argument("--clip-index", type=int, help="render only this clip")
+    parser.add_argument(
+        "--config-file",
+        help="render only: committed config.NAME.example.json at --source-ref "
+        "(default " + DEFAULT_CONFIG_FILE + ")",
+    )
     parser.add_argument(
         "--part-runs", help="merge: comma-separated RUN_ID:REQUEST_ID of clip renders"
     )
@@ -585,6 +640,21 @@ def main(argv=None):
         )
     if args.stage != "render" and worker != "cpu":
         raise RuntimeError("only clip rendering runs on Colab")
+    if args.config_file is not None and args.stage != "render":
+        raise RuntimeError("--config-file applies to render only")
+    if args.stage == "merge":
+        config_file = part_config_file(
+            Path.home() / ".local/state/clipforge", part_runs
+        )
+    else:
+        config_file = args.config_file or DEFAULT_CONFIG_FILE
+    if args.stage == "render":
+        if not re.fullmatch(CONFIG_FILE_PATTERN, config_file):
+            raise RuntimeError("configuration file name is not allowed")
+        if not config_in_source(args.source_ref, config_file):
+            raise RuntimeError(
+                "configuration file is not committed at --source-ref; nothing was dispatched"
+            )
     base = {
         "source_ref": args.source_ref,
         "audio_stage": args.stage,
@@ -595,6 +665,7 @@ def main(argv=None):
         else "",
         "worker": worker,
         "part_runs": part_runs,
+        "config_file": config_file,
     }
     if len(base["review_json"].encode()) > 32768:
         raise RuntimeError("review metadata is oversized")

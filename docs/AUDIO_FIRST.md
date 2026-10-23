@@ -147,7 +147,10 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
   --source-ref REVIEWED_COMMIT_SHA --review-file /private/reviewed-topics.json
 ```
 
-同一stage・前段run・選定内容・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。
+描画の設定は `--config-file NAME`（既定 `config.landscape.example.json`）で選ぶ。NAMEは `config.英小文字・数字・ハイフン.example.json` の形で、`--source-ref` のコミットに存在するものだけ受け付ける。依頼IDに設定名を含むため、同じ選定でも設定が違えば別依頼になる。`merge` は部分の設定名がすべて同じことを確認し、混在すれば停止する。
+例: `--config-file config.landscape-chat.example.json` を上の `--stage render` に追加する。
+
+同一stage・前段run・選定内容・設定名・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。
 生成物は非公開`clipforge-result-REQUEST_ID`artifactに7日保存する。公開側のActionsで実配信を処理しない。
 
 完了後の回収・検証は [OPERATIONS.md](OPERATIONS.md#結果の回収と再開) を参照する。描画はColab CPUで実行する。
@@ -159,6 +162,15 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
 SHA-256一覧は除去後に作成し、manifestのクリップ別一覧も残ったクリップ内のファイルを指す。
 
 結合は制御VMで `merge --local` を使い、ASRや描画を再実行せず検証・コピーする。実行例・期待値の固定・receiptの扱いは [OPERATIONS.md](OPERATIONS.md#単一クリップ成果物のローカル結合) を参照する。
+
+## チャット欄
+
+設定 `chat_panel`（既定 false）を true にすると、横向き16:9の出力の右側に `chat_panel_width`（既定 480 px、出力幅の20〜40%、偶数）のチャット欄を置く。
+映像は左の欄に `chat_panel_fit` で収める。既定の `top` は16:9の映像を左上に欄の幅いっぱいで置き、その下の帯（欄と同じ色）に字幕を出す（1080 p では帯270 px、字幕は72 px 程度で2行、1行は約18字）。`crop` は中央から左右を削り、`letterbox` は縮めて上下に帯を置く。どちらも字幕は映像部分の中央下に出す。
+`caption_scale`（0.8〜2.0、既定 1.0）は字幕の大きさに掛ける（既定は 1080 p で 52 px）。横用の設定例は `config.landscape-chat.example.json`（チャット欄 top、無音カットなし）。
+取得は Kick VOD の URL 経路だけで、各クリップの元の時刻 [start, end] のチャットを読む。
+無音カット（`silence_cut`）と縦型（9:16・1:1）は設定検証で拒否する。チャットは元動画の時刻で合わせるため、無音カットで時刻がずれると成立しない。
+取得に失敗したクリップは失敗にせず、欄は空のまま描き、`render.json` の `chat.reason` に `chat_unavailable` を記録する。`chat_anonymize` が true なら発言者名を匿名化する。
 
 ## 候補映像の判定と採用
 

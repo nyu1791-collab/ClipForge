@@ -155,6 +155,29 @@ def canonical(url):
     return url
 
 
+def same_vod(value, url):
+    """Compare a page URL with the canonical VOD URL, ignoring letter case."""
+    return isinstance(value, str) and value.lower() == url.lower()
+
+
+def stream_url(value):
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.hostname == "stream.kick.com"
+
+
+def nested(value, *keys):
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
 def child(base, reference, root):
     target = urljoin(base, reference)
     p = urlsplit(target)
@@ -242,16 +265,13 @@ class KickVOD:
         self._session_factory = requests.Session
         self.session = self._new_session()
         try:
-            parser = VideoMetadata()
-            parser.feed(self.fetch(self.url, 2 * 1024**2).decode("utf-8"))
-            matches = [v for v in parser.videos if v.get("url") == self.url]
-            if len(matches) != 1:
+            try:
+                found = self._api_video()
+            except PipelineError:
+                found = self._page_video()
+            if found is None:
                 raise PipelineError("VOD identity missing or ambiguous")
-            v = matches[0]
-            self.metadata = {
-                k: v[k] for k in ("name", "duration", "uploadDate") if k in v
-            }
-            self.master = v.get("contentUrl", "")
+            self.metadata, self.master = found
             self.root = urlsplit(self.master).path.rsplit("/", 1)[0] + "/"
             child(self.master, self.master, self.root)
             master = self.fetch(self.master, 256 * 1024).decode()
@@ -287,6 +307,45 @@ class KickVOD:
         except BaseException:
             self.close()
             raise
+
+    def _api_video(self):
+        # The JSON API is keyed by the VOD uuid; its channel slug must match the page URL.
+        channel, _, uuid = urlsplit(self.url).path.strip("/").split("/")
+        body = self.fetch(f"https://kick.com/api/v1/video/{uuid}", 1024**2)
+        try:
+            data = json.loads(body)
+        except ValueError:
+            raise PipelineError("VOD identity missing or ambiguous") from None
+        slug = nested(data, "livestream", "channel", "slug")
+        source = nested(data, "source")
+        if (
+            not isinstance(slug, str)
+            or slug.lower() != channel.lower()
+            or not stream_url(source)
+        ):
+            raise PipelineError("VOD identity missing or ambiguous")
+        metadata = {}
+        title = nested(data, "livestream", "session_title")
+        started = nested(data, "livestream", "start_time")
+        length = nested(data, "livestream", "duration")
+        if isinstance(title, str):
+            metadata["name"] = title
+        if isinstance(started, str):
+            metadata["uploadDate"] = started
+        if isinstance(length, int) and not isinstance(length, bool):
+            # The API reports milliseconds.
+            metadata["duration"] = length / 1000
+        return metadata, source
+
+    def _page_video(self):
+        parser = VideoMetadata()
+        parser.feed(self.fetch(self.url, 2 * 1024**2).decode("utf-8"))
+        matches = [v for v in parser.videos if same_vod(v.get("url"), self.url)]
+        if len(matches) != 1:
+            return None
+        v = matches[0]
+        metadata = {k: v[k] for k in ("name", "duration", "uploadDate") if k in v}
+        return metadata, v.get("contentUrl", "")
 
     def close(self):
         with self._lock:
