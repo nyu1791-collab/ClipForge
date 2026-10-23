@@ -331,7 +331,9 @@ def merge(parts, duration):
     def overlaps(item, peers):
         return any(item.start < peer.end and item.end > peer.start for peer in peers)
 
-    owned = {index: [item for _, item, kept in timed[index] if kept] for index in (0, 1)}
+    owned = {
+        index: [item for _, item, kept in timed[index] if kept] for index in (0, 1)
+    }
     rescued = {0: [], 1: []}
     for index in (0, 1):
         # The second part's candidates also yield to the first part's adopted candidates.
