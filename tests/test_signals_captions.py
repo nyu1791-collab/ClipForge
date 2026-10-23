@@ -866,3 +866,39 @@ def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
     assert "?" not in text and "!" not in text
     assert "？　" in text or "！　" in text
     assert all(not event[2].endswith("　") for event in ass)
+
+
+@pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
+@pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
+def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
+    tmp_path, settings, japanese_font, mode, aspect
+):
+    from clipforge import quality
+
+    text = "この日本語字幕は切り抜いた動画の中で正しく表示されます。" * 2
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(
+                start=13.003,
+                end=18.997,
+                text=text,
+                words=[Word(start=13.003, end=18.997, text=text)],
+            )
+        ],
+    )
+    clip = SelectedClip(
+        start=13, end=19, candidate_id="manual", title="題", reason="r", confidence=1
+    )
+    configured = _fill_settings(
+        settings, chat_panel=False, caption=mode, aspect=aspect, height=720
+    )
+    captions.create(transcript, clip, tmp_path, configured)
+    ass = quality.caption_events(tmp_path / "captions.ass")
+    srt = quality.caption_events(tmp_path / "captions.srt")
+    assert len(ass) >= 2 and ass == srt
+    assert all(start % 10 == end % 10 == 0 for start, end, _ in ass)
+    assert all(a[1] <= b[0] for a, b in zip(ass, ass[1:]))
+    assert captions.event_spans(transcript, clip, configured) == [
+        (start / 1000, end / 1000) for start, end, _ in ass
+    ]

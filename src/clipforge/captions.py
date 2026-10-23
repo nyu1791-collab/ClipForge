@@ -451,9 +451,11 @@ def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscap
     plain_lines = ["".join(item[2] for item in items) for items in groups]
     spans, previous_end = [], 0
     for items in groups:
-        start = max(previous_end, round(items[0][0] * 1000))
+        # Proportional word splits can create fractional centiseconds. ASS and SRT must
+        # share the same representable times before holding captions into silence.
+        start = max(previous_end, round(items[0][0] * 100) * 10)
         # A group squeezed out by the previous one is kept for a moment, never dropped.
-        end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
+        end = max(round(items[-1][1] * 100) * 10, start + MIN_EVENT_MS)
         spans.append([start, end])
         previous_end = end
     hold_for_reading(
