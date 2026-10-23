@@ -195,7 +195,7 @@ def stage_request():
     ):
         raise ControlError("Invalid audio stage request")
     review = Path(os.environ.get("REVIEW_FILE", "")).read_text(encoding="utf-8")
-    if len(review.encode()) > 32768:
+    if len(review.encode()) > 60000:
         raise ControlError("Review is too large")
     json.loads(review)
     stage["review"] = review

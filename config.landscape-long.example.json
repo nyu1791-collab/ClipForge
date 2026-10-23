@@ -1,6 +1,6 @@
 {
   "gemini_model": "manual-no-api",
-  "clips": 3,
+  "clips": 5,
   "candidates": 8,
   "min_seconds": 60,
   "max_seconds": 420,

@@ -939,3 +939,69 @@ def test_previews_follow_the_hint_ranking_before_speech_length(tmp_path, monkeyp
         ranking=["t-short", "t-mid", "t-long"],
     )
     assert seen == ["t-short", "t-mid", "t-long"]
+
+
+def test_reviewed_captions_replace_the_shared_asr_for_their_clip_only(
+    audio_job, monkeypatch
+):
+    vod, root, settings, events, _ = audio_job
+    af.previews(vod, root, settings)
+    analysis = json.loads((root / "topics.json").read_text())
+    value = make_review(analysis)
+    for clip, (start, end) in zip(value["clips"], [(0, 85), (120, 175), (210, 295)]):
+        clip.update(start=start, end=end)
+    words = [
+        {"text": "字", "start": 10.0, "end": 10.4},
+        {"text": "幕", "start": 10.4, "end": 11.0},
+    ]
+    value["clips"][1]["captions"] = af.pack_captions(
+        [
+            {
+                "start": 130.0,
+                "end": 131.0,
+                "text": "字幕",
+                "words": [
+                    {**w, "start": w["start"] + 120, "end": w["end"] + 120}
+                    for w in words
+                ],
+            }
+        ]
+    )
+    review = root / "review.json"
+    write_json(review, value)
+    texts = {}
+
+    def render(source, output, index, clip, transcript, settings, key):
+        texts[index] = "".join(s.text for s in transcript.segments)
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    monkeypatch.setattr(
+        af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
+    )
+    af.render(vod, root, settings, review)
+    assert texts[2] == "字幕"
+    assert texts[1] and texts[1] != "字幕" and texts[3] != "字幕"
+
+
+@pytest.mark.parametrize("packed", [123, "not base64!", af.pack_captions([]) + "x"])
+def test_malformed_reviewed_captions_are_rejected(packed):
+    with pytest.raises(PipelineError, match="captions"):
+        af.caption_overrides({"clips": [{"captions": packed}]}, "ja")
+
+
+def test_packed_captions_round_trip_to_a_transcript():
+    segment = {
+        "start": 1.0,
+        "end": 2.5,
+        "text": "あい",
+        "words": [
+            {"text": "あ", "start": 1.0, "end": 1.5},
+            {"text": "い", "start": 1.5, "end": 2.5},
+        ],
+    }
+    (transcript,) = af.caption_overrides(
+        {"clips": [{"captions": af.pack_captions([segment])}]}, "ja"
+    )
+    assert transcript.segments[0].model_dump() == segment
+    assert af.caption_overrides({"clips": [{}]}, "ja") == [None]

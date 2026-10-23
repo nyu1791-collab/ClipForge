@@ -4,6 +4,8 @@ Each stage is explicit: acquiring audio never starts ASR or downloads high-quali
 """
 
 import argparse
+import base64
+import binascii
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
@@ -13,10 +15,13 @@ import os
 from pathlib import Path
 import re
 import sys
+import zlib
 
 from . import landscape, media, pipeline, topics
 from .kick_media import RANGE_FORMAT, KickVOD
 from .media_sources import canonical, open_source
+from pydantic import ValidationError
+
 from .models import Transcript
 from .storage import (
     TIME_TOLERANCE,
@@ -316,6 +321,80 @@ def caption_floors(value):
     return floors
 
 
+# A reviewed clip may carry captions recognised separately for its interval, packed as
+# base64 zlib JSON: [[start_cs, end_cs, text, [[word, start_cs, end_cs], ...]], ...] in
+# source centiseconds. They replace the full-source ASR for that clip only.
+MAX_CAPTION_BYTES = 2 * 1024 * 1024
+
+
+def pack_captions(segments):
+    """Pack Transcript-shaped segments (source seconds) for a reviewed clip's captions."""
+    cs = lambda seconds: round(seconds * 100)  # noqa: E731
+    rows = [
+        [
+            cs(s["start"]),
+            cs(s["end"]),
+            s["text"],
+            [[w["text"], cs(w["start"]), cs(w["end"])] for w in s.get("words", [])],
+        ]
+        for s in segments
+    ]
+    raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":")).encode()
+    return base64.b64encode(zlib.compress(raw, 9)).decode()
+
+
+def caption_overrides(value, language):
+    """The Transcript each reviewed clip supplies for its own captions, or None."""
+    overrides = []
+    for row in value["clips"]:
+        packed = row.get("captions")
+        if packed is None:
+            overrides.append(None)
+            continue
+        try:
+            if not isinstance(packed, str):
+                raise TypeError
+            inflate = zlib.decompressobj()
+            raw = inflate.decompress(
+                base64.b64decode(packed, validate=True), MAX_CAPTION_BYTES + 1
+            )
+            if len(raw) > MAX_CAPTION_BYTES or inflate.unconsumed_tail:
+                raise PipelineError("reviewed captions are oversized")
+            rows = json.loads(raw)
+            overrides.append(
+                Transcript.model_validate(
+                    {
+                        "language": language,
+                        "segments": [
+                            {
+                                "start": start / 100,
+                                "end": end / 100,
+                                "text": text,
+                                "words": [
+                                    {"text": w, "start": a / 100, "end": b / 100}
+                                    for w, a, b in words
+                                ],
+                            }
+                            for start, end, text, words in rows
+                        ],
+                    }
+                )
+            )
+        except PipelineError:
+            raise
+        except (
+            TypeError,
+            ValueError,
+            binascii.Error,
+            zlib.error,
+            ValidationError,
+        ):
+            raise PipelineError(
+                "reviewed captions must be packed caption segments"
+            ) from None
+    return overrides
+
+
 def reviewed_clips(value, analysis, preview, settings):
     if (
         value.get("analysis_key") != analysis["analysis_key"]
@@ -331,7 +410,8 @@ def reviewed_clips(value, analysis, preview, settings):
             {
                 k: v
                 for k, v in row.items()
-                if k not in ("video_reviewed", "crop_anchor", "caption_floor")
+                if k
+                not in ("video_reviewed", "crop_anchor", "caption_floor", "captions")
             }
             for row in value["clips"]
         ]
@@ -448,8 +528,10 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
         target = root / "previews" / (topic["id"] + ".mp4")
         if not target.is_file() or row["receipt"].get("sha256") != digest(target):
             raise PipelineError("reviewed preview changed")
+    overrides = caption_overrides(value, transcript.language)
     local_transcripts = [
-        shifted_transcript(transcript, clip.start, clip.end) for clip in clips
+        shifted_transcript(override or transcript, clip.start, clip.end)
+        for clip, override in zip(clips, overrides)
     ]
     output = root / "delivery"
     output.mkdir(exist_ok=True)

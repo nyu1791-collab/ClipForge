@@ -894,8 +894,8 @@ def test_parallel_clips_dispatch_one_colab_request_per_clip(stage_submitter, tmp
 @pytest.mark.parametrize(
     "extra, active",
     [
-        (("--worker", "colab-auto", "--clips", "3"), 2),
-        (("--worker", "colab-auto", "--clips", "5"), 0),
+        (("--worker", "colab-auto", "--clips", "4"), 2),
+        (("--worker", "colab-auto", "--clips", "6"), 0),
         (("--clips", "2"), 0),
         (("--clips", "2", "--clip-index", "1"), 0),
     ],

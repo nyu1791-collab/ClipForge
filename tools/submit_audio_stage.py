@@ -19,7 +19,7 @@ REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "main"
 WORKFLOW = "clipforge-stages.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
-MAX_ACTIVE = {"colab-auto": 4}
+MAX_ACTIVE = {"colab-auto": 5}
 RESULT_STATUS = {
     "previews": "awaiting_video_review",
     "render": "complete",
@@ -505,6 +505,8 @@ def require_video_review(value):
             type(floor) not in (int, float) or not 0 <= floor <= 0.32
         ):
             raise AudioStageError("caption_floor must be from 0 to 0.32")
+    if any(not isinstance(row.get("captions", ""), str) for row in clips):
+        raise AudioStageError("captions must be a packed caption string")
 
 
 def clip_indices(args, worker):
@@ -693,7 +695,7 @@ def main(argv=None):
         "part_runs": part_runs,
         "config_file": config_file,
     }
-    if len(base["review_json"].encode()) > 32768:
+    if len(base["review_json"].encode()) > 60000:
         raise AudioStageError("review metadata is oversized")
     requests = []
     for index in indices:
