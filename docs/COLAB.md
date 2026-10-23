@@ -4,6 +4,8 @@
 
 ## 通常の動画ジョブ
 
+Kick URL からの切り抜きは、[GPU_ROUTE.md](GPU_ROUTE.md) の手順だけを使います。以下の表のうち、ローカル動画の行はその手順の対象外です。
+
 既定のworkerは `colab-auto` です。Colabが担当する範囲は入力経路で異なります。
 
 | 経路 | Colabの担当 | Gemini |
