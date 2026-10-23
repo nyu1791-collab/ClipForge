@@ -691,3 +691,34 @@ def test_frame_check_ignores_files_without_captions(tmp_path):
     pysubs2.SSAFile().save(str(path))
     assert quality.outside_frame_captions(path) == []
     assert quality.overflowing_lines(path) == []
+
+
+def _static_case(tmp_path, first_margin):
+    subtitles = pysubs2.SSAFile()
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontsize=52, alignment=pysubs2.Alignment.BOTTOM_CENTER, marginv=130
+    )
+    for start in (0, 1000):
+        subtitles.append(
+            pysubs2.SSAEvent(
+                start=start,
+                end=start + 1000,
+                style="Default",
+                text=r"{\an2}字幕",
+                marginv=first_margin if start == 0 else 130,
+            )
+        )
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    return path
+
+
+def test_static_overlaps_counts_captions_over_a_band_they_were_placed_by(tmp_path):
+    path = _static_case(tmp_path, 346)
+    rendered = {"width": 1920, "height": 1080}
+    # The first caption's box runs from 346 px (0.32) up about one line; the second sits at 130 px.
+    assert quality.static_overlaps(path, [[[0.3, 0.4, "whole"]], []], rendered) == 1
+    assert quality.static_overlaps(path, [[[0.5, 0.6, "whole"]], []], rendered) == 0
+    assert quality.static_overlaps(path, [[[0.0, 0.1, "left"]], []], rendered) == 0
+    # Captions and bands that do not correspond one to one cannot be checked.
+    assert quality.static_overlaps(path, [[]], rendered) is None

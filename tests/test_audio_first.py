@@ -806,3 +806,30 @@ def test_render_refuses_an_unknown_crop_side_before_any_fetch(audio_job, monkeyp
     with pytest.raises(PipelineError, match="crop_anchor must be"):
         af.render(vod, root, chat_settings(settings), review)
     assert fetched == []
+
+
+def test_caption_floors_default_to_none_and_refuse_out_of_range():
+    assert af.caption_floors({"clips": [{}, {"caption_floor": 0.25}]}) == [None, 0.25]
+    for floor in (0.33, -0.1, True, "0.2", float("nan")):
+        with pytest.raises(PipelineError, match="caption_floor must be"):
+            af.caption_floors({"clips": [{"caption_floor": floor}]})
+
+
+def test_render_passes_a_reviewed_caption_floor_to_its_clip(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][1]["caption_floor"] = 0.25
+    review.write_text(json.dumps(value))
+    floors = []
+
+    def render(source, output, index, clip, transcript, settings, key, **options):
+        floors.append((index, options.get("caption_floor")))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    monkeypatch.setattr(
+        af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
+    )
+    af.render(vod, root, settings, review, only=2)
+    assert floors == [(2, 0.25)]

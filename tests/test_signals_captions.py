@@ -802,3 +802,48 @@ def test_fast_caption_can_use_nearby_preceding_silence_without_overlap():
     assert 1000 <= spans[1][0] < 1500
     assert spans[1][1] <= spans[2][0]
     assert 10 / ((spans[1][1] - spans[1][0]) / 1000) <= 7
+
+
+def test_landscape_lifts_place_each_caption_at_its_margin(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    plain = _fill_settings(settings, chat_panel=False)
+    captions.create(transcript, clip, tmp_path, plain, lifts=[0.2, 0.25])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    events = [e for e in subtitles if e.style == "Default"]
+    assert [e.marginv for e in events] == [216, 270]
+    assert all(r"{\an2}" in e.text for e in events)
+
+
+def test_landscape_without_lifts_keeps_the_style_margin(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    plain = _fill_settings(settings, chat_panel=False)
+    captions.create(transcript, clip, tmp_path, plain)
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    events = [e for e in subtitles if e.style == "Default"]
+    assert all(r"\an2" not in e.text and e.marginv == 0 for e in events)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"chat_panel": False},
+        {"chat_panel": True, "chat_panel_fit": "fill"},
+        {"chat_panel": True, "chat_panel_fit": "top"},
+        {"chat_panel": True, "chat_panel_fit": "crop"},
+        {"chat_panel": True, "chat_panel_fit": "letterbox"},
+    ],
+)
+def test_no_landscape_layout_places_captions_at_the_top(
+    tmp_path, settings, japanese_font, updates
+):
+    transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
+    layout = _fill_settings(settings, **updates)
+    captions.create(transcript, clip, tmp_path, layout, lifts=[0.2, 0.2])
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    assert subtitles.styles["Default"].alignment == pysubs2.Alignment.BOTTOM_CENTER
+    assert all(r"\an8" not in e.text for e in subtitles if e.style == "Default")
+    assert r"\an8" not in (tmp_path / "captions.ass").read_text(encoding="utf-8")

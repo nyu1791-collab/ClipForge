@@ -243,6 +243,54 @@ def outside_frame_captions(path):
     return found
 
 
+# Horizontal share of the picture each band region covers.
+STATIC_REGIONS = {"whole": (0.0, 1.0), "left": (0.0, 0.5), "right": (0.5, 1.0)}
+
+
+def static_overlaps(path, static, rendered, settings=None):
+    """Captions whose box meets a static band that auto_layout placed them by.
+
+    A caption's box is its MarginV (or the style's) up by its lines times the font height, and
+    its width is the widest line measured with the caption font, centred in the picture area
+    (the frame less the chat column). static[i] lists caption i's bands as [bottom, top, region],
+    shares of the height from the bottom edge, with region "whole", "left" or "right". Returns the
+    number of captions that overlap a band, or None when the captions and the bands do not
+    correspond one to one.
+    """
+    subtitles = pysubs2.load(str(path))
+    events = [event for event in subtitles if event.style in TEXT_STYLES]
+    if len(events) != len(static):
+        return None
+    height = rendered["height"]
+    panel = settings.chat_panel_pixels() if settings is not None else 0
+    area = rendered["width"] - panel
+    count = 0
+    for event, bands in zip(events, static):
+        style = _caption_style(subtitles, event)
+        lines = event.plaintext.split("\n")
+        if settings is not None:
+            measure = fonts.Measure(fonts.resolve(settings.font), style.fontsize)
+            width = max(measure.width(line) for line in lines)
+        else:
+            width = area
+        bottom = event.marginv or style.marginv
+        block = len(lines) * style.fontsize * CAPTION_LINE_EM
+        low, high = bottom / height, (bottom + block) / height
+        left = max(0.0, 0.5 - width / 2 / area)
+        right = min(1.0, 0.5 + width / 2 / area)
+        for band_bottom, band_top, region in bands:
+            region_left, region_right = STATIC_REGIONS[region]
+            if (
+                band_bottom < high
+                and low < band_top
+                and region_left < right
+                and left < region_right
+            ):
+                count += 1
+                break
+    return count
+
+
 def loudness_warnings(loudness):
     lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
     found = []
@@ -346,7 +394,7 @@ def _finite(value):
     return value if value is not None and math.isfinite(value) else None
 
 
-def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
+def check_clip(directory, rendered, missing_glyphs, ledger, settings=None, static=None):
     """Quality report for a rendered clip folder; the caller decides what to do with it."""
     failures, warnings = [], []
     events = caption_events(directory / "captions.ass")
@@ -385,6 +433,14 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None):
             f"{len(high)} caption(s) rise above the top of the frame, for example "
             + high[0][:20]
         )
+    if static is not None:
+        overlapping = static_overlaps(
+            directory / "captions.ass", static, rendered, settings
+        )
+        if overlapping is None:
+            warnings.append("captions could not be checked against static elements")
+        elif overlapping:
+            warnings.append(f"{overlapping} caption(s) overlap static screen elements")
     starts = [orphan_start(text) for _, _, text in events]
     if "punctuation" in starts:
         failures.append("a caption starts with a punctuation mark")

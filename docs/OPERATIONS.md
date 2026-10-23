@@ -100,8 +100,11 @@ python tools/submit_job.py --cleanup-tag clipforge-input-REQUEST_ID
 
 ```bash
 python tools/submit_audio_stage.py --stage merge --local \
-  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 --output /private/merged-NEW
+  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 \
+  --source-ref RENDER_SOURCE_SHA --output /private/merged-NEW
 ```
+
+`--local` の結合は、描画に使ったコミット（`--source-ref` と同じ SHA）を制御VMでチェックアウトした状態で実行する。手元のコードが違うと `local merge code differs from source_ref` で停止する。例: `git worktree add --detach /tmp/merge-SHA SHA` で別の作業ツリーを作って、その中で実行する。
 
 制御VMで各runのcompleted・success・依頼IDを確認し、artifactを一度取得して `merge_parts` で検証・コピーする。GitHub run・FFmpeg・フォントは使わない。元コミット・本数・前段依頼IDは検証済みpartから取得し、任意の `--source-ref REVIEWED_COMMIT_SHA` で期待値を固定できる。
 `delivery/`・manifest・request receiptを通常の回収と同じ検証後に確定し、receiptの `workflow_run` は `"local"` となる。GitHub上の結合では `--local` を付けず、`--previous-run`・`--previous-request`・`--source-ref`・`--part-runs` を指定する。

@@ -58,3 +58,6 @@ worker 側は `.github/clipforge-source.json` に40桁の公開 source SHA を�
 PR #12 の bundle 先頭 `33cea7e` は、この作業時点でリモートから取得できなかった。PR の head は `5887e6d`。
 そのため Silero の分割変更をこのブランチへ推測で移植せず、実配信の中央±30分での測定と一台 ASR との話題境界比較は未実施。
 bundle と対応する worker 更新が反映された後、同じ音声・モデル・設定で比較する。キャッシュ形式が変わる点も引き継ぐ。
+
+
+追加統合: ベース5c1a279の通常16:9動画への字幕持ち上げ、caption_floor、静的な帯との重なり検査、run_cliを保持。帯の診断情報も省メモリの二段階分析から返し、通常の横動画も検証済みlayout.jsonを再利用する。crop_anchor、caption_floor、caption_liftを含む全設定を分析キャッシュのキー（version 4）へ含める。外部のRuntimeError/ValueError等の本文にはURLや秘密値が入り得るため、具体的な本文の表示はこのツールが生成するAudioStageErrorに限定し、外部例外は種類・固定の終了情報を表示する。

@@ -13,7 +13,7 @@ import sys
 import tempfile
 
 from clipforge import github_cli
-from clipforge.storage import digest, write_json
+from clipforge.storage import PipelineError, digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "main"
@@ -54,13 +54,8 @@ class AudioStageError(RuntimeError):
 
 
 def command_failure(error):
-    """Only our fixed explanations are public; transport and parser details stay private."""
-    reason = str(error) if isinstance(error, AudioStageError) else type(error).__name__
-    return (
-        "Audio stage command failed: "
-        + reason
-        + ". Inspect its private receipt. No retry or fallback was started."
-    )
+    """Explain our fixed failures, keeping external details and secrets private."""
+    return "Audio stage command failed: " + failure_text(error) + "\n" + RECEIPT_HINT
 
 
 def gh(*args, body=None, timeout=60):
@@ -503,6 +498,13 @@ def require_video_review(value):
     # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
     if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
         raise AudioStageError("crop_anchor must be auto, left, center or right")
+    # Same range as pipeline.MAX_CAPTION_FLOOR; a missing floor means none is set.
+    for row in clips:
+        floor = row.get("caption_floor")
+        if floor is not None and (
+            type(floor) not in (int, float) or not 0 <= floor <= 0.32
+        ):
+            raise AudioStageError("caption_floor must be from 0 to 0.32")
 
 
 def clip_indices(args, worker):
@@ -743,16 +745,46 @@ def main(argv=None):
     return 0
 
 
-if __name__ == "__main__":
+RECEIPT_HINT = (
+    "依頼が作られた後の失敗なら ~/.local/state/clipforge/<依頼ID>/receipt.json を確認する。"
+    "自動の再送や代替は行っていない。"
+)
+
+
+def failure_text(error):
+    """Only explicitly public errors carry detail; process and parser payloads stay private."""
+    name = type(error).__name__
+    if isinstance(error, subprocess.CalledProcessError):
+        return name + ": exit " + str(error.returncode)
+    if isinstance(error, subprocess.TimeoutExpired):
+        return name + ": timed out"
+    if isinstance(error, OSError):
+        return (
+            name + ": " + os.strerror(error.errno)
+            if isinstance(error.errno, int)
+            else name
+        )
+    if isinstance(error, AudioStageError):
+        text = " ".join(str(error).split())[:300]
+        return name + ": " + text if text else name
+    return name
+
+
+def run_cli(argv=None):
     try:
-        raise SystemExit(main())
+        return main(argv)
     except (
         OSError,
         ValueError,
         KeyError,
         TypeError,
         RuntimeError,
+        PipelineError,
         subprocess.SubprocessError,
     ) as error:
         print(command_failure(error), file=sys.stderr)
-        raise SystemExit(1) from None
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(run_cli())

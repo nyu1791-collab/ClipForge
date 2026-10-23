@@ -537,7 +537,22 @@ def _region_profile(persistent, left, right, mask):
     return persistent[:, left:right][:, mask].mean(axis=1)
 
 
-def caption_lifts(
+def _busy_runs(busy, height, region):
+    """Runs of busy rows as [bottom, top, region], shares of the height counted from the bottom."""
+    runs, first = [], None
+    for row in range(len(busy) + 1):
+        flagged = row < len(busy) and bool(busy[row])
+        if flagged and first is None:
+            first = row
+        elif not flagged and first is not None:
+            bottom = (height - row) / height
+            top = (height - first) / height
+            runs.append([round(bottom, 4), round(top, 4), region])
+            first = None
+    return runs
+
+
+def caption_analysis(
     times,
     frames,
     events,
@@ -548,7 +563,7 @@ def caption_lifts(
     base=None,
     pad=LIFT_PAD,
 ):
-    """Bottom margin of each caption, as a share of the height ("lift"), from persistent detail.
+    """Bottom margin of each caption ("lift", a share of the height) and its static bands.
 
     For each caption, the gradient is the temporal median over the frames near it, so only detail
     that stays in place counts (a HUD, a wipe, a border; not the moving game world). A row is busy
@@ -558,6 +573,9 @@ def caption_lifts(
     bottom edge (searched up to `search` of the height) and the band's top is above the base; then
     the caption's bottom edge sits `pad` above that top, capped at `max_lift`. Captions less than
     GROUP_GAP apart share the largest lift of their run.
+
+    Returns (lifts, bands). bands[i] lists every run of busy rows that caption i was judged on, as
+    [bottom, top, region] with region "whole", "left" or "right"; the quality check uses them.
     """
     import numpy as np
 
@@ -575,36 +593,77 @@ def caption_lifts(
     left, right = _window(width, crop["x"], crop["keep"])
     columns = _window_columns(crop, width, left, right)
     if not columns.any():
-        return [base] * len(events)
+        return [base] * len(events), [[] for _ in events]
     span = right - left
     position = np.arange(span)
     middle = span // 2
-    masks = [columns, columns & (position < middle), columns & (position >= middle)]
-    masks = [mask for mask in masks if mask.any()]
+    regions = [
+        ("whole", columns),
+        ("left", columns & (position < middle)),
+        ("right", columns & (position >= middle)),
+    ]
+    regions = [(name, mask) for name, mask in regions if mask.any()]
 
     whole = _persistent_gradient(frames, _subsample(np.arange(len(times))))
     references = [
-        float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
+        float(np.median(_region_profile(whole, left, right, mask)))
+        for _, mask in regions
     ]
     tolerance = round(BAND_GAP * height)
 
-    lifts = []
+    lifts, bands = [], []
     for start, end in events:
         indices = _caption_frames(times, start, end)
         persistent = _persistent_gradient(frames, indices)
         lift = base
-        for mask, reference in zip(masks, references):
+        found = []
+        for (name, mask), reference in zip(regions, references):
             profile = _region_profile(persistent, left, right, mask)
-            top = _band_top(profile > BUSY_RATIO * reference, search, tolerance)
+            busy = profile > BUSY_RATIO * reference
+            found.extend(_busy_runs(busy, height, name))
+            top = _band_top(busy, search, tolerance)
             if top is not None:
                 edge = (height - top) / height
                 if edge > base:
                     lift = max(lift, edge + pad)
         lifts.append(min(lift, max_lift))
-    return [round(lift, 4) for lift in _shared_max(events, lifts)]
+        bands.append(sorted(found, key=lambda run: (run[0], run[1], run[2])))
+    return [round(lift, 4) for lift in _shared_max(events, lifts)], bands
 
 
-def _stream_lifts(stats, samples, events, crop):
+def caption_lifts(
+    times,
+    frames,
+    events,
+    crop,
+    *,
+    search=SEARCH,
+    max_lift=MAX_LIFT,
+    base=None,
+    pad=LIFT_PAD,
+):
+    """The lifts of caption_analysis, without the bands."""
+    lifts, _ = caption_analysis(
+        times,
+        frames,
+        events,
+        crop,
+        search=search,
+        max_lift=max_lift,
+        base=base,
+        pad=pad,
+    )
+    return lifts
+
+
+def apply_floor(lifts, floor):
+    """Each lift raised to at least `floor`, a caption floor reviewed for one clip (wipes the detector misses)."""
+    if not 0 <= floor <= MAX_LIFT:
+        raise ValueError("caption floor must be from 0 to MAX_LIFT")
+    return [round(min(max(lift, floor), MAX_LIFT), 4) for lift in lifts]
+
+
+def _stream_analysis(stats, samples, events, crop):
     """Exact persistent medians with a bounded rolling frame cache and row summaries.
 
     Crop statistics are known from the first decode. The second decode keeps at most BLOCK
@@ -617,16 +676,21 @@ def _stream_lifts(stats, samples, events, crop):
 
     base = FILL_BOTTOM_SHARE
     if not events:
-        return []
+        return [], []
     height, width = stats.height, stats.width
     left, right = _window(width, crop["x"], crop["keep"])
     columns = _window_columns(crop, width, left, right)
     if not columns.any():
-        return [base] * len(events)
+        return [base] * len(events), [[] for _ in events]
     positions = np.arange(right - left)
     middle = (right - left) // 2
-    masks = [columns, columns & (positions < middle), columns & (positions >= middle)]
-    masks = [mask for mask in masks if mask.any()]
+    regions = [
+        ("whole", columns),
+        ("left", columns & (positions < middle)),
+        ("right", columns & (positions >= middle)),
+    ]
+    regions = [(name, mask) for name, mask in regions if mask.any()]
+    masks = [mask for _, mask in regions]
     selections = [_caption_frames(stats.times, start, end) for start, end in events]
     required = Counter(int(index) for indices in selections for index in indices)
     order = sorted(range(len(events)), key=lambda i: int(selections[i][-1]))
@@ -675,17 +739,25 @@ def _stream_lifts(stats, samples, events, crop):
         float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
     ]
     tolerance = round(BAND_GAP * height)
-    lifts = []
+    lifts, bands = [], []
     for row_profiles in profiles:
-        lift = base
-        for profile, reference in zip(row_profiles, references):
-            top = _band_top(profile > BUSY_RATIO * reference, SEARCH, tolerance)
+        lift, found = base, []
+        for (name, _), profile, reference in zip(regions, row_profiles, references):
+            busy = profile > BUSY_RATIO * reference
+            found.extend(_busy_runs(busy, height, name))
+            top = _band_top(busy, SEARCH, tolerance)
             if top is not None:
                 edge = (height - top) / height
                 if edge > base:
                     lift = max(lift, edge + LIFT_PAD)
         lifts.append(min(lift, MAX_LIFT))
-    return [round(lift, 4) for lift in _shared_max(events, lifts)]
+        bands.append(sorted(found, key=lambda run: (run[0], run[1], run[2])))
+    return [round(lift, 4) for lift in _shared_max(events, lifts)], bands
+
+
+def _stream_lifts(stats, samples, events, crop):
+    """Compatibility helper returning the lifts from the bounded analysis."""
+    return _stream_analysis(stats, samples, events, crop)[0]
 
 
 def plan(source, start, end, events, *, keep=0.75, anchor="auto"):
@@ -698,10 +770,13 @@ def plan(source, start, end, events, *, keep=0.75, anchor="auto"):
             anchor=anchor,
             x={"left": 0.0, "center": (1 - keep) / 2, "right": 1 - keep}[anchor],
         )
-    lifts = _stream_lifts(stats, sample_frames(source, start, end), events, crop)
+    lifts, bands = _stream_analysis(
+        stats, sample_frames(source, start, end), events, crop
+    )
     return {
         "crop": crop,
         "lifts": lifts,
+        "bands": bands,
         "frames": stats.count,
         "seconds": round(time.monotonic() - began, 3),
     }

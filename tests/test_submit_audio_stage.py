@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from clipforge.storage import PipelineError
+
 
 @pytest.fixture
 def stage_submitter(tmp_path, monkeypatch):
@@ -194,9 +196,69 @@ def test_command_timeout_exits_with_short_failure_message(
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == (
-        "Audio stage command failed: TimeoutExpired. Inspect its private receipt. "
-        "No retry or fallback was started.\n"
+        "Audio stage command failed: TimeoutExpired: timed out\n"
+        "依頼が作られた後の失敗なら ~/.local/state/clipforge/<依頼ID>/receipt.json を確認する。"
+        "自動の再送や代替は行っていない。\n"
     )
+
+
+@pytest.mark.parametrize(
+    "make_error, shown",
+    [
+        (
+            lambda: RuntimeError("the approved owner connection is required"),
+            "RuntimeError",
+        ),
+        (
+            lambda: PipelineError("SVG is larger than the allowed size"),
+            "PipelineError",
+        ),
+        (lambda: ValueError("bad\nvalue"), "ValueError"),
+        (lambda: ValueError("x" * 400), "ValueError"),
+        (lambda: KeyError("row"), "KeyError"),
+        (lambda: TypeError("expected str"), "TypeError"),
+        (
+            lambda: FileNotFoundError(
+                2, "No such file or directory", "/private/secret/a.json"
+            ),
+            "FileNotFoundError: No such file or directory",
+        ),
+        (
+            lambda: OSError(13, "Permission denied", "/private/secret"),
+            "PermissionError: Permission denied",
+        ),
+        (
+            lambda: subprocess.CalledProcessError(
+                1, ["gh", "api", "https://example.test/x?token=SECRET"], output="SECRET"
+            ),
+            "CalledProcessError: exit 1",
+        ),
+        (
+            lambda: subprocess.TimeoutExpired(
+                ["gh", "https://example.test/signed?sig=SECRET"], 60
+            ),
+            "TimeoutExpired: timed out",
+        ),
+    ],
+)
+def test_run_cli_shows_error_type_without_paths_commands_or_urls(
+    stage_submitter, monkeypatch, capsys, make_error, shown
+):
+    module, _, _ = stage_submitter
+
+    def fail(argv=None):
+        raise make_error()
+
+    monkeypatch.setattr(module, "main", fail)
+    assert module.run_cli(["--stage", "merge"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    first, second, *rest = output.err.splitlines()
+    assert first == "Audio stage command failed: " + shown
+    assert second == module.RECEIPT_HINT
+    assert rest == []
+    for leaked in ("/private", "gh ", "http", "SECRET", "token", "sig="):
+        assert leaked not in output.err
 
 
 COLLECT_REQUEST = "d" * 32
@@ -1353,11 +1415,34 @@ def test_review_refuses_an_unknown_crop_side_before_dispatch():
         )
 
 
-def test_command_failure_explains_local_code_mismatch_without_external_details():
-    from tools import submit_audio_stage as submit
+def test_command_failure_explains_local_code_mismatch_without_external_details(
+    stage_submitter,
+):
+    submit, _, _ = stage_submitter
 
     reason = "local merge code differs from source_ref"
     assert reason in submit.command_failure(submit.AudioStageError(reason))
     hidden = "https://private.example/input?token=SECRET_AUTH_VALUE"
     assert hidden not in submit.command_failure(RuntimeError(hidden))
     assert "SECRET_AUTH_VALUE" not in submit.command_failure(ValueError(hidden))
+
+
+def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():
+    spec = importlib.util.spec_from_file_location(
+        "submit_audio_stage", Path("tools/submit_audio_stage.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.require_video_review(
+        {
+            "clips": [
+                {"video_reviewed": True, "caption_floor": 0.32},
+                {"video_reviewed": True},
+            ]
+        }
+    )
+    for floor in (0.4, -0.01):
+        with pytest.raises(RuntimeError, match="caption_floor"):
+            module.require_video_review(
+                {"clips": [{"video_reviewed": True, "caption_floor": floor}]}
+            )

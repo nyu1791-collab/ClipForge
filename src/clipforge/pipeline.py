@@ -336,6 +336,8 @@ def cut_regions(source, transcript, clip, settings):
 
 # Crop sides a reviewer may request for a chat render; "auto" lets auto_layout choose.
 CROP_ANCHORS = ("auto", "left", "center", "right")
+# Highest caption floor a reviewer may set for one clip: the cap of auto_layout.MAX_LIFT.
+MAX_CAPTION_FLOOR = 0.32
 
 
 def _crop_fractions(keep):
@@ -362,7 +364,8 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
 
     crop_anchor "auto" takes auto_layout's choice; left, center and right fix the crop and only
     place the captions. When the plan fails the picture is centred (or on the fixed side) and
-    every caption stays at the base margin (lifts None); reason then names the failure. Caption
+    every caption stays at the base margin (lifts None); reason then names the failure. With
+    caption_lift off the crop is kept and the lifts are dropped (reason "disabled"). Caption
     times are the file's own, as auto_layout expects.
     """
     frame_width, _ = media.frame_size(settings)
@@ -384,12 +387,14 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
         crop = plan["crop"]
         # The crop stays inside the source: its left edge is 0 to the share not kept.
         x = min(max(float(crop["x"]), 0.0), 1 - keep)
+        enabled = settings.caption_lift
         return {
             "anchor": crop["anchor"],
             "requested": crop_anchor,
             "x": x,
-            "lifts": lifts,
-            "reason": None,
+            "lifts": lifts if enabled else None,
+            "static": plan.get("bands") if enabled else None,
+            "reason": None if enabled else "disabled",
         }
     except Exception as failure:
         fixed = crop_anchor != "auto"
@@ -398,6 +403,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "requested": crop_anchor,
             "x": _crop_fractions(keep)[crop_anchor] if fixed else None,
             "lifts": None,
+            "static": None,
             "reason": type(failure).__name__,
         }
 
@@ -428,33 +434,157 @@ def _saved_layout(target, input_key):
     return plan
 
 
-def render_clip(
-    source, root, index, clip, transcript, settings, key, chat=None, crop_anchor="auto"
+def _source_time(moment, clip, keep):
+    """Source-file seconds of a caption time on the output timeline (after silence cuts, if any)."""
+    if not keep:
+        return clip.start + moment
+    elapsed = 0.0
+    for start, end in keep:
+        if moment <= elapsed + (end - start):
+            return start + max(0.0, moment - elapsed)
+        elapsed += end - start
+    return keep[-1][1]
+
+
+def standard_layout(source, clip, transcript, settings, keep):
+    """Caption lifts for a 16:9 render without the chat column, from the source picture.
+
+    The window is the whole picture, or the centred crop of a source wider than 16:9 when framing
+    is center-crop. The panels layout stacks two boxes, so its picture is not the source's: it
+    keeps the base margin (reason "panels"). A failed analysis also keeps the base margin.
+    """
+    base = {
+        "anchor": "full",
+        "requested": "auto",
+        "x": None,
+        "lifts": None,
+        "static": None,
+        "reason": None,
+    }
+    if settings.layout == "panels":
+        return {**base, "reason": "panels"}
+    if not settings.caption_lift:
+        return {**base, "reason": "disabled"}
+    try:
+        info = media.probe(source)
+        frame_width, frame_height = media.frame_size(settings)
+        # Share of the source width the picture keeps: all of it unless center-crop cuts it.
+        share = 1.0
+        if settings.framing == "center-crop":
+            share = min(
+                1.0, frame_width * info["height"] / (frame_height * info["width"])
+            )
+        events = [
+            (_source_time(start, clip, keep), _source_time(end, clip, keep))
+            for start, end in caption_spans(transcript, clip, settings, keep)
+        ]
+        plan = _auto_layout_window(
+            source, clip.start, clip.end, events, "center", share
+        )
+        lifts = [float(lift) for lift in plan["lifts"]]
+        if len(lifts) != len(events):
+            raise PipelineError("auto layout gave one lift per caption")
+        return {
+            **base,
+            "anchor": "center" if share < 1 else "full",
+            "x": plan["crop"]["x"],
+            "lifts": lifts,
+            "static": plan["bands"],
+            "reason": None,
+        }
+    except Exception as failure:
+        return {**base, "reason": type(failure).__name__}
+
+
+def _with_floor(layout, count, floor):
+    """Raises each caption's lift to the reviewed floor; without lifts the floor starts from base."""
+    from . import auto_layout
+
+    lifts = (
+        layout["lifts"] if layout["lifts"] is not None else [FILL_BOTTOM_SHARE] * count
+    )
+    return {**layout, "lifts": auto_layout.apply_floor(lifts, floor), "floor": floor}
+
+
+def landscape_layout(
+    source, clip, transcript, settings, keep, crop_anchor, caption_floor
 ):
-    """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel."""
+    """The caption layout of a 16:9 render, or None when the render has none.
+
+    With the chat panel's fill fit the layout is chat_layout's (crop and lifts); the other chat fits
+    have none. Without the chat panel the layout is standard_layout, unless caption_lift is off and
+    no caption_floor was reviewed. Portrait renders have no layout.
+    """
+    if settings.aspect != "16:9":
+        if caption_floor is not None:
+            raise PipelineError("caption_floor needs a landscape 16:9 render")
+        return None
+    if settings.chat_panel:
+        if settings.chat_panel_fit != "fill":
+            # The other chat fits keep their captions in the band or on a fixed margin.
+            if caption_floor is not None:
+                raise PipelineError(
+                    "caption_floor needs the chat fill fit or no chat panel"
+                )
+            return None
+        layout = chat_layout(source, clip, transcript, settings, crop_anchor)
+    elif settings.caption_lift or caption_floor is not None:
+        layout = standard_layout(source, clip, transcript, settings, keep)
+    else:
+        return None
+    if caption_floor is None:
+        return layout
+    count = len(caption_spans(transcript, clip, settings, keep))
+    return _with_floor(layout, count, caption_floor)
+
+
+def render_clip(
+    source,
+    root,
+    index,
+    clip,
+    transcript,
+    settings,
+    key,
+    chat=None,
+    crop_anchor="auto",
+    caption_floor=None,
+):
+    """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel.
+
+    caption_floor is a reviewed share of the height (0 to MAX_CAPTION_FLOOR) that every caption's
+    lift is raised to; it applies to 16:9 renders only.
+    """
     name = f"clip-{index:03}"
     target = root / name
     if settings.chat_panel and chat is None:
         raise PipelineError("chat panel needs a Kick VOD URL source")
     if crop_anchor not in CROP_ANCHORS:
         raise PipelineError("crop_anchor must be auto, left, center or right")
-    # Fill chooses where the picture is cropped and how high each caption sits. The plan is
-    # made before the render key, so a different plan is a different render.
-    layout, layout_input_key = None, None
-    if settings.chat_panel and settings.chat_panel_fit == "fill":
-        layout_input_key = fingerprint(
-            {
-                "version": 3,
-                "job": key,
-                "clip": clip.model_dump(),
-                "transcript": transcript.model_dump(),
-                "settings": settings.model_dump(mode="json"),
-                "crop_anchor": crop_anchor,
-            }
+    if caption_floor is not None and (
+        type(caption_floor) not in (int, float)
+        or not 0 <= caption_floor <= MAX_CAPTION_FLOOR
+    ):
+        raise PipelineError("caption_floor must be from 0 to 0.32")
+    timings = {}
+    keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
+    # Bind both chat and standard landscape analysis to all planning inputs before reuse.
+    layout_input_key = fingerprint(
+        {
+            "version": 4,
+            "job": key,
+            "clip": clip.model_dump(),
+            "transcript": transcript.model_dump(),
+            "settings": settings.model_dump(mode="json"),
+            "crop_anchor": crop_anchor,
+            "caption_floor": caption_floor,
+        }
+    )
+    layout = _saved_layout(target, layout_input_key) if target.is_dir() else None
+    if layout is None:
+        layout = landscape_layout(
+            source, clip, transcript, settings, keep, crop_anchor, caption_floor
         )
-        layout = _saved_layout(target, layout_input_key) if target.is_dir() else None
-        if layout is None:
-            layout = chat_layout(source, clip, transcript, settings, crop_anchor)
     render_key = fingerprint(
         {
             "job": key,
@@ -472,6 +602,11 @@ def render_clip(
                         "x": layout["x"],
                         "lifts": layout["lifts"],
                         "requested": layout["requested"],
+                        **(
+                            {"floor": layout["floor"]}
+                            if layout.get("floor") is not None
+                            else {}
+                        ),
                     }
                 }
                 if layout
@@ -487,8 +622,6 @@ def render_clip(
         if not valid_receipt(target, saved, render_key):
             raise PipelineError("existing clip differs from the saved render receipt")
         return {"directory": "clips/" + name, **saved}
-    timings = {}
-    keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
     with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
         directory = Path(temporary)
         if layout is not None:
@@ -533,17 +666,24 @@ def render_clip(
                 keep=keep,
                 visuals=visuals,
                 **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
-                **({"crop_x": layout["x"]} if layout else {}),
+                # Only the chat fill crops by position; standard layouts keep the framing setting.
+                **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
             ),
         )
-        # Checked before the thumbnail, so a strict refusal costs no extra work.
+        # Checked before the thumbnail, so a strict refusal costs no extra work. The static bands
+        # are the ones the captions were placed by, saved in the layout of render.json.
         report = timed(
             timings,
             "quality",
             lambda: quality.record(
                 directory,
                 quality.check_clip(
-                    directory, info, caption["missing_glyphs"], ledger, settings
+                    directory,
+                    info,
+                    caption["missing_glyphs"],
+                    ledger,
+                    settings,
+                    static=layout.get("static") if layout else None,
                 ),
             ),
         )
@@ -594,6 +734,8 @@ def render_clip(
                 "lift_max": max(lifts, default=None),
                 "lifted": sum(lift > FILL_BOTTOM_SHARE + 1e-9 for lift in lifts),
                 "reason": layout["reason"],
+                "floor": layout.get("floor"),
+                "static": layout.get("static"),
             }
         write_json(directory / "render.json", saved)
         # Commit the whole clip directory only when MP4 and captions are complete.
