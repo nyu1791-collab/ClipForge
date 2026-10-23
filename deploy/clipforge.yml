@@ -371,6 +371,7 @@ jobs:
         if: steps.request.outputs.asr_parts == '2'
         env:
           GH_TOKEN: ${{ github.token }}
+          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
           CLIPFORGE_PUBLIC_CACHE: ${{ inputs.public_cache || 'off' }}
         run: |
