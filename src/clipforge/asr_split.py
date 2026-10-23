@@ -19,6 +19,7 @@ from .storage import (
 )
 
 OVERLAP_SECONDS = 5
+BOUNDARY_RESCUE = 1.0
 
 
 def part_id(parent, index, split):
@@ -252,7 +253,12 @@ def validate_part(part):
 
 
 def merge(parts, duration):
-    """Keep each word once, by the half-open ownership interval of its midpoint."""
+    """Keep each word once, by the half-open ownership interval of its midpoint.
+
+    A word whose midpoint lies just outside its own part, within BOUNDARY_RESCUE of the cut, is
+    only a candidate. It is kept when no accepted word of the other part overlaps it, so a word
+    recognised on one side alone is not lost; the first part's candidate wins a clash.
+    """
     if len(parts) != 2:
         raise PipelineError("both ASR parts are required")
     ordered = sorted(parts, key=lambda row: row[0]["index"])
@@ -276,18 +282,20 @@ def merge(parts, duration):
         or second["core_end"] != duration
     ):
         raise PipelineError("ASR parts do not cover the same source exactly once")
-    results, languages, previous_word = [], set(), None
+    boundary = first["core_end"]
+    languages, results = set(), []
+    # Per part: (segment position, word, accepted) for every word inside or near its interval.
+    timed = {0: [], 1: []}
     for descriptor, raw in ordered:
+        index = descriptor["index"]
         transcript = Transcript.model_validate(raw)
         languages.add(transcript.language)
         lo, hi, offset = (
             descriptor[key] for key in ("core_start", "core_end", "offset")
         )
-        boundary_word = previous_word
-        for segment in transcript.segments:
+        for position, segment in enumerate(transcript.segments):
             if segment.end > descriptor["duration"] + 0.3:
                 raise PipelineError("ASR part transcript exceeds its audio")
-            words = []
             for word in segment.words:
                 if (
                     word.start < segment.start - TIME_TOLERANCE
@@ -299,32 +307,14 @@ def merge(parts, duration):
                     min(duration, word.end + offset),
                 )
                 midpoint = (start + end) / 2
-                if not (end > start and lo <= midpoint < hi):
+                if not end > start:
                     continue
                 item = Word(start=start, end=end, text=word.text)
-                if (
-                    descriptor["index"] == 1
-                    and boundary_word
-                    and item.start < boundary_word.end
-                ):
-                    if item.text.strip() == boundary_word.text.strip():
-                        continue
-                    if boundary_word.end - item.start > TIME_TOLERANCE:
-                        raise PipelineError(
-                            "ambiguous ASR split boundary; use --asr-parts 1"
-                        )
-                words.append(item)
-                previous_word = item
-            if words:
-                results.append(
-                    Segment(
-                        start=words[0].start,
-                        end=words[-1].end,
-                        text="".join(word.text for word in words),
-                        words=words,
-                    )
-                )
-            elif not segment.words and segment.text.strip():
+                if lo <= midpoint < hi:
+                    timed[index].append((position, item, True))
+                elif abs(midpoint - boundary) <= BOUNDARY_RESCUE:
+                    timed[index].append((position, item, False))
+            if not segment.words and segment.text.strip():
                 start, end = (
                     max(0, segment.start + offset),
                     min(duration, segment.end + offset),
@@ -335,6 +325,55 @@ def merge(parts, duration):
                     raise PipelineError(
                         "word timestamps are required at the ASR split boundary"
                     )
+
+    def overlaps(item, peers):
+        return any(item.start < peer.end and item.end > peer.start for peer in peers)
+
+    owned = {index: [item for _, item, kept in timed[index] if kept] for index in (0, 1)}
+    rescued = {0: [], 1: []}
+    for index in (0, 1):
+        # The second part's candidates also yield to the first part's adopted candidates.
+        peers = owned[1 - index] + [item for _, item in rescued[0]]
+        rescued[index] = [
+            (position, item)
+            for position, item, kept in timed[index]
+            if not kept and not overlaps(item, peers)
+        ]
+    accepted = {
+        index: sorted(
+            [(position, item) for position, item, kept in timed[index] if kept]
+            + rescued[index],
+            key=lambda pair: (pair[1].start, pair[1].end),
+        )
+        for index in (0, 1)
+    }
+    # The boundary check runs on the final word lists, so it also covers rescued words.
+    if accepted[0]:
+        boundary_word = accepted[0][-1][1]
+        checked = []
+        for position, item in accepted[1]:
+            if item.start < boundary_word.end:
+                if item.text.strip() == boundary_word.text.strip():
+                    continue
+                if boundary_word.end - item.start > TIME_TOLERANCE:
+                    raise PipelineError(
+                        "ambiguous ASR split boundary; use --asr-parts 1"
+                    )
+            checked.append((position, item))
+        accepted[1] = checked
+    for index in (0, 1):
+        grouped = {}
+        for position, item in accepted[index]:
+            grouped.setdefault(position, []).append(item)
+        results.extend(
+            Segment(
+                start=words[0].start,
+                end=words[-1].end,
+                text="".join(word.text for word in words),
+                words=words,
+            )
+            for words in grouped.values()
+        )
     if len(languages - {"und"}) > 1:
         raise PipelineError(
             "ASR parts detected different languages; set language explicitly"

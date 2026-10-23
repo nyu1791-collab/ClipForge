@@ -126,6 +126,107 @@ def test_ambiguous_boundary_fails_without_clipping_words(prepared):
         asr_split.merge(parts, 40)
 
 
+def merged_words(plan, front, back):
+    value = asr_split.merge(
+        [
+            (plan["parts"][0]["asr_part"], front),
+            (plan["parts"][1]["asr_part"], back),
+        ],
+        40,
+    )
+    return [
+        (word["text"], round(word["start"], 6))
+        for segment in value["segments"]
+        for word in segment["words"]
+    ]
+
+
+def test_word_straddling_the_cut_is_kept_once_when_each_side_places_it_differently(
+    prepared,
+):
+    _, plan, _ = prepared
+    # The front half hears the word after the cut (midpoint 20.1), the back half before it (19.9).
+    front = transcript([(1, 2, "前半"), (19.8, 20.4, "境界")])
+    back = transcript([(4.6, 5.2, "境界"), (20, 21, "後半")])
+    assert merged_words(plan, front, back) == [
+        ("前半", 1),
+        ("境界", 19.8),
+        ("後半", 35),
+    ]
+
+
+@pytest.mark.parametrize("side", ["front", "back"])
+def test_word_heard_by_one_side_near_the_cut_is_kept(prepared, side):
+    _, plan, _ = prepared
+    front = transcript(
+        [(1, 2, "前半")] + ([(19.8, 20.4, "境界")] if side == "front" else [])
+    )
+    back = transcript(
+        ([(4.6, 5.2, "境界")] if side == "back" else []) + [(20, 21, "後半")]
+    )
+    start = 19.8 if side == "front" else 19.6
+    assert merged_words(plan, front, back) == [
+        ("前半", 1),
+        ("境界", start),
+        ("後半", 35),
+    ]
+
+
+def test_word_beyond_the_rescue_distance_is_still_dropped(prepared):
+    _, plan, _ = prepared
+    # Midpoint 21.5 is 1.5 s past the cut, so it is not a candidate and is discarded.
+    front = transcript([(1, 2, "前半"), (21, 22, "遠い")])
+    back = transcript([(4.7, 5.3, "境界"), (20, 21, "後半")])
+    assert merged_words(plan, front, back) == [
+        ("前半", 1),
+        ("境界", 19.7),
+        ("後半", 35),
+    ]
+
+
+def test_rescued_word_joins_its_own_segment_in_time_order(prepared):
+    _, plan, _ = prepared
+    front = transcript([(1, 2, "前半")])
+    back = {
+        "language": "ja",
+        "segments": [
+            {
+                "start": 4.6,
+                "end": 6.0,
+                "text": "境界後半",
+                "words": [
+                    {"start": 4.6, "end": 5.2, "text": "境界"},
+                    {"start": 5.5, "end": 6.0, "text": "後半"},
+                ],
+            }
+        ],
+    }
+    value = asr_split.merge(
+        [
+            (plan["parts"][0]["asr_part"], front),
+            (plan["parts"][1]["asr_part"], back),
+        ],
+        40,
+    )
+    assert len(value["segments"]) == 2
+    joined = value["segments"][1]
+    assert joined["text"] == "境界後半"
+    assert [word["text"] for word in joined["words"]] == ["境界", "後半"]
+    assert round(joined["start"], 6) == 19.6 and round(joined["end"], 6) == 21
+
+
+def test_overlapping_rescued_words_from_both_sides_keep_the_front_half(prepared):
+    _, plan, _ = prepared
+    # Front: 左 (midpoint 20.2) and back: 右 (midpoint 19.8) overlap, so only the front one stays.
+    front = transcript([(1, 2, "前半"), (19.9, 20.5, "左")])
+    back = transcript([(4.5, 5.1, "右"), (20, 21, "後半")])
+    assert merged_words(plan, front, back) == [
+        ("前半", 1),
+        ("左", 19.9),
+        ("後半", 35),
+    ]
+
+
 def test_full_split_identity_is_separate_and_cannot_silently_run_sequentially(prepared):
     source, plan, _ = prepared
     settings = Settings.model_validate(plan["settings"])
