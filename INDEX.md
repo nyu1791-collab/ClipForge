@@ -6,6 +6,7 @@
 - Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q`、lint は `ruff`。
 - 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。
 - 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。
+- 開発環境の準備: `bash tools/dev_setup.sh`／依存・フォント・検証・worker 認証の説明: `docs/DEVELOPMENT.md`。
 
 ## 主な流れ（URL 経路）
 Kick / YouTube / Twitch / 直接HTTPSメディア URL → runner で音声取得（`tools/acquire_audio_url.py`）→ Colab GPU で2分割ASR → 結合・話題分割 → previews と未承認の下書き → 承認 → Colab CPU で描画 → 制御 VM で `merge --local`。音声のみのURLは解析まで。

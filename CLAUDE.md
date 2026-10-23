@@ -25,7 +25,7 @@
 - 決まったことを読み直したり、言い直したりしない。
 
 ## 検証
-- 準備: `uv sync --all-extras` と日本語フォント `fonts-noto-cjk`（無いと字幕系のテストが約60件失敗する）。
+- 準備: `bash tools/dev_setup.sh`（依存・FFmpeg・日本語フォント。詳細は [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)）。新しい環境では検証の前に実行する。
 - テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`（`pytest` 直呼びでは `tools` を import できず1件落ちる）。
 - 順序は、変更モジュールのテスト → 全単体テスト → `ruff check .` と変更ファイルの `ruff format --check`。
 - 変更前にベースラインを取り、失敗が既存か新規かを区別する。
