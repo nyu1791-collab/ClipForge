@@ -826,3 +826,34 @@ def test_crop_position_does_not_change_the_other_chat_fits():
             crop_x=0.1,
         )
         assert moved == plain
+
+
+def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
+    import shutil
+    from clipforge import quality
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("ffmpeg is required for the final AAC peak check")
+    target = tmp_path / "peaks.m4a"
+    signal = "aevalsrc='if(lt(mod(t,0.1),0.001),0.99,0)':s=48000:d=2"
+    command = [
+        "ffmpeg",
+        "-nostdin",
+        "-v",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        signal,
+        "-filter_complex",
+        "[0:a]anull[mix];" + media._audio_tail(make(), 2, None),
+        "-map",
+        "[aout]",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        str(target),
+    ]
+    subprocess.run(command, capture_output=True, check=True, timeout=30)
+    assert quality.measure_output(target)["true_peak_dbtp"] < -1.0

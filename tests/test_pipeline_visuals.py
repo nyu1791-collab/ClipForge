@@ -1393,6 +1393,24 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
     assert seen == [lifts, 0.25, lifts, 0.0]
     # A different requested side is a different render, so its receipt has its own key.
     assert auto["key"] != fixed["key"]
+
+    def no_analysis(*args, **kwargs):
+        raise AssertionError("a verified cached render must not analyse frames again")
+
+    monkeypatch.setattr(pipeline, "chat_layout", no_analysis)
+    cached = pipeline.render_clip(
+        source, roots["auto"], 1, clip, transcript, settings, "job", chat=chat
+    )
+    assert cached == auto
+    assert seen == [lifts, 0.25, lifts, 0.0]
+    receipt_file = roots["auto"] / "clip-001" / "render.json"
+    stored = json.loads(receipt_file.read_text())
+    stored["render_inputs"]["layout"]["requested"] = "left"
+    receipt_file.write_text(json.dumps(stored))
+    with pytest.raises(PipelineError, match="existing clip differs"):
+        pipeline.render_clip(
+            source, roots["auto"], 1, clip, transcript, settings, "job", chat=chat
+        )
     with pytest.raises(PipelineError, match="crop_anchor must be"):
         pipeline.render_clip(
             source,
@@ -1628,6 +1646,33 @@ def test_render_clip_applies_the_reviewed_caption_floor(
     )
     assert "layout" not in off
     assert ("lifts", None) in seen
+
+    def no_analysis(*args, **kwargs):
+        raise AssertionError("cached standard layout must not decode frames again")
+
+    monkeypatch.setattr(pipeline, "standard_layout", no_analysis)
+    cached = pipeline.render_clip(
+        source,
+        tmp_path / "floored",
+        1,
+        clip,
+        transcript,
+        settings,
+        "job",
+        caption_floor=0.25,
+    )
+    assert cached == floored
+    with pytest.raises(PipelineError, match="existing clip differs"):
+        pipeline.render_clip(
+            source,
+            tmp_path / "floored",
+            1,
+            clip,
+            transcript,
+            settings,
+            "job",
+            caption_floor=0.2,
+        )
 
 
 def test_pause_marks_become_fullwidth_spaces_inside_and_vanish_at_the_end():

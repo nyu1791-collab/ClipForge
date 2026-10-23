@@ -376,6 +376,34 @@ def test_empty_clip_is_rejected():
         kick_chat.panel_ass([], 10.0, 10.0)
 
 
+def test_page_boundary_replays_the_same_second_and_deduplicates_ids(
+    no_sleep, monkeypatch
+):
+    monkeypatch.setattr(kick_chat, "PAGE_LIMIT", 2)
+
+    class BurstSession(FakeSession):
+        def __init__(self):
+            super().__init__([])
+            self.pages = [
+                [row("a", 11, content="first"), row("b", 12, content="second")],
+                [row("b", 12, content="second"), row("c", 12, content="boundary")],
+                [row("b", 12, content="second"), row("c", 12, content="boundary")],
+            ]
+
+        def get(self, url, *, params=None, timeout=None):
+            if url == MESSAGES and self.pages:
+                self.calls.append((url, params))
+                return Response(200, {"data": {"messages": self.pages.pop(0)}})
+            return super().get(url, params=params, timeout=timeout)
+
+    session = BurstSession()
+    result = fetch(session, start=10, end=16, lead=0)
+    assert [m["text"] for m in result] == ["first", "second", "boundary"]
+    cursors = [p["start_time"] for u, p in session.calls if u == MESSAGES]
+    assert cursors[:3] == [iso(10), iso(12), iso(12)]
+    assert len(cursors) < 10
+
+
 def chat_calls(session):
     return [params for url, params in session.calls if url == MESSAGES]
 

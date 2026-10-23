@@ -207,16 +207,16 @@ def test_command_timeout_exits_with_short_failure_message(
     [
         (
             lambda: RuntimeError("the approved owner connection is required"),
-            "RuntimeError: the approved owner connection is required",
+            "RuntimeError",
         ),
         (
             lambda: PipelineError("SVG is larger than the allowed size"),
-            "PipelineError: SVG is larger than the allowed size",
+            "PipelineError",
         ),
-        (lambda: ValueError("bad\nvalue"), "ValueError: bad value"),
-        (lambda: ValueError("x" * 400), "ValueError: " + "x" * 300),
-        (lambda: KeyError("row"), "KeyError: 'row'"),
-        (lambda: TypeError("expected str"), "TypeError: expected str"),
+        (lambda: ValueError("bad\nvalue"), "ValueError"),
+        (lambda: ValueError("x" * 400), "ValueError"),
+        (lambda: KeyError("row"), "KeyError"),
+        (lambda: TypeError("expected str"), "TypeError"),
         (
             lambda: FileNotFoundError(
                 2, "No such file or directory", "/private/secret/a.json"
@@ -1413,6 +1413,18 @@ def test_review_refuses_an_unknown_crop_side_before_dispatch():
         module.require_video_review(
             {"clips": [{"video_reviewed": True, "crop_anchor": "middle"}]}
         )
+
+
+def test_command_failure_explains_local_code_mismatch_without_external_details(
+    stage_submitter,
+):
+    submit, _, _ = stage_submitter
+
+    reason = "local merge code differs from source_ref"
+    assert reason in submit.command_failure(submit.AudioStageError(reason))
+    hidden = "https://private.example/input?token=SECRET_AUTH_VALUE"
+    assert hidden not in submit.command_failure(RuntimeError(hidden))
+    assert "SECRET_AUTH_VALUE" not in submit.command_failure(ValueError(hidden))
 
 
 def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():

@@ -157,8 +157,15 @@ MARK_FOLLOWERS_NOT_SPACED = "」』）)］】〉》、。…‥？！"
 
 
 def japanese_marks(text):
-    """Halfwidth ? and ! become the fullwidth marks used in Japanese captions."""
-    return text.translate(JAPANESE_MARKS)
+    """Halfwidth ? and ! become fullwidth; inside a token, more text after them is spaced.
+
+    The fullwidth space follows the same rule as space_after_marks between tokens.
+    """
+    return re.sub(
+        r"([？！]+)[ \t　]*(?=[^\s" + re.escape(MARK_FOLLOWERS_NOT_SPACED) + "])",
+        r"\1　",
+        text.translate(JAPANESE_MARKS),
+    )
 
 
 def space_after_marks(tokens):
@@ -426,7 +433,9 @@ def spoken_length(text):
     return len(re.sub(r"\s", "", text))
 
 
-def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0):
+def hold_for_reading(
+    spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0, lead_ms=0
+):
     """Extend captions read faster than the target into the silence after them.
 
     spans holds [start, end] in milliseconds, in order, and is changed in place. Only
@@ -443,6 +452,14 @@ def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0):
         # times already are whole centiseconds, and both files then keep the same timing.
         held = min(-(-wanted // 10) * 10, ceiling - ceiling % 10)
         span[1] = max(span[1], held)
+    if lead_ms:
+        for index, (span, text) in enumerate(zip(spans, texts)):
+            needed = math.ceil(spoken_length(text) * 1000 / cps) - (span[1] - span[0])
+            previous_end = spans[index - 1][1] if index else 0
+            room = max(0, min(lead_ms, span[0] - previous_end))
+            # Use only nearby silence, on centisecond boundaries, without moving speech.
+            shift = min(room, max(0, -(-needed // 10) * 10))
+            span[0] -= shift - shift % 10
     return spans
 
 
@@ -512,6 +529,14 @@ def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscap
         round(duration * 1000),
         settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
         floor_ms=round(MIN_CAPTION_SECONDS * 1000),
+        lead_ms=500
+        if landscape
+        and any(
+            _is_kanji(c) or _is_hiragana(c) or _is_katakana(c)
+            for text in plain_lines
+            for c in text
+        )
+        else 0,
     )
     return groups, spans, plain_lines, cleanup, approximate
 

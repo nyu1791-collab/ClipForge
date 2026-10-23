@@ -352,19 +352,7 @@ def _auto_layout_window(source, start, end, events, anchor, keep):
     """Caption bands for a crop side the reviewer fixed: the window is not chosen by plan."""
     from . import auto_layout
 
-    times, frames = auto_layout.sample_frames(source, start, end)
-    # The overlay (a dark chat block at an edge) is found as for an automatic crop; only the side
-    # is fixed, so the captions do not count detail under the overlay.
-    overlay = auto_layout.choose_crop(frames, keep=keep)["overlay"]
-    crop = {
-        "anchor": anchor,
-        "x": _crop_fractions(keep)[anchor],
-        "keep": keep,
-        "kept": {},
-        "overlay": overlay,
-    }
-    lifts, bands = auto_layout.caption_analysis(times, frames, events, crop)
-    return {"crop": crop, "lifts": lifts, "bands": bands}
+    return auto_layout.plan(source, start, end, events, keep=keep, anchor=anchor)
 
 
 def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):

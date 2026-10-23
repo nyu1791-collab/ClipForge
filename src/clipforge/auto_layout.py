@@ -7,8 +7,11 @@ bottom edge, up to MAX_LIFT of the height.
 """
 
 import time
+import subprocess
+import tempfile
+import threading
+from dataclasses import dataclass
 
-from . import storage
 from .storage import PipelineError
 
 
@@ -75,9 +78,7 @@ def _check_frames(frames, message):
 
 
 def sample_frames(source, start, end, *, fps=2.0, width=320, height=180):
-    """Grayscale frames of [start, end) as (times in source seconds, uint8 [n, height, width])."""
-    import numpy as np
-
+    """Iterate (source times, grayscale frames) in blocks of at most BLOCK frames."""
     if not end > start:
         raise ValueError("sample window must end after it starts")
     if fps <= 0 or width <= 0 or height <= 0:
@@ -92,8 +93,10 @@ def sample_frames(source, start, end, *, fps=2.0, width=320, height=180):
         f"{start:.3f}",
         "-t",
         f"{end - start:.3f}",
+        "-protocol_whitelist",
+        "file,pipe",
         "-i",
-        source,
+        str(source),
         "-map",
         "0:v:0",
         "-an",
@@ -106,17 +109,208 @@ def sample_frames(source, start, end, *, fps=2.0, width=320, height=180):
         "rawvideo",
         "pipe:1",
     ]
-    # Decoding time grows with the window; a fixed limit would fail long topics.
-    timeout = max(120, int((end - start) * 2) + 60)
-    result = storage.process(command, timeout=timeout, stage="layout-frames")
-    size = width * height
-    count = len(result.stdout) // size
-    if count == 0:
+    return _decode_frames(
+        command, start, fps, width, height, max(120, int((end - start) * 2) + 60)
+    )
+
+
+def _decode_frames(command, start, fps, width, height, timeout):
+    import numpy as np
+
+    count, size = 0, width * height
+    expired = threading.Event()
+    with tempfile.TemporaryFile() as errors:
+        try:
+            proc = subprocess.Popen(
+                command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=errors
+            )
+        except OSError:
+            raise PipelineError("layout frame decoder could not start") from None
+
+        def stop():
+            expired.set()
+            proc.kill()
+
+        timer = threading.Timer(timeout, stop)
+        timer.daemon = True
+        timer.start()
+        try:
+            while True:
+                data = proc.stdout.read(BLOCK * size)
+                number = len(data) // size
+                if not number:
+                    break
+                frames = np.frombuffer(
+                    data, dtype=np.uint8, count=number * size
+                ).reshape(number, height, width)
+                yield [start + (count + i) / fps for i in range(number)], frames
+                count += number
+            code = proc.wait()
+            if expired.is_set():
+                raise PipelineError("layout frame decoding timed out")
+            if code:
+                raise PipelineError("layout frame decoding failed")
+            if not count:
+                raise PipelineError("no video frames in the layout sample window")
+        finally:
+            timer.cancel()
+            proc.stdout.close()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+
+@dataclass
+class FrameStatistics:
+    count: int
+    height: int
+    width: int
+    profile: object
+    dark: object
+    mean_gradient: object
+    persistent: object
+    times: list
+    bottom: object
+    top: object
+    rows: int
+
+
+def frame_statistics(samples, *, band=0.24):
+    """Keep column/band summaries, never the full decoded video or its gradients."""
+    import numpy as np
+
+    # Older callers can supply one already-decoded (times, frames) pair.
+    if isinstance(samples, tuple):
+        samples = [samples]
+    count, times, bottoms, tops = 0, [], [], []
+    height = width = rows = None
+    for moments, frames in samples:
+        _check_frames(frames, "no frames to analyse")
+        if len(moments) != len(frames):
+            raise ValueError("times and frames must have the same length")
+        if height is None:
+            height, width = frames.shape[1:]
+            rows = max(1, round(band * height))
+            profile, dark = np.zeros(width), np.zeros(width)
+            gradients, edges = np.zeros((height, width)), np.zeros((height, width))
+        if frames.shape[1:] != (height, width):
+            raise ValueError("sample frame dimensions changed")
+        for offset in range(0, len(frames), BLOCK):
+            block = frames[offset : offset + BLOCK]
+            gradient = _gradient(block)
+            profile += gradient.sum(axis=(0, 1))
+            dark += (block < DARK_LEVEL).sum(axis=(0, 1))
+            gradients += gradient.sum(axis=0)
+            edges += (gradient > 80).sum(axis=0)
+            bottoms.append(gradient[:, height - rows :, :].mean(axis=1))
+            tops.append(gradient[:, :rows, :].mean(axis=1))
+        count += len(frames)
+        times.extend(float(t) for t in moments)
+    if not count:
         raise PipelineError("no video frames in the layout sample window")
-    frames = np.frombuffer(result.stdout, dtype=np.uint8, count=count * size)
-    frames = frames.reshape(count, height, width)
-    times = [start + index / fps for index in range(count)]
-    return times, frames
+    return FrameStatistics(
+        count,
+        height,
+        width,
+        profile / count,
+        dark / (count * height),
+        gradients / count,
+        edges / count,
+        times,
+        np.concatenate(bottoms),
+        np.concatenate(tops),
+        rows,
+    )
+
+
+def _statistics(frames):
+    import numpy as np
+
+    if isinstance(frames, FrameStatistics):
+        return frames
+    frames = np.asarray(frames)
+    _check_frames(frames, "no frames to choose a crop from")
+    return frame_statistics((list(range(len(frames))), frames))
+
+
+def _runs(mask):
+    """One representative pixel per contiguous line candidate."""
+    positions, previous = [], -2
+    for value in mask.nonzero()[0]:
+        if value > previous + 1:
+            positions.append(int(value))
+        previous = value
+    return positions
+
+
+def _corner_wipe(stats):
+    """Persistent closed rectangles in a lower corner, not transient game texture."""
+    import numpy as np
+
+    if stats.count < 3:
+        return None
+    h, w = stats.height, stats.width
+    energy = stats.mean_gradient
+    stable = stats.persistent >= 0.8
+    horizontal = stable & (
+        energy > 1.5 * (np.roll(energy, 4, 0) + np.roll(energy, -4, 0)) / 2 + 40
+    )
+    vertical = stable & (
+        energy > 1.5 * (np.roll(energy, 4, 1) + np.roll(energy, -4, 1)) / 2 + 40
+    )
+    candidates = []
+    for side, lo, hi in (("left", 0, round(w * 0.36)), ("right", round(w * 0.64), w)):
+        ys = _runs(horizontal[:, lo:hi].mean(axis=1) > 0.2)
+        xs = _runs(vertical[round(h * 0.5) :, :].mean(axis=0) > 0.2)
+        xs = [x for x in xs if lo <= x < hi]
+        for left in xs:
+            for right in xs:
+                if not 0.1 * w <= right - left <= 0.35 * w:
+                    continue
+                if (
+                    side == "left"
+                    and left > 0.08 * w
+                    or side == "right"
+                    and right < 0.92 * w
+                ):
+                    continue
+                for top in ys:
+                    if not 0.5 * h <= top <= 0.85 * h:
+                        continue
+                    for bottom in ys:
+                        if bottom < 0.85 * h or not 0.1 * h <= bottom - top <= 0.45 * h:
+                            continue
+                        support = [
+                            horizontal[y : y + 2, left : right + 1].any(axis=0).mean()
+                            for y in (top, bottom)
+                        ]
+                        support += [
+                            vertical[top : bottom + 1, x : x + 2].any(axis=1).mean()
+                            for x in (left, right)
+                        ]
+                        if min(support) >= 0.75:
+                            candidates.append(
+                                (
+                                    sum(support),
+                                    (right - left) * (bottom - top),
+                                    side,
+                                    left,
+                                    right,
+                                    top,
+                                    bottom,
+                                )
+                            )
+    if not candidates:
+        return None
+    score, _, side, left, right, top, bottom = max(candidates)
+    return {
+        "side": side,
+        "left": max(0, left - 2) / w,
+        "right": min(w, right + 3) / w,
+        "top": max(0, top - 2) / h,
+        "bottom": min(h, bottom + 3) / h,
+        "confidence": round(score / 4, 3),
+    }
 
 
 def _overlay_block(dark, width):
@@ -150,21 +344,11 @@ def choose_crop(frames, *, keep=0.75):
     OFFSET_STEP from 0 to (1 - keep). A best window within CENTER_MARGIN of the center
     gives "center". Ties go to the offset nearest the center.
     """
-    import numpy as np
-
     if not 0 < keep <= 1:
         raise ValueError("keep must be in (0, 1]")
-    frames = np.asarray(frames)
-    _check_frames(frames, "no frames to choose a crop from")
-    count, height, width = frames.shape
-    profile = np.zeros(width, dtype=np.float64)
-    dark = np.zeros(width, dtype=np.float64)
-    for block in _blocks(frames):
-        # Sum rows (per column) and frames; divided by the frame count below.
-        profile += _gradient(block).sum(axis=(0, 1))
-        dark += (block < DARK_LEVEL).sum(axis=(0, 1))
-    profile /= count
-    dark /= count * height
+    stats = _statistics(frames)
+    width = stats.width
+    profile, dark = stats.profile, stats.dark
     raw_total = float(profile.sum())
 
     overlay = _overlay_block(dark >= DARK_SHARE, width)
@@ -214,6 +398,13 @@ def choose_crop(frames, *, keep=0.75):
             if target + win <= width:
                 x = target / width
 
+    wipe = _corner_wipe(stats)
+    if wipe is not None and wipe["right"] - wipe["left"] <= keep:
+        # Keeping the camera rectangle takes priority over excluding the chat overlay.
+        low = max(0.0, wipe["right"] - keep)
+        high = min(slack, wipe["left"])
+        x = min(max(x, low), high)
+
     if abs(x - center_x) < 1e-9:
         anchor = "center"
     elif abs(x) < 1e-9:
@@ -233,6 +424,7 @@ def choose_crop(frames, *, keep=0.75):
             a: round(share(profile, raw_total, anchor_x[a]), 4) for a in ANCHORS
         },
         "overlay": overlay_info,
+        "wipe": wipe,
     }
 
 
@@ -470,16 +662,120 @@ def apply_floor(lifts, floor):
     return [round(min(max(lift, floor), MAX_LIFT), 4) for lift in lifts]
 
 
-def plan(source, start, end, events, *, keep=0.75):
-    """Crop side and caption lifts for [start, end) of `source`; events are (start, end) seconds."""
+def _stream_analysis(stats, samples, events, crop):
+    """Exact persistent medians with a bounded rolling frame cache and row summaries.
+
+    Crop statistics are known from the first decode. The second decode keeps at most BLOCK
+    selected local frames and PERSIST_MAX global samples, not the whole clip. Completed caption
+    windows retain only three row profiles. The native array API uses the same median and masks.
+    """
+    from collections import Counter
+    import numpy as np
+    from .captions import FILL_BOTTOM_SHARE
+
+    base = FILL_BOTTOM_SHARE
+    if not events:
+        return [], []
+    height, width = stats.height, stats.width
+    left, right = _window(width, crop["x"], crop["keep"])
+    columns = _window_columns(crop, width, left, right)
+    if not columns.any():
+        return [base] * len(events), [[] for _ in events]
+    positions = np.arange(right - left)
+    middle = (right - left) // 2
+    regions = [
+        ("whole", columns),
+        ("left", columns & (positions < middle)),
+        ("right", columns & (positions >= middle)),
+    ]
+    regions = [(name, mask) for name, mask in regions if mask.any()]
+    masks = [mask for _, mask in regions]
+    selections = [_caption_frames(stats.times, start, end) for start, end in events]
+    required = Counter(int(index) for indices in selections for index in indices)
+    order = sorted(range(len(events)), key=lambda i: int(selections[i][-1]))
+    global_indices = set(int(i) for i in _subsample(np.arange(stats.count)))
+    local, global_frames = {}, {}
+    profiles = [None] * len(events)
+    cursor = ready = 0
+    if isinstance(samples, tuple):
+        samples = [samples]
+    for _, frames in samples:
+        for frame in frames:
+            if cursor in required or cursor in global_indices:
+                copy = frame.copy()
+                if cursor in required:
+                    local[cursor] = copy
+                if cursor in global_indices:
+                    global_frames[cursor] = copy
+            while ready < len(order) and selections[order[ready]][-1] <= cursor:
+                item = order[ready]
+                indices = selections[item]
+                if any(int(i) not in local for i in indices):
+                    raise PipelineError("caption frame samples changed between decodes")
+                chosen = np.stack([local[int(i)] for i in indices])
+                persistent = _persistent_gradient(chosen, np.arange(len(chosen)))
+                profiles[item] = [
+                    _region_profile(persistent, left, right, mask) for mask in masks
+                ]
+                for index in indices:
+                    required[int(index)] -= 1
+                    if not required[int(index)]:
+                        del required[int(index)]
+                        del local[int(index)]
+                ready += 1
+            if len(local) > BLOCK:
+                raise PipelineError("caption sample exceeds its bounded frame window")
+            cursor += 1
+    if (
+        cursor != stats.count
+        or ready != len(events)
+        or len(global_frames) != len(global_indices)
+    ):
+        raise PipelineError("layout frame samples changed between decodes")
+    chosen = np.stack([global_frames[i] for i in sorted(global_frames)])
+    whole = _persistent_gradient(chosen, np.arange(len(chosen)))
+    references = [
+        float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
+    ]
+    tolerance = round(BAND_GAP * height)
+    lifts, bands = [], []
+    for row_profiles in profiles:
+        lift, found = base, []
+        for (name, _), profile, reference in zip(regions, row_profiles, references):
+            busy = profile > BUSY_RATIO * reference
+            found.extend(_busy_runs(busy, height, name))
+            top = _band_top(busy, SEARCH, tolerance)
+            if top is not None:
+                edge = (height - top) / height
+                if edge > base:
+                    lift = max(lift, edge + LIFT_PAD)
+        lifts.append(min(lift, MAX_LIFT))
+        bands.append(sorted(found, key=lambda run: (run[0], run[1], run[2])))
+    return [round(lift, 4) for lift in _neighbour_max(events, lifts)], bands
+
+
+def _stream_lifts(stats, samples, events, crop):
+    """Compatibility helper returning the lifts from the bounded analysis."""
+    return _stream_analysis(stats, samples, events, crop)[0]
+
+
+def plan(source, start, end, events, *, keep=0.75, anchor="auto"):
+    """Bounded crop statistics and persistent bottom-caption lifts in source seconds."""
     began = time.monotonic()
-    times, frames = sample_frames(source, start, end)
-    crop = choose_crop(frames, keep=keep)
-    lifts, bands = caption_analysis(times, frames, events, crop)
+    stats = frame_statistics(sample_frames(source, start, end))
+    crop = choose_crop(stats, keep=keep)
+    if anchor != "auto":
+        crop.update(
+            anchor=anchor,
+            x={"left": 0.0, "center": (1 - keep) / 2, "right": 1 - keep}[anchor],
+        )
+    lifts, bands = _stream_analysis(
+        stats, sample_frames(source, start, end), events, crop
+    )
     return {
         "crop": crop,
         "lifts": lifts,
         "bands": bands,
-        "frames": len(times),
+        "frames": stats.count,
         "seconds": round(time.monotonic() - began, 3),
     }

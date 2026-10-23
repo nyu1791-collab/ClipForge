@@ -268,6 +268,9 @@ def execute(
                     vod, output, settings, analysis_result=analysis, **options
                 )
                 volume, volume_reason = _volume_series(source, info)
+                from .chat_activity import candidate_series
+
+                chat, chat_diagnostics = candidate_series(vod, analysis[0], result)
                 draft, diagnostics = review_draft.build_review_draft(
                     analysis[0],
                     result,
@@ -275,6 +278,8 @@ def execute(
                     transcript=analysis[1],
                     volume=volume,
                     volume_reason=volume_reason,
+                    chat=chat,
+                    chat_diagnostics=chat_diagnostics,
                 )
                 write_json(output / "review-draft.json", draft)
                 write_json(output / "review-draft-diagnostics.json", diagnostics)

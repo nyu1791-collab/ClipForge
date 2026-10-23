@@ -2,7 +2,7 @@
 
 from .audio_first import shifted_transcript
 from .storage import PipelineError
-from .topic_hints import VOLUME_WEIGHT, hint_topics
+from .topic_hints import VOLUME_WEIGHT, CHAT_WEIGHT, hint_topics
 from .storage import TIME_TOLERANCE
 
 
@@ -15,6 +15,8 @@ def build_review_draft(
     count=None,
     volume=None,
     volume_reason=None,
+    chat=None,
+    chat_diagnostics=None,
 ):
     """Return review-file-shaped suggestions and text-free selection diagnostics.
 
@@ -38,7 +40,7 @@ def build_review_draft(
     }
     clips, skipped = [], []
     selected_ids = set()
-    ranked = hint_topics(analysis, volume=volume)["topics"]
+    ranked = hint_topics(analysis, volume=volume, chat=chat)["topics"]
     for topic in ranked:
         topic_id, start, end = topic["id"], topic["start"], topic["end"]
         reason = None
@@ -90,6 +92,20 @@ def build_review_draft(
         "skipped": skipped,
         "volume_hints": _volume_diagnostics(ranked, volume, volume_reason),
     }
+    if chat is not None or chat_diagnostics is not None:
+        diagnostics["chat_hints"] = {
+            **(chat_diagnostics or {"data": "available"}),
+            "weight": CHAT_WEIGHT if chat is not None else 0.0,
+            "topics": [
+                {
+                    "topic_id": hint["id"],
+                    "score": hint.get("chat_score"),
+                    "messages": hint.get("chat_messages"),
+                    "observed_seconds": hint.get("chat_coverage_seconds", 0),
+                }
+                for hint in ranked
+            ],
+        }
     return draft, diagnostics
 
 

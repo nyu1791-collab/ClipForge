@@ -281,7 +281,9 @@ def test_a_line_never_starts_with_a_closing_mark_or_a_small_kana(monkeypatch):
     # The first line would end before 、 at index 4, so it stops at 3 instead;
     # the second line then breaks after the 、, which is a preferred edge.
     breaks = captions.wrap_breaks(text, FixedWidth(), 40)
-    assert breaks == [3, 5]
+    # Dictionary words may move the first break earlier; prohibited starts still never occur.
+    assert breaks[-1] == 5
+    assert all(text[index] not in captions.NO_LINE_START for index in breaks)
     assert all(text[index] not in captions.NO_LINE_START for index in breaks)
 
 
@@ -777,6 +779,30 @@ def test_event_spans_are_the_times_create_writes(tmp_path, settings, japanese_fo
     assert spans == written and len(spans) == 2
 
 
+def test_caption_punctuation_uses_fullwidth_marks_and_one_following_space():
+    assert captions.japanese_marks("本当? 次!!　はい!") == "本当？　次！！　はい！"
+    assert captions.japanese_marks("本当？　次！！　") == "本当？　次！！　"
+    # No space before a closing bracket or another mark.
+    assert captions.japanese_marks("えっ!」と?!") == "えっ！」と？！"
+
+
+def test_dictionary_words_and_noun_no_noun_are_not_line_break_candidates():
+    from clipforge.caption_breaks import _unbreakable
+
+    assert {1, 2, 3} <= _unbreakable("大人の人")
+    assert {1, 2, 3, 4, 5, 6} <= _unbreakable("マインクラフト")
+
+
+def test_fast_caption_can_use_nearby_preceding_silence_without_overlap():
+    spans = [[0, 1000], [1500, 2000], [2500, 3000]]
+    captions.hold_for_reading(
+        spans, ["あ" * 7, "い" * 10, "う"], 4000, cps=7, lead_ms=500
+    )
+    assert 1000 <= spans[1][0] < 1500
+    assert spans[1][1] <= spans[2][0]
+    assert 10 / ((spans[1][1] - spans[1][0]) / 1000) <= 7
+
+
 def test_landscape_lifts_place_each_caption_at_its_margin(
     tmp_path, settings, japanese_font
 ):
@@ -820,3 +846,71 @@ def test_no_landscape_layout_places_captions_at_the_top(
     assert subtitles.styles["Default"].alignment == pysubs2.Alignment.BOTTOM_CENTER
     assert all(r"\an8" not in e.text for e in subtitles if e.style == "Default")
     assert r"\an8" not in (tmp_path / "captions.ass").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
+@pytest.mark.parametrize("aspect", ["9:16", "16:9"])
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ("本当? これは本当!!", "はい! 次はどう?"),
+        (" Hello? next!!　", " Yes! and now?　"),
+    ],
+)
+def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
+    tmp_path, settings, japanese_font, mode, aspect, texts
+):
+    from clipforge import quality
+
+    transcript, clip = _fill_case(texts)
+    configured = _fill_settings(settings, chat_panel=False, caption=mode, aspect=aspect)
+    captions.create(transcript, clip, tmp_path, configured)
+    ass = quality.caption_events(tmp_path / "captions.ass")
+    srt = quality.caption_events(tmp_path / "captions.srt")
+    assert ass == srt
+    text = "".join(event[2].replace("\n", "") for event in ass)
+    assert "?" not in text and "!" not in text
+    assert "？　" in text or "！　" in text
+    assert all(event[2] == event[2].strip() for event in ass)
+
+
+@pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
+@pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
+@pytest.mark.parametrize("repeats", [1, 2])
+def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
+    tmp_path, settings, japanese_font, mode, aspect, repeats
+):
+    from clipforge import quality
+
+    text = "この日本語字幕は切り抜いた動画の中で正しく表示されます。" * repeats
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(
+                start=13.003,
+                end=18.997,
+                text=text,
+                words=[Word(start=13.003, end=18.997, text=text)],
+            )
+        ],
+    )
+    clip = SelectedClip(
+        start=13, end=19, candidate_id="manual", title="題", reason="r", confidence=1
+    )
+    configured = _fill_settings(
+        settings, chat_panel=False, caption=mode, aspect=aspect, height=720
+    )
+    captions.create(transcript, clip, tmp_path, configured)
+    ass = quality.caption_events(tmp_path / "captions.ass")
+    srt = quality.caption_events(tmp_path / "captions.srt")
+    assert ass and ass == srt
+    if repeats == 2:
+        assert len(ass) >= 2
+    from clipforge.caption_breaks import NO_LINE_START
+
+    assert all(text.lstrip()[0] not in NO_LINE_START for _, _, text in ass)
+    assert all(start % 10 == end % 10 == 0 for start, end, _ in ass)
+    assert all(a[1] <= b[0] for a, b in zip(ass, ass[1:]))
+    assert captions.event_spans(transcript, clip, configured) == [
+        (start / 1000, end / 1000) for start, end, _ in ass
+    ]

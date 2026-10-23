@@ -1,6 +1,7 @@
 """Line-break rules for Japanese captions: script kinds, break ranks and wrap points."""
 
 import re
+from functools import lru_cache
 import unicodedata
 
 
@@ -49,12 +50,52 @@ LATIN = re.compile(r"[A-Za-z0-9]+(?:[._:/+%-][A-Za-z0-9]+)*")
 URL = re.compile(r"https?://\S+")
 
 
+@lru_cache(maxsize=512)
+def _lexical_spans(text):
+    """Dictionary word spans, with adjacent name parts and noun-no-noun kept together."""
+    if not any(
+        _is_kanji(char) or _is_hiragana(char) or _is_katakana(char) for char in text
+    ):
+        return ()
+    from .caption_sentences import _tagger
+
+    spans, cursor = [], 0
+    words = list(_tagger()(text))
+    for word in words:
+        start = text.find(word.surface, cursor)
+        if start < 0:
+            return ()
+        end = start + len(word.surface)
+        spans.append((start, end))
+        cursor = end
+    protected = list(spans)
+    for index, word in enumerate(words):
+        if (
+            0 < index < len(words) - 1
+            and word.surface == "の"
+            and len(words[index + 1].surface) == 1
+        ):
+            if all(
+                getattr(words[j].feature, "pos1", "") == "名詞"
+                for j in (index - 1, index + 1)
+            ):
+                protected.append((spans[index - 1][0], spans[index + 1][1]))
+        if index and all(
+            getattr(words[j].feature, "pos2", "") == "固有名詞"
+            for j in (index - 1, index)
+        ):
+            protected.append((spans[index - 1][0], spans[index][1]))
+    return tuple(protected)
+
+
 def _unbreakable(text):
     """Positions that may not start a line because they are inside a number, term or URL."""
     blocked = set()
-    for pattern in (NUMBER, LATIN, URL):
+    for pattern in (NUMBER, LATIN, URL, re.compile(r"[ァ-ヿー]+")):
         for match in pattern.finditer(text):
             blocked.update(range(match.start() + 1, match.end()))
+    for start, end in _lexical_spans(text):
+        blocked.update(range(start + 1, end))
     return blocked
 
 
@@ -148,6 +189,8 @@ def wrap_breaks(text, measure, line_px):
         size = measure.width(char)
         if index > begin:
             rank = _boundary_rank(text[index - 1], char)
+            if index in blocked:
+                rank = 0
             if rank and index in phrase_starts:
                 rank = 3
             if rank:
