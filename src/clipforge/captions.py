@@ -236,14 +236,10 @@ def split_long(tokens, measure, limit):
             result.append((start, end, text))
             continue
         split += 1
-        chunks, pending = [], ""
-        for char in text:
-            if pending and measure.width(pending + char) > limit:
-                chunks.append(pending)
-                pending = ""
-            pending += char
-        if pending:
-            chunks.append(pending)
+        # Use the same lexical and punctuation rules as the displayed line breaks.
+        # A raw width cut can otherwise leave a sentence mark as its own timed token.
+        points = [0, *wrap_breaks(text, measure, limit), len(text)]
+        chunks = [text[left:right] for left, right in zip(points, points[1:])]
         total = sum(len(chunk) for chunk in chunks) or 1
         cursor, consumed = start, 0
         for chunk in chunks:

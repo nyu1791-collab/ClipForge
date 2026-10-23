@@ -1,6 +1,7 @@
 """Synthetic chat only; no network access (the session is a fake)."""
 
 import datetime as dt
+import random
 import re
 import sys
 import types
@@ -65,9 +66,10 @@ class FakeSession:
     cut off at API_LIMIT messages.
     """
 
-    def __init__(self, messages, *, plan=None):
+    def __init__(self, messages, *, plan=None, order="ascending"):
         self.messages = messages
         self.plan = plan or {}
+        self.order = order  # "ascending", "descending" or "shuffled" within a response
         self.calls = []
 
     def get(self, url, *, params=None, timeout=None):
@@ -99,8 +101,12 @@ class FakeSession:
             rows = sorted(
                 (m for m in self.messages if cursor <= when[id(m)] < cursor + window),
                 key=lambda m: when[id(m)],
-            )
-            return Response(200, {"data": {"messages": rows[:API_LIMIT]}})
+            )[:API_LIMIT]
+            if self.order == "descending":
+                rows.reverse()
+            elif self.order == "shuffled":
+                random.Random(len(self.calls)).shuffle(rows)
+            return Response(200, {"data": {"messages": rows}})
         return Response(404)
 
 
@@ -398,6 +404,17 @@ def test_dense_chat_is_collected_past_the_page_limit(no_sleep):
     msgs = [row(i, 10 + i * 0.05, content=f"m{i}") for i in range(600)]
 
     got = fetch(FakeSession(msgs), start=20, end=40, lead=10)
+
+    assert {m["text"] for m in got} == {f"m{i}" for i in range(600)}
+    assert len(got) == 600
+
+
+@pytest.mark.parametrize("order", ["descending", "shuffled"])
+def test_dense_chat_is_collected_whatever_the_page_order(order, no_sleep):
+    # Same dense burst as above, but each response lists its messages out of time order.
+    msgs = [row(i, 10 + i * 0.05, content=f"m{i}") for i in range(600)]
+
+    got = fetch(FakeSession(msgs, order=order), start=20, end=40, lead=10)
 
     assert {m["text"] for m in got} == {f"m{i}" for i in range(600)}
     assert len(got) == 600

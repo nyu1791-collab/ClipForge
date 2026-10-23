@@ -877,12 +877,13 @@ def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
 
 @pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
 @pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
+@pytest.mark.parametrize("repeats", [1, 2])
 def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
-    tmp_path, settings, japanese_font, mode, aspect
+    tmp_path, settings, japanese_font, mode, aspect, repeats
 ):
     from clipforge import quality
 
-    text = "この日本語字幕は切り抜いた動画の中で正しく表示されます。" * 2
+    text = "この日本語字幕は切り抜いた動画の中で正しく表示されます。" * repeats
     transcript = Transcript(
         language="ja",
         segments=[
@@ -903,7 +904,12 @@ def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
     captions.create(transcript, clip, tmp_path, configured)
     ass = quality.caption_events(tmp_path / "captions.ass")
     srt = quality.caption_events(tmp_path / "captions.srt")
-    assert len(ass) >= 2 and ass == srt
+    assert ass and ass == srt
+    if repeats == 2:
+        assert len(ass) >= 2
+    from clipforge.caption_breaks import NO_LINE_START
+
+    assert all(text.lstrip()[0] not in NO_LINE_START for _, _, text in ass)
     assert all(start % 10 == end % 10 == 0 for start, end, _ in ass)
     assert all(a[1] <= b[0] for a, b in zip(ass, ass[1:]))
     assert captions.event_spans(transcript, clip, configured) == [
