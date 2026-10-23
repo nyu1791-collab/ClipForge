@@ -1,15 +1,25 @@
+import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from tools import check_worker_workflows as sync
-
 REF = "a" * 40
 
 
 @pytest.fixture
-def directories(tmp_path, monkeypatch):
+def sync():
+    path = Path(__file__).resolve().parents[1] / "tools" / "check_worker_workflows.py"
+    spec = importlib.util.spec_from_file_location(
+        "test_worker_workflow_sync_tool", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def directories(tmp_path, monkeypatch, sync):
     source, worker = tmp_path / "source", tmp_path / "worker"
     for worker_name, source_name in sync.WORKFLOWS.items():
         for root, name in ((worker, worker_name), (source, source_name)):
@@ -22,7 +32,7 @@ def directories(tmp_path, monkeypatch):
     return worker, source
 
 
-def test_workflows_must_match_both_files_and_exact_source_commit(directories):
+def test_workflows_must_match_both_files_and_exact_source_commit(directories, sync):
     worker, source = directories
     result = sync.check_workflows(worker, source, REF)
     assert result["status"] == "matched"
@@ -36,7 +46,7 @@ def test_workflows_must_match_both_files_and_exact_source_commit(directories):
         sync.check_workflows(worker, source, "b" * 40)
 
 
-def test_missing_or_symlink_workflow_fails_closed(directories):
+def test_missing_or_symlink_workflow_fails_closed(directories, sync):
     worker, source = directories
     target = worker / next(iter(sync.WORKFLOWS))
     target.unlink()
@@ -47,6 +57,6 @@ def test_missing_or_symlink_workflow_fails_closed(directories):
         sync.check_workflows(worker, source, REF)
 
 
-def test_comparison_rejects_branch_names_before_git(directories):
+def test_comparison_rejects_branch_names_before_git(directories, sync):
     with pytest.raises(ValueError, match="exact"):
         sync.check_workflows(*directories, "main")
