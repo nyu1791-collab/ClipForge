@@ -194,6 +194,17 @@ def preview_contact_sheet(root, previews):
     sheet.save(root / "preview-contact-sheet.jpg", quality=90)
 
 
+# How the analysis produced its transcript, carried into every later stage's receipt.
+ORIGIN_FIELDS = (
+    "source",
+    "parts",
+    "overlap_seconds",
+    "part_requests",
+    "split",
+    "split_key",
+)
+
+
 def _volume_series(source, info):
     """(series, reason): per-second loudness on the topic clock, or None and a reason code."""
     try:
@@ -210,7 +221,8 @@ def execute(
         url = restore_analysis(previous, output, previous_id)
         # The verified analysis names its transcript; later code changes to recognition do
         # not orphan it, and no new recognition can start from here.
-        recorded = json.loads((output / "asr-receipt.json").read_text())["key"]
+        origin = json.loads((output / "asr-receipt.json").read_text())
+        recorded = origin["key"]
         settings = settings.model_copy(
             update={
                 "transcript_cache": str(output / "transcripts"),
@@ -225,8 +237,14 @@ def execute(
                 "the saved ASR does not match; no new recognition was started"
             )
         analysis = audio_first.allocate_audio(source, output, settings, url)
-        if not json.loads((output / "asr-receipt.json").read_text())["reused"]:
+        cache = json.loads((output / "asr-receipt.json").read_text())
+        if not cache["reused"]:
             raise PipelineError("downstream stage must reuse ASR")
+        # Reuse rewrites the receipt; keep how the analysis recognised it, such as the cut.
+        cache["origin"] = origin.get("origin") or {
+            name: origin[name] for name in ORIGIN_FIELDS if name in origin
+        }
+        write_json(output / "asr-receipt.json", cache)
         vod = open_source(
             url,
             output / "segments",

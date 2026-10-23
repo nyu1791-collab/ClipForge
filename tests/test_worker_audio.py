@@ -127,6 +127,40 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
     assert json.loads((output / "asr-receipt.json").read_text())["reused"] is True
 
 
+def test_later_stages_keep_how_the_analysis_recognised(previous_analysis, monkeypatch):
+    previous, output, settings = previous_analysis
+    path = previous / "asr-receipt.json"
+    cache = json.loads(path.read_text())
+    split = {"method": "vad", "silence": [7389.6, 7400.0]}
+    cache.update(source="split_asr", parts=2, split=split, split_key="d" * 64)
+    write_json(path, cache)
+    receipt = json.loads((previous / "request-receipt.json").read_text())
+    receipt["sha256"]["asr-receipt.json"] = digest(path)
+    write_json(previous / "request-receipt.json", receipt)
+    monkeypatch.setattr(
+        worker, "KickVOD", lambda *a, **k: SimpleNamespace(close=lambda: None)
+    )
+    monkeypatch.setattr(
+        audio_first,
+        "previews",
+        lambda vod, root, settings, analysis_result=None: {
+            "status": "awaiting_video_review",
+            "previews": [],
+            "analysis_key": analysis_result[0]["analysis_key"],
+        },
+    )
+    monkeypatch.setattr(worker, "preview_contact_sheet", lambda *a: None)
+    worker.execute(previous, output, IDENTITY, settings, "previews")
+    kept = json.loads((output / "asr-receipt.json").read_text())
+    assert kept["reused"] is True and kept["source"] == "transcript_cache"
+    assert kept["origin"] == {
+        "source": "split_asr",
+        "parts": 2,
+        "split": split,
+        "split_key": "d" * 64,
+    }
+
+
 @pytest.mark.parametrize("same_run", [False, True])
 def test_previews_write_unapproved_drafts_before_receipting(
     previous_analysis, monkeypatch, same_run
