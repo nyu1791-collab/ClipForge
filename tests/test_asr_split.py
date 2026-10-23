@@ -257,6 +257,11 @@ def test_joined_analysis_can_be_collected_and_reused_without_asr(prepared, monke
                 "rendered": [],
             },
         )
+        names = ["manifest.json", "transcript.json"]
+        if index == 0:
+            # The Colab worker adds its runtime diagnostics to the checksum list.
+            write_json(directory / "gpu-receipt.json", {"timings": {}})
+            names.append("gpu-receipt.json")
         write_json(
             directory / "request-receipt.json",
             {
@@ -266,10 +271,7 @@ def test_joined_analysis_can_be_collected_and_reused_without_asr(prepared, monke
                 "workflow_run": "123",
                 "status": "asr_part_complete",
                 "asr_part": descriptor,
-                "sha256": {
-                    name: digest(directory / name)
-                    for name in ("manifest.json", "transcript.json")
-                },
+                "sha256": {name: digest(directory / name) for name in names},
             },
         )
     monkeypatch.setattr(

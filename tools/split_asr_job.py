@@ -61,9 +61,11 @@ def verify_part(directory, child, workflow_run):
     }:
         raise PipelineError("returned ASR part belongs to another request")
     hashes = receipt.get("sha256")
+    required = {"manifest.json", "transcript.json"}
     if (
         not isinstance(hashes, dict)
-        or set(hashes) != {"manifest.json", "transcript.json"}
+        # The Colab worker also lists its runtime diagnostics; nothing else is accepted.
+        or not required <= set(hashes) <= required | {"gpu-receipt.json"}
         or any(
             (directory / name).is_symlink() or digest(directory / name) != checksum
             for name, checksum in hashes.items()
