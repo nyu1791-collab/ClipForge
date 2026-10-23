@@ -727,7 +727,11 @@ del _clipforge_bootstrap
                     flush=True,
                 )
             else:
-                print(f"Compute units used by this job: {change:.2f}", flush=True)
+                # Separate runs, such as parallel clip renders, also share the balance.
+                print(
+                    f"Compute units used while this job ran (account-wide): {change:.2f}",
+                    flush=True,
+                )
 
 
 def probe(accelerator_name, hold_seconds=0):

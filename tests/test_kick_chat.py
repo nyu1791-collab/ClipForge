@@ -171,6 +171,19 @@ def test_emotes_are_named_and_controls_removed(no_sleep):
     assert fetch(FakeSession(msgs))[0]["text"] == "hi :Kappa: yo !"
 
 
+def test_repeated_emotes_are_shown_once_with_a_count(no_sleep):
+    run = " ".join(["[emote:7:gen626mitogen]"] * 8)
+    msgs = [
+        row(
+            1,
+            30,
+            content=f"{run}[emote:7:gen626mitogen] [emote:9:wave] ok [emote:9:wave]",
+        )
+    ]
+
+    assert fetch(FakeSession(msgs))[0]["text"] == ":gen626mitogen: ×9 :wave: ok :wave:"
+
+
 @pytest.mark.parametrize(
     ("color", "expected"),
     [

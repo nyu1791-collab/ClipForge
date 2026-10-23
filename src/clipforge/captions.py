@@ -236,6 +236,27 @@ def collect_tokens(transcript, clip, keep):
     return tokens, approximate
 
 
+def pause_marks(tokens):
+    """、 and 。 inside one caption become a fullwidth space; at its end they are dropped.
+
+    Japanese captions show pauses as spaces. The marks are replaced only after grouping,
+    because the line and caption breaks use them; token timing stays as it was.
+    """
+    texts = [token[2] for token in tokens]
+    for index in reversed(range(len(texts))):
+        texts[index] = texts[index].rstrip("、。 \t")
+        if texts[index]:
+            break
+    texts = [re.sub(r"[、。]+", "　", text) for text in texts]
+    for index in range(1, len(texts)):
+        # One space between pauses: a token after a converted mark drops its own lead.
+        if texts[index - 1].endswith("　"):
+            texts[index] = texts[index].lstrip(" \t　")
+    if not "".join(texts).strip():
+        return tokens
+    return [(start, end, text) for (start, end, _), text in zip(tokens, texts)]
+
+
 def join_phrases(tokens):
     """Join adjacent tokens that spell a term in PHRASES into one token.
 
@@ -267,14 +288,10 @@ def split_long(tokens, measure, limit):
             result.append((start, end, text))
             continue
         split += 1
-        chunks, pending = [], ""
-        for char in text:
-            if pending and measure.width(pending + char) > limit:
-                chunks.append(pending)
-                pending = ""
-            pending += char
-        if pending:
-            chunks.append(pending)
+        # Use the same lexical and punctuation rules as the displayed line breaks.
+        # A raw width cut can otherwise leave a sentence mark as its own timed token.
+        points = [0, *wrap_breaks(text, measure, limit), len(text)]
+        chunks = [text[left:right] for left, right in zip(points, points[1:])]
         total = sum(len(chunk) for chunk in chunks) or 1
         cursor, consumed = start, 0
         for chunk in chunks:
@@ -377,6 +394,14 @@ def with_breaks(text, breaks):
 
 def group_text(tokens, measure, line_px, mode):
     """ASS text for one group; mode is plain, karaoke (fill) or sequential (reveal)."""
+    # Whisper keeps a leading space on English words. Strip caption edges before tags
+    # are added, matching SRT's serialization without changing spacing between words.
+    tokens = list(tokens)
+    if tokens:
+        first = tokens[0]
+        tokens[0] = (first[0], first[1], first[2].lstrip())
+        last = tokens[-1]
+        tokens[-1] = (last[0], last[1], last[2].rstrip())
     text = "".join(token[2] for token in tokens)
     breaks = set(wrap_breaks(text, measure, line_px))
     out, offset = [], 0
@@ -392,7 +417,8 @@ def group_text(tokens, measure, line_px, mode):
                 out.append(r"\N")
             out.append(char)
         offset += len(token_text)
-    return "".join(out)
+    # SRT strips outer whitespace; retain punctuation spacing inside the caption only.
+    return "".join(out).rstrip()
 
 
 def spoken_length(text):
@@ -468,12 +494,16 @@ def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscap
     tokens, split = split_long(tokens, measure, line_px)
     approximate += split
     groups = group(tokens, measure, line_px)
+    if transcript.language == "ja":
+        groups = [pause_marks(items) for items in groups]
     plain_lines = ["".join(item[2] for item in items) for items in groups]
     spans, previous_end = [], 0
     for items in groups:
-        start = max(previous_end, round(items[0][0] * 1000))
+        # Proportional word splits can create fractional centiseconds. ASS and SRT must
+        # share the same representable times before holding captions into silence.
+        start = max(previous_end, round(items[0][0] * 100) * 10)
         # A group squeezed out by the previous one is kept for a moment, never dropped.
-        end = max(round(items[-1][1] * 1000), start + MIN_EVENT_MS)
+        end = max(round(items[-1][1] * 100) * 10, start + MIN_EVENT_MS)
         spans.append([start, end])
         previous_end = end
     hold_for_reading(

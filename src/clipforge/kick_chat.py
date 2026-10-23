@@ -25,8 +25,19 @@ DEFAULT_COLOR = "#FFFFFF"
 
 _HEX = re.compile(r"#[0-9A-Fa-f]{6}")
 _EMOTE = re.compile(r"\[emote:\d+:([^\]]+)\]")
+# The same emote repeated, as viewers often send it; shown once with a count.
+_EMOTE_RUN = re.compile(r"\[emote:\d+:([^\]]+)\](?:\s*\[emote:\d+:\1\])+")
 _BREAKS = re.compile(r"[\t\n\r\v\f]+")
 _CONTROL = re.compile(r"[\x00-\x08\x0e-\x1f\x7f-\x9f]")
+
+
+def _emotes(text):
+    """Emote codes as :name:, a run of the same emote as :name: ×N."""
+    text = _EMOTE_RUN.sub(
+        lambda run: f":{run.group(1)}: ×{len(_EMOTE.findall(run.group(0)))}", text
+    )
+    return _EMOTE.sub(r":\1:", text)
+
 
 # Panel geometry, measured at 1080p with a 480 px panel and scaled from there.
 REF_HEIGHT = 1080
@@ -115,7 +126,7 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
                 "t": t,
                 "name": _plain(sender.get("username")) or "-",
                 "color": _hex_color(identity.get("color")),
-                "text": _plain(_EMOTE.sub(r":\1:", _as_text(row.get("content")))),
+                "text": _plain(_emotes(_as_text(row.get("content")))),
             }
         )
     out.sort(key=lambda message: message["t"])

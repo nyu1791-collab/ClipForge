@@ -235,7 +235,9 @@ class ControlTests(unittest.TestCase):
                 controller.stop()
             self.assertEqual(controller.state()["units_after"]["balance"], 179.6)
             lines = " ".join(str(call.args[0]) for call in printed.call_args_list)
-            self.assertIn("Compute units used by this job: 0.40", lines)
+            self.assertIn(
+                "Compute units used while this job ran (account-wide): 0.40", lines
+            )
         client.get_consumption_user_info.side_effect = RuntimeError("not reported")
         self.assertIsNone(control.compute_units(client))
 
@@ -243,7 +245,7 @@ class ControlTests(unittest.TestCase):
         for shared, active, expected in (
             ("1", 0, "changed account-wide by 0.18 (0 other runtime(s) still active)"),
             ("", 1, "changed account-wide by 0.18 (1 other runtime(s) still active)"),
-            ("", 0, "Compute units used by this job: 0.18"),
+            ("", 0, "Compute units used while this job ran (account-wide): 0.18"),
         ):
             with (
                 self.subTest(shared=shared, active=active),
@@ -288,7 +290,7 @@ class ControlTests(unittest.TestCase):
                 self.assertIn(expected, lines)
                 self.assertIn("Runtime held: T4 ", lines)
                 if expected.startswith("changed"):
-                    self.assertNotIn("used by this job", lines)
+                    self.assertNotIn("used while this job ran", lines)
 
     def test_stage_line_names_the_cores_that_did_the_work(self):
         self.assertEqual(

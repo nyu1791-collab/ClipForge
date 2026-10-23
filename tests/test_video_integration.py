@@ -26,6 +26,12 @@ def source_video():
     return path
 
 
+@pytest.fixture(autouse=True)
+def fixture_render_size(settings):
+    # Integration pixel checks explicitly target 720p; production defaults may be taller.
+    settings.height = 720
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
 @pytest.mark.parametrize("framing", ["fit", "center-crop"])

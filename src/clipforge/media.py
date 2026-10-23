@@ -18,8 +18,10 @@ ASR_SAMPLE_RATE = 16000
 # loudnorm target. TP sits 0.5 dB below the -1.5 dBTP the loudnorm pass itself aims for
 # because AAC encoding adds about +0.6 dB of overshoot (3 delivered clips measured -0.9 dBTP).
 LOUDNESS = "I=-16:TP=-2.0:LRA=11"
-# Sample-peak limit after loudnorm: linear 0.7943, about -2 dBFS. Keeps the decoded AAC true peak under -1 dBTP.
-PEAK_LIMIT = 0.7943
+# Sample-peak limit after loudnorm: linear 0.7079, about -3 dBFS. AAC adds up to about
+# +1.2 dB on a sharp transient (2026-10-23: -2 dBFS gave -0.8 dBTP on one clip); -3 dBFS
+# keeps the decoded true peak under -1 dBTP and moved integrated loudness by 0.2 LU at most.
+PEAK_LIMIT = 0.7079
 MAX_KEEP_REGIONS = 60
 MAX_SOUND_EFFECTS = 20
 SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio

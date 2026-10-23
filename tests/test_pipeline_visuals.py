@@ -1628,3 +1628,24 @@ def test_render_clip_applies_the_reviewed_caption_floor(
     )
     assert "layout" not in off
     assert ("lifts", None) in seen
+
+
+def test_pause_marks_become_fullwidth_spaces_inside_and_vanish_at_the_end():
+    tokens = [(0, 1, "よし、"), (1, 2, "平地に"), (2, 3, "しよう。")]
+    assert captions.pause_marks(tokens) == [
+        (0, 1, "よし　"),
+        (1, 2, "平地に"),
+        (2, 3, "しよう"),
+    ]
+    # A mark alone at the end empties its token but keeps its timing.
+    assert captions.pause_marks([(0, 1, "はい、"), (1, 2, " そう"), (2, 3, "、")]) == [
+        (0, 1, "はい　"),
+        (1, 2, "そう"),
+        (2, 3, ""),
+    ]
+    # Repeated marks give one space; a caption of marks only is left as it was.
+    assert captions.pause_marks([(0, 1, "そう、、だね")]) == [(0, 1, "そう　だね")]
+    assert captions.pause_marks([(0, 1, "、"), (1, 2, "。")]) == [
+        (0, 1, "、"),
+        (1, 2, "。"),
+    ]

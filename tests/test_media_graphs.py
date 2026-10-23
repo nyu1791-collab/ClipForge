@@ -238,8 +238,8 @@ def test_loudness_arguments_use_the_first_pass_measurement():
 
 
 def test_peak_limiter_follows_loudnorm_and_resample_and_precedes_the_fades():
-    # 0.7943 is -2 dBFS as a linear amplitude.
-    assert media.PEAK_LIMIT == pytest.approx(10 ** (-2 / 20), abs=1e-4)
+    # 0.7079 is -3 dBFS as a linear amplitude.
+    assert media.PEAK_LIMIT == pytest.approx(10 ** (-3 / 20), abs=1e-4)
     tail = media._audio_tail(make(fade_seconds=0.3), 10.0, None)
     limiter = f"alimiter=limit={media.PEAK_LIMIT}:level=disabled:attack=5:release=50"
     order = [
