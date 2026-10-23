@@ -654,6 +654,18 @@ def test_chat_panel_top_overlays_and_progress_use_the_picture():
     )
     # With a heading the top overlay starts below it, at 14 percent of the picture height.
     assert "overlay=(main_w-overlay_w)/2:113:" in heading
+    larger = media._video_graph(
+        CLIP,
+        make(**TOP, heading=True, heading_scale=1.4, fade_seconds=0),
+        1920,
+        1080,
+        None,
+        10.0,
+        [{**visuals[0], "position": "top"}],
+        "captions.ass",
+    )
+    # A larger heading pushes the top overlay down with it.
+    assert "overlay=(main_w-overlay_w)/2:136:" in larger
 
 
 def test_chat_panel_top_scales_the_picture_with_the_column_width():

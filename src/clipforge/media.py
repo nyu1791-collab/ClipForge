@@ -421,7 +421,11 @@ def _video_graph(
         previous = nxt
     margin = round(picture * 0.04)
     # A top overlay sits below the heading when one is shown, so the title stays readable.
-    top = round(picture * 0.14) if settings.heading else margin
+    top = (
+        round(picture * (0.07 + 0.07 * settings.heading_scale))
+        if settings.heading
+        else margin
+    )
     for index, visual in enumerate(visuals):
         max_w = round(area * visual["max_fraction"])
         # An overlay fades in and out over its own interval; a short one fades by half.
