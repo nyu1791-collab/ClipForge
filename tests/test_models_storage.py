@@ -337,4 +337,12 @@ def test_long_topic_example_keeps_topics_long_without_the_chat_panel():
     example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
     assert example.chat_panel is False and example.heading is True
     assert example.heading_align == "left" and example.heading_scale > 1
-    assert example.topic_min_seconds == 120 and example.max_seconds == 420
+    assert example.topic_min_seconds == 120 and example.max_seconds == 1800
+    assert example.caption_scale == 1.6 and example.caption_font_size() == 83
+
+
+def test_frame_budget_applies_only_to_gemini_selection(settings):
+    base = {**settings.model_dump(), "max_seconds": 1800, "candidates": 8}
+    assert Settings.model_validate({**base, "gemini_model": "manual-no-api"})
+    with pytest.raises(ValueError, match="frame budget"):
+        Settings.model_validate({**base, "gemini_model": "gemini-3.8-flash"})

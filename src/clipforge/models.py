@@ -149,7 +149,7 @@ class Settings(Record):
     clips: int = Field(default=3, ge=1, le=10)
     candidates: int = Field(default=8, ge=1, le=10)
     min_seconds: float = Field(default=20, ge=2, le=120)
-    max_seconds: float = Field(default=75, ge=3, le=600)
+    max_seconds: float = Field(default=75, ge=3, le=1800)
     # large-v3-turbo transcribes Japanese clearly better than small at about the same speed
     # (measured on 4 minutes of speech: mean word probability 0.96 against 0.88).
     whisper_model: str = Field(
@@ -217,7 +217,7 @@ class Settings(Record):
     vad: Literal["transcript", "silero"] = "transcript"
     topics: bool = True
     topic_min_seconds: float = Field(default=25, ge=5, le=120)
-    topic_max_seconds: float = Field(default=180, ge=30, le=600)
+    topic_max_seconds: float = Field(default=180, ge=30, le=1800)
     visuals: list[Visual] = Field(default_factory=list, max_length=12)
     diagrams: list[Diagram] = Field(default_factory=list, max_length=8)
     image_search: bool = False
@@ -371,7 +371,11 @@ class Settings(Record):
             raise ValueError("zoom needs face_box")
         if self.candidates < self.clips:
             raise ValueError("candidate count must cover requested clips")
-        if self.analysis_fps * self.max_seconds * self.candidates > 6000:
+        # The frame budget bounds Gemini video selection; manual selection sends no frames.
+        if (
+            self.gemini_model != "manual-no-api"
+            and self.analysis_fps * self.max_seconds * self.candidates > 6000
+        ):
             raise ValueError("analysis frame budget exceeds 6000")
         if any(c in self.font for c in "\r\n,\\{}"):
             raise ValueError("invalid font name")

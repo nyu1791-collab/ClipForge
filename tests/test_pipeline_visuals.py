@@ -993,7 +993,12 @@ def test_zoom_visual_and_diagram_validate_their_intervals():
         {"face_box": (0.9, 0.9, 0.5, 0.5)},
         {"min_seconds": 40, "max_seconds": 30},
         {"topic_min_seconds": 100, "topic_max_seconds": 120},
-        {"analysis_fps": 5, "max_seconds": 180, "candidates": 10},
+        {
+            "analysis_fps": 5,
+            "max_seconds": 180,
+            "candidates": 10,
+            "gemini_model": "test-video-model",
+        },
     ],
 )
 def test_settings_reject_inconsistent_options(update):
