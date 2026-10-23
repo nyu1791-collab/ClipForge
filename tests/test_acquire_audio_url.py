@@ -11,6 +11,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 URL = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
+AUDIO_URL = "https://cdn.example/audio.mp3"
 
 
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
@@ -81,7 +82,9 @@ def acquisition(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "KickVOD", VOD)
     monkeypatch.setattr(module, "acquire", acquire)
 
-    def invoke(url=URL, request_id="b" * 32, source_ref="a" * 40, settings_json=None):
+    def invoke(
+        url=URL, request_id="b" * 32, source_ref="a" * 40, settings_json=None, extra=()
+    ):
         module.main(
             [
                 "--url",
@@ -96,6 +99,7 @@ def acquisition(tmp_path, monkeypatch):
                 else settings_json,
                 "--directory",
                 str(output),
+                *extra,
             ]
         )
 
@@ -138,7 +142,8 @@ def test_acquisition_rejects_unknown_local_or_enriched_settings(acquisition, set
     request["settings"] = settings
     with pytest.raises(RuntimeError):
         invoke()
-    assert not control["created"] and not output.exists()
+    assert not control["created"]
+    refused(output, "invalid_settings")
 
 
 @pytest.mark.parametrize("settings_json", ["{", "[]", "null", " " * 16385])
@@ -148,7 +153,8 @@ def test_acquisition_rejects_invalid_or_oversized_settings_before_network(
     _, output, control, invoke = acquisition
     with pytest.raises((RuntimeError, json.JSONDecodeError)):
         invoke(settings_json=settings_json)
-    assert not control["created"] and not output.exists()
+    assert not control["created"]
+    refused(output, "invalid_settings")
 
 
 @pytest.mark.parametrize(
@@ -158,16 +164,63 @@ def test_acquisition_rejects_invalid_identity_before_network(acquisition, identi
     _, output, control, invoke = acquisition
     with pytest.raises(RuntimeError, match="identity"):
         invoke(**identity)
-    assert not control["created"] and not output.exists()
+    assert not control["created"]
+    refused(output, "request_mismatch")
 
 
 def test_acquisition_validates_url_before_network(acquisition):
     from clipforge.storage import PipelineError
 
-    _, _, control, invoke = acquisition
+    _, output, control, invoke = acquisition
     with pytest.raises(PipelineError, match="canonical"):
         invoke(URL + "?extra=1")
     assert not control["created"]
+    refused(output, "invalid_url")
+
+
+def refused(output, reason):
+    assert {path.name for path in output.iterdir()} == {"acquisition-report.json"}
+    text = (output / "acquisition-report.json").read_text()
+    report = json.loads(text)
+    assert report["status"] == "acquisition_failed"
+    assert report["phase"] == "input_validation"
+    assert report["reason"] == reason
+    assert report["gpu_allocated"] is False and report["asr_started"] is False
+    # Identity is recorded only once it has been checked, so earlier refusals omit it.
+    if reason == "invalid_settings":
+        assert report["request_id"] == "b" * 32 and report["source_ref"] == "a" * 40
+    else:
+        assert "request_id" not in report and "source_ref" not in report
+    assert "https://" not in text
+    return report
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "reason"),
+    [
+        ({"extra": ["--require-video"], "url": AUDIO_URL}, "audio_only_source"),
+        ({"extra": ["--verified-audio-dir", "/nonexistent"]}, "invalid_reuse"),
+    ],
+)
+def test_refused_inputs_leave_a_reason_code_and_never_reach_the_network(
+    acquisition, kwargs, reason
+):
+    from clipforge.storage import PipelineError
+
+    _, output, control, invoke = acquisition
+    with pytest.raises(PipelineError):
+        invoke(**kwargs)
+    assert not control["created"]
+    refused(output, reason)
+
+
+def test_successful_acquisition_report_keeps_identity_and_transport(acquisition):
+    _, output, _, invoke = acquisition
+    invoke()
+    report = json.loads((output / "acquisition-report.json").read_text())
+    assert report["status"] == "audio_acquired" and report["phase"] == "complete"
+    assert report["request_id"] == "b" * 32 and report["source_ref"] == "a" * 40
+    assert report["transport"] == "standard" and "reason" not in report
 
 
 def test_acquisition_closes_vod_and_removes_temporary_media_on_failure(acquisition):

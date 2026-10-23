@@ -2,6 +2,7 @@
 """Acquire URL-only audio on the hosted runner before allocating a GPU."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 from datetime import datetime, timezone
 import os
@@ -18,6 +19,16 @@ from clipforge.media_sources import audio_only_url, canonical, open_source
 from clipforge.models import Settings
 from clipforge.storage import PipelineError, digest, write_json
 from submit_job import parse_settings_json
+
+
+@contextmanager
+def rejected(report, reason):
+    """Record a stable reason code for a refused input and let the error propagate."""
+    try:
+        yield
+    except Exception:
+        report["reason"] = reason
+        raise
 
 
 def main(argv=None):
@@ -46,54 +57,61 @@ def main(argv=None):
         args.verified_audio_request,
         args.verified_audio_source_ref,
     )
-    if any(value is not None for value in reuse_fields) and not all(
-        value is not None for value in reuse_fields
-    ):
-        raise PipelineError(
-            "audio reuse requires directory, producer run, request and source revision"
-        )
-    canonical(args.url)
-    if args.require_video and audio_only_url(args.url):
-        raise PipelineError(
-            "audio-only sources cannot produce automatic video previews"
-        )
-    if not re.fullmatch(r"[a-f0-9]{32}", args.request_id) or not re.fullmatch(
-        r"[a-f0-9]{40}", args.source_ref
-    ):
-        raise RuntimeError("invalid request identity or source revision")
-    request = {
-        "request_id": args.request_id,
-        "source_ref": args.source_ref,
-        "video_sha256": None,
-        "video_bytes": None,
-        "settings": parse_settings_json(args.settings_json),
-        "chat_sha256": None,
-        "audio_source_url": args.url,
-    }
-    settings = Settings.model_validate(request["settings"])
-    if (
-        settings.gemini_model != "manual-no-api"
-        or settings.image_search
-        or settings.table_query
-        or settings.chat_url
-    ):
-        raise RuntimeError(
-            "audio analysis cannot include model calls or external lookups"
-        )
+    # The report exists before any validation, so refused inputs leave a reason code too.
     args.directory.mkdir(parents=True, mode=0o700)
     started = time.monotonic()
     report = {
         "schema": 1,
-        "request_id": args.request_id,
-        "source_ref": args.source_ref,
         "source_sha256": hashlib.sha256(args.url.encode()).hexdigest(),
         "started_at": datetime.now(timezone.utc).isoformat(),
         "status": "acquisition_failed",
+        "phase": "input_validation",
         "gpu_allocated": False,
         "asr_started": False,
-        "transport": settings.youtube_audio_transport,
+        "transport": None,
     }
     try:
+        with rejected(report, "invalid_reuse"):
+            if any(value is not None for value in reuse_fields) and not all(
+                value is not None for value in reuse_fields
+            ):
+                raise PipelineError(
+                    "audio reuse requires directory, producer run, request and source revision"
+                )
+        with rejected(report, "invalid_url"):
+            canonical(args.url)
+        with rejected(report, "audio_only_source"):
+            if args.require_video and audio_only_url(args.url):
+                raise PipelineError(
+                    "audio-only sources cannot produce automatic video previews"
+                )
+        with rejected(report, "request_mismatch"):
+            if not re.fullmatch(r"[a-f0-9]{32}", args.request_id) or not re.fullmatch(
+                r"[a-f0-9]{40}", args.source_ref
+            ):
+                raise RuntimeError("invalid request identity or source revision")
+        report.update(request_id=args.request_id, source_ref=args.source_ref)
+        with rejected(report, "invalid_settings"):
+            request = {
+                "request_id": args.request_id,
+                "source_ref": args.source_ref,
+                "video_sha256": None,
+                "video_bytes": None,
+                "settings": parse_settings_json(args.settings_json),
+                "chat_sha256": None,
+                "audio_source_url": args.url,
+            }
+            settings = Settings.model_validate(request["settings"])
+            if (
+                settings.gemini_model != "manual-no-api"
+                or settings.image_search
+                or settings.table_query
+                or settings.chat_url
+            ):
+                raise RuntimeError(
+                    "audio analysis cannot include model calls or external lookups"
+                )
+        report["transport"] = settings.youtube_audio_transport
         if (
             settings.youtube_audio_transport == "warp"
             and args.verified_audio_dir is None
