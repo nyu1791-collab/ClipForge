@@ -73,3 +73,18 @@ def test_compare_warns_when_the_baseline_came_from_other_code(tmp_path, capsys):
     captured = capsys.readouterr()
     assert json.loads(captured.out)["same_code"] is False
     assert "different code" in captured.err
+
+
+def test_cut_is_read_from_the_origin_of_a_reused_analysis(tmp_path):
+    base = output(
+        tmp_path / "base", "a" * 40, [segment(0, "あ")], [topic(0, 10), topic(10, 20)]
+    )
+    other = output(
+        tmp_path / "other", "a" * 40, [segment(0, "あ")], [topic(0, 10), topic(10, 20)]
+    )
+    receipt = json.loads((other / "asr-receipt.json").read_text())
+    receipt.pop("split", None)
+    receipt["origin"] = {"source": "split_asr", "split": {"silence": [8.0, 12.0]}}
+    write_json(other / "asr-receipt.json", receipt)
+    report = compare_asr.compare(compare_asr.load(base), compare_asr.load(other))
+    assert report["cut_s"] == 10.0

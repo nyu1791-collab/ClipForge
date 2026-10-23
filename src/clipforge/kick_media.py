@@ -65,10 +65,7 @@ def extract_audio(source, output, start, duration):
                 if media.start_time is not None
                 else float((audio.start_time or 0) * audio.time_base)
             )
-            # The fast coder halves encoding time; ASR audio is 16 kHz mono, where it is inaudible.
-            stream = target.add_stream(
-                "aac", rate=ASR_SAMPLE_RATE, options={"aac_coder": "fast"}
-            )
+            stream = target.add_stream("aac", rate=ASR_SAMPLE_RATE)
             stream.layout, stream.bit_rate = "mono", 48000
             resampler = av.AudioResampler(
                 format="fltp", layout="mono", rate=ASR_SAMPLE_RATE

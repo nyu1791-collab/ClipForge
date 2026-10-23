@@ -48,6 +48,11 @@ def overlapping_words(segments, start, end):
     return sum(b["start"] < a["end"] - 0.05 for a, b in zip(words, words[1:]))
 
 
+def _split(receipt):
+    """The cut of a two-part analysis, kept at the top level or under its origin."""
+    return receipt.get("split") or (receipt.get("origin") or {}).get("split")
+
+
 def first_difference(a, b):
     """Earliest start where the two segment lists stop agreeing, or None if identical."""
     for x, y in zip(a, b):
@@ -81,7 +86,7 @@ def boundary_stats(rows):
 
 
 def compare(base, other):
-    split = (other["asr"].get("split") or base["asr"].get("split") or {}).get("silence")
+    split = (_split(other["asr"]) or _split(base["asr"]) or {}).get("silence")
     cut = sum(split) / 2 if split else None
     end = max(base["segments"][-1]["end"], other["segments"][-1]["end"]) + 1
     halves = [("whole", 0.0, end)]
