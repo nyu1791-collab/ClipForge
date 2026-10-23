@@ -472,9 +472,9 @@ def margin_px(height):
     return round(MARGIN * scale(height))
 
 
-def heading_size(title, frame_width, height, font_path):
+def heading_size(title, frame_width, height, font_path, scale_factor=1.0):
     """Largest size that fits one line, shrinking to 60%; longer titles must be shortened."""
-    base = round(height * 0.07)
+    base = round(height * 0.07 * scale_factor)
     limit = frame_width - 2 * margin_px(height)
     for size in range(base, max(12, round(base * 0.6)) - 1, -1):
         if fonts.Measure(font_path, size).width(title) <= limit:
@@ -617,7 +617,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
     title = getattr(clip, "title", None)
     if settings.heading and title:
         heading_text = safe(title)
-        size = heading_size(heading_text, area, height, font_path)
+        size = heading_size(
+            heading_text, area, height, font_path, settings.heading_scale
+        )
         subtitles.styles["Heading"] = pysubs2.SSAStyle(
             fontname=settings.font,
             fontsize=size,
@@ -626,7 +628,11 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             outline=3,
             shadow=0.5,
             bold=True,
-            alignment=pysubs2.Alignment.TOP_CENTER,
+            alignment=(
+                pysubs2.Alignment.TOP_LEFT
+                if settings.heading_align == "left"
+                else pysubs2.Alignment.TOP_CENTER
+            ),
             marginl=margin,
             marginr=margin_right,
             marginv=round(height * 0.06),

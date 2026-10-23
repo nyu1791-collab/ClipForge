@@ -180,6 +180,26 @@ def test_heading_shrinks_then_refuses_titles_that_cannot_fit(japanese_font):
         captions.heading_size("とても長い題名" * 30, 404, 720, japanese_font)
 
 
+def test_heading_scale_enlarges_the_heading(japanese_font):
+    base = captions.heading_size("短い題名", 404, 720, japanese_font)
+    scaled = captions.heading_size("短い題名", 404, 720, japanese_font, 1.4)
+    assert scaled > base
+
+
+def test_heading_align_left_pins_the_heading_to_the_top_left(
+    tmp_path, monkeypatch, japanese_font, transcript
+):
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
+    clip = SelectedClip(
+        start=0, end=30, candidate_id="m", title="テスト題名", reason="r", confidence=1
+    )
+    captions.create(
+        transcript, clip, tmp_path, make(heading=True, heading_align="left")
+    )
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    assert subtitles.styles["Heading"].alignment == pysubs2.Alignment.TOP_LEFT
+
+
 def test_heading_and_credits_stay_out_of_the_srt_and_wrap_inside_the_frame(
     tmp_path, monkeypatch, japanese_font, transcript
 ):

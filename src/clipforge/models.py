@@ -149,7 +149,7 @@ class Settings(Record):
     clips: int = Field(default=3, ge=1, le=10)
     candidates: int = Field(default=8, ge=1, le=10)
     min_seconds: float = Field(default=20, ge=2, le=120)
-    max_seconds: float = Field(default=75, ge=3, le=180)
+    max_seconds: float = Field(default=75, ge=3, le=600)
     # large-v3-turbo transcribes Japanese clearly better than small at about the same speed
     # (measured on 4 minutes of speech: mean word probability 0.96 against 0.88).
     whisper_model: str = Field(
@@ -202,6 +202,10 @@ class Settings(Record):
     # blur fills the frame with a softened copy of the picture; fit leaves black bars.
     layout: Literal["fit", "blur", "panels"] = "blur"
     heading: bool = False
+    # left pins the heading to the top-left corner; center is the default.
+    heading_align: Literal["center", "left"] = "center"
+    # Heading font scale; 1.0 is 7% of the frame height.
+    heading_scale: float = Field(default=1.0, ge=0.8, le=1.6)
     face_box: tuple[float, float, float, float] | None = None
     game_box: tuple[float, float, float, float] | None = None
     zoom: list[Zoom] = Field(default_factory=list, max_length=5)

@@ -330,3 +330,11 @@ def test_chat_panel_fill_is_the_default_and_keeps_the_top_caption_size(settings)
     # Without the chat panel the fit does not change the caption size.
     off = Settings.model_validate({**landscape, "chat_panel": False})
     assert off.caption_font_size() == 52
+
+
+def test_long_topic_example_keeps_topics_long_without_the_chat_panel():
+    path = Path(__file__).resolve().parents[1] / "config.landscape-long.example.json"
+    example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert example.chat_panel is False and example.heading is True
+    assert example.heading_align == "left" and example.heading_scale > 1
+    assert example.topic_min_seconds == 120 and example.max_seconds == 420

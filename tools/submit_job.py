@@ -53,6 +53,8 @@ SETTINGS_FIELDS = {
     "horizontal_line_chars",
     "layout",
     "heading",
+    "heading_align",
+    "heading_scale",
     "face_box",
     "game_box",
     "zoom",
