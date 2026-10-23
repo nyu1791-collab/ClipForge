@@ -388,6 +388,9 @@ def reviewed_clips(value, analysis, preview, settings):
         raise PipelineError("video review belongs to a different audio analysis")
     if not all(row.get("video_reviewed") is True for row in value["clips"]):
         raise PipelineError("each selected topic requires video review")
+    if any("caption_edits" in row for row in value["clips"]):
+        # Edits are applied where the captions run's captions are attached.
+        raise PipelineError("caption edits need captions attached from a captions run")
     crop_anchors(value)
     caption_floors(value)
     cleaned = {

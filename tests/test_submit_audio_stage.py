@@ -1503,3 +1503,20 @@ def test_captions_run_applies_to_render_only(stage_submitter):
     with pytest.raises(RuntimeError, match="captions-run"):
         module.main(["--stage", "previews"] + args[2:] + ["--captions-run", "42"])
     assert not control["posts"]
+
+
+def test_caption_edits_need_a_captions_run(stage_submitter, tmp_path):
+    module, control, args = stage_submitter
+    argv = render_args(args, tmp_path)
+    clip = {
+        "video_reviewed": True,
+        "caption_edits": [{"at": 1.0, "from": "a", "to": "b"}],
+    }
+    (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
+    with pytest.raises(RuntimeError, match="captions-run"):
+        module.main(argv)
+    clip["caption_edits"] = [{"at": "1", "from": "a", "to": "b"}]
+    (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
+    with pytest.raises(RuntimeError, match="caption_edits"):
+        module.main(argv + ["--captions-run", "42"])
+    assert not control["posts"]

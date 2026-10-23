@@ -6,6 +6,9 @@ import os
 from pathlib import Path
 import sys
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from clipforge.caption_pack import apply_edits  # noqa: E402
+
 
 def attach(review, captions):
     if captions.get("analysis_key") != review.get("analysis_key"):
@@ -22,6 +25,14 @@ def attach(review, captions):
         if len(match) != 1 or not isinstance(match[0].get("captions"), str):
             raise SystemExit(f"no captions for {clip.get('candidate_id')}")
         clip["captions"] = match[0]["captions"]
+        edits = clip.pop("caption_edits", None)
+        if edits:
+            try:
+                clip["captions"] = apply_edits(clip["captions"], clip["start"], edits)
+            except (KeyError, TypeError, ValueError) as error:
+                raise SystemExit(
+                    f"caption edit refused for {clip.get('candidate_id')}: {error}"
+                )
     return review
 
 

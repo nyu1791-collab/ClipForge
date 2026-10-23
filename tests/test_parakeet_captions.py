@@ -52,3 +52,57 @@ def test_packed_captions_are_read_back_by_the_render(tmp_path):
         "captions": None,
     }
     assert audio_first.pack_captions is pack_captions
+
+
+def packed(*texts):
+    rows = []
+    for start, text in texts:
+        words = [
+            {"text": c, "start": start + 0.1 * i, "end": start + 0.1 * (i + 1)}
+            for i, c in enumerate(text)
+        ]
+        rows.append(
+            {"start": start, "end": words[-1]["end"], "text": text, "words": words}
+        )
+    return pack_captions(rows)
+
+
+def test_an_edit_changes_only_the_nearest_matching_line():
+    from clipforge.caption_pack import apply_edits, unpack_captions
+
+    value = packed((100.0, "雪ナイトだよ"), (130.0, "雪ナイトです"))
+    rows = unpack_captions(
+        apply_edits(
+            value, 100.0, [{"at": 29.0, "from": "雪ナイト", "to": "ユキナイト"}]
+        )
+    )
+    assert [r[2] for r in rows] == ["雪ナイトだよ", "ユキナイトです"]
+    assert [w[0] for w in rows[1][3]][:5] == list("ユキナイト")
+    assert rows[1][3][0][1] == 13000 and rows[1][3][4][2] == 13040
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"at": 0.0, "from": "ない語", "to": "x"},
+        {"at": 60.0, "from": "雪ナイト", "to": "x"},
+    ],
+)
+def test_an_edit_without_a_nearby_match_is_refused(edit):
+    from clipforge.caption_pack import apply_edits
+
+    with pytest.raises(ValueError):
+        apply_edits(packed((100.0, "雪ナイトだよ")), 100.0, [edit])
+
+
+def test_unapplied_caption_edits_never_reach_the_render():
+    with pytest.raises(audio_first.PipelineError, match="caption edits"):
+        audio_first.reviewed_clips(
+            {
+                "analysis_key": "k",
+                "clips": [{"video_reviewed": True, "caption_edits": []}],
+            },
+            {"analysis_key": "k"},
+            {"analysis_key": "k"},
+            None,
+        )

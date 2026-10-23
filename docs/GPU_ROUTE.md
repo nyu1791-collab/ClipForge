@@ -59,7 +59,7 @@ python tools/submit_audio_stage.py --stage render --worker colab-auto --clips N 
   --source-ref "$SHA" --review-file /home/user/private/NAME-approved.json
 ```
 
-`--previous-run` と `--previous-request` は S1 の run とその依頼ID。描画は各クリップが別の依頼IDになり、並列に走る。S3.5 の字幕を使うときは `--captions-run 字幕のrun ID` を加える。描画の workflow がその artifact を承認ファイルへ差し込み、全編の Whisper の代わりに Parakeet の字幕で描画する（区間・話題・分析キーが一致しないと止まる）。最終確認で直した字幕は、承認ファイルの各クリップの `captions` に詰め直して、`--captions-run` なしで描画し直す。`--clip-index` を1本ずつ同時に投入すると、手元の多重投入防止で2本目以降が止まる。並列描画は `--clips N` の1回で投入する。
+`--previous-run` と `--previous-request` は S1 の run とその依頼ID。描画は各クリップが別の依頼IDになり、並列に走る。S3.5 の字幕を使うときは `--captions-run 字幕のrun ID` を加える。描画の workflow がその artifact を承認ファイルへ差し込み、全編の Whisper の代わりに Parakeet の字幕で描画する（区間・話題・分析キーが一致しないと止まる）。最終確認で直す箇所は、承認ファイルの該当クリップに `"caption_edits": [{"at": 動画内の秒, "from": "誤", "to": "正"}]` を足し、同じ `--captions-run` と `--clip-index N` でその1本だけ描画し直す（`at` の前後10秒で `from` を含む最も近い行だけを置き換え、見つからなければ描画前に止まる）。結合は差し替えたrunで `--part-runs` を組み直す。確認用と納品は `config.landscape-long-preview.example.json`（360p・veryfast）を基本とし、1080pは頼まれたときだけ `config.landscape-long.example.json` で描画する。`--clip-index` を1本ずつ同時に投入すると、手元の多重投入防止で2本目以降が止まる。並列描画は `--clips N` の1回で投入する。
 配信画面にコメント欄が映っている配信で話題を長く取るときは、S1 の `--config` と S4 の `--config-file` の両方に `config.landscape-long.example.json` を渡す（[AUDIO_FIRST.md](AUDIO_FIRST.md) の「長めの話題と左上の見出し」）。
 
 ## S5 結合（制御VM）

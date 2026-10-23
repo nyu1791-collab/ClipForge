@@ -507,6 +507,20 @@ def require_video_review(value):
             raise AudioStageError("caption_floor must be from 0 to 0.32")
     if any(not isinstance(row.get("captions", ""), str) for row in clips):
         raise AudioStageError("captions must be a packed caption string")
+    for row in clips:
+        edits = row.get("caption_edits", [])
+        if not isinstance(edits, list) or any(
+            not isinstance(e, dict)
+            or set(e) != {"at", "from", "to"}
+            or type(e["at"]) not in (int, float)
+            or not 0 <= e["at"] <= 1800
+            or not isinstance(e["from"], str)
+            or not 0 < len(e["from"]) <= 100
+            or not isinstance(e["to"], str)
+            or len(e["to"]) > 100
+            for e in edits
+        ):
+            raise AudioStageError("caption_edits must list at, from and to")
 
 
 def clip_indices(args, worker):
@@ -706,6 +720,10 @@ def main(argv=None):
     }
     if args.captions_run is not None:
         base["captions_run_id"] = args.captions_run
+    elif review is not None and any(
+        row.get("caption_edits") for row in review["clips"]
+    ):
+        raise AudioStageError("caption_edits need --captions-run")
     if len(base["review_json"].encode()) > 60000:
         raise AudioStageError("review metadata is oversized")
     requests = []
