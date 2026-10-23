@@ -143,10 +143,22 @@ def test_a_space_is_added_after_a_mark_when_the_next_token_continues():
     assert tokens == [(0, 1, "やった！"), (1, 2, "」")]
 
 
-def test_a_mark_followed_by_an_ascii_space_keeps_the_text_from_being_flagged():
-    # " 次" starts with a space, so "？ 次" would still read as unspaced to the quality check.
+def test_a_leading_space_of_the_next_token_is_replaced_by_the_fullwidth_space():
+    # Without this, "え？　 次" would show two gaps; the next token keeps its timing.
     tokens = _collect([(0, 1, "え?"), (1, 2, " 次")], language="ja")
-    assert tokens == [(0, 1, "え？　"), (1, 2, " 次")]
+    assert tokens == [(0, 1, "え？　"), (1, 2, "次")]
+
+
+def test_a_trailing_space_before_the_fullwidth_space_is_replaced():
+    tokens = _collect([(0, 1, "え? "), (1, 2, "次")], language="ja")
+    assert tokens == [(0, 1, "え？　"), (1, 2, "次")]
+
+
+def test_a_mark_already_followed_by_a_fullwidth_space_is_left_alone():
+    tokens = _collect([(0, 1, "え？　"), (1, 2, "次")], language="ja")
+    assert tokens == [(0, 1, "え？　"), (1, 2, "次")]
+    tokens = _collect([(0, 1, "え?　"), (1, 2, "次")], language="ja")
+    assert tokens == [(0, 1, "え？　"), (1, 2, "次")]
 
 
 def test_marks_outside_japanese_clips_are_left_alone():

@@ -169,14 +169,20 @@ def space_after_marks(tokens):
     spaced = list(tokens)
     for index in range(len(spaced) - 1):
         start, end, text = spaced[index]
-        if text.rstrip(" \t")[-1:] not in ("？", "！"):
+        # A halfwidth space before the fullwidth one is replaced, so the result has no gap.
+        # A token already ending in a fullwidth space ends in neither mark, so it is skipped.
+        before = text.rstrip(" \t")
+        if before[-1:] not in ("？", "！"):
             continue
-        following = spaced[index + 1][2].lstrip(" \t")
+        next_start, next_end, next_text = spaced[index + 1]
+        following = next_text.lstrip(" \t")
         if not following or following[0].isspace():
             continue
         if following[0] in MARK_FOLLOWERS_NOT_SPACED:
             continue
-        spaced[index] = (start, end, text + "　")
+        spaced[index] = (start, end, before + "　")
+        # The leading halfwidth space of the next token would double the gap, so it goes.
+        spaced[index + 1] = (next_start, next_end, following)
     return spaced
 
 
