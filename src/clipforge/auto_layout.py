@@ -1,8 +1,9 @@
 """Choose the crop side and caption band for the landscape chat layout from frame content.
 
 The 16:9 source keeps `keep` of its width (the left 1440x1080 of a 1920x1080 frame). The
-crop side is the window that keeps the most detail (gradient energy). A caption moves to
-the top band only when the bottom band is busy and the caption is not a quiet moment.
+crop side is the window that keeps the most detail (gradient energy). Captions stay at the
+bottom; a caption is lifted just above a busy band (HUD, hotbar, overlay) that touches the
+bottom edge, up to MAX_LIFT of the height.
 """
 
 import time
@@ -27,6 +28,21 @@ OVERLAY_MAX_SHARE = 0.40
 OFFSET_STEP = 1 / 32
 # Captions this close (seconds) in sequence share one band, so the band does not flicker.
 GROUP_GAP = 2.0
+# A row is busy when its density is above this multiple of the window's median row density.
+BUSY_RATIO = 1.6
+# Busy rows are searched from the bottom edge up to this share of the height.
+SEARCH = 0.40
+# Quiet rows inside a busy band are tolerated up to this share of the height.
+BAND_GAP = 0.015
+# A caption's persistent detail is the temporal median over the frames within this many seconds of
+# it, at least PERSIST_MIN frames (the nearest ones are added), at most PERSIST_MAX frames.
+PERSIST_MARGIN = 3.0
+PERSIST_MIN = 5
+PERSIST_MAX = 64
+# A caption's bottom edge sits this share of the height above the top of the busy band.
+LIFT_PAD = 0.015
+# No caption is lifted above this share of the height.
+MAX_LIFT = 0.32
 # Frames are processed in blocks so float32 temporaries stay small for long samples.
 BLOCK = 256
 
@@ -412,34 +428,8 @@ def choose_crop(frames, *, keep=0.75):
     }
 
 
-def _band_densities(frames, left, right, rows, overlay=None):
-    """Band density over content columns only; source chat text is not scene detail."""
-    import numpy as np
-
-    stats = _statistics(frames)
-    columns = np.arange(left, right)
-    if overlay and overlay.get("side"):
-        lo, hi = (
-            round(overlay["start"] * stats.width),
-            round(overlay["end"] * stats.width),
-        )
-        columns = columns[(columns < lo) | (columns >= hi)]
-    if not len(columns):
-        return np.zeros(stats.count), np.zeros(stats.count)
-    if stats.rows != rows:
-        raise ValueError("caption band differs from sampled statistics")
-    return stats.bottom[:, columns].mean(axis=1), stats.top[:, columns].mean(axis=1)
-
-
-def _frames_for(times, start, end):
-    """Indices of the frames inside [start, end]; if none, the nearest frame(s) in time."""
-    distances = [max(start - moment, 0.0, moment - end) for moment in times]
-    nearest = min(distances)
-    return [index for index, distance in enumerate(distances) if distance == nearest]
-
-
-def _steady(events, raw):
-    """Captions less than GROUP_GAP apart in sequence take the majority band of their group."""
+def _groups(events):
+    """Runs of caption indices: a caption starting less than GROUP_GAP after the last run ends joins it."""
     order = sorted(range(len(events)), key=lambda index: events[index])
     groups, current, reach = [], [], 0.0
     for index in order:
@@ -451,66 +441,267 @@ def _steady(events, raw):
         current.append(index)
     if current:
         groups.append(current)
+    return groups
 
-    result = list(raw)
-    for group in groups:
-        tops = sum(1 for index in group if raw[index] == "top")
-        # A tie keeps the default band.
-        majority = "top" if tops * 2 > len(group) else "bottom"
+
+def _shared_max(events, values):
+    """Each caption takes the largest value of its run, so captions in one run do not flicker."""
+    result = list(values)
+    for group in _groups(events):
+        peak = max(values[index] for index in group)
         for index in group:
-            result[index] = majority
+            result[index] = peak
     return result
 
 
-def caption_positions(times, frames, events, crop, *, band=0.24, ratio=1.4, floor=None):
-    """Band ("top" or "bottom") per caption event, from the detail in the crop window's bands."""
+def _window_columns(crop, width, left, right):
+    """Mask of the window's columns that are not under the chat overlay (a dark block at an edge)."""
     import numpy as np
 
-    if not isinstance(frames, FrameStatistics):
-        frames = frame_statistics((times, np.asarray(frames)), band=band)
-    if len(times) != frames.count:
-        raise ValueError("times and frames must have the same length")
-    times = [float(moment) for moment in times]
-    height, width = frames.height, frames.width
-    left, right = _window(width, crop["x"], crop["keep"])
-    rows = max(1, round(band * height))
-    overlay = crop.get("overlay")
-    if overlay is None:
-        block = _overlay_block(frames.dark >= DARK_SHARE, width)
-        overlay = (
-            {"side": block[0], "start": block[1] / width, "end": block[2] / width}
-            if block
-            else None
-        )
-    bottom, top = _band_densities(frames, left, right, rows, overlay)
-    if floor is None:
-        floor = float(bottom.mean())
+    columns = np.ones(right - left, dtype=bool)
+    overlay = crop.get("overlay") or {}
+    if overlay.get("side") is not None:
+        start = round(float(overlay["start"]) * width)
+        end = round(float(overlay["end"]) * width)
+        lo, hi = max(start, left) - left, min(end, right) - left
+        if hi > lo:
+            columns[lo:hi] = False
+    return columns
 
-    raw = []
+
+def _band_top(busy, search, tolerance):
+    """Top row of the busy band that touches the bottom edge, or None.
+
+    Walks up from the bottom row through the bottom `search` share of the height. Quiet rows
+    up to `tolerance` rows in a row do not end the band; a quiet stretch longer than that does.
+    """
+    height = len(busy)
+    limit = height - round(search * height)
+    top, quiet = None, 0
+    for row in range(height - 1, limit - 1, -1):
+        if busy[row]:
+            top, quiet = row, 0
+        else:
+            quiet += 1
+            if quiet > tolerance:
+                break
+    return top
+
+
+def _caption_frames(times, start, end):
+    """Indices of the frames near [start, end] for a caption's persistent detail.
+
+    Frames within PERSIST_MARGIN seconds of the caption count; if fewer than PERSIST_MIN, the
+    nearest frames in time are added. Long spans are subsampled to PERSIST_MAX frames.
+    """
+    import numpy as np
+
+    moments = np.asarray(times, dtype=np.float64)
+    distances = np.maximum.reduce(
+        [
+            start - PERSIST_MARGIN - moments,
+            moments - end - PERSIST_MARGIN,
+            np.zeros(len(moments)),
+        ]
+    )
+    inside = int((distances == 0).sum())
+    count = min(len(moments), max(PERSIST_MIN, inside))
+    order = np.argsort(distances, kind="stable")[:count]
+    return _subsample(np.sort(order))
+
+
+def _subsample(indices):
+    """At most PERSIST_MAX of the given frame indices, spread evenly."""
+    import numpy as np
+
+    indices = np.asarray(indices, dtype=np.int64)
+    if len(indices) <= PERSIST_MAX:
+        return indices
+    picks = np.linspace(0, len(indices) - 1, PERSIST_MAX).round().astype(int)
+    return indices[picks]
+
+
+def _persistent_gradient(frames, indices):
+    """Per-pixel temporal median of the gradient over the frames at `indices`.
+
+    Detail that stays in place (a HUD, a wipe's frame, a border) keeps its gradient; detail
+    that moves with the game world drops out of the median.
+    """
+    import numpy as np
+
+    return np.median(_gradient(frames[indices]), axis=0)
+
+
+def _region_profile(persistent, left, right, mask):
+    """Mean gradient of each row over the window columns selected by `mask`: shape [height]."""
+    return persistent[:, left:right][:, mask].mean(axis=1)
+
+
+def caption_lifts(
+    times,
+    frames,
+    events,
+    crop,
+    *,
+    search=SEARCH,
+    max_lift=MAX_LIFT,
+    base=None,
+    pad=LIFT_PAD,
+):
+    """Bottom margin of each caption, as a share of the height ("lift"), from persistent detail.
+
+    For each caption, the gradient is the temporal median over the frames near it, so only detail
+    that stays in place counts (a HUD, a wipe, a border; not the moving game world). A row is busy
+    when its persistent density is above BUSY_RATIO times the median of the window's rows, taken
+    over the whole sample. The window is measured whole and in its left and right halves; a band
+    found in any of them counts. A caption sits at the base margin unless a busy band touches the
+    bottom edge (searched up to `search` of the height) and the band's top is above the base; then
+    the caption's bottom edge sits `pad` above that top, capped at `max_lift`. Captions less than
+    GROUP_GAP apart share the largest lift of their run.
+    """
+    import numpy as np
+
+    frames = np.asarray(frames)
+    _check_frames(frames, "no frames to place captions on")
+    if len(times) != frames.shape[0]:
+        raise ValueError("times and frames must have the same length")
+    if base is None:
+        from .captions import FILL_BOTTOM_SHARE
+
+        base = FILL_BOTTOM_SHARE
+    times = [float(moment) for moment in times]
+    events = [(float(start), float(end)) for start, end in events]
+    _, height, width = frames.shape
+    left, right = _window(width, crop["x"], crop["keep"])
+    columns = _window_columns(crop, width, left, right)
+    if not columns.any():
+        return [base] * len(events)
+    span = right - left
+    position = np.arange(span)
+    middle = span // 2
+    masks = [columns, columns & (position < middle), columns & (position >= middle)]
+    masks = [mask for mask in masks if mask.any()]
+
+    whole = _persistent_gradient(frames, _subsample(np.arange(len(times))))
+    references = [
+        float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
+    ]
+    tolerance = round(BAND_GAP * height)
+
+    lifts = []
     for start, end in events:
-        index = _frames_for(times, start, end)
-        bottom_density = float(bottom[index].mean())
-        top_density = float(top[index].mean())
-        busy = bottom_density > ratio * top_density and bottom_density > floor
-        raw.append("top" if busy else "bottom")
-    return _steady([(float(start), float(end)) for start, end in events], raw)
+        indices = _caption_frames(times, start, end)
+        persistent = _persistent_gradient(frames, indices)
+        lift = base
+        for mask, reference in zip(masks, references):
+            profile = _region_profile(persistent, left, right, mask)
+            top = _band_top(profile > BUSY_RATIO * reference, search, tolerance)
+            if top is not None:
+                edge = (height - top) / height
+                if edge > base:
+                    lift = max(lift, edge + pad)
+        lifts.append(min(lift, max_lift))
+    return [round(lift, 4) for lift in _shared_max(events, lifts)]
+
+
+def _stream_lifts(stats, samples, events, crop):
+    """Exact persistent medians with a bounded rolling frame cache and row summaries.
+
+    Crop statistics are known from the first decode. The second decode keeps at most BLOCK
+    selected local frames and PERSIST_MAX global samples, not the whole clip. Completed caption
+    windows retain only three row profiles. The native array API uses the same median and masks.
+    """
+    from collections import Counter
+    import numpy as np
+    from .captions import FILL_BOTTOM_SHARE
+
+    base = FILL_BOTTOM_SHARE
+    if not events:
+        return []
+    height, width = stats.height, stats.width
+    left, right = _window(width, crop["x"], crop["keep"])
+    columns = _window_columns(crop, width, left, right)
+    if not columns.any():
+        return [base] * len(events)
+    positions = np.arange(right - left)
+    middle = (right - left) // 2
+    masks = [columns, columns & (positions < middle), columns & (positions >= middle)]
+    masks = [mask for mask in masks if mask.any()]
+    selections = [_caption_frames(stats.times, start, end) for start, end in events]
+    required = Counter(int(index) for indices in selections for index in indices)
+    order = sorted(range(len(events)), key=lambda i: int(selections[i][-1]))
+    global_indices = set(int(i) for i in _subsample(np.arange(stats.count)))
+    local, global_frames = {}, {}
+    profiles = [None] * len(events)
+    cursor = ready = 0
+    if isinstance(samples, tuple):
+        samples = [samples]
+    for _, frames in samples:
+        for frame in frames:
+            if cursor in required or cursor in global_indices:
+                copy = frame.copy()
+                if cursor in required:
+                    local[cursor] = copy
+                if cursor in global_indices:
+                    global_frames[cursor] = copy
+            while ready < len(order) and selections[order[ready]][-1] <= cursor:
+                item = order[ready]
+                indices = selections[item]
+                if any(int(i) not in local for i in indices):
+                    raise PipelineError("caption frame samples changed between decodes")
+                chosen = np.stack([local[int(i)] for i in indices])
+                persistent = _persistent_gradient(chosen, np.arange(len(chosen)))
+                profiles[item] = [
+                    _region_profile(persistent, left, right, mask) for mask in masks
+                ]
+                for index in indices:
+                    required[int(index)] -= 1
+                    if not required[int(index)]:
+                        del required[int(index)]
+                        del local[int(index)]
+                ready += 1
+            if len(local) > BLOCK:
+                raise PipelineError("caption sample exceeds its bounded frame window")
+            cursor += 1
+    if (
+        cursor != stats.count
+        or ready != len(events)
+        or len(global_frames) != len(global_indices)
+    ):
+        raise PipelineError("layout frame samples changed between decodes")
+    chosen = np.stack([global_frames[i] for i in sorted(global_frames)])
+    whole = _persistent_gradient(chosen, np.arange(len(chosen)))
+    references = [
+        float(np.median(_region_profile(whole, left, right, mask))) for mask in masks
+    ]
+    tolerance = round(BAND_GAP * height)
+    lifts = []
+    for row_profiles in profiles:
+        lift = base
+        for profile, reference in zip(row_profiles, references):
+            top = _band_top(profile > BUSY_RATIO * reference, SEARCH, tolerance)
+            if top is not None:
+                edge = (height - top) / height
+                if edge > base:
+                    lift = max(lift, edge + LIFT_PAD)
+        lifts.append(min(lift, MAX_LIFT))
+    return [round(lift, 4) for lift in _shared_max(events, lifts)]
 
 
 def plan(source, start, end, events, *, keep=0.75, anchor="auto"):
-    """Crop side and caption bands for [start, end) of `source`; events are (start, end) seconds."""
+    """Bounded crop statistics and persistent bottom-caption lifts in source seconds."""
     began = time.monotonic()
-    frames = frame_statistics(sample_frames(source, start, end))
-    times = frames.times
-    crop = choose_crop(frames, keep=keep)
+    stats = frame_statistics(sample_frames(source, start, end))
+    crop = choose_crop(stats, keep=keep)
     if anchor != "auto":
         crop.update(
             anchor=anchor,
             x={"left": 0.0, "center": (1 - keep) / 2, "right": 1 - keep}[anchor],
         )
-    positions = caption_positions(times, frames, events, crop)
+    lifts = _stream_lifts(stats, sample_frames(source, start, end), events, crop)
     return {
         "crop": crop,
-        "positions": positions,
-        "frames": len(times),
+        "lifts": lifts,
+        "frames": stats.count,
         "seconds": round(time.monotonic() - began, 3),
     }

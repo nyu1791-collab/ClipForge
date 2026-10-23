@@ -25,7 +25,11 @@ from . import (
     thumbnail,
 )
 from . import topics as topic_tools
-from .captions import create as create_captions, event_spans as caption_spans
+from .captions import (
+    FILL_BOTTOM_SHARE,
+    create as create_captions,
+    event_spans as caption_spans,
+)
 from .hardware import asr_options, cpu_threads, encode_threads
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import (
@@ -354,12 +358,12 @@ def _auto_layout_window(source, start, end, events, anchor, keep):
 
 
 def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
-    """Crop position and caption positions for a chat render with fit fill.
+    """Crop position and caption lifts for a chat render with fit fill.
 
     crop_anchor "auto" takes auto_layout's choice; left, center and right fix the crop and only
     place the captions. When the plan fails the picture is centred (or on the fixed side) and
-    every caption stays at the bottom; reason then names the failure. Caption times are the
-    file's own, as auto_layout expects.
+    every caption stays at the base margin (lifts None); reason then names the failure. Caption
+    times are the file's own, as auto_layout expects.
     """
     frame_width, _ = media.frame_size(settings)
     keep = (frame_width - settings.chat_panel_pixels()) / frame_width
@@ -374,9 +378,9 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             plan = _auto_layout_window(
                 source, clip.start, clip.end, events, crop_anchor, keep
             )
-        positions = list(plan["positions"])
-        if len(positions) != len(events):
-            raise PipelineError("auto layout gave one position per caption")
+        lifts = [float(lift) for lift in plan["lifts"]]
+        if len(lifts) != len(events):
+            raise PipelineError("auto layout gave one lift per caption")
         crop = plan["crop"]
         # The crop stays inside the source: its left edge is 0 to the share not kept.
         x = min(max(float(crop["x"]), 0.0), 1 - keep)
@@ -384,7 +388,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "anchor": crop["anchor"],
             "requested": crop_anchor,
             "x": x,
-            "positions": positions,
+            "lifts": lifts,
             "reason": None,
         }
     except Exception as failure:
@@ -393,7 +397,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "anchor": crop_anchor if fixed else "center",
             "requested": crop_anchor,
             "x": _crop_fractions(keep)[crop_anchor] if fixed else None,
-            "positions": None,
+            "lifts": None,
             "reason": type(failure).__name__,
         }
 
@@ -415,7 +419,7 @@ def _saved_layout(target, input_key):
     plan = value.get("plan")
     if not isinstance(plan, dict) or not {
         "x",
-        "positions",
+        "lifts",
         "requested",
         "anchor",
         "reason",
@@ -434,13 +438,13 @@ def render_clip(
         raise PipelineError("chat panel needs a Kick VOD URL source")
     if crop_anchor not in CROP_ANCHORS:
         raise PipelineError("crop_anchor must be auto, left, center or right")
-    # Fill chooses where the picture is cropped and which captions go to the top. The plan is
+    # Fill chooses where the picture is cropped and how high each caption sits. The plan is
     # made before the render key, so a different plan is a different render.
     layout, layout_input_key = None, None
     if settings.chat_panel and settings.chat_panel_fit == "fill":
         layout_input_key = fingerprint(
             {
-                "version": 2,
+                "version": 3,
                 "job": key,
                 "clip": clip.model_dump(),
                 "transcript": transcript.model_dump(),
@@ -466,7 +470,7 @@ def render_clip(
                 {
                     "layout": {
                         "x": layout["x"],
-                        "positions": layout["positions"],
+                        "lifts": layout["lifts"],
                         "requested": layout["requested"],
                     }
                 }
@@ -514,7 +518,7 @@ def render_clip(
                 settings,
                 keep,
                 credits=credits,
-                positions=layout["positions"] if layout else None,
+                lifts=layout["lifts"] if layout else None,
             ),
         )
         info = timed(
@@ -581,11 +585,14 @@ def render_clip(
                 "error": chat["error"],
             }
         if layout:
+            lifts = layout["lifts"] or []
             saved["layout"] = {
                 "anchor": layout["anchor"],
                 "requested": layout["requested"],
                 "x": layout["x"],
-                "positions_top": sum(p == "top" for p in layout["positions"] or []),
+                "lift_min": min(lifts, default=None),
+                "lift_max": max(lifts, default=None),
+                "lifted": sum(lift > FILL_BOTTOM_SHARE + 1e-9 for lift in lifts),
                 "reason": layout["reason"],
             }
         write_json(directory / "render.json", saved)

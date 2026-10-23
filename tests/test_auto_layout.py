@@ -4,7 +4,7 @@ from io import BytesIO
 import numpy as np
 import pytest
 
-from clipforge import auto_layout
+from clipforge import auto_layout, captions
 from clipforge.storage import PipelineError
 
 HEIGHT = 180
@@ -138,85 +138,126 @@ def test_detail_between_the_edges_gives_an_offset_window():
     assert crop["x"] == pytest.approx(10 / WIDTH)
 
 
-def test_bottom_band_detail_moves_caption_to_top():
-    frames = frame_with([(slice(137, HEIGHT), slice(0, WIDTH), 255)])
-    # Only the caption's own frames are busy below; the rest of the clip is quiet.
-    frames[2:] = 128
-    crop = {"anchor": "center", "x": 0.125, "keep": 0.75, "kept": {}}
-    positions = auto_layout.caption_positions(
-        [0.0, 0.5, 1.0, 1.5], frames, [(0.0, 0.5)], crop
-    )
-    assert positions == ["top"]
+CROP = {"anchor": "center", "x": 0.125, "keep": 0.75, "kept": {}}
+TIMES = [0.0, 0.5, 1.0, 1.5]
+BASE = captions.FILL_BOTTOM_SHARE
 
 
-def test_no_bottom_detail_keeps_caption_at_bottom():
-    frames = frame_with([(slice(0, 100), slice(0, WIDTH), 255)])
-    crop = {"anchor": "center", "x": 0.125, "keep": 0.75, "kept": {}}
-    positions = auto_layout.caption_positions(
-        [0.0, 0.5, 1.0, 1.5], frames, [(0.0, 1.0)], crop
-    )
-    assert positions == ["bottom"]
+def test_busy_band_at_the_bottom_lifts_caption_just_above_it():
+    frames = frame_with([(slice(140, HEIGHT), slice(0, WIDTH), 255)])
+    lifts = auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP)
+    # The band's top row is 139 or 140 (the gradient reaches one row up); the caption clears
+    # the band by LIFT_PAD.
+    assert lifts[0] == pytest.approx((HEIGHT - 140) / HEIGHT + 0.015, abs=0.01)
 
 
-def test_equally_busy_bands_keep_caption_at_bottom():
-    frames = frame_with(
-        [
-            (slice(0, 40), slice(0, WIDTH), 255),
-            (slice(140, HEIGHT), slice(0, WIDTH), 255),
-        ]
-    )
-    crop = {"anchor": "center", "x": 0.125, "keep": 0.75, "kept": {}}
-    positions = auto_layout.caption_positions(
-        [0.0, 0.5, 1.0, 1.5], frames, [(0.0, 0.5)], crop
-    )
-    assert positions == ["bottom"]
-
-
-def test_quiet_bottom_below_floor_keeps_caption_at_bottom():
-    frames = np.full((10, HEIGHT, WIDTH), 128, dtype=np.uint8)
-    # A strong bottom band in most of the clip makes the average floor high.
-    frames[5:] = frame_with([(slice(137, HEIGHT), slice(0, WIDTH), 255)], count=5)
-    # The caption's own frames have only a faint bottom texture: busier than the top, but quiet.
-    frames[0:2, 137:, :] = 128 + texture(HEIGHT - 137, WIDTH, seed=7, amplitude=3)
-    frames[0:2, :40, :] = 128
-    crop = {"anchor": "center", "x": 0.125, "keep": 0.75, "kept": {}}
-    times = [0.5 * index for index in range(10)]
-    assert auto_layout.caption_positions(times, frames, [(0.0, 0.5)], crop) == [
-        "bottom"
-    ]
-
-
-def test_caption_outside_the_frames_uses_the_nearest_frame():
+def test_quiet_frames_keep_the_base_margin():
     frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
-    frames[3, 137:, :] = texture(HEIGHT - 137, WIDTH, seed=3)
-    crop = {"anchor": "center", "x": 0.125, "keep": 0.75, "kept": {}}
-    times = [0.0, 0.5, 1.0, 1.5]
-    positions = auto_layout.caption_positions(
-        times, frames, [(100.0, 101.0), (-9.0, -8.0)], crop
-    )
-    assert positions == ["top", "bottom"]
-    frames[0, 137:, :] = texture(HEIGHT - 137, WIDTH, seed=4)
-    frames[1:, 137:, :] = 128
-    positions = auto_layout.caption_positions(times, frames, [(-9.0, -8.0)], crop)
-    assert positions == ["top"]
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 1.0)], CROP) == [BASE]
 
 
-def test_short_runs_of_captions_share_the_majority_band():
-    events = [(0.0, 1.0), (1.5, 2.5), (3.0, 4.0)]
-    raw = ["top", "bottom", "top"]
-    assert auto_layout._steady(events, raw) == ["top", "top", "top"]
+def test_band_below_the_base_keeps_the_base_margin():
+    frames = frame_with([(slice(170, HEIGHT), slice(0, WIDTH), 255)])
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP) == [BASE]
 
 
-def test_tied_run_keeps_the_default_band():
-    assert auto_layout._steady([(0.0, 1.0), (1.5, 2.5)], ["top", "bottom"]) == [
-        "bottom",
-        "bottom",
+def test_band_outside_the_search_range_is_ignored():
+    frames = frame_with([(slice(0, 100), slice(0, WIDTH), 255)])
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 1.0)], CROP) == [BASE]
+
+
+def test_lift_is_capped_at_max_lift():
+    frames = frame_with([(slice(100, HEIGHT), slice(0, WIDTH), 255)])
+    # The band reaches above the 40 percent search range, so the lift is the cap.
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP) == [0.32]
+    assert auto_layout.caption_lifts(
+        TIMES, frames, [(0.0, 0.5)], CROP, max_lift=0.3
+    ) == [0.3]
+
+
+def test_uniform_busy_rows_are_not_a_band():
+    # Every row is equally busy, so none is busier than the window's median row.
+    frames = frame_with([(slice(0, HEIGHT), slice(240, WIDTH), 255)])
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 1.0)], CROP) == [BASE]
+
+
+def test_detail_in_one_half_of_the_window_lifts_the_caption():
+    background = texture(HEIGHT, WIDTH, seed=9, amplitude=40)
+    frames = np.repeat(background[None], 4, axis=0)
+    # A moderate band in the right half only: the whole window's row density stays under the
+    # busy level, but the right half's crosses it (a wipe in the corner works this way).
+    frames[:, 140:, 200:280] = texture(HEIGHT - 140, 80, seed=4, amplitude=80)
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP)[0] > BASE
+
+
+def test_chat_overlay_columns_do_not_count_as_busy():
+    background = texture(HEIGHT, WIDTH, seed=9, amplitude=40)
+    frames = np.repeat(background[None], 4, axis=0)
+    # Detail only under the overlay, the right 40 columns of the window.
+    frames[:, 140:, 240:280] = texture(HEIGHT - 140, 40, seed=10)
+    overlay = {"side": "right", "start": 0.75, "end": 1.0}
+    with_overlay = {**CROP, "overlay": overlay}
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], CROP)[0] > BASE
+    assert auto_layout.caption_lifts(TIMES, frames, [(0.0, 0.5)], with_overlay) == [
+        BASE
     ]
 
 
-def test_separated_captions_keep_their_own_band():
-    events = [(0.0, 1.0), (4.0, 5.0)]
-    assert auto_layout._steady(events, ["top", "bottom"]) == ["top", "bottom"]
+def test_captions_close_in_sequence_share_the_largest_lift():
+    # Detail in rows 140 and below only in the first 5 seconds (frames 0 to 9 of 40).
+    frames = np.full((40, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[0:10, 140:, :] = texture(HEIGHT - 140, WIDTH, seed=5)
+    times = [0.5 * index for index in range(40)]
+    # The first caption sees the detail in most of its frames; the second, 1.5 s later, does not.
+    events = [(3.0, 3.5), (5.0, 5.5), (15.0, 15.5)]
+    lifts = auto_layout.caption_lifts(times, frames, events, CROP)
+    assert lifts[0] > BASE and lifts[1] == lifts[0] and lifts[2] == BASE
+
+
+def test_detail_in_few_frames_of_a_caption_is_not_persistent():
+    frames = np.full((10, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    # Detail in only 3 of the 8 frames near the caption: the median gradient is zero there.
+    frames[0:3, 140:, :] = texture(HEIGHT - 140, WIDTH, seed=6)
+    times = [0.5 * index for index in range(10)]
+    assert auto_layout.caption_lifts(times, frames, [(0.0, 0.5)], CROP) == [BASE]
+
+
+def test_caption_outside_the_frames_uses_the_nearest_frames():
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    frames[:, 137:, :] = texture(HEIGHT - 137, WIDTH, seed=3)
+    lifts = auto_layout.caption_lifts(
+        TIMES, frames, [(100.0, 101.0), (-9.0, -8.0)], CROP
+    )
+    assert lifts[0] > BASE and lifts[1] > BASE
+
+
+def test_lifts_need_one_frame_set_per_sample_and_a_crop_window():
+    frames = np.full((4, HEIGHT, WIDTH), 128, dtype=np.uint8)
+    with pytest.raises(ValueError, match="same length"):
+        auto_layout.caption_lifts(TIMES[:3], frames, [(0.0, 1.0)], CROP)
+    with pytest.raises(PipelineError, match="no frames"):
+        auto_layout.caption_lifts([], np.zeros((0, HEIGHT, WIDTH)), [], CROP)
+
+
+def test_band_top_stops_at_a_quiet_stretch_longer_than_the_tolerance():
+    busy = np.zeros(20, dtype=bool)
+    busy[15:20] = True
+    busy[10:12] = True  # three quiet rows (12 to 14) between the two bands
+    assert auto_layout._band_top(busy, 1.0, 3) == 10
+    assert auto_layout._band_top(busy, 1.0, 2) == 15
+
+
+def test_band_top_searches_only_the_bottom_share():
+    busy = np.zeros(20, dtype=bool)
+    busy[2:9] = True
+    assert auto_layout._band_top(busy, 0.5, 3) is None
+    busy[10:20] = True
+    assert auto_layout._band_top(busy, 0.5, 3) == 10
+
+
+def test_runs_of_captions_take_the_largest_value():
+    events = [(0.0, 1.0), (1.5, 2.5), (4.5, 5.5)]
+    assert auto_layout._shared_max(events, [0.2, 0.12, 0.12]) == [0.2, 0.2, 0.12]
 
 
 def fake_decoder(monkeypatch, data, code=0):
@@ -281,7 +322,8 @@ def test_plan_combines_the_steps(monkeypatch):
     )
     result = auto_layout.plan("source.mp4", 0, 2, [(0.0, 1.0)])
     assert result["crop"]["anchor"] == "right"
-    assert result["positions"] == ["bottom"]
+    # Every row is equally busy in the window, so no band stands out.
+    assert result["lifts"] == [pytest.approx(captions.FILL_BOTTOM_SHARE)]
     assert result["frames"] == 4
     assert result["seconds"] >= 0
 
@@ -319,9 +361,9 @@ def test_caption_density_excludes_source_chat_columns():
         "keep": 1.0,
         "overlay": {"side": "right", "start": 0.75, "end": 1.0},
     }
-    assert auto_layout.caption_positions(
-        [0, 0.5, 1, 1.5], frames, [(0, 1)], crop, floor=0
-    ) == ["bottom"]
+    assert auto_layout.caption_lifts([0, 0.5, 1, 1.5], frames, [(0, 1)], crop) == [
+        captions.FILL_BOTTOM_SHARE
+    ]
 
 
 def test_streamed_statistics_match_single_batch():
@@ -332,8 +374,25 @@ def test_streamed_statistics_match_single_batch():
     )
     assert streamed.count == 10
     assert auto_layout.choose_crop(streamed) == auto_layout.choose_crop(frames)
-    assert auto_layout.caption_positions(
-        times, streamed, [(0, 1), (3, 4)], auto_layout.choose_crop(streamed)
-    ) == auto_layout.caption_positions(
-        times, frames, [(0, 1), (3, 4)], auto_layout.choose_crop(frames)
-    )
+    crop = auto_layout.choose_crop(streamed)
+    events = [(0, 1), (3, 4)]
+    blocks = ((times[i : i + 3], frames[i : i + 3]) for i in range(0, 10, 3))
+    assert auto_layout._stream_lifts(
+        streamed, blocks, events, crop
+    ) == auto_layout.caption_lifts(times, frames, events, crop)
+
+
+def test_streamed_persistent_lifts_match_moving_scene_and_reject_changed_decode():
+    rng = np.random.default_rng(101)
+    frames = rng.integers(80, 150, size=(80, HEIGHT, WIDTH), dtype=np.uint8)
+    frames[:, 145:, :160] = texture(35, 160, seed=4)
+    times = [i / 2 for i in range(len(frames))]
+    stats = auto_layout.frame_statistics((times, frames))
+    crop = {"x": 0.0, "keep": 1.0}
+    events = [(0, 1), (10, 12), (35, 38), (50, 51)]
+    blocks = ((times[i : i + 7], frames[i : i + 7]) for i in range(0, len(frames), 7))
+    assert auto_layout._stream_lifts(
+        stats, blocks, events, crop
+    ) == auto_layout.caption_lifts(times, frames, events, crop)
+    with pytest.raises(PipelineError, match="changed"):
+        auto_layout._stream_lifts(stats, [(times[:-1], frames[:-1])], events, crop)

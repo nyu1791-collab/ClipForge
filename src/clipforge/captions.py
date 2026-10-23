@@ -86,6 +86,9 @@ MIN_EVENT_MS = 100
 TARGET_CAPTION_CPS = 10
 MAX_CAPTION_CPS = 15
 OUTLINE_ALLOWANCE = CAPTION_OUTLINE_ALLOWANCE
+# Bottom margin of a caption, as a share of the height. With fit fill auto_layout may lift a
+# caption above a busy band; the base is what it returns when nothing needs room.
+FILL_BOTTOM_SHARE = 0.12
 # Horizontal (landscape) line length and reading speed are defined only in Settings
 # (horizontal_line_chars, horizontal_target_cps); this module reads them from the settings.
 # A pause this long ends a caption. Shorter captions are joined to a neighbour across
@@ -479,20 +482,19 @@ def event_spans(transcript, clip, settings, keep=None):
     return [(start / 1000, end / 1000) for start, end in spans]
 
 
-def _top_flags(positions, count):
-    """True for each caption placed at the top; any list not matching the captions is bottom."""
-    if positions is None or len(positions) != count:
-        return [False] * count
-    return [position == "top" for position in positions]
+def _lift_margins(lifts, count, height):
+    """MarginV in pixels for each caption; a list that does not match the captions gives the base."""
+    if lifts is None or len(lifts) != count:
+        lifts = [FILL_BOTTOM_SHARE] * count
+    return [round(lift * height) for lift in lifts]
 
 
-def create(
-    transcript, clip, directory, settings, keep=None, credits=None, positions=None
-):
+def create(transcript, clip, directory, settings, keep=None, credits=None, lifts=None):
     """Write captions.ass and captions.srt.
 
-    positions gives "top" or "bottom" for each caption in order. It is used only with the chat
-    panel's fill fit, and then only when its length matches the captions.
+    lifts gives the bottom margin of each caption as a share of the height, in order. It is used
+    only with the chat panel's fill fit, where every caption is bottom centre (alignment 2); a
+    list that does not match the captions gives every caption the base margin.
     """
     height = settings.height
     margin = margin_px(height)
@@ -529,7 +531,7 @@ def create(
         alignment=pysubs2.Alignment.BOTTOM_CENTER,
         marginl=margin,
         marginr=margin_right,
-        marginv=round(height * 0.12),
+        marginv=round(height * FILL_BOTTOM_SHARE),
     )
     if band:
         # Two lines centred in the caption band below the picture.
@@ -601,19 +603,17 @@ def create(
         transcript, clip, settings, keep, measure, line_px, landscape
     )
     style = "Sequential" if settings.caption == "sequential" else "Default"
-    on_top = _top_flags(positions, len(groups)) if fill else [False] * len(groups)
-    # Top captions sit under the heading when one is shown, as the top visuals do.
-    top_margin = round(height * (0.14 if heading_text else 0.04))
-    for items, (start, end), top in zip(groups, spans, on_top):
+    margins = _lift_margins(lifts, len(groups), height) if fill else [0] * len(groups)
+    for items, (start, end), margin in zip(groups, spans, margins):
         text = group_text(items, measure, line_px, settings.caption)
-        if top:
-            # Alignment 8 is top centre; the event's own margin places it below the top edge.
+        if fill:
+            # Bottom centre (\an2); the event's own MarginV sets how high the caption sits.
             event = pysubs2.SSAEvent(
                 start=start,
                 end=end,
                 style=style,
-                text=r"{\an8}" + text,
-                marginv=top_margin,
+                text=r"{\an2}" + text,
+                marginv=margin,
             )
         else:
             event = pysubs2.SSAEvent(start=start, end=end, style=style, text=text)

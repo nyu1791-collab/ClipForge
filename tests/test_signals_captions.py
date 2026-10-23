@@ -710,18 +710,19 @@ def _fill_settings(settings, **updates):
     )
 
 
-def test_fill_captions_over_the_picture_and_the_top_ones_are_placed_by_position(
+def test_fill_captions_sit_bottom_centre_at_their_lifts(
     tmp_path, settings, japanese_font
 ):
     transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
     fill = _fill_settings(settings)
     assert fill.chat_panel_fit == "fill"
-    captions.create(transcript, clip, tmp_path, fill, positions=["top", "bottom"])
+    captions.create(transcript, clip, tmp_path, fill, lifts=[0.2, 0.12])
     subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
-    top, bottom = [event for event in subtitles if event.style == "Default"]
-    # Top captions use alignment 8 and their own margin; bottom captions keep the style's.
-    assert top.text.startswith(r"{\an8}") and top.marginv == round(1080 * 0.04)
-    assert r"\an8" not in bottom.text and bottom.marginv == 0
+    lifted, base = [event for event in subtitles if event.style == "Default"]
+    # Every fill caption is bottom centre; its own MarginV is its lift in pixels.
+    assert lifted.text.startswith(r"{\an2}") and lifted.marginv == round(1080 * 0.2)
+    assert base.text.startswith(r"{\an2}") and base.marginv == round(1080 * 0.12)
+    assert r"\an8" not in lifted.text + base.text
     style = subtitles.styles["Default"]
     assert style.fontsize == 72 and style.alignment == pysubs2.Alignment.BOTTOM_CENTER
     assert style.marginv == round(1080 * 0.12)
@@ -730,41 +731,40 @@ def test_fill_captions_over_the_picture_and_the_top_ones_are_placed_by_position(
     assert style.outline == 3.5
 
 
-def test_fill_captions_stay_at_the_bottom_without_matching_positions(
+def test_fill_captions_take_the_base_margin_without_matching_lifts(
     tmp_path, settings, japanese_font
 ):
     transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
     fill = _fill_settings(settings)
-    # No list, or one that does not give a position to every caption: all at the bottom.
-    for positions in (None, ["top"], ["top", "bottom", "top"]):
-        captions.create(transcript, clip, tmp_path, fill, positions=positions)
+    # No list, or one that does not give a lift to every caption: all at the base margin.
+    for lifts in (None, [0.2], [0.2, 0.3, 0.1]):
+        captions.create(transcript, clip, tmp_path, fill, lifts=lifts)
         subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
-        texts = [e.text for e in subtitles if e.style == "Default"]
-        assert len(texts) == 2 and all(r"\an8" not in text for text in texts)
-    # Only the word "top" moves a caption; any other word keeps it at the bottom.
-    captions.create(transcript, clip, tmp_path, fill, positions=["top", "middle"])
-    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
-    first, second = [e.text for e in subtitles if e.style == "Default"]
-    assert r"\an8" in first and r"\an8" not in second
+        events = [e for e in subtitles if e.style == "Default"]
+        assert len(events) == 2
+        assert all(e.marginv == round(1080 * 0.12) for e in events)
+        assert all(e.text.startswith(r"{\an2}") for e in events)
 
 
-def test_fill_top_captions_sit_below_a_heading(tmp_path, settings, japanese_font):
+def test_fill_heading_leaves_the_caption_margins_alone(
+    tmp_path, settings, japanese_font
+):
     transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
     fill = _fill_settings(settings, heading=True)
-    captions.create(transcript, clip, tmp_path, fill, positions=["top", "top"])
+    captions.create(transcript, clip, tmp_path, fill, lifts=[0.2, 0.2])
     subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
     texts = [e for e in subtitles if e.style == "Default"]
-    # The heading occupies the top 6 percent; top captions start at 14 percent, as visuals do.
-    assert all(e.marginv == round(1080 * 0.14) for e in texts)
+    assert all(e.marginv == round(1080 * 0.2) for e in texts)
     assert subtitles.styles["Heading"].alignment == pysubs2.Alignment.TOP_CENTER
 
 
-def test_top_fit_ignores_caption_positions(tmp_path, settings, japanese_font):
+def test_top_fit_ignores_caption_lifts(tmp_path, settings, japanese_font):
     transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
     top = _fill_settings(settings, chat_panel_fit="top")
-    captions.create(transcript, clip, tmp_path, top, positions=["top", "top"])
+    captions.create(transcript, clip, tmp_path, top, lifts=[0.2, 0.2])
     subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
-    assert all(r"\an8" not in e.text for e in subtitles if e.style == "Default")
+    events = [e for e in subtitles if e.style == "Default"]
+    assert all(r"\an2" not in e.text and e.marginv == 0 for e in events)
 
 
 def test_event_spans_are_the_times_create_writes(tmp_path, settings, japanese_font):
