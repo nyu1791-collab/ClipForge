@@ -16,7 +16,7 @@ sudo systemctl start warp-svc
 timeout 20 warp-cli --accept-tos registration new
 timeout 20 warp-cli --accept-tos mode warp+doh
 # Roll back even if the new network interrupts the runner control connection.
-sudo systemd-run --unit=clipforge-warp-rollback --on-active=240s /usr/bin/warp-cli --accept-tos disconnect
+sudo systemd-run --unit=clipforge-warp-rollback --on-active=1200s /usr/bin/warp-cli --accept-tos disconnect
 timeout 20 warp-cli --accept-tos connect
 python3 - <<'PY'
 from datetime import datetime, timezone

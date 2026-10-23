@@ -446,7 +446,7 @@ jobs:
   url-probe:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
     env:
@@ -518,6 +518,26 @@ jobs:
           done
           test "$ready" = true
           uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
+      - name: Verify actual audio acquisition through WARP without allocating a GPU
+        id: audio_probe
+        if: steps.warp.outcome == 'success'
+        timeout-minutes: 15
+        run: |
+          if ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          uv run --no-sync python tools/probe_youtube_audio.py --url "$AUDIO_URL" --directory "$RUNNER_TEMP/clipforge-audio-probe"
+      - name: Keep verified audio privately for subsequent ASR
+        if: steps.audio_probe.outputs.audio_acquired == 'true'
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipforge-verified-audio-${{ inputs.request_id }}
+          path: ${{ runner.temp }}/clipforge-audio-probe/audio.m4a
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: warn
       - name: Disconnect WARP and remove the temporary Docker provider
         timeout-minutes: 1
         if: always()

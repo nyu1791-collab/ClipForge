@@ -26,6 +26,11 @@ def main(argv=None):
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--require-video", action="store_true")
     parser.add_argument("--cookies-file", type=Path)
+    parser.add_argument(
+        "--youtube-web-clients",
+        action="store_true",
+        help="Use web/mweb with explicit PO Token requests; requires an external provider",
+    )
     args = parser.parse_args(argv)
     canonical(args.url)
     if args.require_video and audio_only_url(args.url):
@@ -65,6 +70,7 @@ def main(argv=None):
             root / "segments",
             kick_factory=KickVOD,
             **({"cookies_file": args.cookies_file} if args.cookies_file else {}),
+            **({"youtube_web_clients": True} if args.youtube_web_clients else {}),
             max_bytes=settings.max_transport_bytes,
             max_seconds=settings.max_source_seconds,
         )

@@ -366,3 +366,26 @@ def test_original_yt_dlp_failure_identifies_the_stage_without_a_second_attempt(
     finally:
         source.close()
     assert calls == [False]
+
+
+def test_youtube_web_profile_requests_po_tokens_only_when_enabled(tmp_path):
+    default = sources.RemoteMedia("https://youtu.be/abcdefghijk", tmp_path / "default")
+    web = sources.RemoteMedia(
+        "https://youtu.be/abcdefghijk", tmp_path / "web", youtube_web_clients=True
+    )
+    try:
+        assert "extractor_args" not in default._options(True, "lowest")
+        assert web._options(True, "lowest")["extractor_args"]["youtube"] == {
+            "player_client": ["web", "mweb"],
+            "fetch_pot": ["always"],
+            "webpage_skip": ["player_response"],
+        }
+        with pytest.raises(PipelineError, match="requires a YouTube source"):
+            sources.RemoteMedia(
+                "https://example.com/file.mp3",
+                tmp_path / "direct",
+                youtube_web_clients=True,
+            )
+    finally:
+        default.close()
+        web.close()

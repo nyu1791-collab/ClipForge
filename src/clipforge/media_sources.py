@@ -135,8 +135,12 @@ class RemoteMedia:
         max_seconds=43200,
         workers=1,
         cookies_file=None,
+        youtube_web_clients=False,
     ):
         self.url = canonical(url)
+        self._youtube_web_clients = youtube_web_clients
+        if youtube_web_clients and source_kind(url) != "youtube":
+            raise PipelineError("web client profile requires a YouTube source")
         if (
             type(max_bytes) is not int
             or not 1024 <= max_bytes <= 16 * 1024**3
@@ -196,6 +200,14 @@ class RemoteMedia:
             "js_runtimes": {"node": {}},
         }
 
+        if self._youtube_web_clients:
+            options["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["web", "mweb"],
+                    "fetch_pot": ["always"],
+                    "webpage_skip": ["player_response"],
+                }
+            }
         if self._cookiefile:
             options["cookiefile"] = self._cookiefile
         return options
