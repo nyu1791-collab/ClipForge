@@ -346,3 +346,13 @@ def test_frame_budget_applies_only_to_gemini_selection(settings):
     assert Settings.model_validate({**base, "gemini_model": "manual-no-api"})
     with pytest.raises(ValueError, match="frame budget"):
         Settings.model_validate({**base, "gemini_model": "gemini-3.8-flash"})
+
+
+def test_review_preview_config_renders_small_and_fast():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "config.landscape-long-preview.example.json"
+    )
+    preview = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert preview.height == 360 and preview.encode_preset == "veryfast"
+    assert preview.chat_panel is False and preview.caption_scale == 1.6

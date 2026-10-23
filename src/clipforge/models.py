@@ -185,7 +185,7 @@ class Settings(Record):
     framing: Literal["fit", "center-crop"] = "fit"
     # Frame height in pixels. Unset means the standard size for the aspect: 1920 for 9:16
     # (1080x1920, the size phones show at full sharpness), otherwise 1080.
-    height: Literal[720, 1080, 1920] | None = None
+    height: Literal[360, 720, 1080, 1920] | None = None
     # x264 speed preset. On a 40 s clip with CRF 18, slow matched medium's time and gained
     # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
