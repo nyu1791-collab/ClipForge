@@ -255,9 +255,26 @@ def test_band_top_searches_only_the_bottom_share():
     assert auto_layout._band_top(busy, 0.5, 3) == 10
 
 
-def test_runs_of_captions_take_the_largest_value():
+def test_adjacent_captions_take_the_higher_lift():
     events = [(0.0, 1.0), (1.5, 2.5), (4.5, 5.5)]
-    assert auto_layout._shared_max(events, [0.2, 0.12, 0.12]) == [0.2, 0.2, 0.12]
+    assert auto_layout._neighbour_max(events, [0.2, 0.12, 0.12]) == [0.2, 0.2, 0.12]
+
+
+def test_a_chain_does_not_spread_past_the_neighbour():
+    events = [(0.0, 1.0), (2.0, 3.0), (4.0, 5.0)]
+    assert auto_layout._neighbour_max(events, [0.1, 0.2, 0.3]) == [0.2, 0.3, 0.3]
+
+
+def test_a_gap_of_group_gap_or_more_is_not_linked():
+    events = [(0.0, 1.0), (3.0, 4.0)]
+    assert auto_layout._neighbour_max(events, [0.1, 0.3]) == [0.1, 0.3]
+    events = [(0.0, 1.0), (2.5, 3.0)]
+    assert auto_layout._neighbour_max(events, [0.1, 0.3]) == [0.3, 0.3]
+
+
+def test_neighbours_are_found_in_start_order_not_list_order():
+    events = [(4.5, 5.5), (0.0, 1.0), (1.5, 2.5)]
+    assert auto_layout._neighbour_max(events, [0.12, 0.2, 0.12]) == [0.12, 0.2, 0.2]
 
 
 def fake_decoder(monkeypatch, data, code=0):

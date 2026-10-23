@@ -755,7 +755,7 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
         "ass": "[Script Info]\n",
         "messages": 0,
         "reason": "chat_unavailable",
-        "error": "PipelineError",
+        "error": "chat service refused",
     }
 
 
@@ -763,6 +763,31 @@ def test_crop_anchors_default_to_auto_and_refuse_other_words():
     assert af.crop_anchors({"clips": [{}, {"crop_anchor": "left"}]}) == ["auto", "left"]
     with pytest.raises(PipelineError, match="crop_anchor must be"):
         af.crop_anchors({"clips": [{"crop_anchor": "centre"}]})
+
+
+def test_chat_failure_is_recorded_and_a_bug_is_not_hidden(audio_job, monkeypatch):
+    from types import SimpleNamespace
+
+    vod, _, settings, _, _ = audio_job
+    clip = SimpleNamespace(start=120, end=175)
+
+    def refused(slug, uuid, start, end, **options):
+        raise PipelineError("chat service refused")
+
+    fake_kick_chat(monkeypatch, refused)
+    chat = af.chat_panel_for_clip(vod, clip, chat_settings(settings))
+    assert (chat["messages"], chat["reason"], chat["error"]) == (
+        0,
+        "chat_unavailable",
+        "chat service refused",
+    )
+
+    def broken(slug, uuid, start, end, **options):
+        raise TypeError("bug in the chat reader")
+
+    fake_kick_chat(monkeypatch, broken)
+    with pytest.raises(TypeError, match="bug in the chat reader"):
+        af.chat_panel_for_clip(vod, clip, chat_settings(settings))
 
 
 def test_chat_panel_clip_passes_its_reviewed_crop_side(audio_job, monkeypatch):
@@ -791,6 +816,43 @@ def test_chat_panel_clip_passes_its_reviewed_crop_side(audio_job, monkeypatch):
     monkeypatch.setattr(pipeline, "render_clip", render)
     af.render(vod, root, chat_settings(settings), review, only=2)
     assert anchors == [(2, "right")]
+
+
+def test_a_rendered_clip_is_not_read_for_chat_again(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    fetched = []
+
+    def fetch(slug, uuid, start, end, **options):
+        fetched.append((start, end))
+        return []
+
+    fake_kick_chat(monkeypatch, fetch)
+    folder = root / "delivery" / "clips" / "clip-002"
+    folder.mkdir(parents=True)
+    write_json(
+        folder / "render.json", {"render_inputs": {"chat": None, "layout": None}}
+    )
+    rendered = []
+
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
+        rendered.append((index, chat, crop_anchor))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, chat_settings(settings), review, only=2)
+    assert fetched == []
+    assert rendered == [(2, None, "auto")]
 
 
 def test_render_refuses_an_unknown_crop_side_before_any_fetch(audio_job, monkeypatch):

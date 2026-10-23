@@ -391,8 +391,8 @@ def chat_panel_for_clip(vod, clip, settings):
     messages, reason, error = [], None, None
     try:
         messages = kick_chat.fetch_messages(slug, uuid, clip.start, clip.end)
-    except Exception as failure:
-        reason, error = "chat_unavailable", type(failure).__name__
+    except PipelineError as failure:
+        reason, error = "chat_unavailable", str(failure)[:200]
     width, height = media.frame_size(settings)
     ass = kick_chat.panel_ass(
         messages,
@@ -501,10 +501,13 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
             # Chat is timed on the clip's original interval, not the shifted local one.
             chat_options = {}
             if settings.chat_panel:
-                chat_options["chat"] = pipeline.timed(
-                    clip_timings, "chat", chat_panel_for_clip, vod, clip, settings
-                )
                 chat_options["crop_anchor"] = anchors[index - 1]
+                # A clip already rendered with its inputs saved reuses its stored chat, so the chat
+                # is not read again.
+                if pipeline.saved_render_inputs(output / "clips", index) is None:
+                    chat_options["chat"] = pipeline.timed(
+                        clip_timings, "chat", chat_panel_for_clip, vod, clip, settings
+                    )
             if floors[index - 1] is not None:
                 chat_options["caption_floor"] = floors[index - 1]
             row = pipeline.timed(

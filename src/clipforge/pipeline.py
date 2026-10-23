@@ -155,11 +155,7 @@ REQUIRED_FILES = {
     "ledger.json",
     "quality.json",
 }
-OPTIONAL_FILES = {
-    "thumbnail.png",
-    "chat.ass",
-    "layout.json",
-}  # chat.ass only with the chat panel
+OPTIONAL_FILES = {"thumbnail.png", "chat.ass"}  # chat.ass only with the chat panel
 VISUAL_DIR = "visuals"
 SUPPLIED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REPOSITORY_URL = "https://github.com/nyu1791-collab/ClipForge"
@@ -396,7 +392,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "static": plan.get("bands") if enabled else None,
             "reason": None if enabled else "disabled",
         }
-    except Exception as failure:
+    except PipelineError as failure:
         fixed = crop_anchor != "auto"
         return {
             "anchor": crop_anchor if fixed else "center",
@@ -404,34 +400,8 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
             "x": _crop_fractions(keep)[crop_anchor] if fixed else None,
             "lifts": None,
             "static": None,
-            "reason": type(failure).__name__,
+            "reason": str(failure)[:200],
         }
-
-
-def _saved_layout(target, input_key):
-    """A layout is reusable only when its receipt hash and all planning inputs match."""
-    path, receipt = target / "layout.json", target / "render.json"
-    if not path.exists():
-        return None
-    if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024**2:
-        raise PipelineError("invalid saved layout")
-    saved, value = json.loads(receipt.read_text()), json.loads(path.read_text())
-    if (
-        value.get("schema") != 1
-        or value.get("input_key") != input_key
-        or saved.get("sha256", {}).get("layout.json") != digest(path)
-    ):
-        raise PipelineError("saved layout differs from the render inputs or receipt")
-    plan = value.get("plan")
-    if not isinstance(plan, dict) or not {
-        "x",
-        "lifts",
-        "requested",
-        "anchor",
-        "reason",
-    } <= set(plan):
-        raise PipelineError("invalid saved layout plan")
-    return plan
 
 
 def _source_time(moment, clip, keep):
@@ -492,8 +462,8 @@ def standard_layout(source, clip, transcript, settings, keep):
             "static": plan["bands"],
             "reason": None,
         }
-    except Exception as failure:
-        return {**base, "reason": type(failure).__name__}
+    except PipelineError as failure:
+        return {**base, "reason": str(failure)[:200]}
 
 
 def _with_floor(layout, count, floor):
@@ -538,6 +508,98 @@ def landscape_layout(
     return _with_floor(layout, count, caption_floor)
 
 
+def _chat_inputs(chat):
+    """What a chat-panel render depends on: the fingerprint of its ASS file and the chat reason."""
+    return {"ass_sha256": fingerprint(chat["ass"]), "reason": chat["reason"]}
+
+
+def _layout_inputs(layout):
+    """What a caption-layout render depends on; None when the render has no layout."""
+    if layout is None:
+        return None
+    return {
+        "x": layout["x"],
+        "lifts": layout["lifts"],
+        "requested": layout["requested"],
+        **({"floor": layout["floor"]} if layout.get("floor") is not None else {}),
+    }
+
+
+def _render_key(key, clip, transcript, chat_inputs, layout_inputs):
+    """The key of one clip render. Chat and layout join it only when the render has them, so a
+    render without either keeps the key it had before they were added.
+    """
+    parts = {
+        "job": key,
+        "clip": clip.model_dump(),
+        "transcript": transcript.model_dump(),
+    }
+    if chat_inputs is not None:
+        # The field keeps the name "ass" that earlier receipts were keyed by.
+        parts["chat"] = {
+            "ass": chat_inputs["ass_sha256"],
+            "reason": chat_inputs["reason"],
+        }
+    if layout_inputs is not None:
+        parts["layout"] = layout_inputs
+    return fingerprint(parts)
+
+
+def _stored_inputs(saved):
+    """The render inputs a receipt was keyed by; None for a receipt written without them."""
+    inputs = saved.get("render_inputs") if isinstance(saved, dict) else None
+    if isinstance(inputs, dict) and {"chat", "layout"} <= inputs.keys():
+        return inputs
+    return None
+
+
+def saved_render_inputs(root, index):
+    """The render inputs of clip index under root, or None when it has no receipt with them."""
+    receipt = root / f"clip-{index:03}" / "render.json"
+    if not receipt.is_file():
+        return None
+    return _stored_inputs(json.loads(receipt.read_text()))
+
+
+def _has_layout(settings, caption_floor):
+    """Whether a render with these settings gets a caption layout; landscape_layout's rule, without
+    the analysis.
+    """
+    if settings.aspect != "16:9":
+        return False
+    if settings.chat_panel:
+        return settings.chat_panel_fit == "fill"
+    return settings.caption_lift or caption_floor is not None
+
+
+def _same_layout_arguments(saved_layout, settings, crop_anchor, caption_floor):
+    """Whether this call lays a clip out as the stored render was laid out.
+
+    saved_layout is the stored layout inputs, or None for a render without a layout. A call that
+    would lay the clip out differently is refused rather than answered with the stored clip.
+    """
+    if saved_layout is None:
+        # The chat crop side only matters with the chat fill, which has a layout.
+        return not (
+            _has_layout(settings, caption_floor)
+            or (settings.chat_panel and crop_anchor != "auto")
+        )
+    # Standard layouts always record "auto" as the requested side.
+    requested = crop_anchor if settings.chat_panel else "auto"
+    return (
+        _has_layout(settings, caption_floor)
+        and saved_layout.get("requested") == requested
+        and saved_layout.get("floor") == caption_floor
+    )
+
+
+def _existing_clip(target, name, saved, render_key):
+    """The stored result of a rendered clip; refused when its receipt or files no longer match."""
+    if not valid_receipt(target, saved, render_key):
+        raise PipelineError("existing clip differs from the saved render receipt")
+    return {"directory": "clips/" + name, **saved}
+
+
 def render_clip(
     source,
     root,
@@ -553,12 +615,12 @@ def render_clip(
     """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel.
 
     caption_floor is a reviewed share of the height (0 to MAX_CAPTION_FLOOR) that every caption's
-    lift is raised to; it applies to 16:9 renders only.
+    lift is raised to; it applies to 16:9 renders only. A clip rendered before with its inputs
+    saved in render.json is returned as stored: its chat and layout are not fetched or planned
+    again, so chat may be None for it.
     """
     name = f"clip-{index:03}"
     target = root / name
-    if settings.chat_panel and chat is None:
-        raise PipelineError("chat panel needs a Kick VOD URL source")
     if crop_anchor not in CROP_ANCHORS:
         raise PipelineError("crop_anchor must be auto, left, center or right")
     if caption_floor is not None and (
@@ -566,69 +628,57 @@ def render_clip(
         or not 0 <= caption_floor <= MAX_CAPTION_FLOOR
     ):
         raise PipelineError("caption_floor must be from 0 to 0.32")
-    timings = {}
-    keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
-    # Bind both chat and standard landscape analysis to all planning inputs before reuse.
-    layout_input_key = fingerprint(
-        {
-            "version": 4,
-            "job": key,
-            "clip": clip.model_dump(),
-            "transcript": transcript.model_dump(),
-            "settings": settings.model_dump(mode="json"),
-            "crop_anchor": crop_anchor,
-            "caption_floor": caption_floor,
-        }
-    )
-    layout = _saved_layout(target, layout_input_key) if target.is_dir() else None
-    if layout is None:
-        layout = landscape_layout(
-            source, clip, transcript, settings, keep, crop_anchor, caption_floor
-        )
-    render_key = fingerprint(
-        {
-            "job": key,
-            "clip": clip.model_dump(),
-            "transcript": transcript.model_dump(),
-            # Only chat-panel renders depend on chat; other keys stay as they were.
-            **(
-                {"chat": {"ass": fingerprint(chat["ass"]), "reason": chat["reason"]}}
-                if settings.chat_panel
-                else {}
-            ),
-            **(
-                {
-                    "layout": {
-                        "x": layout["x"],
-                        "lifts": layout["lifts"],
-                        "requested": layout["requested"],
-                        **(
-                            {"floor": layout["floor"]}
-                            if layout.get("floor") is not None
-                            else {}
-                        ),
-                    }
-                }
-                if layout
-                else {}
-            ),
-        }
-    )
-    receipt = target / "render.json"
+    existing = None
     if target.exists():
+        receipt = target / "render.json"
         if not receipt.is_file():
             raise PipelineError("existing clip has no verified render receipt")
-        saved = json.loads(receipt.read_text())
-        if not valid_receipt(target, saved, render_key):
-            raise PipelineError("existing clip differs from the saved render receipt")
-        return {"directory": "clips/" + name, **saved}
+        existing = json.loads(receipt.read_text())
+        inputs = _stored_inputs(existing)
+        if inputs is not None:
+            if not _same_layout_arguments(
+                inputs["layout"], settings, crop_anchor, caption_floor
+            ):
+                raise PipelineError(
+                    "existing clip differs from the saved render receipt"
+                )
+            return _existing_clip(
+                target,
+                name,
+                existing,
+                _render_key(
+                    key,
+                    clip,
+                    transcript,
+                    inputs["chat"],
+                    inputs["layout"],
+                ),
+            )
+        # A receipt without saved inputs is reused when its key has neither chat nor layout.
+        if valid_receipt(
+            target, existing, _render_key(key, clip, transcript, None, None)
+        ):
+            if not _same_layout_arguments(None, settings, crop_anchor, caption_floor):
+                raise PipelineError(
+                    "existing clip differs from the saved render receipt"
+                )
+            return {"directory": "clips/" + name, **existing}
+    if settings.chat_panel and chat is None:
+        raise PipelineError("chat panel needs a Kick VOD URL source")
+    timings = {}
+    keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
+    # The layout (chat crop and lifts, or caption lifts) is planned before the render key, so a
+    # different plan is a different render.
+    layout = landscape_layout(
+        source, clip, transcript, settings, keep, crop_anchor, caption_floor
+    )
+    chat_inputs = _chat_inputs(chat) if settings.chat_panel else None
+    layout_inputs = _layout_inputs(layout)
+    render_key = _render_key(key, clip, transcript, chat_inputs, layout_inputs)
+    if existing is not None:
+        return _existing_clip(target, name, existing, render_key)
     with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
         directory = Path(temporary)
-        if layout is not None:
-            write_json(
-                directory / "layout.json",
-                {"schema": 1, "input_key": layout_input_key, "plan": layout},
-            )
         if settings.chat_panel:
             # Written beside the MP4 under the fixed name the render graph uses.
             (directory / "chat.ass").write_text(chat["ass"], encoding="utf-8")
@@ -714,6 +764,8 @@ def render_clip(
             "keep": keep,
             "ledger": ledger,
             "sha256": {n: digest(directory / n) for n in names},
+            # The inputs the key was built from; a rerun rebuilds the key from them.
+            "render_inputs": {"chat": chat_inputs, "layout": layout_inputs},
             # Seconds per stage; not part of the render key or the hashed files.
             "timings": timings,
         }
