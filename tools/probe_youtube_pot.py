@@ -147,6 +147,7 @@ def main():
             "provider_version": version("bgutil-ytdlp-pot-provider"),
             "server_version": health.get("version"),
             "server_ping_ok": True,
+            "server_uptime_at_group_start": health.get("server_uptime"),
             "cookies_used": False,
             "media_downloaded": False,
             "gpu_allocated": False,

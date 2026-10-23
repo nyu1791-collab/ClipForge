@@ -508,7 +508,16 @@ jobs:
       - name: Probe Docker provider with web,mweb through verified WARP
         if: steps.warp.outcome == 'success'
         timeout-minutes: 6
-        run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
+        run: |
+          # Tokens may depend on the egress IP: drop all pre-WARP server caches.
+          docker restart clipforge-bgutil >/dev/null
+          ready=false
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:4416/ping >/dev/null; then ready=true; break; fi
+            sleep 1
+          done
+          test "$ready" = true
+          uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
       - name: Disconnect WARP and remove the temporary Docker provider
         timeout-minutes: 1
         if: always()
