@@ -31,6 +31,7 @@ SETTINGS_FIELDS = {
     "whisper_revision",
     "asr_batch_size",
     "asr_parts",
+    "asr_split_search_seconds",
     "youtube_audio_transport",
     "language",
     "threads",
