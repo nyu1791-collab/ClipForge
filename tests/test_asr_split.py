@@ -540,6 +540,34 @@ def test_split_cuts_at_longest_silence_inside_the_search_window(tmp_path, monkey
     assert split["elapsed_seconds"] >= 0
 
 
+def test_split_scales_pcm_in_place_to_the_same_float_samples(tmp_path, monkeypatch):
+    import numpy as np
+
+    source = tmp_path / "pcm.wav"
+    values = np.random.default_rng(7).integers(
+        -32768, 32768, size=40 * SPEECH_RATE, dtype="<i2"
+    )
+    with wave.open(str(source), "wb") as handle:
+        handle.setparams((1, 2, SPEECH_RATE, 0, "NONE", "not compressed"))
+        handle.writeframes(values.tobytes())
+    captured = []
+
+    def get_speech_timestamps(audio, vad_options=None, sampling_rate=16000, **kwargs):
+        captured.append(audio.copy())
+        return []
+
+    monkeypatch.setattr(
+        faster_whisper.vad, "get_speech_timestamps", get_speech_timestamps
+    )
+    with wave.open(str(source), "rb") as handle:
+        asr_split.choose_boundary(handle, SPEECH_RATE, handle.getnframes(), 0, 1800)
+    # Window is 10 s to 30 s, the same as the scaled PCM read from the file.
+    expected = values[10 * SPEECH_RATE : 30 * SPEECH_RATE].astype(np.float32) / 32768.0
+    assert captured[0].dtype == np.float32
+    assert np.array_equal(captured[0], expected)
+    assert captured[0].min() == -1.0
+
+
 def test_split_ignores_long_silence_outside_the_search_window(tmp_path, monkeypatch):
     # With 3 s of search, the window is 17 s to 23 s; the 8 s silence before it is out of reach.
     fake_vad(monkeypatch, [(5, 6), (14, 14.5), (17, 17.5), (18.5, 19)], origin=17)

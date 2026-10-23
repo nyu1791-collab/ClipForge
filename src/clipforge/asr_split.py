@@ -83,7 +83,9 @@ def choose_boundary(handle, rate, frames, offset, search_seconds):
         return finish("middle", "vad_unavailable", middle)
     handle.setpos(lo)
     pcm = handle.readframes(hi - lo)
-    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
+    samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32)
+    del pcm
+    samples *= 1 / 32768.0
     try:
         spans = vad.get_speech_timestamps(samples, vad.VadOptions(), sampling_rate=rate)
     except Exception:
