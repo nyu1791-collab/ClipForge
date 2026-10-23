@@ -39,6 +39,13 @@ def vod(tmp_path, monkeypatch):
         def get(self, url, **kwargs):
             assert kwargs["allow_redirects"] is False
             calls.append(url)
+            if url not in data:
+                return SimpleNamespace(
+                    status_code=404,
+                    headers={},
+                    iter_content=lambda: [],
+                    close=lambda: None,
+                )
             body = data[url]
             body = body.encode() if isinstance(body, str) else body
             return SimpleNamespace(
@@ -313,3 +320,134 @@ def test_audio_retrieval_uses_pyav_without_cli(tmp_path, monkeypatch, start, end
             end - start, abs=0.15
         )
         assert max(float(np.abs(frame.to_ndarray()).max()) for frame in frames) > 0.01
+
+
+API = "https://kick.com/api/v1/video/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
+NO_VIDEO_METADATA = "<html><body>no embedded video metadata</body></html>"
+MASTER_TEXT = (
+    "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000,RESOLUTION=1920x1080\n1080.m3u8\n"
+)
+
+
+def api_payload(slug="example", source=MASTER):
+    return {
+        "source": source,
+        "livestream": {
+            "session_title": "Sample stream",
+            "start_time": "2026-10-22T01:21:15+00:00",
+            "duration": 17749000,
+            "channel": {"slug": slug},
+        },
+    }
+
+
+def json_ld(url=URL):
+    return (
+        '<script type="application/ld+json">'
+        + json.dumps({"@type": "VideoObject", "url": url, "contentUrl": MASTER})
+        + "</script>"
+    )
+
+
+@pytest.fixture
+def fake_kick(monkeypatch):
+    data, calls = {MASTER: MASTER_TEXT}, []
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, **kwargs):
+            assert kwargs["allow_redirects"] is False
+            calls.append(url)
+            if url not in data:
+                return SimpleNamespace(
+                    status_code=404,
+                    headers={},
+                    iter_content=lambda: [],
+                    close=lambda: None,
+                )
+            body = data[url]
+            body = body.encode() if isinstance(body, str) else body
+            return SimpleNamespace(
+                status_code=200, iter_content=lambda: [body], close=lambda: None
+            )
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "curl_cffi",
+        SimpleNamespace(requests=SimpleNamespace(Session=Session)),
+    )
+    return data, calls
+
+
+def test_api_identifies_vod_without_page_metadata(tmp_path, fake_kick):
+    data, calls = fake_kick
+    data[URL] = NO_VIDEO_METADATA
+    data[API] = json.dumps(api_payload())
+    value = km.KickVOD(URL, tmp_path / "cache")
+    try:
+        assert value.master == MASTER
+        assert value.metadata == {
+            "name": "Sample stream",
+            "duration": 17749.0,
+            "uploadDate": "2026-10-22T01:21:15+00:00",
+        }
+        assert calls[0] == API
+    finally:
+        value.close()
+
+
+def test_page_metadata_is_used_when_api_fails(tmp_path, fake_kick):
+    data, calls = fake_kick
+    data[URL] = json_ld()
+    value = km.KickVOD(URL, tmp_path / "cache")
+    try:
+        assert value.master == MASTER
+        assert API in calls
+    finally:
+        value.close()
+
+
+@pytest.mark.parametrize(
+    "slug,source",
+    [
+        ("someone-else", MASTER),
+        (None, MASTER),
+        ("example", "https://evil.test/archive/master.m3u8"),
+        ("example", "http://stream.kick.com/archive/master.m3u8"),
+        ("example", "https://stream.kick.com.evil.test/archive/master.m3u8"),
+    ],
+)
+def test_api_identity_mismatch_fails_closed(tmp_path, fake_kick, slug, source):
+    data, _ = fake_kick
+    data[URL] = NO_VIDEO_METADATA
+    data[API] = json.dumps(api_payload(slug=slug, source=source))
+    with pytest.raises(PipelineError, match="identity"):
+        km.KickVOD(URL, tmp_path / "cache")
+
+
+def test_api_slug_match_ignores_channel_case(tmp_path, fake_kick):
+    data, _ = fake_kick
+    upper = URL.replace("/example/", "/Example/")
+    data[upper] = NO_VIDEO_METADATA
+    data[API] = json.dumps(api_payload(slug="EXAMPLE"))
+    value = km.KickVOD(upper, tmp_path / "cache")
+    try:
+        assert value.master == MASTER
+    finally:
+        value.close()
+
+
+def test_page_url_match_ignores_channel_case(tmp_path, fake_kick):
+    data, _ = fake_kick
+    upper = URL.replace("/example/", "/Example/")
+    data[upper] = json_ld(url=URL)
+    value = km.KickVOD(upper, tmp_path / "cache")
+    try:
+        assert value.master == MASTER
+    finally:
+        value.close()
