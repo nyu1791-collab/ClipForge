@@ -361,7 +361,8 @@ def group_text(tokens, measure, line_px, mode):
                 out.append(r"\N")
             out.append(char)
         offset += len(token_text)
-    return "".join(out)
+    # SRT strips outer whitespace; retain punctuation spacing inside the caption only.
+    return "".join(out).rstrip()
 
 
 def spoken_length(text):

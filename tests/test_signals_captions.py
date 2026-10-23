@@ -847,3 +847,22 @@ def test_no_landscape_layout_places_captions_at_the_top(
     assert subtitles.styles["Default"].alignment == pysubs2.Alignment.BOTTOM_CENTER
     assert all(r"\an8" not in e.text for e in subtitles if e.style == "Default")
     assert r"\an8" not in (tmp_path / "captions.ass").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
+@pytest.mark.parametrize("aspect", ["9:16", "16:9"])
+def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
+    tmp_path, settings, japanese_font, mode, aspect
+):
+    from clipforge import quality
+
+    transcript, clip = _fill_case(("本当? これは本当!!", "はい! 次はどう?"))
+    configured = _fill_settings(settings, chat_panel=False, caption=mode, aspect=aspect)
+    captions.create(transcript, clip, tmp_path, configured)
+    ass = quality.caption_events(tmp_path / "captions.ass")
+    srt = quality.caption_events(tmp_path / "captions.srt")
+    assert ass == srt
+    text = "".join(event[2].replace("\n", "") for event in ass)
+    assert "?" not in text and "!" not in text
+    assert "？　" in text or "！　" in text
+    assert all(not event[2].endswith("　") for event in ass)
