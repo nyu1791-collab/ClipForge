@@ -83,7 +83,7 @@ jobs:
           assert parts=='' or re.fullmatch(r'[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}',parts)
           assert re.fullmatch(r'config\.[a-z0-9-]+\.example\.json',os.environ['CONFIG_FILE'])
           text=os.environ['REVIEW_JSON']
-          assert len(text.encode())<=32768
+          assert len(text.encode())<=60000
           if os.environ['AUDIO_STAGE']=='render':
               assert text
           text=text or '{}'
@@ -195,7 +195,7 @@ jobs:
           assert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])
           assert re.fullmatch(r'config\.[a-z0-9-]+\.example\.json',os.environ['CONFIG_FILE'])
           text=os.environ['REVIEW_JSON']
-          assert text and len(text.encode())<=32768
+          assert text and len(text.encode())<=60000
           json.loads(text)
           path=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'
           path.write_text(text)
