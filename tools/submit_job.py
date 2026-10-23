@@ -134,6 +134,12 @@ def preflight_audio_url(url, settings, cookies_file=None):
     if settings.youtube_audio_transport == "warp":
         if kind != "youtube":
             raise PipelineError("YouTube WARP audio transport requires a YouTube URL")
+        if cookies_file is not None:
+            from clipforge.youtube_auth import cookie_copy
+
+            temporary, _ = cookie_copy(cookies_file)
+            if temporary is not None:
+                temporary.cleanup()
         # WARP is only installed on the disposable hosted runner; it performs the
         # complete acquisition and validation before any GPU can be allocated.
         print(
@@ -562,8 +568,20 @@ def find_run(identity):
     )
 
 
+def workflow_ref(value):
+    if (
+        not isinstance(value, str)
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}", value)
+        or ".." in value
+        or "//" in value
+    ):
+        raise RuntimeError("invalid worker workflow ref")
+    return value
+
+
 def send_dispatch(state, receipt):
     """Record the uncertain interval before POST, so a lost reply cannot cause a retry."""
+    selected_workflow = workflow_ref(receipt.get("workflow_ref", "main"))
     settings_json = "{}"
     if receipt.get("audio_url"):
         request = json.loads((state / "request.json").read_text())
@@ -575,7 +593,7 @@ def send_dispatch(state, receipt):
     save(state / "receipt.json", receipt)
     payload = json.dumps(
         {
-            "ref": "main",
+            "ref": selected_workflow,
             "inputs": {
                 "request_id": receipt["request_id"],
                 "input_tag": receipt["input_tag"],
@@ -836,6 +854,10 @@ def main():
         help="Kick / YouTube / Twitch または HTTPS の mp4・m4a・mp3・webm・m3u8。あなたが権利を持つファイルを置いた場所の URL。Gemini 呼び出しなし",
     )
     parser.add_argument("--ref", default="main")
+    parser.add_argument(
+        "--workflow-ref",
+        help="Private worker branch/tag for review runs; default: main (persisted for resume)",
+    )
     parser.add_argument("--worker", choices=["colab-auto", "cpu"], default="colab-auto")
     parser.add_argument("--config", type=Path)
     parser.add_argument("--chat-file", type=Path)
@@ -978,6 +1000,7 @@ def submit(args):
 
 
 def dispatch(args, state_root):
+    selected_workflow_ref = workflow_ref(getattr(args, "workflow_ref", None) or "main")
     workflow = json.loads(gh("api", f"repos/{REPO}/actions/workflows/{WORKFLOW}"))
     if workflow.get("state") != "active":
         raise RuntimeError("private ClipForge workflow is not active")
@@ -1078,7 +1101,7 @@ def dispatch(args, state_root):
         parse_settings_json(json.dumps(settings, ensure_ascii=False))
         if getattr(args, "cookies_file", None):
             print(
-                "Local preflight uses --cookies-file; remote retrieval requires the worker YOUTUBE_COOKIES_B64 Secret. Cookie contents are never uploaded."
+                "The local cookie file is validated for preflight; remote retrieval requires the worker YOUTUBE_COOKIES_B64 Secret. Cookie contents are never uploaded."
             )
         metadata = preflight_audio_url(
             args.audio_analysis_url,
@@ -1125,6 +1148,8 @@ def dispatch(args, state_root):
         "public_cache": args.public_cache,
         "input_staged": False,
     }
+    if getattr(args, "workflow_ref", None) is not None:
+        receipt["workflow_ref"] = selected_workflow_ref
     if args.auto_previews:
         receipt.update(auto_previews=True, target_stage="previews")
     receipt_path = state / "receipt.json"

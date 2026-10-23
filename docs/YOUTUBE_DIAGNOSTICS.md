@@ -64,7 +64,7 @@ Token生成・返却のtraceと、送信JSON内のpoTokenの存在を値を保�
 ## 実装範囲
 
 - Cookie入力: pipeline/CLI/worker Secretに実装。実Cookieは未設定・認証成功は未検証。
-- Docker + nightly + WARP: 診断workflowで検証。通常の解析workflowへWARPを自動適用していない。
+- Docker + nightly + WARP: 診断と通常の音声取得で共通化。`--youtube-audio-transport warp`で明示し、自動切替はしない。
 - `acquire_audio_url.py --youtube-web-clients`: web/mwebと明示的PO Token要求を指定する取得オプション。別途providerの起動が必要。
 - Data API / RSS / WebSubによる配信の検出: 未実装。
 - 住宅用proxy・自宅PC取得worker: 未実装。
@@ -92,3 +92,32 @@ GitHubのジョブ記録は04:45:55〜04:49:55 UTC（240秒）で、上記の音
 元メタデータの3,731秒と実ファイルの3,730.773313秒の差は0.227秒。
 ファイルの全区間をPyAVで変換し、ffprobeで音声・長さを検証した。
 単体テストは1,270件合格、13件除外（20.14秒）。
+
+## 基盤化後の確認
+
+[共通化した取得経路のrun](https://github.com/nyu1791-collab/ai-model-workers/actions/runs/39904822228)
+（source `7d4494cf909ed0769548f567823efa12f782acfb`）では、固定環境の導入、
+WARP接続、provider再起動まで成功した。ただし、このrunの出口ではTokenを取得・付与しても
+YouTubeのbot確認でメタデータが拒否され、音声取得も1.517秒で失敗した。
+**診断jobのsuccessは記録収集の成功であり、音声取得の成功ではない。**
+通常の`acquire_audio_url.py`はこの例外で失敗するため、GPU割当前に停止する。
+
+private Artifact内の状態を実際に回収して確認した結果:
+
+- `status=cleaned`、`warp_disconnected=true`、`provider_removed=true`
+- 依存導入0.344秒、provider起動10.344秒、WARP接続20.276秒、provider再起動1.882秒
+- 終了確認0.588秒、GPU割当・ASRともなし
+- yt-dlp、provider、curl-cffi、EJS、Node、WARPの実バージョンが固定値と一致
+
+成功した既存runの音声はGitHub Appから回収し、Artifact ZIPのSHA-256をGitHubのdigestと照合した。
+成功状態・request ID・worker commit・checkoutしたsource commit・元URLをrunとjob logで確認し、
+取得報告のSHA-256と実音声、ffprobeの長さを照合してから、旧Artifact用のmanifestを作った。
+旧Artifactを無条件に信用して自動移行する処理は設けていない。
+
+この実音声（23,867,993 bytes、3,730.773313秒）から、Pythonのネットワーク接続を禁止して
+`acquire_audio_url.py --verified-audio-dir ...`を実行し、新しい依頼を作ることにも成功した。
+入力再生成は**0.064910秒**（Archive回収、旧run確認、事前ffprobe、独立した事後照合は別）。
+新requestは`asr_parts=2`・`aspect=16:9`で、入力ハッシュは元の音声と一致した。
+GPU・ASRは開始していない。
+
+運用方法・固定値・失敗時の扱いは [YOUTUBE_TRANSPORT.md](YOUTUBE_TRANSPORT.md) を参照。

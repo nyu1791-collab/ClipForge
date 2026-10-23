@@ -267,7 +267,7 @@ def test_main_workflow_ends_transport_before_any_gpu_and_keeps_receipt_private()
     assert len(workflow[True]["workflow_dispatch"]["inputs"]) == 10
 
 
-def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch):
+def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch, tmp_path):
     import importlib.util
 
     monkeypatch.syspath_prepend(str(ROOT / "tools"))
@@ -293,3 +293,45 @@ def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch):
             "https://example.com/audio.mp3",
             {"gemini_model": "manual-no-api", "youtube_audio_transport": "warp"},
         )
+
+    bad_cookies = tmp_path / "cookies.txt"
+    bad_cookies.write_text("invalid private cookie content")
+    with pytest.raises(PipelineError, match="invalid YouTube cookies"):
+        module.preflight_audio_url(
+            URL,
+            {"gemini_model": "manual-no-api", "youtube_audio_transport": "warp"},
+            cookies_file=bad_cookies,
+        )
+
+
+def test_dispatch_keeps_explicit_worker_ref_for_review_and_resume(
+    tmp_path, monkeypatch
+):
+    monkeypatch.syspath_prepend(str(ROOT / "tools"))
+    spec = importlib.util.spec_from_file_location(
+        "workflow_ref_dispatch", ROOT / "tools/submit_job.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "gh",
+        lambda *args, **kwargs: calls.append(json.loads(kwargs["body"])) or "",
+    )
+    receipt = {
+        "request_id": "a" * 32,
+        "source_ref": "b" * 40,
+        "input_tag": "clipforge-input-" + "a" * 32,
+        "worker": "colab-auto",
+        "workflow_ref": "feat/two-part-asr-media-sources",
+    }
+    module.send_dispatch(tmp_path, receipt)
+    assert calls[0]["ref"] == "feat/two-part-asr-media-sources"
+    assert (
+        json.loads((tmp_path / "receipt.json").read_text())["workflow_ref"]
+        == "feat/two-part-asr-media-sources"
+    )
+    for value in ("../other", "main\nmalformed", "https://example.com"):
+        with pytest.raises(RuntimeError, match="workflow ref"):
+            module.workflow_ref(value)

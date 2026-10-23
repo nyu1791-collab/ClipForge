@@ -8,6 +8,9 @@ YouTube の全音声取得に成功した経路を、通常の取得と診断で
 
 `submit_job.py --audio-analysis-url URL --youtube-audio-transport warp ...` を指定する。
 設定JSONでは `"youtube_audio_transport": "warp"` が同じ意味になる。
+PRをレビューする段階では、`--ref PUBLIC_SOURCE_SHA --workflow-ref WORKER_BRANCH`も指定する。
+`--ref`は公開側のコード、`--workflow-ref`は非公開workerのworkflowを選ぶ。
+worker refもreceiptへ保存し、再開時にmainへ戻さない。PRは未マージのため既定mainへは未反映。
 URLだけの解析・`colab-auto` 用で、ASRは既定2分割。
 既定の `standard` は従来どおりで、失敗時にWARPへ自動で切り替えない。
 
@@ -85,3 +88,12 @@ manifestだけではGitHub実行の真正性を証明しない。ダウンロー
 この設定でWARPを使うのは**URL音声の取得**。後段の映像取得を同じ接続へ載せる設定ではない。
 自動プレビューや後日の描画で元動画を再取得する場合は、その工程の取得経路・Cookieも確認する。
 Data API/RSS/WebSubによる配信検出、住宅用proxy、自宅PC workerは実装していない。
+
+## 見直しの検証
+
+最終コードの単体テスト1,295件、依存ロックからの空環境への導入、workflowのshell構文を確認した。
+実環境では、取得拒否時にGPUを使わず、WARP切断・所有provider削除まで完了することを確認した。
+また、成功済みの実音声23,867,993 bytesを来歴とハッシュで検証し、
+Pythonの接続を禁止した状態で新しい2分割ASR用入力へ再利用できた（入力再生成0.065秒）。
+元音声のYouTubeからの取得成功と、新しい出口IPでの取得成功は同じ保証ではない。
+最新の再取得ではbot確認が再現しており、無条件に常時取得できる状態とはしていない。

@@ -60,14 +60,21 @@ def worker(url, policy):
 
     class ObservedDownloader(YoutubeDL):
         def urlopen(self, request):
-            if hasattr(request, "data") and request.data:
+            address = getattr(request, "url", "")
+            parsed = urlsplit(address)
+            host = parsed.hostname or ""
+            player_request = (
+                host == "youtube.com"
+                or host.endswith(".youtube.com")
+                or host == "youtubei.googleapis.com"
+            ) and parsed.path.endswith("/player")
+            if player_request and getattr(request, "data", None):
                 try:
                     if contains_token(json.loads(request.data)):
                         metrics["player_requests_with_token"] += 1
                 except (ValueError, UnicodeError, TypeError):
                     pass
-            address = getattr(request, "url", "")
-            if address and parse_qs(urlsplit(address).query).get("pot"):
+            if host.endswith(".googlevideo.com") and parse_qs(parsed.query).get("pot"):
                 metrics["media_requests_with_token"] += 1
             return super().urlopen(request)
 

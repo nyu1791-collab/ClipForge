@@ -51,6 +51,12 @@ def test_probe_records_generation_and_attachment_without_exposing_tokens(
                 logger.debug(line)
             self.urlopen(
                 SimpleNamespace(
+                    data=json.dumps({"poToken": token}).encode(),
+                    url="http://127.0.0.1:4416/get_pot",
+                )
+            )
+            self.urlopen(
+                SimpleNamespace(
                     data=json.dumps(
                         {"serviceIntegrityDimensions": {"poToken": token}}
                     ).encode(),
@@ -70,3 +76,56 @@ def test_probe_records_generation_and_attachment_without_exposing_tokens(
     assert report["generation_attempted"] is True
     assert "cookiefile" not in options_seen[0]
     assert options_seen[0]["extractor_args"]["youtube"]["fetch_pot"] == ["always"]
+
+
+def test_audio_probe_preserves_canonical_failure_receipt(tmp_path, monkeypatch):
+    import sys
+    from clipforge.storage import PipelineError
+
+    repository = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "probe_audio_failure", repository / "tools/probe_youtube_audio.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def failed(arguments):
+        directory = Path(arguments[arguments.index("--directory") + 1])
+        directory.mkdir()
+        (directory / "acquisition-report.json").write_text(
+            json.dumps(
+                {
+                    "status": "acquisition_failed",
+                    "phase": "acquire",
+                    "error_type": "PipelineError",
+                }
+            )
+        )
+        raise PipelineError("provider denied metadata")
+
+    monkeypatch.setitem(sys.modules, "acquire_audio_url", SimpleNamespace(main=failed))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("REQUEST_ID", "a" * 32)
+    monkeypatch.setenv("SOURCE_REF", "b" * 40)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "probe_youtube_audio.py",
+            "--url",
+            "https://youtu.be/6ras3m-gFuc",
+            "--directory",
+            str(tmp_path / "audio"),
+        ],
+    )
+    module.main()
+    assert (
+        json.loads((tmp_path / "probe-result/audio.json").read_text())["status"]
+        == "audio_failed"
+    )
+    assert (
+        json.loads((tmp_path / "probe-result/canonical-acquisition.json").read_text())[
+            "phase"
+        ]
+        == "acquire"
+    )

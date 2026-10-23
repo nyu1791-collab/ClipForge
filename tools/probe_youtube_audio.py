@@ -73,7 +73,6 @@ def main():
             audio_info=audio_info(audio),
         )
         acquisition = json.loads((staged / "acquisition-report.json").read_text())
-        write_json(Path("probe-result/canonical-acquisition.json"), acquisition)
         write_json(
             args.directory / "audio-source.json",
             {
@@ -94,6 +93,13 @@ def main():
         report["error"] = str(error)
     except Exception as error:
         report["error"] = type(error).__name__
+    finally:
+        canonical_receipt = args.directory / "staged/acquisition-report.json"
+        if canonical_receipt.is_file():
+            write_json(
+                Path("probe-result/canonical-acquisition.json"),
+                json.loads(canonical_receipt.read_text()),
+            )
     report.update(
         ended_at=datetime.now(timezone.utc).isoformat(),
         elapsed_seconds=round(time.monotonic() - started, 3),
