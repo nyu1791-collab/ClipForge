@@ -1,5 +1,7 @@
 import json
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -286,8 +288,11 @@ def test_audio_retrieval_uses_pyav_without_cli(tmp_path, monkeypatch, start, end
     value = object.__new__(km.KickVOD)
     value.url = URL
     monkeypatch.setattr(value, "playlist", lambda quality: (segments, 0))
+    # The audio path streams segments in order as they become ready.
     monkeypatch.setattr(
-        value, "_download_segments", lambda selected: [s["url"] for s in selected]
+        value,
+        "_stream_segments",
+        lambda selected: iter([s["url"] for s in selected]),
     )
 
     def no_cli(*args, **kwargs):
@@ -471,3 +476,72 @@ def test_failed_api_and_page_keep_both_safe_reason_codes(vod, tmp_path, monkeypa
     assert "page=http_502" in str(failure.value)
     assert "HIDDEN" not in str(failure.value)
     assert "https://" not in str(failure.value)
+
+
+def test_streamed_segments_yield_in_stream_order_even_when_finished_out_of_order(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    segments = [{"url": f"seg-{n}", "start": n, "end": n + 1} for n in range(6)]
+    paths = {s["url"]: tmp_path / (s["url"] + ".ts") for s in segments}
+    pool = ThreadPoolExecutor(max_workers=6)
+    value = object.__new__(km.KickVOD)
+    value.workers = 3
+    value._lock = threading.RLock()
+
+    def finish_later_for_earlier_segments(url):
+        index = int(url.split("-")[1])
+        time.sleep(0.02 * (len(segments) - index))
+        return paths[url]
+
+    value._segment_future = lambda url: pool.submit(
+        finish_later_for_earlier_segments, url
+    )
+    try:
+        assert list(value._stream_segments(segments)) == [
+            paths[s["url"]] for s in segments
+        ]
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_streamed_download_failure_stops_the_stream_and_is_reported(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    segments = [{"url": f"seg-{n}", "start": n, "end": n + 1} for n in range(4)]
+    pool = ThreadPoolExecutor(max_workers=4)
+    value = object.__new__(km.KickVOD)
+    value.workers = 2
+    value._lock = threading.RLock()
+
+    def fail_second(url):
+        if url == "seg-1":
+            raise km.PipelineError("segment failed")
+        return tmp_path / (url + ".ts")
+
+    value._segment_future = lambda url: pool.submit(fail_second, url)
+    try:
+        with pytest.raises(km.PipelineError, match="segment failed"):
+            list(value._stream_segments(segments))
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_extract_streamed_reports_a_download_failure_instead_of_short_audio(
+    tmp_path, monkeypatch
+):
+    value = object.__new__(km.KickVOD)
+
+    def stream(selected):
+        yield from []
+        raise km.PipelineError("segment failed mid-stream")
+
+    monkeypatch.setattr(value, "_stream_segments", stream)
+    with pytest.raises(km.PipelineError, match="segment failed mid-stream"):
+        value._extract_streamed(
+            [{"url": "x", "start": 0, "end": 1}],
+            tmp_path / "audio.m4a",
+            0.0,
+            1.0,
+        )
