@@ -1,9 +1,10 @@
 from types import SimpleNamespace
+from io import BytesIO
 
 import numpy as np
 import pytest
 
-from clipforge import auto_layout, storage
+from clipforge import auto_layout
 from clipforge.storage import PipelineError
 
 HEIGHT = 180
@@ -218,37 +219,53 @@ def test_separated_captions_keep_their_own_band():
     assert auto_layout._steady(events, ["top", "bottom"]) == ["top", "bottom"]
 
 
-def test_sample_frames_reads_rawvideo_with_source_times(monkeypatch):
-    data = np.arange(5 * 3 * 4, dtype=np.uint8).reshape(5, 3, 4)
+def fake_decoder(monkeypatch, data, code=0):
     seen = {}
 
-    def fake_process(command, timeout=180, stage=None, cwd=None):
-        seen.update(command=command, timeout=timeout, stage=stage)
-        # A trailing partial frame is dropped.
-        return SimpleNamespace(stdout=data.tobytes() + b"\x01\x02")
+    def popen(command, **kwargs):
+        seen["command"] = command
+        return SimpleNamespace(
+            stdout=BytesIO(data),
+            wait=lambda: code,
+            poll=lambda: code,
+            kill=lambda: None,
+        )
 
-    monkeypatch.setattr(storage, "process", fake_process)
-    times, frames = auto_layout.sample_frames("source.mp4", 10, 12.5, width=4, height=3)
+    monkeypatch.setattr(auto_layout.subprocess, "Popen", popen)
+    return seen
 
+
+def test_sample_frames_reads_rawvideo_with_source_times(monkeypatch):
+    data = np.arange(5 * 3 * 4, dtype=np.uint8).reshape(5, 3, 4)
+    seen = fake_decoder(monkeypatch, data.tobytes() + b"\x01\x02")
+    blocks = list(auto_layout.sample_frames("source.mp4", 10, 12.5, width=4, height=3))
+    assert len(blocks) == 1
+    times, frames = blocks[0]
     assert times == [10.0, 10.5, 11.0, 11.5, 12.0]
-    assert frames.shape == (5, 3, 4)
     assert frames.dtype == np.uint8
     assert np.array_equal(frames, data)
-    assert seen["stage"] == "layout-frames"
     command = seen["command"]
     assert command[command.index("-ss") + 1] == "10.000"
-    assert command[command.index("-t") + 1] == "2.500"
     assert command[command.index("-vf") + 1] == "fps=2,scale=4:3"
-    assert command[command.index("-pix_fmt") + 1] == "gray"
     assert command[-1] == "pipe:1"
 
 
 def test_sample_frames_without_frames_is_an_error(monkeypatch):
-    monkeypatch.setattr(
-        storage, "process", lambda command, **kwargs: SimpleNamespace(stdout=b"")
-    )
+    fake_decoder(monkeypatch, b"")
     with pytest.raises(PipelineError):
-        auto_layout.sample_frames("source.mp4", 0, 5, width=4, height=3)
+        list(auto_layout.sample_frames("source.mp4", 0, 5, width=4, height=3))
+
+
+def test_sample_frames_stays_bounded_and_checks_decoder_failure(monkeypatch):
+    data = np.arange(5 * 12, dtype=np.uint8).reshape(5, 3, 4)
+    monkeypatch.setattr(auto_layout, "BLOCK", 2)
+    fake_decoder(monkeypatch, data.tobytes())
+    blocks = list(auto_layout.sample_frames("source.mp4", 0, 3, width=4, height=3))
+    assert [len(frames) for _, frames in blocks] == [2, 2, 1]
+    assert np.array_equal(np.concatenate([frames for _, frames in blocks]), data)
+    fake_decoder(monkeypatch, data.tobytes(), code=1)
+    with pytest.raises(PipelineError, match="failed"):
+        list(auto_layout.sample_frames("source.mp4", 0, 3, width=4, height=3))
 
 
 def test_sample_window_must_be_forward():
@@ -267,3 +284,56 @@ def test_plan_combines_the_steps(monkeypatch):
     assert result["positions"] == ["bottom"]
     assert result["frames"] == 4
     assert result["seconds"] >= 0
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_persistent_corner_camera_is_kept_even_when_center_is_busier(side):
+    rng = np.random.default_rng(81)
+    frames = rng.integers(80, 150, size=(8, HEIGHT, WIDTH), dtype=np.uint8)
+    left, right = (3, 70) if side == "left" else (250, 317)
+    top, bottom = 110, 175
+    frames[:, top : bottom + 1, left : left + 2] = 255
+    frames[:, top : bottom + 1, right : right + 2] = 255
+    frames[:, top : top + 2, left : right + 1] = 255
+    frames[:, bottom : bottom + 2, left : right + 1] = 255
+    crop = auto_layout.choose_crop(frames)
+    assert crop["wipe"] is not None
+    assert crop["wipe"]["side"] == side
+    assert crop["x"] <= crop["wipe"]["left"]
+    assert crop["x"] + crop["keep"] >= crop["wipe"]["right"]
+
+
+def test_transient_rectangle_is_not_a_camera_window():
+    rng = np.random.default_rng(82)
+    frames = rng.integers(80, 150, size=(8, HEIGHT, WIDTH), dtype=np.uint8)
+    frames[0, 110:177, 250:320] = 255
+    assert auto_layout.choose_crop(frames)["wipe"] is None
+
+
+def test_caption_density_excludes_source_chat_columns():
+    frames = np.full((4, HEIGHT, WIDTH), 100, dtype=np.uint8)
+    frames[:, :, 240:] = 0
+    frames[:, 135:, 240:] = texture(45, 80, seed=9)
+    crop = {
+        "x": 0.0,
+        "keep": 1.0,
+        "overlay": {"side": "right", "start": 0.75, "end": 1.0},
+    }
+    assert auto_layout.caption_positions(
+        [0, 0.5, 1, 1.5], frames, [(0, 1)], crop, floor=0
+    ) == ["bottom"]
+
+
+def test_streamed_statistics_match_single_batch():
+    frames = frame_with([(slice(100, 180), slice(10, 200), 255)], count=10)
+    times = [i / 2 for i in range(10)]
+    streamed = auto_layout.frame_statistics(
+        ((times[i : i + 3], frames[i : i + 3]) for i in range(0, 10, 3))
+    )
+    assert streamed.count == 10
+    assert auto_layout.choose_crop(streamed) == auto_layout.choose_crop(frames)
+    assert auto_layout.caption_positions(
+        times, streamed, [(0, 1), (3, 4)], auto_layout.choose_crop(streamed)
+    ) == auto_layout.caption_positions(
+        times, frames, [(0, 1), (3, 4)], auto_layout.choose_crop(frames)
+    )

@@ -194,7 +194,7 @@ def test_command_timeout_exits_with_short_failure_message(
     output = capsys.readouterr()
     assert output.out == ""
     assert output.err == (
-        "Audio stage command failed; inspect its private receipt. "
+        "Audio stage command failed: TimeoutExpired. Inspect its private receipt. "
         "No retry or fallback was started.\n"
     )
 
@@ -1351,3 +1351,13 @@ def test_review_refuses_an_unknown_crop_side_before_dispatch():
         module.require_video_review(
             {"clips": [{"video_reviewed": True, "crop_anchor": "middle"}]}
         )
+
+
+def test_command_failure_explains_local_code_mismatch_without_external_details():
+    from tools import submit_audio_stage as submit
+
+    reason = "local merge code differs from source_ref"
+    assert reason in submit.command_failure(submit.AudioStageError(reason))
+    hidden = "https://private.example/input?token=SECRET_AUTH_VALUE"
+    assert hidden not in submit.command_failure(RuntimeError(hidden))
+    assert "SECRET_AUTH_VALUE" not in submit.command_failure(ValueError(hidden))

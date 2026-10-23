@@ -909,6 +909,22 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
     assert seen == [positions, 0.25, positions, 0.0]
     # A different requested side is a different render, so its receipt has its own key.
     assert auto["key"] != fixed["key"]
+
+    def no_analysis(*args, **kwargs):
+        raise AssertionError("a verified cached render must not analyse frames again")
+
+    monkeypatch.setattr(pipeline, "chat_layout", no_analysis)
+    cached = pipeline.render_clip(
+        source, roots["auto"], 1, clip, transcript, settings, "job", chat=chat
+    )
+    assert cached == auto
+    assert seen == [positions, 0.25, positions, 0.0]
+    layout_file = roots["auto"] / "clip-001" / "layout.json"
+    layout_file.write_text(layout_file.read_text().replace('"right"', '"left"'))
+    with pytest.raises(PipelineError, match="saved layout differs"):
+        pipeline.render_clip(
+            source, roots["auto"], 1, clip, transcript, settings, "job", chat=chat
+        )
     with pytest.raises(PipelineError, match="crop_anchor must be"):
         pipeline.render_clip(
             source,

@@ -775,3 +775,28 @@ def test_event_spans_are_the_times_create_writes(tmp_path, settings, japanese_fo
         (e.start / 1000, e.end / 1000) for e in subtitles if e.style == "Default"
     ]
     assert spans == written and len(spans) == 2
+
+
+def test_caption_punctuation_uses_fullwidth_marks_and_one_following_space():
+    assert (
+        captions.normalize_punctuation("本当? 次!!　はい!")
+        == "本当？　次！！　はい！　"
+    )
+    assert captions.normalize_punctuation("本当？　次！！　") == "本当？　次！！　"
+
+
+def test_dictionary_words_and_noun_no_noun_are_not_line_break_candidates():
+    from clipforge.caption_breaks import _unbreakable
+
+    assert {1, 2, 3} <= _unbreakable("大人の人")
+    assert {1, 2, 3, 4, 5, 6} <= _unbreakable("マインクラフト")
+
+
+def test_fast_caption_can_use_nearby_preceding_silence_without_overlap():
+    spans = [[0, 1000], [1500, 2000], [2500, 3000]]
+    captions.hold_for_reading(
+        spans, ["あ" * 7, "い" * 10, "う"], 4000, cps=7, lead_ms=500
+    )
+    assert 1000 <= spans[1][0] < 1500
+    assert spans[1][1] <= spans[2][0]
+    assert 10 / ((spans[1][1] - spans[1][0]) / 1000) <= 7

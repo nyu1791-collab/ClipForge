@@ -62,7 +62,7 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
     messages_url = f"{KICK_V2}/{quote(str(channel_id), safe='')}/messages"
 
     # Each request returns the chat just after start_time; the cursor only moves forward.
-    budget = int((end - start + lead) // 5) + 20
+    budget = 3 * int((end - start + lead) // 5) + 20
     cursor = origin + dt.timedelta(seconds=max(0.0, start - lead))
     stop = origin + dt.timedelta(seconds=end)
     seen = {}
@@ -78,6 +78,8 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
         if not isinstance(data, dict):
             raise PipelineError("Kick chat response has no data")
         latest = cursor
+        new_messages = 0
+        rows = data.get("messages") or []
         for row in data.get("messages") or []:
             if not isinstance(row, dict):
                 continue
@@ -85,8 +87,17 @@ def fetch_messages(channel_slug, vod_uuid, start, end, *, lead=90.0, session=Non
             if when is None:
                 continue
             latest = max(latest, when)
-            seen.setdefault(_message_key(row, when), (when, row))
-        cursor = max(cursor + CHAT_STEP, latest + NEXT_STEP)
+            key = _message_key(row, when)
+            if key not in seen:
+                seen[key] = (when, row)
+                new_messages += 1
+        # Re-read the boundary second: pages can split a burst at that timestamp.
+        # A repeated page makes no progress, so only then move to the next second.
+        boundary = latest.replace(microsecond=0)
+        if boundary > cursor or new_messages:
+            cursor = max(cursor, boundary)
+        else:
+            cursor += NEXT_STEP if rows else CHAT_STEP
 
     lower = start - lead
     out = []

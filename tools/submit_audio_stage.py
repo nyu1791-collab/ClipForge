@@ -49,6 +49,20 @@ SUBMIT_OPTIONS = (
 )
 
 
+class AudioStageError(RuntimeError):
+    """A fixed, public CLI explanation; never wrap an external exception in this type."""
+
+
+def command_failure(error):
+    """Only our fixed explanations are public; transport and parser details stay private."""
+    reason = str(error) if isinstance(error, AudioStageError) else type(error).__name__
+    return (
+        "Audio stage command failed: "
+        + reason
+        + ". Inspect its private receipt. No retry or fallback was started."
+    )
+
+
 def gh(*args, body=None, timeout=60):
     # The shared runner never prints stderr, where gh may echo signed URLs.
     return github_cli.run(
@@ -67,14 +81,14 @@ def save(path, receipt):
 def safe_relative(name):
     """Reject paths that could leave the collected directory or name an unlisted location."""
     if not isinstance(name, str) or not name or "\\" in name or "\x00" in name:
-        raise RuntimeError("unsafe path in stage receipt")
+        raise AudioStageError("unsafe path in stage receipt")
     path = PurePosixPath(name)
     if (
         path.is_absolute()
         or path.as_posix() != name
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
-        raise RuntimeError("unsafe path in stage receipt")
+        raise AudioStageError("unsafe path in stage receipt")
     return name
 
 
@@ -82,11 +96,11 @@ def staged_files(root):
     names = set()
     for path in root.rglob("*"):
         if path.is_symlink():
-            raise RuntimeError("stage artifact contains a symlink")
+            raise AudioStageError("stage artifact contains a symlink")
         if path.is_dir():
             continue
         if not path.is_file():
-            raise RuntimeError("stage artifact contains a non-regular entry")
+            raise AudioStageError("stage artifact contains a non-regular entry")
         names.add(path.relative_to(root).as_posix())
     return names
 
@@ -116,10 +130,10 @@ def find_stage_run(identity):
         and row["headBranch"] == BRANCH
     ]
     if len(matches) != 1:
-        raise RuntimeError("expected exactly one private stage run for this request")
+        raise AudioStageError("expected exactly one private stage run for this request")
     run = matches[0]
     if run["status"] != "completed" or run["conclusion"] != "success":
-        raise RuntimeError(
+        raise AudioStageError(
             "private stage run did not complete successfully; no retry or fallback"
         )
     return run["databaseId"]
@@ -175,28 +189,30 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
         or not 1 <= len(hashes) <= MAX_LISTED_FILES
         or "request-receipt.json" in hashes
     ):
-        raise RuntimeError("stage artifact identity mismatch")
+        raise AudioStageError("stage artifact identity mismatch")
     listed = {safe_relative(name) for name in hashes}
     for value in hashes.values():
         if not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value):
-            raise RuntimeError("invalid SHA-256 entry in stage receipt")
+            raise AudioStageError("invalid SHA-256 entry in stage receipt")
     required = {"manifest.json"} if delivery_only else REQUIRED_FILES
     if not listed >= required:
-        raise RuntimeError("stage artifact omits required files")
+        raise AudioStageError("stage artifact omits required files")
     found = staged_files(root) - {"request-receipt.json"}
     missing = listed - found
     extra = (
         found - listed - {".audio-first.lock"}
     )  # an empty lock file the worker may leave
     if missing:
-        raise RuntimeError(
+        raise AudioStageError(
             str(len(missing)) + " listed file(s) missing from the stage artifact"
         )
     if extra:
-        raise RuntimeError(str(len(extra)) + " unlisted file(s) in the stage artifact")
+        raise AudioStageError(
+            str(len(extra)) + " unlisted file(s) in the stage artifact"
+        )
     for name, value in hashes.items():
         if digest(root / name) != value:
-            raise RuntimeError("stage artifact SHA-256 mismatch")
+            raise AudioStageError("stage artifact SHA-256 mismatch")
     if not delivery_only:
         cache = json.loads((root / "asr-receipt.json").read_text())
         key = cache.get("key", "")
@@ -206,7 +222,7 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
             or not re.fullmatch(r"[a-f0-9]{64}", key)
             or "transcripts/" + key + ".json" not in listed
         ):
-            raise RuntimeError("stage ASR identity is incomplete")
+            raise AudioStageError("stage ASR identity is incomplete")
     manifest = json.loads((root / "manifest.json").read_text())
     if (
         manifest.get("status") != status
@@ -219,17 +235,17 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
             and manifest.get("source_sha256") != hashes["audio.m4a"]
         )
     ):
-        raise RuntimeError("stage manifest does not match the artifact receipt")
+        raise AudioStageError("stage manifest does not match the artifact receipt")
     rendered = manifest.get("rendered", [])
     if delivery_only and (not isinstance(rendered, list) or not rendered):
-        raise RuntimeError("stage artifact omits required rendered clips")
+        raise AudioStageError("stage artifact omits required rendered clips")
     if status == "clip_rendered":
         expected = "clips/clip-%03d" % int(request["clip_index"])
         if len(rendered) != 1 or rendered[0].get("directory") not in {
             expected,
             "delivery/" + expected,
         }:
-            raise RuntimeError("stage artifact clip index mismatch")
+            raise AudioStageError("stage artifact clip index mismatch")
     for name in sorted(listed):
         if name.endswith(".receipt.json"):
             media = name[: -len(".receipt.json")]
@@ -239,23 +255,23 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
                 or generated.get("sha256") != hashes[media]
                 or generated.get("source_url") != returned["audio_source_url"]
             ):
-                raise RuntimeError("generated receipt does not match its media")
+                raise AudioStageError("generated receipt does not match its media")
     for row in rendered:
         directory = safe_relative(row.get("directory"))
         if delivery_only:
             if status != "clip_rendered" and not re.fullmatch(
                 r"delivery/clips/clip-[0-9]{3}", directory
             ):
-                raise RuntimeError("stage manifest has an invalid clip directory")
+                raise AudioStageError("stage manifest has an invalid clip directory")
             required = {
                 directory + "/" + name
                 for name in ("video.mp4", "captions.ass", "captions.srt")
             }
             if not listed >= required:
-                raise RuntimeError("stage artifact omits required files")
+                raise AudioStageError("stage artifact omits required files")
         for name, value in row.get("sha256", {}).items():
             if hashes.get(safe_relative(directory + "/" + name)) != value:
-                raise RuntimeError("rendered clip receipt does not match its file")
+                raise AudioStageError("rendered clip receipt does not match its file")
     return len(listed)
 
 
@@ -284,9 +300,9 @@ def part_config_file(root, part_runs):
         isinstance(name, str) and re.fullmatch(CONFIG_FILE_PATTERN, name)
         for name in names
     ):
-        raise RuntimeError("invalid clip render configuration receipt")
+        raise AudioStageError("invalid clip render configuration receipt")
     if len(names) > 1:
-        raise RuntimeError("clip renders use different configuration files")
+        raise AudioStageError("clip renders use different configuration files")
     return names.pop() if names else DEFAULT_CONFIG_FILE
 
 
@@ -295,7 +311,7 @@ def prepare_destination(destination):
     if destination.exists() or any(
         part.is_symlink() for part in [destination, *destination.parents]
     ):
-        raise RuntimeError(
+        raise AudioStageError(
             "download destination already exists or uses a symlink; choose a new directory"
         )
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -310,7 +326,7 @@ def local_merge(part_runs, destination, source_ref=None):
     if not re.fullmatch(
         r"[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}", part_runs
     ) or (source_ref is not None and not re.fullmatch(r"[a-f0-9]{40}", source_ref)):
-        raise RuntimeError("invalid local merge identity")
+        raise AudioStageError("invalid local merge identity")
     destination = prepare_destination(destination)
     with tempfile.TemporaryDirectory(
         prefix=".clipforge-merge-", dir=destination.parent
@@ -319,7 +335,7 @@ def local_merge(part_runs, destination, source_ref=None):
         parts = worker_audio.download_parts(part_runs, root / "parts")
         configs = {worker_audio.receipt_config_file(path) for path, _ in parts}
         if len(configs) != 1:
-            raise RuntimeError("clip renders use different configuration files")
+            raise AudioStageError("clip renders use different configuration files")
         config_file = configs.pop()
         receipt = json.loads(
             worker_audio.private_member(parts[0][0], "request-receipt.json").read_text()
@@ -328,7 +344,7 @@ def local_merge(part_runs, destination, source_ref=None):
         if not isinstance(source_ref, str) or not re.fullmatch(
             r"[a-f0-9]{40}", source_ref
         ):
-            raise RuntimeError("invalid local merge source identity")
+            raise AudioStageError("invalid local merge source identity")
         first = worker_audio.load_part(parts[0][0], parts[0][1], source_ref)
         request = {
             "audio_stage": "merge",
@@ -338,7 +354,7 @@ def local_merge(part_runs, destination, source_ref=None):
             "config_file": config_file,
         }
         if not re.fullmatch(r"[a-f0-9]{32}", str(request["previous_request_id"])):
-            raise RuntimeError("invalid local merge analysis identity")
+            raise AudioStageError("invalid local merge analysis identity")
         identity = hashlib.sha256(
             json.dumps(request, sort_keys=True).encode()
         ).hexdigest()[:32]
@@ -369,7 +385,7 @@ def local_merge(part_runs, destination, source_ref=None):
             head != source_ref
             or worker_audio.landscape.code_identity().get("git_head") != source_ref
         ):
-            raise RuntimeError("local merge code differs from source_ref")
+            raise AudioStageError("local merge code differs from source_ref")
         # Parts retain no reviewed selection or previous request settings. Check the
         # source configuration's plan; never derive the expected count from the parts.
         staging = root / "result"
@@ -388,7 +404,7 @@ def local_merge(part_runs, destination, source_ref=None):
         )
         count = verify_stage_artifact(staging, identity, "merge", request, "local")
         if destination.exists() or destination.is_symlink():
-            raise RuntimeError("merge destination was created by another operation")
+            raise AudioStageError("merge destination was created by another operation")
         shutil.move(str(staging), str(destination))
     print(
         json.dumps(
@@ -408,7 +424,7 @@ def local_merge(part_runs, destination, source_ref=None):
 def collect(identity, destination):
     """Recover one finished private stage into a new directory; nothing is dispatched."""
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
-        raise RuntimeError("invalid request identifier")
+        raise AudioStageError("invalid request identifier")
     state = Path.home() / ".local/state/clipforge" / identity
     request = json.loads((state / "request.json").read_text())
     receipt = json.loads((state / "receipt.json").read_text())
@@ -428,7 +444,7 @@ def collect(identity, destination):
         or not re.fullmatch(r"[0-9]{1,20}", str(request.get("previous_run_id")))
         or not re.fullmatch(r"[a-f0-9]{32}", str(request.get("previous_request_id")))
     ):
-        raise RuntimeError("saved stage request identity mismatch")
+        raise AudioStageError("saved stage request identity mismatch")
     destination = prepare_destination(destination)
     run_id = find_stage_run(identity)
     with tempfile.TemporaryDirectory(
@@ -449,7 +465,9 @@ def collect(identity, destination):
         )
         count = verify_stage_artifact(staging, identity, stage, request, run_id)
         if destination.exists() or destination.is_symlink():
-            raise RuntimeError("download destination was created by another operation")
+            raise AudioStageError(
+                "download destination was created by another operation"
+            )
         shutil.move(str(staging), str(destination))
     receipt.update(run_id=run_id, status="COLLECTED", output=str(destination))
     save(state / "receipt.json", receipt)
@@ -481,25 +499,25 @@ def require_video_review(value):
             for row in clips
         )
     ):
-        raise RuntimeError("each selected topic requires video review")
+        raise AudioStageError("each selected topic requires video review")
     # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
     if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
-        raise RuntimeError("crop_anchor must be auto, left, center or right")
+        raise AudioStageError("crop_anchor must be auto, left, center or right")
 
 
 def clip_indices(args, worker):
     """The clip numbers to request: one request per clip when rendering in parallel."""
     if args.clips is not None and args.clip_index is not None:
-        raise RuntimeError("use either --clips or --clip-index")
+        raise AudioStageError("use either --clips or --clip-index")
     if args.stage != "render" and (args.clips or args.clip_index):
-        raise RuntimeError("clip numbers apply to rendering only")
+        raise AudioStageError("clip numbers apply to rendering only")
     if args.clip_index is not None:
         if not 1 <= args.clip_index <= 20:
-            raise RuntimeError("clip index must be 1 to 20")
+            raise AudioStageError("clip index must be 1 to 20")
         return [args.clip_index]
     if args.clips is not None:
         if not 1 <= args.clips <= MAX_ACTIVE["colab-auto"] or worker != "colab-auto":
-            raise RuntimeError(
+            raise AudioStageError(
                 "parallel clips need --worker colab-auto and 1 to 4 clips"
             )
         return list(range(1, args.clips + 1))
@@ -626,11 +644,11 @@ def main(argv=None):
         or not re.fullmatch(r"[a-f0-9]{32}", args.previous_request)
         or not re.fullmatch(r"[a-f0-9]{40}", args.source_ref)
     ):
-        raise RuntimeError("invalid immutable source or analysis identity")
+        raise AudioStageError("invalid immutable source or analysis identity")
     review = json.loads(args.review_file.read_text()) if args.review_file else None
     if args.stage == "render":
         if review is None:
-            raise RuntimeError("render requires reviewed topic intervals")
+            raise AudioStageError("render requires reviewed topic intervals")
         require_video_review(review)
     worker = args.worker or "cpu"
     indices = clip_indices(args, worker)
@@ -641,13 +659,13 @@ def main(argv=None):
             r"[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}", part_runs
         )
     ):
-        raise RuntimeError(
+        raise AudioStageError(
             "merge needs --part-runs RUN_ID:REQUEST_ID,... and only merge"
         )
     if args.stage != "render" and worker != "cpu":
-        raise RuntimeError("only clip rendering runs on Colab")
+        raise AudioStageError("only clip rendering runs on Colab")
     if args.config_file is not None and args.stage != "render":
-        raise RuntimeError("--config-file applies to render only")
+        raise AudioStageError("--config-file applies to render only")
     if args.stage == "merge":
         config_file = part_config_file(
             Path.home() / ".local/state/clipforge", part_runs
@@ -656,9 +674,9 @@ def main(argv=None):
         config_file = args.config_file or DEFAULT_CONFIG_FILE
     if args.stage == "render":
         if not re.fullmatch(CONFIG_FILE_PATTERN, config_file):
-            raise RuntimeError("configuration file name is not allowed")
+            raise AudioStageError("configuration file name is not allowed")
         if not config_in_source(args.source_ref, config_file):
-            raise RuntimeError(
+            raise AudioStageError(
                 "configuration file is not committed at --source-ref; nothing was dispatched"
             )
     base = {
@@ -674,7 +692,7 @@ def main(argv=None):
         "config_file": config_file,
     }
     if len(base["review_json"].encode()) > 32768:
-        raise RuntimeError("review metadata is oversized")
+        raise AudioStageError("review metadata is oversized")
     requests = []
     for index in indices:
         inputs = {**base, "clip_index": str(index) if index else ""}
@@ -689,16 +707,16 @@ def main(argv=None):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise RuntimeError("another ClipForge submission is active") from None
+            raise AudioStageError("another ClipForge submission is active") from None
         for inputs in requests:
             if (root / inputs["request_id"]).exists():
-                raise RuntimeError(
+                raise AudioStageError(
                     "this exact stage already has a request; inspect it before retrying"
                 )
         if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
-            raise RuntimeError("the approved owner connection is required")
+            raise AudioStageError("the approved owner connection is required")
         if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
-            raise RuntimeError("audio stages require the private worker repository")
+            raise AudioStageError("audio stages require the private worker repository")
         runs = json.loads(
             gh(
                 "run",
@@ -717,7 +735,7 @@ def main(argv=None):
         )
         active = sum(row["status"] != "completed" for row in runs)
         if active + len(requests) > MAX_ACTIVE.get(worker, 1):
-            raise RuntimeError(
+            raise AudioStageError(
                 "another worker is active; no duplicate stage was submitted"
             )
         for inputs in requests:
@@ -735,9 +753,6 @@ if __name__ == "__main__":
         TypeError,
         RuntimeError,
         subprocess.SubprocessError,
-    ):
-        print(
-            "Audio stage command failed; inspect its private receipt. No retry or fallback was started.",
-            file=sys.stderr,
-        )
+    ) as error:
+        print(command_failure(error), file=sys.stderr)
         raise SystemExit(1) from None

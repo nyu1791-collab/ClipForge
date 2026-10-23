@@ -148,6 +148,12 @@ def normalize_terms(text):
     )
 
 
+def normalize_punctuation(text):
+    """Caption typography only: full-width marks and one full-width following space."""
+    text = text.translate(str.maketrans({"?": "？", "!": "！"}))
+    return re.sub(r"([！？]+)[ \u3000]*", r"\1　", text)
+
+
 def collect_tokens(transcript, clip, keep):
     """Word tokens (start, end, text) in output time, split where cuts removed audio."""
     tokens, approximate = [], 0
@@ -158,7 +164,7 @@ def collect_tokens(transcript, clip, keep):
             Word(start=segment.start, end=segment.end, text=segment.text or " ")
         ]
         for word in source:
-            text = normalize_terms(safe(word.text))
+            text = normalize_punctuation(normalize_terms(safe(word.text)))
             if not text.strip():
                 continue
             a, b = max(clip.start, word.start), min(clip.end, word.end)
@@ -189,6 +195,10 @@ def collect_tokens(transcript, clip, keep):
                 s, e, _ = spans[0]
                 tokens.append((s, e, text))
     tokens.sort(key=lambda token: (token[0], token[1]))
+    for index in range(1, len(tokens)):
+        if tokens[index - 1][2].endswith("　"):
+            start, end, text = tokens[index]
+            tokens[index] = (start, end, text.lstrip(" 　"))
     return join_phrases(tokens), approximate
 
 
@@ -356,7 +366,9 @@ def spoken_length(text):
     return len(re.sub(r"\s", "", text))
 
 
-def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0):
+def hold_for_reading(
+    spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0, lead_ms=0
+):
     """Extend captions read faster than the target into the silence after them.
 
     spans holds [start, end] in milliseconds, in order, and is changed in place. Only
@@ -373,6 +385,14 @@ def hold_for_reading(spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0):
         # times already are whole centiseconds, and both files then keep the same timing.
         held = min(-(-wanted // 10) * 10, ceiling - ceiling % 10)
         span[1] = max(span[1], held)
+    if lead_ms:
+        for index, (span, text) in enumerate(zip(spans, texts)):
+            needed = math.ceil(spoken_length(text) * 1000 / cps) - (span[1] - span[0])
+            previous_end = spans[index - 1][1] if index else 0
+            room = max(0, min(lead_ms, span[0] - previous_end))
+            # Use only nearby silence, on centisecond boundaries, without moving speech.
+            shift = min(room, max(0, -(-needed // 10) * 10))
+            span[0] -= shift - shift % 10
     return spans
 
 
@@ -438,6 +458,7 @@ def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscap
         round(duration * 1000),
         settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
         floor_ms=round(MIN_CAPTION_SECONDS * 1000),
+        lead_ms=500 if landscape else 0,
     )
     return groups, spans, plain_lines, cleanup, approximate
 

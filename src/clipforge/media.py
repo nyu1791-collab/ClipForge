@@ -15,7 +15,7 @@ PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
 FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf"]
 AUDIO_RATE = 48000
 ASR_SAMPLE_RATE = 16000
-LOUDNESS = "I=-16:TP=-1.5:LRA=11"
+LOUDNESS = "I=-16:TP=-2.5:LRA=11"
 MAX_KEEP_REGIONS = 60
 MAX_SOUND_EFFECTS = 20
 SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio
@@ -562,7 +562,9 @@ def _audio_tail(settings, duration, measured):
     tail = f"[mix]{_loudness_args(measured)},aresample={AUDIO_RATE}"
     if fade > 0 and duration > 2 * fade:
         tail += f",afade=t=in:st=0:d={fade:.3f},afade=t=out:st={duration - fade:.3f}:d={fade:.3f}"
-    return tail + "[aout]"
+    # Oversample before limiting; reserve 1.5 dB for intersample and AAC overshoot.
+    tail += ",aresample=192000,alimiter=limit=0.749894:level=false:latency=true"
+    return tail + f",aresample={AUDIO_RATE}[aout]"
 
 
 def measure_loudness(source, clip, settings, keep, duration):

@@ -115,6 +115,18 @@ def extract_audio(source, output, start, duration):
         raise PipelineError("PyAV audio extraction failed") from None
 
 
+def _metadata_reason(error):
+    """Stable reason codes, without forwarding response bodies or URLs."""
+    match = re.search(r"\bHTTP ([1-5][0-9]{2})\b", str(error))
+    if match:
+        return "http_" + match[1]
+    if "HTTP unavailable" in str(error) or isinstance(
+        error, (ConnectionError, TimeoutError)
+    ):
+        return "connection_error"
+    return "invalid_metadata"
+
+
 class VideoMetadata(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -267,8 +279,23 @@ class KickVOD:
         try:
             try:
                 found = self._api_video()
-            except PipelineError:
-                found = self._page_video()
+            except PipelineError as api_error:
+                api_reason = _metadata_reason(api_error)
+                try:
+                    found = self._page_video()
+                    if found is None:
+                        raise PipelineError("VOD identity missing or ambiguous")
+                except (PipelineError, UnicodeError, ValueError) as page_error:
+                    reasons = {"api": api_reason, "page": _metadata_reason(page_error)}
+                    failure = PipelineError(
+                        "Kick VOD metadata failed (api="
+                        + reasons["api"]
+                        + "; page="
+                        + reasons["page"]
+                        + ")"
+                    )
+                    failure.reasons = reasons
+                    raise failure from None
             if found is None:
                 raise PipelineError("VOD identity missing or ambiguous")
             self.metadata, self.master = found

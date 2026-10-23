@@ -451,3 +451,23 @@ def test_page_url_match_ignores_channel_case(tmp_path, fake_kick):
         assert value.master == MASTER
     finally:
         value.close()
+
+
+def test_failed_api_and_page_keep_both_safe_reason_codes(vod, tmp_path, monkeypatch):
+    def api(self):
+        raise PipelineError("Kick media HTTP 403; failed after 1 attempts")
+
+    def page(self):
+        raise PipelineError(
+            "Kick media HTTP 502; failed after 4 attempts https://private.example?secret=HIDDEN"
+        )
+
+    monkeypatch.setattr(km.KickVOD, "_api_video", api)
+    monkeypatch.setattr(km.KickVOD, "_page_video", page)
+    with pytest.raises(PipelineError) as failure:
+        km.KickVOD(URL, tmp_path / "failed")
+    assert failure.value.reasons == {"api": "http_403", "page": "http_502"}
+    assert "api=http_403" in str(failure.value)
+    assert "page=http_502" in str(failure.value)
+    assert "HIDDEN" not in str(failure.value)
+    assert "https://" not in str(failure.value)

@@ -151,7 +151,11 @@ REQUIRED_FILES = {
     "ledger.json",
     "quality.json",
 }
-OPTIONAL_FILES = {"thumbnail.png", "chat.ass"}  # chat.ass only with the chat panel
+OPTIONAL_FILES = {
+    "thumbnail.png",
+    "chat.ass",
+    "layout.json",
+}  # chat.ass only with the chat panel
 VISUAL_DIR = "visuals"
 SUPPLIED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REPOSITORY_URL = "https://github.com/nyu1791-collab/ClipForge"
@@ -346,17 +350,7 @@ def _auto_layout_window(source, start, end, events, anchor, keep):
     """Caption bands for a crop side the reviewer fixed: the window is not chosen by plan."""
     from . import auto_layout
 
-    times, frames = auto_layout.sample_frames(source, start, end)
-    crop = {
-        "anchor": anchor,
-        "x": _crop_fractions(keep)[anchor],
-        "keep": keep,
-        "kept": {},
-    }
-    return {
-        "crop": crop,
-        "positions": auto_layout.caption_positions(times, frames, events, crop),
-    }
+    return auto_layout.plan(source, start, end, events, keep=keep, anchor=anchor)
 
 
 def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
@@ -404,6 +398,32 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
         }
 
 
+def _saved_layout(target, input_key):
+    """A layout is reusable only when its receipt hash and all planning inputs match."""
+    path, receipt = target / "layout.json", target / "render.json"
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024**2:
+        raise PipelineError("invalid saved layout")
+    saved, value = json.loads(receipt.read_text()), json.loads(path.read_text())
+    if (
+        value.get("schema") != 1
+        or value.get("input_key") != input_key
+        or saved.get("sha256", {}).get("layout.json") != digest(path)
+    ):
+        raise PipelineError("saved layout differs from the render inputs or receipt")
+    plan = value.get("plan")
+    if not isinstance(plan, dict) or not {
+        "x",
+        "positions",
+        "requested",
+        "anchor",
+        "reason",
+    } <= set(plan):
+        raise PipelineError("invalid saved layout plan")
+    return plan
+
+
 def render_clip(
     source, root, index, clip, transcript, settings, key, chat=None, crop_anchor="auto"
 ):
@@ -416,9 +436,21 @@ def render_clip(
         raise PipelineError("crop_anchor must be auto, left, center or right")
     # Fill chooses where the picture is cropped and which captions go to the top. The plan is
     # made before the render key, so a different plan is a different render.
-    layout = None
+    layout, layout_input_key = None, None
     if settings.chat_panel and settings.chat_panel_fit == "fill":
-        layout = chat_layout(source, clip, transcript, settings, crop_anchor)
+        layout_input_key = fingerprint(
+            {
+                "version": 2,
+                "job": key,
+                "clip": clip.model_dump(),
+                "transcript": transcript.model_dump(),
+                "settings": settings.model_dump(mode="json"),
+                "crop_anchor": crop_anchor,
+            }
+        )
+        layout = _saved_layout(target, layout_input_key) if target.is_dir() else None
+        if layout is None:
+            layout = chat_layout(source, clip, transcript, settings, crop_anchor)
     render_key = fingerprint(
         {
             "job": key,
@@ -455,6 +487,11 @@ def render_clip(
     keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
     with tempfile.TemporaryDirectory(prefix="." + name + "-", dir=root) as temporary:
         directory = Path(temporary)
+        if layout is not None:
+            write_json(
+                directory / "layout.json",
+                {"schema": 1, "input_key": layout_input_key, "plan": layout},
+            )
         if settings.chat_panel:
             # Written beside the MP4 under the fixed name the render graph uses.
             (directory / "chat.ass").write_text(chat["ass"], encoding="utf-8")
