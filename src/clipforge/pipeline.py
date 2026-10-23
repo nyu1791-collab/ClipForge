@@ -573,6 +573,38 @@ def saved_render_inputs(root, index):
     return _stored_inputs(json.loads(receipt.read_text()))
 
 
+def _has_layout(settings, caption_floor):
+    """Whether a render with these settings gets a caption layout; landscape_layout's rule, without
+    the analysis.
+    """
+    if settings.aspect != "16:9":
+        return False
+    if settings.chat_panel:
+        return settings.chat_panel_fit == "fill"
+    return settings.caption_lift or caption_floor is not None
+
+
+def _same_layout_arguments(saved_layout, settings, crop_anchor, caption_floor):
+    """Whether this call lays a clip out as the stored render was laid out.
+
+    saved_layout is the stored layout inputs, or None for a render without a layout. A call that
+    would lay the clip out differently is refused rather than answered with the stored clip.
+    """
+    if saved_layout is None:
+        # The chat crop side only matters with the chat fill, which has a layout.
+        return not (
+            _has_layout(settings, caption_floor)
+            or (settings.chat_panel and crop_anchor != "auto")
+        )
+    # Standard layouts always record "auto" as the requested side.
+    requested = crop_anchor if settings.chat_panel else "auto"
+    return (
+        _has_layout(settings, caption_floor)
+        and saved_layout.get("requested") == requested
+        and saved_layout.get("floor") == caption_floor
+    )
+
+
 def _existing_clip(target, name, saved, render_key):
     """The stored result of a rendered clip; refused when its receipt or files no longer match."""
     if not valid_receipt(target, saved, render_key):
@@ -616,6 +648,12 @@ def render_clip(
         existing = json.loads(receipt.read_text())
         inputs = _stored_inputs(existing)
         if inputs is not None:
+            if not _same_layout_arguments(
+                inputs["layout"], settings, crop_anchor, caption_floor
+            ):
+                raise PipelineError(
+                    "existing clip differs from the saved render receipt"
+                )
             return _existing_clip(
                 target,
                 name,
@@ -632,6 +670,10 @@ def render_clip(
         if valid_receipt(
             target, existing, _render_key(key, clip, transcript, None, None)
         ):
+            if not _same_layout_arguments(None, settings, crop_anchor, caption_floor):
+                raise PipelineError(
+                    "existing clip differs from the saved render receipt"
+                )
             return {"directory": "clips/" + name, **existing}
     if settings.chat_panel and chat is None:
         raise PipelineError("chat panel needs a Kick VOD URL source")
