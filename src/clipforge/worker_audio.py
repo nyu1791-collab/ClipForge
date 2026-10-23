@@ -10,7 +10,15 @@ import shutil
 import sys
 import tempfile
 
-from . import audio_first, audio_volume, landscape, media, pipeline, review_draft
+from . import (
+    audio_first,
+    audio_volume,
+    landscape,
+    media,
+    pipeline,
+    review_draft,
+    topic_hints,
+)
 from .github_cli import run as run_gh
 from .kick_media import KickVOD
 from .media_sources import canonical, open_source
@@ -205,6 +213,15 @@ ORIGIN_FIELDS = (
 )
 
 
+def _hint_ranking(analysis, volume):
+    """Topic IDs best first by the text, speech and loudness hints; empty if they fail."""
+    try:
+        ranked = topic_hints.hint_topics(analysis, volume=volume)["topics"]
+    except (ValueError, KeyError, TypeError):
+        return []
+    return [row["id"] for row in ranked]
+
+
 def _volume_series(source, info):
     """(series, reason): per-second loudness on the topic clock, or None and a reason code."""
     try:
@@ -266,10 +283,18 @@ def execute(
                     if "topic_ids" in selection
                     else {}
                 )
-                result = audio_first.previews(
-                    vod, output, settings, analysis_result=analysis, **options
-                )
                 volume, volume_reason = _volume_series(source, info)
+                # Rank by the hints that need no video, so the previewed candidates are
+                # the strongest ones rather than the longest-talking ones.
+                ranking = _hint_ranking(analysis[0], volume)
+                result = audio_first.previews(
+                    vod,
+                    output,
+                    settings,
+                    analysis_result=analysis,
+                    ranking=ranking,
+                    **options,
+                )
                 from .chat_activity import candidate_series
 
                 chat, chat_diagnostics = candidate_series(vod, analysis[0], result)

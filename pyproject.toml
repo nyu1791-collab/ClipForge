@@ -27,7 +27,7 @@ chat = ["chat-downloader==0.2.8"]
 media-fetch = [
     "av==18.1.0; python_version < '3.12'",
     "av==19.0.2; python_version >= '3.12'",
-    "curl-cffi==0.13.0",
+    "curl-cffi==0.15.0",
     "yt-dlp[default]==2026.10.21",
 ]
 cuda = [

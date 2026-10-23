@@ -111,7 +111,7 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
         worker, "KickVOD", lambda *a, **k: SimpleNamespace(close=lambda: None)
     )
 
-    def previews(vod, root, settings, analysis_result=None):
+    def previews(vod, root, settings, analysis_result=None, ranking=None):
         calls.append(analysis_result)
         return {
             "status": "awaiting_video_review",
@@ -143,7 +143,7 @@ def test_later_stages_keep_how_the_analysis_recognised(previous_analysis, monkey
     monkeypatch.setattr(
         audio_first,
         "previews",
-        lambda vod, root, settings, analysis_result=None: {
+        lambda vod, root, settings, analysis_result=None, ranking=None: {
             "status": "awaiting_video_review",
             "previews": [],
             "analysis_key": analysis_result[0]["analysis_key"],
@@ -173,7 +173,7 @@ def test_previews_write_unapproved_drafts_before_receipting(
     )
     monkeypatch.setattr(worker, "preview_contact_sheet", lambda *a: None)
 
-    def previews(vod, root, settings, analysis_result=None):
+    def previews(vod, root, settings, analysis_result=None, ranking=None):
         analysis, _ = analysis_result
         rows = []
         for topic in analysis["topics"]:

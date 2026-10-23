@@ -909,3 +909,33 @@ def test_render_passes_a_reviewed_caption_floor_to_its_clip(audio_job, monkeypat
     )
     af.render(vod, root, settings, review, only=2)
     assert floors == [(2, 0.25)]
+
+
+def test_previews_follow_the_hint_ranking_before_speech_length(tmp_path, monkeypatch):
+    from clipforge import audio_first as first
+    from clipforge.models import Settings
+
+    settings = Settings(gemini_model="manual-no-api", clips=3, candidates=3)
+    topics = [
+        {"id": "t-long", "start": 0, "end": 60, "speech_seconds": 50, "text": "あ"},
+        {"id": "t-short", "start": 100, "end": 160, "speech_seconds": 5, "text": "い"},
+        {"id": "t-mid", "start": 200, "end": 260, "speech_seconds": 20, "text": "う"},
+    ]
+    seen = []
+
+    def fake_retrieved(vod, target, start, end, quality):
+        seen.append(target.stem)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"preview")
+        return {"sha256": "0" * 64}
+
+    monkeypatch.setattr(first, "retrieved", fake_retrieved)
+    analysis = {"analysis_key": "k", "topics": topics}
+    first.previews(
+        None,
+        tmp_path,
+        settings,
+        analysis_result=(analysis, None),
+        ranking=["t-short", "t-mid", "t-long"],
+    )
+    assert seen == ["t-short", "t-mid", "t-long"]

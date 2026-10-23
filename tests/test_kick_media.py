@@ -292,7 +292,7 @@ def test_audio_retrieval_uses_pyav_without_cli(tmp_path, monkeypatch, start, end
     monkeypatch.setattr(
         value,
         "_stream_segments",
-        lambda selected: iter([s["url"] for s in selected]),
+        lambda selected: (s["url"] for s in selected),
     )
 
     def no_cli(*args, **kwargs):

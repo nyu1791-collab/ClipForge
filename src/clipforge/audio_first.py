@@ -227,12 +227,23 @@ def allocate_audio(source, root, settings, source_url):
     return result, transcript
 
 
-def previews(vod, root, settings, analysis_result=None, topic_ids=None):
+def previews(vod, root, settings, analysis_result=None, topic_ids=None, ranking=None):
+    """Preview the best candidates first.
+
+    ``ranking`` lists topic IDs from the text, speech and loudness hints, best first. Without
+    it, speech length alone decides, which can drop a strong short candidate.
+    """
     analysis, _ = (
         analysis_result if analysis_result is not None else analyze(vod, root, settings)
     )
+    position = {topic_id: index for index, topic_id in enumerate(ranking or [])}
     ordered = sorted(
-        analysis["topics"], key=lambda row: (-row["speech_seconds"], row["start"])
+        analysis["topics"],
+        key=lambda row: (
+            position.get(row["id"], len(position)),
+            -row["speech_seconds"],
+            row["start"],
+        ),
     )
     if topic_ids is not None:
         available = {row["id"]: row for row in analysis["topics"]}

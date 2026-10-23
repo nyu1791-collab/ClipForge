@@ -2,7 +2,7 @@
 
 同じ配信から、話題別の**横動画（16:9・1920×1080）を3〜5本**作るパイプラインです。現在の開発対象は横動画です。
 
-主な流れは **メディアURL → runnerで音声取得 → Colab GPUで2分割ASR → 結合・話題分割 → 同じrunでpreviewsと未承認の下書き → 映像確認・承認 → Colab CPUで描画 → 制御VMで `merge --local`** です。URL経路ではGeminiを呼びません。Kickは採用区間の映像を取得します。追加経路では形式により元ファイル全体の転送が必要です。
+主な流れは **メディアURL → runnerで音声取得 → Colab GPUで2〜4分割ASR → 結合・話題分割 → 同じrunでpreviewsと未承認の下書き → 映像確認・承認 → Colab CPUで描画 → 制御VMで `merge --local`** です。URL経路ではGeminiを呼びません。Kickは採用区間の映像を取得します。追加経路では形式により元ファイル全体の転送が必要です。
 
 ローカル動画は `submit_job.py --input` から依頼し、文字起こし・候補抽出・Gemini選定・描画を行います。workerは既定の `colab-auto`、または明示した `cpu` です。制御VMは依頼・回収・結合だけを担当し、重いASRや描画を行いません。
 
@@ -20,9 +20,9 @@ uv run --no-sync python tools/submit_job.py \
 
 `--ref` はレビュー済みの完全なコミットSHAへ置き換えます。話題分割は発話の間と語彙変化による候補作成です。下書きは未承認のため、候補映像・話題・境界を確認して別の承認ファイルを作ります。
 
-Kickのほか、YouTubeの動画、Twitchのアーカイブ・クリップ、直接のHTTPS **mp4・m4a・mp3・webm・HLS m3u8** URLに対応します。**あなたが権利を持つファイルを置いた場所の URL** を指定してください。署名付きURLも使えます。YouTube・Twitchはyt-dlpとNode.jsで取得し、ライブ・プレイリスト一括取得は受け付けません。
+GPUを使うURL経路（上の手順）の対象はKickの配信動画です。YouTube・Twitchのアーカイブ・クリップと直接のHTTPS **mp4・m4a・mp3・webm・HLS m3u8** URLは追加の経路で、実機での検証は完了していません。**あなたが権利を持つファイルを置いた場所の URL** を指定してください。署名付きURLも使えます。YouTube・Twitchはyt-dlpとNode.jsで取得し、ライブ・プレイリスト一括取得は受け付けません。
 
-MP3・M4Aなど音声だけの入力は `--auto-previews` を外して解析します。映像のプレビューや描画には映像を含む入力が必要です。URLだけの投入は既定で2つのColabランタイムへ音声を分け、元の時刻へ結合してから話題を分割します。`--asr-parts 1` で従来の連続ASRを指定できます。詳細は [2分割ASR](docs/ASR_SPLIT.md)。
+MP3・M4Aなど音声だけの入力は `--auto-previews` を外して解析します。映像のプレビューや描画には映像を含む入力が必要です。URLだけの投入は既定で2つのColabランタイムへ音声を分け、元の時刻へ結合してから話題を分割します。`--asr-parts` で2〜4部分を選べます（4部分はL4 2台とT4 2台）。`--asr-parts 1` で従来の連続ASRを指定できます。詳細は [2分割ASR](docs/ASR_SPLIT.md)。
 
 ```bash
 uv run --no-sync python tools/submit_audio_stage.py --stage render \

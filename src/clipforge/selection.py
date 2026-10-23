@@ -7,6 +7,10 @@ from .models import PickEnvelope, SelectedClip, validate_picks
 from .storage import PipelineError, digest
 
 
+MAX_UPLOAD_BYTES = 1024**3
+MAX_REFERENCE_CHARACTERS = 500_000
+
+
 def response_schema(candidates, settings):
     # Google's Schema dialect does not accept JSON Schema's exclusiveMinimum.
     # Keep the wire contract portable; Pydantic enforces strict ordering and
@@ -69,6 +73,24 @@ def choose(source, previews, candidates, transcript, info, settings):
     key = os.environ.get("GEMINI_API_KEY")
     if not key:
         raise PipelineError("GEMINI_API_KEY is required for visual selection")
+    # Checked before any upload: the whole batch is refused, with the reason, rather than
+    # part-sent. The limits are generous; they only stop an accidental flood.
+    video_bytes = sum(path.stat().st_size for path in previews)
+    text_chars = sum(
+        len(
+            "\n".join(
+                s.text
+                for s in transcript.segments
+                if s.start < candidate.end and s.end > candidate.start
+            )
+        )
+        for candidate in candidates
+    )
+    if video_bytes > MAX_UPLOAD_BYTES or text_chars > MAX_REFERENCE_CHARACTERS:
+        raise PipelineError(
+            "candidate batch exceeds the Gemini input budget; "
+            "fewer candidates or shorter previews are needed"
+        )
     client = genai.Client(
         api_key=key,
         http_options=types.HttpOptions(
