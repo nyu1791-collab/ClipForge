@@ -452,7 +452,9 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(transcript, clip, directory, settings, keep=None, credits=None):
+    def fake_captions(
+        transcript, clip, directory, settings, keep=None, credits=None, positions=None
+    ):
         seen["credits"] = credits
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
@@ -653,6 +655,7 @@ def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
         keep=None,
         visuals=(),
         chat_ass=None,
+        crop_x=None,
     ):
         seen["chat_ass"] = chat_ass
         seen["chat_text"] = chat_ass.read_text(encoding="utf-8")
@@ -665,7 +668,9 @@ def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(transcript, clip, directory, settings, keep=None, credits=None):
+    def fake_captions(
+        transcript, clip, directory, settings, keep=None, credits=None, positions=None
+    ):
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
         return {"events": 0, "heading": False, "missing_glyphs": []}
@@ -687,3 +692,232 @@ def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
     # The panel needs its chat source; a clip without one is refused before any work.
     with pytest.raises(PipelineError, match="Kick VOD URL"):
         pipeline.render_clip(source, root, 2, clip, transcript, settings, "job-key")
+
+
+def _fill_clip_case():
+    """Two captions, one at 0.5 s and one at 3.5 s, on a 6 s clip of a 16:9 1080 chat render."""
+    transcript = Transcript(
+        language="ja",
+        segments=[
+            Segment(
+                start=s, end=s + 2, text=t, words=[Word(start=s, end=s + 2, text=t)]
+            )
+            for s, t in ((0.5, "上の字幕です"), (3.5, "下の字幕です"))
+        ],
+    )
+    clip = SelectedClip(
+        start=0, end=6, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    return transcript, clip, make(aspect="16:9", height=1080, chat_panel=True)
+
+
+def test_chat_layout_takes_the_planned_crop_and_caption_positions(monkeypatch):
+    transcript, clip, settings = _fill_clip_case()
+    calls = []
+
+    def plan(source, start, end, events, keep):
+        calls.append((source, start, end, events, keep))
+        return {
+            "crop": {"anchor": "right", "x": 0.25, "kept": {}},
+            "positions": ["top", "bottom"],
+        }
+
+    monkeypatch.setattr(pipeline, "_auto_layout_plan", plan)
+    layout = pipeline.chat_layout("in.mp4", clip, transcript, settings)
+    assert layout == {
+        "anchor": "right",
+        "requested": "auto",
+        "x": 0.25,
+        "positions": ["top", "bottom"],
+        "reason": None,
+    }
+    # Caption times are the file's own; the kept share is the area of the 1920 px frame.
+    _, start, end, events, keep = calls[0]
+    assert (start, end, events, keep) == (0, 6, [(0.5, 2.5), (3.5, 5.5)], 0.75)
+
+
+def test_chat_layout_fixed_side_places_captions_without_choosing_the_crop(monkeypatch):
+    transcript, clip, settings = _fill_clip_case()
+    auto_calls, windows = [], []
+
+    def auto(*args):
+        auto_calls.append(args)
+        return {"crop": {"anchor": "left", "x": 0.0, "kept": {}}, "positions": []}
+
+    def window(source, start, end, events, anchor, keep):
+        windows.append(anchor)
+        crop = {
+            "anchor": anchor,
+            "x": pipeline._crop_fractions(keep)[anchor],
+            "keep": keep,
+        }
+        return {"crop": crop, "positions": ["bottom", "top"]}
+
+    monkeypatch.setattr(pipeline, "_auto_layout_plan", auto)
+    monkeypatch.setattr(pipeline, "_auto_layout_window", window)
+    for anchor, x in (("left", 0.0), ("center", 0.125), ("right", 0.25)):
+        layout = pipeline.chat_layout("in.mp4", clip, transcript, settings, anchor)
+        assert layout["anchor"] == anchor and layout["requested"] == anchor
+        assert layout["x"] == pytest.approx(x) and layout["positions"] == [
+            "bottom",
+            "top",
+        ]
+    assert windows == ["left", "center", "right"] and auto_calls == []
+
+
+def test_chat_layout_failure_falls_back_to_centre_or_the_fixed_side(monkeypatch):
+    transcript, clip, settings = _fill_clip_case()
+
+    def broken(*args):
+        raise RuntimeError("no frames")
+
+    monkeypatch.setattr(pipeline, "_auto_layout_plan", broken)
+    monkeypatch.setattr(pipeline, "_auto_layout_window", broken)
+    assert pipeline.chat_layout("in.mp4", clip, transcript, settings) == {
+        "anchor": "center",
+        "requested": "auto",
+        "x": None,
+        "positions": None,
+        "reason": "RuntimeError",
+    }
+    fixed = pipeline.chat_layout("in.mp4", clip, transcript, settings, "right")
+    assert fixed == {
+        "anchor": "right",
+        "requested": "right",
+        "x": 0.25,
+        "positions": None,
+        "reason": "RuntimeError",
+    }
+
+
+def test_chat_layout_refuses_a_position_for_some_captions_only(monkeypatch):
+    transcript, clip, settings = _fill_clip_case()
+    monkeypatch.setattr(
+        pipeline,
+        "_auto_layout_plan",
+        lambda *args, **kwargs: {
+            "crop": {"anchor": "center", "x": 0.125, "kept": {}},
+            "positions": ["top"],
+        },
+    )
+    layout = pipeline.chat_layout("in.mp4", clip, transcript, settings)
+    assert layout["positions"] is None and layout["reason"] == "PipelineError"
+
+
+def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
+    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
+):
+    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"source")
+    settings = make(aspect="16:9", height=1080, chat_panel=True)
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
+    )
+    chat = {
+        "ass": "[Script Info]\nPlayResX: 1920\n",
+        "messages": 0,
+        "reason": None,
+        "error": None,
+    }
+    count = len(captions.event_spans(transcript, clip, settings))
+    positions = ["top"] + ["bottom"] * (count - 1)
+    seen = []
+
+    def fake_render(
+        source,
+        destination,
+        clip,
+        settings,
+        ass=None,
+        keep=None,
+        visuals=(),
+        chat_ass=None,
+        crop_x=None,
+    ):
+        seen.append(crop_x)
+        destination.write_bytes(b"video")
+        return {
+            "duration": 10,
+            "width": 1920,
+            "height": 1080,
+            "audio": True,
+            "audio_sample_rate": 48000,
+        }
+
+    def fake_captions(
+        transcript, clip, directory, settings, keep=None, credits=None, positions=None
+    ):
+        seen.append(positions)
+        pysubs2.SSAFile().save(str(directory / "captions.ass"))
+        pysubs2.SSAFile().save(str(directory / "captions.srt"))
+        return {"events": 0, "heading": False, "missing_glyphs": []}
+
+    monkeypatch.setattr(pipeline.media, "render", fake_render)
+    monkeypatch.setattr(pipeline, "create_captions", fake_captions)
+    monkeypatch.setattr(
+        pipeline,
+        "_auto_layout_plan",
+        lambda *args, **kwargs: {
+            "crop": {"anchor": "right", "x": 0.25, "kept": {}},
+            "positions": positions,
+        },
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_auto_layout_window",
+        lambda source, start, end, events, anchor, keep: {
+            "crop": {
+                "anchor": anchor,
+                "x": pipeline._crop_fractions(keep)[anchor],
+                "keep": keep,
+            },
+            "positions": positions,
+        },
+    )
+    roots = {name: tmp_path / name / "clips" for name in ("auto", "left")}
+    for root in roots.values():
+        root.mkdir(parents=True)
+    auto = pipeline.render_clip(
+        source, roots["auto"], 1, clip, transcript, settings, "job", chat=chat
+    )
+    fixed = pipeline.render_clip(
+        source,
+        roots["left"],
+        1,
+        clip,
+        transcript,
+        settings,
+        "job",
+        chat=chat,
+        crop_anchor="left",
+    )
+    assert auto["layout"] == {
+        "anchor": "right",
+        "requested": "auto",
+        "x": 0.25,
+        "positions_top": 1,
+        "reason": None,
+    }
+    assert fixed["layout"] == {
+        "anchor": "left",
+        "requested": "left",
+        "x": 0.0,
+        "positions_top": 1,
+        "reason": None,
+    }
+    assert seen == [positions, 0.25, positions, 0.0]
+    # A different requested side is a different render, so its receipt has its own key.
+    assert auto["key"] != fixed["key"]
+    with pytest.raises(PipelineError, match="crop_anchor must be"):
+        pipeline.render_clip(
+            source,
+            roots["left"],
+            2,
+            clip,
+            transcript,
+            settings,
+            "job",
+            chat=chat,
+            crop_anchor="middle",
+        )

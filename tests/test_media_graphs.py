@@ -728,3 +728,85 @@ def test_chat_panel_renders_a_real_landscape_frame(tmp_path, fit):
     clip = SimpleNamespace(start=0.0, end=3.0)
     info = media.render(source, destination, clip, settings, chat_ass=chat)
     assert (info["width"], info["height"]) == (1920, 1080)
+
+
+FILL = {**CHAT_PANEL, "chat_panel_fit": "fill"}
+
+
+def test_chat_panel_fill_scales_the_picture_to_the_area_and_centres_the_crop():
+    settings = make(**FILL, progress_bar=False, fade_seconds=0)
+    graph = media._video_graph(
+        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+    )
+    # The picture is scaled to the frame height and cut to the 1440 px area, centred.
+    assert (
+        "[vin]scale=1440:1080:force_original_aspect_ratio=increase:"
+        "force_divisible_by=2,crop=1440:1080:(iw-1440)/2:(ih-1080)/2,setsar=1[lay0]"
+    ) in graph
+    assert graph.endswith(
+        "[lay0]pad=1920:1080:0:0:color=0x111114,"
+        "drawbox=x=1440:y=0:w=2:h=1080:color=0x2a2a30:t=fill,"
+        "ass=filename=captions.ass,ass=filename=chat.ass[vout]"
+    )
+    # The picture has the full frame height, so the only border is the vertical column line.
+    assert graph.count("drawbox") == 1
+
+
+def test_chat_panel_fill_crops_from_the_planned_x_fraction():
+    settings = make(**FILL, progress_bar=False, fade_seconds=0)
+    graph = media._video_graph(
+        CLIP,
+        settings,
+        1920,
+        1080,
+        None,
+        10.0,
+        [],
+        "captions.ass",
+        "chat.ass",
+        crop_x=0.1,
+    )
+    assert "crop=1440:1080:iw*0.100000:(ih-1080)/2,setsar=1[lay0]" in graph
+
+
+def test_chat_panel_fill_accepts_the_whole_range_of_crop_positions():
+    settings = make(**FILL, progress_bar=False, fade_seconds=0)
+    for crop_x in (0.0, 0.25):
+        media._video_graph(
+            CLIP, settings, 1920, 1080, None, 10.0, [], None, "chat.ass", crop_x=crop_x
+        )
+    for crop_x in (-0.01, 0.26, 1.0):
+        with pytest.raises(PipelineError, match="crop position is outside"):
+            media._video_graph(
+                CLIP,
+                settings,
+                1920,
+                1080,
+                None,
+                10.0,
+                [],
+                None,
+                "chat.ass",
+                crop_x=crop_x,
+            )
+
+
+def test_crop_position_does_not_change_the_other_chat_fits():
+    for fit in ("crop", "letterbox", "top"):
+        settings = make(**{**CHAT_PANEL, "chat_panel_fit": fit}, progress_bar=False)
+        plain = media._video_graph(
+            CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+        )
+        moved = media._video_graph(
+            CLIP,
+            settings,
+            1920,
+            1080,
+            None,
+            10.0,
+            [],
+            "captions.ass",
+            "chat.ass",
+            crop_x=0.1,
+        )
+        assert moved == plain

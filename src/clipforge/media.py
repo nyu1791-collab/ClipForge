@@ -321,13 +321,25 @@ def _layout(settings, width, height, src, out):
     )
 
 
-def _chat_fit(settings, width, height, src, out):
+def _chat_fit(settings, width, height, src, out, crop_x=None):
     """Fit [src] into the video area left of the chat column (width is that area's width).
 
     Used only with the chat panel, which replaces the layout and framing settings there. With
     fit top, [src] is the 16:9 picture box, so the letterbox branch fits it without bars.
+    With fit fill, the picture is scaled to the area's height and cut to its width, starting
+    at crop_x (a fraction of the source width, 0 to 1 minus the area's share); centred when
+    crop_x is None.
     """
-    if settings.chat_panel_fit == "crop":
+    if settings.chat_panel_fit == "fill":
+        frame_width, _ = frame_size(settings)
+        if crop_x is not None and not 0 <= crop_x <= 1 - width / frame_width + 1e-9:
+            raise PipelineError("chat crop position is outside the source picture")
+        left = f"(iw-{width})/2" if crop_x is None else f"iw*{crop_x:.6f}"
+        fit = (
+            f"scale={width}:{height}:force_original_aspect_ratio=increase:"
+            f"force_divisible_by=2,crop={width}:{height}:{left}:(ih-{height})/2"
+        )
+    elif settings.chat_panel_fit == "crop":
         fit = (
             f"scale={width}:{height}:force_original_aspect_ratio=increase:"
             f"force_divisible_by=2,crop={width}:{height}"
@@ -351,7 +363,16 @@ def _position(position, margin, top):
 
 
 def _video_graph(
-    clip, settings, width, height, keep, duration, visuals, ass, chat_ass=None
+    clip,
+    settings,
+    width,
+    height,
+    keep,
+    duration,
+    visuals,
+    ass,
+    chat_ass=None,
+    crop_x=None,
 ):
     """Video chain from [0:V:0] to [vout]; visuals are inputs 1..len(visuals).
 
@@ -373,7 +394,7 @@ def _video_graph(
     else:
         base = "vin"
     if panel:
-        chain.append(_chat_fit(settings, area, picture, base, "lay0"))
+        chain.append(_chat_fit(settings, area, picture, base, "lay0", crop_x))
     else:
         chain.append(_layout(settings, width, height, base, "lay0"))
     previous = "lay0"
@@ -602,7 +623,15 @@ def measure_loudness(source, clip, settings, keep, duration):
 
 
 def render(
-    source, destination, clip, settings, ass=None, keep=None, visuals=(), chat_ass=None
+    source,
+    destination,
+    clip,
+    settings,
+    ass=None,
+    keep=None,
+    visuals=(),
+    chat_ass=None,
+    crop_x=None,
 ):
     """Render one clip; visuals are dicts with file, start, end, position, max_fraction."""
     width, height = frame_size(settings)
@@ -649,7 +678,16 @@ def render(
     first_extra = 1 + len(visuals)
     graph = [
         _video_graph(
-            clip, settings, width, height, keep, duration, visuals, ass, chat_ass
+            clip,
+            settings,
+            width,
+            height,
+            keep,
+            duration,
+            visuals,
+            ass,
+            chat_ass,
+            crop_x,
         )
     ]
     if has_audio or settings.bgm or settings.sound_effects:

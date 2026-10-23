@@ -25,7 +25,7 @@ from . import (
     thumbnail,
 )
 from . import topics as topic_tools
-from .captions import create as create_captions
+from .captions import create as create_captions, event_spans as caption_spans
 from .hardware import asr_options, cpu_threads, encode_threads
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import (
@@ -326,12 +326,99 @@ def cut_regions(source, transcript, clip, settings):
     return regions or None
 
 
-def render_clip(source, root, index, clip, transcript, settings, key, chat=None):
+# Crop sides a reviewer may request for a chat render; "auto" lets auto_layout choose.
+CROP_ANCHORS = ("auto", "left", "center", "right")
+
+
+def _crop_fractions(keep):
+    """Left edge of each crop side, as a fraction of the source width."""
+    return {"left": 0.0, "center": (1 - keep) / 2, "right": 1 - keep}
+
+
+def _auto_layout_plan(source, start, end, events, keep):
+    """auto_layout.plan; imported here, since only fill chat renders need the module."""
+    from . import auto_layout
+
+    return auto_layout.plan(source, start, end, events, keep=keep)
+
+
+def _auto_layout_window(source, start, end, events, anchor, keep):
+    """Caption bands for a crop side the reviewer fixed: the window is not chosen by plan."""
+    from . import auto_layout
+
+    times, frames = auto_layout.sample_frames(source, start, end)
+    crop = {
+        "anchor": anchor,
+        "x": _crop_fractions(keep)[anchor],
+        "keep": keep,
+        "kept": {},
+    }
+    return {
+        "crop": crop,
+        "positions": auto_layout.caption_positions(times, frames, events, crop),
+    }
+
+
+def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
+    """Crop position and caption positions for a chat render with fit fill.
+
+    crop_anchor "auto" takes auto_layout's choice; left, center and right fix the crop and only
+    place the captions. When the plan fails the picture is centred (or on the fixed side) and
+    every caption stays at the bottom; reason then names the failure. Caption times are the
+    file's own, as auto_layout expects.
+    """
+    frame_width, _ = media.frame_size(settings)
+    keep = (frame_width - settings.chat_panel_pixels()) / frame_width
+    try:
+        events = [
+            (clip.start + start, clip.start + end)
+            for start, end in caption_spans(transcript, clip, settings)
+        ]
+        if crop_anchor == "auto":
+            plan = _auto_layout_plan(source, clip.start, clip.end, events, keep)
+        else:
+            plan = _auto_layout_window(
+                source, clip.start, clip.end, events, crop_anchor, keep
+            )
+        positions = list(plan["positions"])
+        if len(positions) != len(events):
+            raise PipelineError("auto layout gave one position per caption")
+        crop = plan["crop"]
+        # The crop stays inside the source: its left edge is 0 to the share not kept.
+        x = min(max(float(crop["x"]), 0.0), 1 - keep)
+        return {
+            "anchor": crop["anchor"],
+            "requested": crop_anchor,
+            "x": x,
+            "positions": positions,
+            "reason": None,
+        }
+    except Exception as failure:
+        fixed = crop_anchor != "auto"
+        return {
+            "anchor": crop_anchor if fixed else "center",
+            "requested": crop_anchor,
+            "x": _crop_fractions(keep)[crop_anchor] if fixed else None,
+            "positions": None,
+            "reason": type(failure).__name__,
+        }
+
+
+def render_clip(
+    source, root, index, clip, transcript, settings, key, chat=None, crop_anchor="auto"
+):
     """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel."""
     name = f"clip-{index:03}"
     target = root / name
     if settings.chat_panel and chat is None:
         raise PipelineError("chat panel needs a Kick VOD URL source")
+    if crop_anchor not in CROP_ANCHORS:
+        raise PipelineError("crop_anchor must be auto, left, center or right")
+    # Fill chooses where the picture is cropped and which captions go to the top. The plan is
+    # made before the render key, so a different plan is a different render.
+    layout = None
+    if settings.chat_panel and settings.chat_panel_fit == "fill":
+        layout = chat_layout(source, clip, transcript, settings, crop_anchor)
     render_key = fingerprint(
         {
             "job": key,
@@ -341,6 +428,17 @@ def render_clip(source, root, index, clip, transcript, settings, key, chat=None)
             **(
                 {"chat": {"ass": fingerprint(chat["ass"]), "reason": chat["reason"]}}
                 if settings.chat_panel
+                else {}
+            ),
+            **(
+                {
+                    "layout": {
+                        "x": layout["x"],
+                        "positions": layout["positions"],
+                        "requested": layout["requested"],
+                    }
+                }
+                if layout
                 else {}
             ),
         }
@@ -373,7 +471,13 @@ def render_clip(source, root, index, clip, transcript, settings, key, chat=None)
             timings,
             "captions",
             lambda: create_captions(
-                transcript, clip, directory, settings, keep, credits=credits
+                transcript,
+                clip,
+                directory,
+                settings,
+                keep,
+                credits=credits,
+                positions=layout["positions"] if layout else None,
             ),
         )
         info = timed(
@@ -388,6 +492,7 @@ def render_clip(source, root, index, clip, transcript, settings, key, chat=None)
                 keep=keep,
                 visuals=visuals,
                 **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
+                **({"crop_x": layout["x"]} if layout else {}),
             ),
         )
         # Checked before the thumbnail, so a strict refusal costs no extra work.
@@ -437,6 +542,14 @@ def render_clip(source, root, index, clip, transcript, settings, key, chat=None)
                 "messages": chat["messages"],
                 "reason": chat["reason"],
                 "error": chat["error"],
+            }
+        if layout:
+            saved["layout"] = {
+                "anchor": layout["anchor"],
+                "requested": layout["requested"],
+                "x": layout["x"],
+                "positions_top": sum(p == "top" for p in layout["positions"] or []),
+                "reason": layout["reason"],
             }
         write_json(directory / "render.json", saved)
         # Commit the whole clip directory only when MP4 and captions are complete.

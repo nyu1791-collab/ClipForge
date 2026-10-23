@@ -690,7 +690,17 @@ def test_chat_panel_clip_is_drawn_from_its_original_interval(audio_job, monkeypa
     drawn = fake_kick_chat(monkeypatch, fetch)
     rendered = []
 
-    def render(source, output, index, clip, transcript, settings, key, chat=None):
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
         rendered.append(chat)
         return {"directory": f"clips/clip-{index:03}"}
 
@@ -724,7 +734,17 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
     drawn = fake_kick_chat(monkeypatch, fetch)
     rendered = []
 
-    def render(source, output, index, clip, transcript, settings, key, chat=None):
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
         rendered.append(chat)
         return {"directory": f"clips/clip-{index:03}"}
 
@@ -737,3 +757,52 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
         "reason": "chat_unavailable",
         "error": "PipelineError",
     }
+
+
+def test_crop_anchors_default_to_auto_and_refuse_other_words():
+    assert af.crop_anchors({"clips": [{}, {"crop_anchor": "left"}]}) == ["auto", "left"]
+    with pytest.raises(PipelineError, match="crop_anchor must be"):
+        af.crop_anchors({"clips": [{"crop_anchor": "centre"}]})
+
+
+def test_chat_panel_clip_passes_its_reviewed_crop_side(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][1]["crop_anchor"] = "right"
+    write_json(review, value)
+    fake_kick_chat(monkeypatch, lambda slug, uuid, start, end, **options: [])
+    anchors = []
+
+    def render(
+        source,
+        output,
+        index,
+        clip,
+        transcript,
+        settings,
+        key,
+        chat=None,
+        crop_anchor="auto",
+    ):
+        anchors.append((index, crop_anchor))
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    af.render(vod, root, chat_settings(settings), review, only=2)
+    assert anchors == [(2, "right")]
+
+
+def test_render_refuses_an_unknown_crop_side_before_any_fetch(audio_job, monkeypatch):
+    vod, root, settings, _, _ = audio_job
+    review = chat_review(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][0]["crop_anchor"] = "middle"
+    write_json(review, value)
+    fetched = []
+    monkeypatch.setattr(
+        vod, "prefetch", lambda *args: fetched.append(args), raising=False
+    )
+    with pytest.raises(PipelineError, match="crop_anchor must be"):
+        af.render(vod, root, chat_settings(settings), review)
+    assert fetched == []

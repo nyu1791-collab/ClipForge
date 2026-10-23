@@ -1331,3 +1331,23 @@ def test_audio_stage_workflow_rejects_unlisted_config_files(
         monkeypatch.setenv(key, value)
     with pytest.raises(AssertionError):
         exec(compile(code, "stage-validation", "exec"), {})
+
+
+def test_review_refuses_an_unknown_crop_side_before_dispatch():
+    spec = importlib.util.spec_from_file_location(
+        "submit_audio_stage", Path("tools/submit_audio_stage.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.require_video_review(
+        {
+            "clips": [
+                {"video_reviewed": True, "crop_anchor": "left"},
+                {"video_reviewed": True},
+            ]
+        }
+    )
+    with pytest.raises(RuntimeError, match="crop_anchor"):
+        module.require_video_review(
+            {"clips": [{"video_reviewed": True, "crop_anchor": "middle"}]}
+        )

@@ -608,3 +608,36 @@ def test_top_chat_caption_overflow_is_measured_inside_the_picture(
     path = tmp_path / "captions.ass"
     subtitles.save(str(path))
     assert quality.overflowing_lines(path) == ["あ" * 19]
+
+
+def test_fill_chat_layout_limits_caption_lines_to_the_video_area(
+    settings, japanese_font
+):
+    fill = Settings.model_validate(
+        {**settings.model_dump(), "aspect": "16:9", "height": 1080, "chat_panel": True}
+    )
+    assert fill.chat_panel_fit == "fill"
+    events = [(0, 2000, "あ" * 18), (2000, 4000, "あ" * 19)]
+    warnings = quality.japanese_style_warnings(events, True, fill)
+    assert len(warnings) == 1
+    assert warnings[0].startswith("1 caption line(s) exceed 18 fullwidth characters")
+
+
+def test_caption_moved_to_the_top_is_measured_inside_the_video_area(
+    tmp_path, japanese_font
+):
+    subtitles = pysubs2.SSAFile()
+    subtitles.info.update(PlayResX="1920", PlayResY="1080")
+    subtitles.styles["Default"] = pysubs2.SSAStyle(
+        fontname="Noto Sans CJK JP", fontsize=72, marginl=38, marginr=518
+    )
+    # The override tag moves the caption to the top; the width limit is still the video area's.
+    subtitles.append(
+        pysubs2.SSAEvent(start=0, end=1000, text=r"{\an8}" + "あ" * 18, marginv=43)
+    )
+    subtitles.append(
+        pysubs2.SSAEvent(start=1000, end=2000, text=r"{\an8}" + "あ" * 19, marginv=43)
+    )
+    path = tmp_path / "captions.ass"
+    subtitles.save(str(path))
+    assert quality.overflowing_lines(path) == ["あ" * 19]

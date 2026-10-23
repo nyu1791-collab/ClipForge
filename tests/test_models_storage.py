@@ -277,12 +277,16 @@ def test_caption_scale_and_the_landscape_chat_config_are_valid(settings):
             Settings.model_validate({**landscape, "caption_scale": value})
     # With the top picture the two lines must fit 80 percent of the band: 108 px at most here.
     large = Settings.model_validate(
-        {**landscape, "chat_panel": True, "caption_scale": 2.0}
+        {**landscape, "chat_panel": True, "chat_panel_fit": "top", "caption_scale": 2.0}
     )
     assert large.caption_font_size() == 108 and large.caption_line_chars() == 12
+    fill = Settings.model_validate(
+        {**landscape, "chat_panel": True, "caption_scale": 2.0}
+    )
+    assert fill.caption_font_size() == 144 and fill.caption_line_chars() == 9
     path = Path(__file__).resolve().parents[1] / "config.landscape-chat.example.json"
     example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    assert example.chat_panel is True and example.chat_panel_fit == "top"
+    assert example.chat_panel is True and example.chat_panel_fit == "fill"
     assert example.silence_cut is False and example.aspect == "16:9"
 
 
@@ -295,7 +299,7 @@ def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
         {**landscape, "chat_panel": True, "horizontal_line_chars": 13}
     )
     assert on.chat_panel_pixels() == 480
-    assert on.chat_panel_fit == "top" and on.chat_anonymize is False
+    assert on.chat_panel_fit == "fill" and on.chat_anonymize is False
     # Top: 1440 px of picture width at the 72 px caption font leaves room for 18 characters.
     assert on.caption_font_size() == 72 and on.caption_line_chars() == 18
     crop = Settings.model_validate({**on.model_dump(), "chat_panel_fit": "crop"})
@@ -304,3 +308,25 @@ def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
     # 720 p landscape: 480 px is 37.5 percent of 1280, inside the allowed range.
     small = Settings.model_validate({**landscape, "height": 720, "chat_panel": True})
     assert small.chat_panel_pixels() == 480
+
+
+def test_chat_panel_fill_is_the_default_and_keeps_the_top_caption_size(settings):
+    landscape = {**settings.model_dump(), "aspect": "16:9", "height": 1080}
+    fill = Settings.model_validate({**landscape, "chat_panel": True})
+    assert fill.chat_panel_fit == "fill"
+    # The picture takes the whole frame height, and captions sit over it at the top size.
+    assert fill.chat_video_height() == 1080
+    assert fill.caption_font_size() == 72 and fill.caption_line_chars() == 18
+    assert (
+        fill.caption_line_chars()
+        == Settings.model_validate(
+            {**landscape, "chat_panel": True, "chat_panel_fit": "top"}
+        ).caption_line_chars()
+    )
+    small = Settings.model_validate(
+        {**landscape, "chat_panel": True, "height": 720, "chat_panel_width": 384}
+    )
+    assert small.chat_video_height() == 720 and small.caption_font_size() == 48
+    # Without the chat panel the fit does not change the caption size.
+    off = Settings.model_validate({**landscape, "chat_panel": False})
+    assert off.caption_font_size() == 52

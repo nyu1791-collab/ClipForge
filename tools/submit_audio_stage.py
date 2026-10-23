@@ -467,6 +467,9 @@ def collect(identity, destination):
     return 0
 
 
+CROP_ANCHORS = ("auto", "left", "center", "right")
+
+
 def require_video_review(value):
     """Reject unapproved drafts before any render request is prepared or dispatched."""
     clips = value.get("clips") if isinstance(value, dict) else None
@@ -479,6 +482,9 @@ def require_video_review(value):
         )
     ):
         raise RuntimeError("each selected topic requires video review")
+    # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
+    if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
+        raise RuntimeError("crop_anchor must be auto, left, center or right")
 
 
 def clip_indices(args, worker):
