@@ -57,7 +57,7 @@ def test_selection_rejects_incomplete_or_ambiguous_delivery(
     manual_plan, landscape_settings, fault
 ):
     if fault == "too_few":
-        manual_plan["clips"].pop()
+        del manual_plan["clips"][1:]
     elif fault == "too_many":
         manual_plan["clips"] *= 2
     elif fault == "overlap":
@@ -68,6 +68,12 @@ def test_selection_rejects_incomplete_or_ambiguous_delivery(
         manual_plan["clips"][0]["title"] = " "
     with pytest.raises((PipelineError, ValueError)):
         landscape.validate_selection(manual_plan, landscape_settings, 300)
+
+
+def test_two_clips_are_a_valid_landscape_delivery(manual_plan, landscape_settings):
+    manual_plan["clips"].pop()
+    landscape_settings = landscape_settings.model_copy(update={"clips": 2})
+    landscape.validate_selection(manual_plan, landscape_settings, 300)
 
 
 def test_safe_summary_never_copies_speech_paths_or_unrecognised_metrics():
