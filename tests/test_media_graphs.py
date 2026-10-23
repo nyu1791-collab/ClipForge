@@ -223,7 +223,7 @@ def test_narration_only_mix_passes_through():
 
 
 def test_loudness_arguments_use_the_first_pass_measurement():
-    assert media._loudness_args(None) == "loudnorm=I=-16:TP=-1.5:LRA=11"
+    assert media._loudness_args(None) == "loudnorm=I=-16:TP=-2.0:LRA=11"
     measured = {
         "input_i": -20.1,
         "input_tp": -3.2,
@@ -232,9 +232,25 @@ def test_loudness_arguments_use_the_first_pass_measurement():
         "target_offset": 0.4,
     }
     assert media._loudness_args(measured) == (
-        "loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=-20.10:measured_TP=-3.20:"
+        "loudnorm=I=-16:TP=-2.0:LRA=11:measured_I=-20.10:measured_TP=-3.20:"
         "measured_LRA=5.00:measured_thresh=-30.00:offset=0.40:linear=true"
     )
+
+
+def test_peak_limiter_follows_loudnorm_and_resample_and_precedes_the_fades():
+    # 0.7943 is -2 dBFS as a linear amplitude.
+    assert media.PEAK_LIMIT == pytest.approx(10 ** (-2 / 20), abs=1e-4)
+    tail = media._audio_tail(make(fade_seconds=0.3), 10.0, None)
+    limiter = f"alimiter=limit={media.PEAK_LIMIT}:level=disabled:attack=5:release=50"
+    order = [
+        tail.index("loudnorm="),
+        tail.index(f",aresample={media.AUDIO_RATE},"),
+        tail.index(limiter),
+        tail.index("afade=t=in"),
+        tail.index("[aout]"),
+    ]
+    assert order == sorted(order)
+    assert limiter in media._audio_tail(make(fade_seconds=0), 10.0, None)
 
 
 def test_audio_tail_fades_only_when_the_clip_is_long_enough():

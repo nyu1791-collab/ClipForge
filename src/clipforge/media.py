@@ -15,7 +15,11 @@ PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
 FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf"]
 AUDIO_RATE = 48000
 ASR_SAMPLE_RATE = 16000
-LOUDNESS = "I=-16:TP=-1.5:LRA=11"
+# loudnorm target. TP sits 0.5 dB below the -1.5 dBTP the loudnorm pass itself aims for
+# because AAC encoding adds about +0.6 dB of overshoot (3 delivered clips measured -0.9 dBTP).
+LOUDNESS = "I=-16:TP=-2.0:LRA=11"
+# Sample-peak limit after loudnorm: linear 0.7943, about -2 dBFS. Keeps the decoded AAC true peak under -1 dBTP.
+PEAK_LIMIT = 0.7943
 MAX_KEEP_REGIONS = 60
 MAX_SOUND_EFFECTS = 20
 SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio
@@ -559,7 +563,10 @@ def _loudness_args(measured):
 
 def _audio_tail(settings, duration, measured):
     fade = settings.fade_seconds
-    tail = f"[mix]{_loudness_args(measured)},aresample={AUDIO_RATE}"
+    tail = (
+        f"[mix]{_loudness_args(measured)},aresample={AUDIO_RATE},"
+        f"alimiter=limit={PEAK_LIMIT}:level=disabled:attack=5:release=50"
+    )
     if fade > 0 and duration > 2 * fade:
         tail += f",afade=t=in:st=0:d={fade:.3f},afade=t=out:st={duration - fade:.3f}:d={fade:.3f}"
     return tail + "[aout]"
