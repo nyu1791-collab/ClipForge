@@ -18,6 +18,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      media: ${{ steps.scope.outputs.media }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: scope
+        env:
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import subprocess
+          base = os.environ.get("PUSH_BASE") or "HEAD^"
+          diff = subprocess.run(["git", "diff", "--name-only", base, "HEAD"], capture_output=True, text=True)
+          # A missing shallow-history base runs the media checks conservatively.
+          files = diff.stdout.splitlines() if diff.returncode == 0 else ["src/clipforge/"]
+          media = any(name.startswith(("src/clipforge/", "tools/make_quality_fixture.py", "tests/test_video_integration.py", ".github/workflows/quality.yml")) for name in files)
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write("media=" + str(media).lower() + "\n")
+          PYTHON
+
   unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -89,7 +116,8 @@ jobs:
           if-no-files-found: warn
 
   video:
-    if: github.event_name == 'workflow_dispatch' && inputs.video_checks
+    needs: scope
+    if: (github.event_name == 'workflow_dispatch' && inputs.video_checks) || (github.event_name != 'workflow_dispatch' && needs.scope.outputs.media == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
