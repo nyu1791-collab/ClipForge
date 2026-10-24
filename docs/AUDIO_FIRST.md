@@ -148,6 +148,8 @@ uv run --no-sync python tools/submit_audio_stage.py --stage render \
 ```
 
 描画の設定は `--config-file NAME`（既定 `config.landscape.example.json`）で選ぶ。NAMEは `config.英小文字・数字・ハイフン.example.json` の形で、`--source-ref` のコミットに存在するものだけ受け付ける。依頼IDに設定名を含むため、同じ選定でも設定が違えば別依頼になる。`merge` は部分の設定名がすべて同じことを確認し、混在すれば停止する。
+
+話題を長めに残す設定例は `config.long-topics.example.json`。最大15分、左上の見出し、通常の1.6倍の字幕を指定する。見出しの位置は `heading_position`（`top-center`／`top-left`）、字幕の大きさは `caption_scale` で設定する。長尺でも開始・終了は話題と発話の境界を確認して選び、短い別の話題を本数合わせでつなげない。`max_seconds` は最大1800秒まで指定できるが、解析フレーム数6000枚の上限は維持されるため、設定例では `analysis_fps=0.5`・`candidates=3` とする。
 例: `--config-file config.landscape-chat.example.json` を上の `--stage render` に追加する。
 
 同一stage・前段run・選定内容・設定名・コードSHAは同一依頼IDになる。同じ依頼の二重dispatchや、応答不明の要求の自動再送は行わない。

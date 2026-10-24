@@ -62,6 +62,20 @@ def test_settings_reject_invalid_configuration(settings, updates):
         Settings.model_validate({**settings.model_dump(), **updates})
 
 
+def test_long_topic_duration_keeps_the_frame_budget_guard():
+    long = Settings(
+        gemini_model="manual-no-api",
+        max_seconds=900,
+        analysis_fps=0.5,
+        candidates=3,
+    )
+    assert long.max_seconds == 900
+    with pytest.raises(ValidationError):
+        Settings(gemini_model="manual-no-api", max_seconds=900)
+    with pytest.raises(ValidationError):
+        Settings(gemini_model="manual-no-api", max_seconds=1801, analysis_fps=0.5)
+
+
 def test_long_source_and_transport_budgets_keep_local_defaults():
     settings = Settings(gemini_model="manual-no-api")
     assert settings.max_source_seconds == 3600

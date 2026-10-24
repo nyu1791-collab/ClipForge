@@ -626,7 +626,11 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             outline=3,
             shadow=0.5,
             bold=True,
-            alignment=pysubs2.Alignment.TOP_CENTER,
+            alignment=(
+                pysubs2.Alignment.TOP_LEFT
+                if settings.heading_position == "top-left"
+                else pysubs2.Alignment.TOP_CENTER
+            ),
             marginl=margin,
             marginr=margin_right,
             marginv=round(height * 0.06),

@@ -758,6 +758,28 @@ def test_fill_heading_leaves_the_caption_margins_alone(
     assert subtitles.styles["Heading"].alignment == pysubs2.Alignment.TOP_CENTER
 
 
+def test_large_landscape_captions_with_top_left_heading(
+    tmp_path, settings, japanese_font
+):
+    transcript, clip = _fill_case(("話題の始まり", "話題の結び"))
+    enlarged = Settings.model_validate(
+        {
+            **settings.model_dump(),
+            "aspect": "16:9",
+            "height": 1080,
+            "heading": True,
+            "heading_position": "top-left",
+            "caption_scale": 1.6,
+        }
+    )
+    captions.create(transcript, clip, tmp_path, enlarged)
+    subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
+    assert subtitles.styles["Heading"].alignment == pysubs2.Alignment.TOP_LEFT
+    assert subtitles.styles["Default"].fontsize == 83
+    heading = next(event for event in subtitles if event.style == "Heading")
+    assert (heading.start, heading.end, heading.text) == (0, 6000, clip.title)
+
+
 def test_top_fit_ignores_caption_lifts(tmp_path, settings, japanese_font):
     transcript, clip = _fill_case(("上の字幕です", "下の字幕です"))
     top = _fill_settings(settings, chat_panel_fit="top")
