@@ -127,37 +127,17 @@ class Settings(Record):
     candidates: int = Field(default=8, ge=1, le=10)
     min_seconds: float = Field(default=20, ge=2, le=120)
     max_seconds: float = Field(default=75, ge=3, le=1800)
-    # large-v3-turbo transcribes Japanese clearly better than small at about the same speed
-    # (measured on 4 minutes of speech: mean word probability 0.96 against 0.88).
-    whisper_model: str = Field(
-        default="mobiuslabsgmbh/faster-whisper-large-v3-turbo",
-        min_length=1,
-        max_length=160,
-    )
-    # None uses the pinned revision of the default model; other models float unless set.
-    whisper_revision: str | None = None
-    # 0 keeps sequential decoding (default); 1-16 batches speech chunks for speed.
-    asr_batch_size: int = Field(default=0, ge=0, le=16)
-    # URL jobs may recognise overlapping parts on separate Colab runtimes (up to four).
-    asr_parts: Literal[1, 2, 3, 4] = 1
-    # parakeet recognises the whole audio in one runtime with NVIDIA Parakeet (Japanese).
-    asr_engine: Literal["whisper", "parakeet"] = "whisper"
-    # 2-part ASR: cut at the longest silence within this many seconds of the middle (0 cuts at the middle).
-    asr_split_search_seconds: int = Field(default=1800, ge=0, le=3600)
+    # Colab GPU runtimes that recognise the audio side by side with Parakeet (asr_split).
+    asr_parts: Literal[1, 2, 3, 4] = 4
     # Explicit hosted-runner audio acquisition route; not an automatic fallback.
     youtube_audio_transport: Literal["standard", "warp"] = "standard"
-    # Folder of saved transcripts; a run reuses one whose audio and recognition settings match.
+    # Folder of saved transcripts; a stage reads the one its analysis recorded.
     transcript_cache: str | None = Field(default=None, max_length=1024)
     require_transcript_cache: bool = False
     # A verified analysis's transcript key; only valid with require_transcript_cache.
     transcript_key: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     language: str | None = None
-    whisper_device: Literal["auto", "cpu", "cuda"] = "auto"
-    whisper_compute_type: Literal[
-        "auto", "int8", "float16", "float32", "int8_float16"
-    ] = "auto"
     video_encoder: Literal["auto", "libx264", "h264_nvenc"] = "auto"
-    threads: int = Field(default=0, ge=0, le=1024)
     # Rendering only; 0 uses all cores available on the machine doing the render.
     encode_threads: int = Field(default=0, ge=0, le=1024)
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
@@ -303,11 +283,6 @@ class Settings(Record):
 
     @model_validator(mode="after")
     def limits(self):
-        # Batched decoding changes silence merging and so topic boundaries; it is CPU-only.
-        if self.asr_batch_size and self.whisper_device == "cuda":
-            raise ValueError(
-                "asr_batch_size must be 0 when recognition runs on the GPU"
-            )
         if self.horizontal_target_cps > self.horizontal_warn_cps:
             raise ValueError("horizontal reading target must not exceed warning limit")
         if self.require_transcript_cache and not self.transcript_cache:
@@ -340,12 +315,6 @@ class Settings(Record):
             raise ValueError("layout panels needs face_box")
         if self.zoom and self.face_box is None:
             raise ValueError("zoom needs face_box")
-        if self.asr_engine == "parakeet" and (
-            self.asr_parts != 1 or self.asr_batch_size
-        ):
-            raise ValueError(
-                "Parakeet recognises the whole audio in one part, unbatched"
-            )
         if self.candidates < self.clips:
             raise ValueError("candidate count must cover requested clips")
         if any(c in self.font for c in "\r\n,\\{}"):

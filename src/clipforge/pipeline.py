@@ -13,7 +13,6 @@ from . import (
     fonts,
     media,
     quality,
-    signals,
     silence,
     tables,
     thumbnail,
@@ -23,7 +22,6 @@ from .captions import (
     create as create_captions,
     event_spans as caption_spans,
 )
-from .hardware import asr_options, cpu_threads
 from .models import Transcript
 from .storage import (
     PipelineError,
@@ -708,73 +706,14 @@ def timed(timings, name, function, *args):
         timings[name] = round(time.monotonic() - started, 2)
 
 
-# The transcript depends only on the audio, the recognition settings and the code that reads and
-# recognises it, not on captions or rendering. Its own identity lets a saved transcript serve any
-# later run, so a change to captions does not repeat the recognition.
-TRANSCRIPT_CODE = ("signals.py", "media.py", "asr_split.py")
-PARAKEET_CODE = ("parakeet_asr.py", "parakeet_captions.py", "caption_pack.py")
+def saved_transcript(settings):
+    """The verified analysis's transcript named by settings.transcript_key, or None.
 
-
-def asr_identity(settings):
-    """Recognition hardware that shapes the transcript, without needing that hardware.
-
-    GPU float16 and CPU int8 decode differently, so each keeps its own transcript. An explicit
-    device is taken as stated, so a CPU-only later stage can name a GPU transcript; only "auto"
-    is resolved on the current machine. CPU results also depend on the thread count.
+    Recognition happens only in the ASR job on Colab; every later stage reads its result.
     """
-    device, compute = settings.whisper_device, settings.whisper_compute_type
-    if "auto" in (device, compute):
-        resolved = asr_options(settings)
-        device = resolved["device"] if device == "auto" else device
-        compute = resolved["compute_type"] if compute == "auto" else compute
-    if device == "cpu" and compute == "int8":
-        return {"threads": cpu_threads(settings)}
-    return {"whisper_device": device, "whisper_compute_type": compute}
-
-
-def transcript_key(source, info, settings):
-    """The saved transcript to use: a pinned key from a verified analysis, else the identity.
-
-    A downstream stage reuses the transcript its analysis recorded, even after the recognition
-    code has changed; a pinned key is only ever read, never recognised again.
-    """
-    return settings.transcript_key or transcript_identity(source, info, settings)
-
-
-def transcript_identity(source, info, settings, split=None):
-    """split is the cut of a 2-part ASR plan; a different cut is a different transcript."""
-    code = {name: digest(Path(__file__).parent / name) for name in TRANSCRIPT_CODE}
-    value = {
-        "source_sha256": digest(source),
-        "duration": info["duration"],
-        "audio": info["audio"],
-        "audio_start": info.get("audio_start", 0.0),
-        "code": code,
-        "whisper_model": settings.whisper_model,
-        "whisper_revision": settings.whisper_revision,
-        "language": settings.language,
-        **asr_identity(settings),
-        "asr_batch_size": settings.asr_batch_size,
-        "asr_parts": settings.asr_parts,
-    }
-    if settings.asr_engine != "whisper":
-        # Whisper keys stay as they were; another recogniser names itself and its code.
-        value["asr_engine"] = settings.asr_engine
-        value["engine_code"] = {
-            name: digest(Path(__file__).parent / name) for name in PARAKEET_CODE
-        }
-    if split is not None:
-        value["split"] = split
-    return fingerprint(value)
-
-
-def saved_transcript(source, info, settings):
-    """Read a validated persistent cache only; never invoke ASR or print its text."""
-    if not settings.transcript_cache:
+    if not settings.transcript_cache or not settings.transcript_key:
         return None
-    path = Path(settings.transcript_cache) / (
-        transcript_key(source, info, settings) + ".json"
-    )
+    path = Path(settings.transcript_cache) / (settings.transcript_key + ".json")
     if path.is_file():
         try:
             return Transcript.model_validate_json(
@@ -785,52 +724,17 @@ def saved_transcript(source, info, settings):
     return None
 
 
-def recognise(source, info, settings, journal=None):
-    """The settings' recogniser: Parakeet, or faster-whisper."""
-    if settings.asr_engine == "parakeet":
-        from . import parakeet_asr
-
-        return parakeet_asr.transcribe(source, info, settings)
-    if journal is None:
-        return signals.transcribe(source, info, settings)
-    return signals.transcribe(source, info, settings, journal=journal)
-
-
-def transcribe_once(source, info, settings, receipt=None):
-    """Recognised transcript, reused from settings.transcript_cache when its identity matches."""
-    receipt = receipt if receipt is not None else {}
-    receipt.update(enabled=bool(settings.transcript_cache), reused=False, source="asr")
-    if not settings.transcript_cache:
-        if settings.asr_parts != 1:
-            raise PipelineError("two-part ASR requires the split job coordinator")
-        receipt["key"] = None
-        return recognise(source, info, settings)
-    # The receipt is output metadata, never authority to select another input's cache.
-    key = transcript_key(source, info, settings)
-    receipt["key"] = key
-    path = Path(settings.transcript_cache) / (key + ".json")
-    if path.is_file():
-        try:
-            value = Transcript.model_validate_json(
-                path.read_text(encoding="utf-8")
-            ).model_dump()
-            receipt.update(reused=True, source="transcript_cache")
-            return value
-        except (ValueError, UnicodeDecodeError):
-            # A damaged saved transcript is recognised again rather than used.
-            pass
-    if settings.require_transcript_cache:
+def load_transcript(settings, receipt):
+    """The saved transcript, recorded in receipt; recognition is never started here."""
+    value = saved_transcript(settings)
+    if value is None:
         raise PipelineError(
             "a matching valid transcript cache is required; ASR was not started"
         )
-    if settings.asr_parts != 1:
-        raise PipelineError("two-part ASR requires the split job coordinator")
-    # Segments are noted here as they are recognised; a stopped run keeps them. A new run
-    # starts the journal afresh, since recognition is one pass and is not resumed mid-way.
-    journal = path.with_suffix(".partial.jsonl")
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    journal.unlink(missing_ok=True)
-    value = recognise(source, info, settings, journal=journal)
-    write_json(path, value)
-    journal.unlink(missing_ok=True)
+    receipt.update(
+        enabled=True,
+        key=settings.transcript_key,
+        reused=True,
+        source="transcript_cache",
+    )
     return value

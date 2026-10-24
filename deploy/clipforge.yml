@@ -16,11 +16,6 @@ on:
         description: Exact reviewed ClipForge commit SHA
         type: string
         required: true
-      shape:
-        description: Colab runtime shape for colab-auto (high-ram has 8 CPU cores and 51 GB)
-        type: choice
-        options: [high-ram, standard]
-        default: high-ram
       audio_url:
         description: Kick, YouTube, Twitch or owned HTTPS mp4/m4a/mp3/webm/m3u8 URL
         type: string
@@ -164,11 +159,10 @@ jobs:
              '--name', 'clipforge-verified-audio-' + request, '--dir', str(destination)],
             check=True)
           PY
-      - name: Acquire audio and stage verified private input before GPU allocation
+      - name: Acquire and verify the audio before GPU allocation
         timeout-minutes: 30
         if: inputs.audio_url != ''
         env:
-          GH_TOKEN: ${{ github.token }}
           AUDIO_URL: ${{ inputs.audio_url }}
           SETTINGS_JSON: ${{ inputs.settings_json }}
           AUTO_PREVIEWS: ${{ inputs.auto_previews }}
@@ -176,9 +170,6 @@ jobs:
           VERIFIED_AUDIO_REQUEST: ${{ inputs.verified_audio_request }}
           YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
         run: |
-          gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
-            --title "$INPUT_TAG" --latest=false \
-            --notes 'Temporary private ClipForge URL input. Automatically cleaned after execution.'
           video_options=()
           if [ "$AUTO_PREVIEWS" = true ]; then video_options+=(--require-video); fi
           # Reuse is opt-in: without a verified run the command line stays exactly as before.
@@ -191,9 +182,6 @@ jobs:
             --url "$AUDIO_URL" --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
             --settings-json "$SETTINGS_JSON" \
             --directory "$RUNNER_TEMP/clipforge-input" "${video_options[@]}"
-          gh release upload "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
-            "$RUNNER_TEMP/clipforge-input/input-video.bin" \
-            "$RUNNER_TEMP/clipforge-input/request.json"
       - name: Close YouTube audio transport before allocating a GPU
         timeout-minutes: 2
         if: always() && inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'
@@ -210,70 +198,28 @@ jobs:
             ${{ runner.temp }}/clipforge-input/acquisition-report.json
           retention-days: 7
           if-no-files-found: warn
-      - name: Read the ASR part count from the staged request
-        timeout-minutes: 10
-        id: request
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AUDIO_URL: ${{ inputs.audio_url }}
-        run: |
-          gh release download "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern request.json --dir "$RUNNER_TEMP/clipforge-model-request"
-          python3 - <<'PY'
-          import json, os
-          from pathlib import Path
-          request = json.loads((Path(os.environ['RUNNER_TEMP']) / 'clipforge-model-request/request.json').read_text())
-          assert request['request_id'] == os.environ['REQUEST_ID']
-          assert request['source_ref'] == os.environ['CLIPFORGE_SOURCE_REF']
-          assert request.get('audio_source_url')
-          parts = request.get('settings', {}).get('asr_parts', 1)
-          assert type(parts) is int and parts in (1, 2, 3, 4)
-          assert parts == 1 or (request.get('audio_source_url') and os.environ.get('AUDIO_URL'))
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'asr_parts={parts}\n')
-          PY
-      - name: Allocate a dedicated T4 for the verified Google account
-        timeout-minutes: 20
-        if: steps.request.outputs.asr_parts == '1'
-        id: allocate
-        env:
-          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
-          CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
-          CLIPFORGE_PUBLIC_CACHE: 'off'
-        run: |
-          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
-      - name: Run the pipeline on Colab and retrieve verified private outputs
-        timeout-minutes: 90
-        if: steps.request.outputs.asr_parts == '1'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
-      - name: Run owned ASR runtimes in parallel and merge before topic allocation
-        timeout-minutes: 110
-        if: steps.request.outputs.asr_parts != '1'
+      - name: Recognise the audio parts on owned Colab GPUs and allocate topics
+        timeout-minutes: 140
         env:
           GH_TOKEN: ${{ github.token }}
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
-          CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
-          CLIPFORGE_PUBLIC_CACHE: 'off'
         run: |
           clipforge-source/.venv/bin/python clipforge-source/tools/split_asr_job.py \
             --directory "$RUNNER_TEMP/clipforge-input" --output "$RUNNER_TEMP/clipforge-out" \
             --control-python "$RUNNER_TEMP/colab-control/bin/python" \
             --state-root "$RUNNER_TEMP/clipforge-split"
-      - name: Release and verify removal of the dedicated Colab runtime
+      - name: Release and verify removal of every owned Colab runtime
         timeout-minutes: 10
         if: always() && steps.control.outcome == 'success'
         run: |
           failed=0
-          for state in "$RUNNER_TEMP/clipforge-colab-control" $RUNNER_TEMP/clipforge-split/control-*; do
+          for state in $RUNNER_TEMP/clipforge-split/control-*; do
             if [ -f "$state/state.json" ]; then
               "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop --state-dir "$state" || failed=1
             fi
           done
           exit "$failed"
-      - name: Keep available ASR part outputs privately after split failure
+      - name: Keep available ASR part outputs privately after a failure
         timeout-minutes: 10
         if: failure() || cancelled()
         uses: actions/upload-artifact@v4
@@ -290,17 +236,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then exit 1; fi
-          mapfile -t tags < <(python3 - <<'PY'
-          import hashlib, os, re
-          parent = os.environ['REQUEST_ID']
-          assert re.fullmatch(r'[a-f0-9]{32}', parent)
-          for index in (0, 1):
-              identity = hashlib.sha256(f'clipforge-asr-part-v1:{parent}:{index}'.encode()).hexdigest()[:32]
-              print('clipforge-input-' + identity)
-          PY
-          )
+          tags=()
+          if [ -f "$RUNNER_TEMP/clipforge-split/staged-tags" ]; then
+            mapfile -t tags < "$RUNNER_TEMP/clipforge-split/staged-tags"
+          fi
           failed=0
           for tag in "${tags[@]}"; do
+            [[ $tag =~ ^clipforge-input-[a-f0-9]{32}$ ]] || { failed=1; continue; }
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || failed=1
             fi

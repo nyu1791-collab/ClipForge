@@ -1,21 +1,14 @@
 """Resolve local hardware without importing PyTorch or downloading a model."""
 
 from functools import lru_cache
-import ctypes
 import os
 import subprocess
 
 from .storage import PipelineError
 
 
-def cpu_threads(settings):
-    if settings.threads:
-        return settings.threads
-    return _available_cpu_threads()
-
-
 def encode_threads(settings):
-    """Rendering uses this machine's available cores, independently of ASR."""
+    """Rendering uses this machine's available cores."""
     return settings.encode_threads or _available_cpu_threads()
 
 
@@ -24,45 +17,6 @@ def _available_cpu_threads():
         return max(1, len(os.sched_getaffinity(0)))
     except (AttributeError, OSError):
         return max(1, os.cpu_count() or 1)
-
-
-def asr_options(settings):
-    # CTranslate2, rather than torch/nvidia-smi, is the inference backend.
-    import ctranslate2
-
-    device = settings.whisper_device
-    if device in {"auto", "cuda"}:
-        try:
-            supported = ctranslate2.get_supported_compute_types("cuda")
-            available = (
-                ctranslate2.get_cuda_device_count() > 0 and "float16" in supported
-            )
-            if available:
-                ctypes.CDLL("libcublas.so.12")
-                ctypes.CDLL("libcudnn.so.9")
-        except (OSError, RuntimeError, ValueError):
-            available = False
-        if device == "cuda" and not available:
-            raise PipelineError(
-                "CUDA/float16 or cuBLAS/cuDNN is unavailable; GPU execution required"
-            )
-        device = "cuda" if available else "cpu"
-    compute = settings.whisper_compute_type
-    if compute == "auto":
-        compute = "float16" if device == "cuda" else "int8"
-    try:
-        supported = ctranslate2.get_supported_compute_types(device)
-    except (RuntimeError, ValueError):
-        raise PipelineError(
-            "CTranslate2 could not initialize the selected device"
-        ) from None
-    if compute not in supported:
-        raise PipelineError(f"CTranslate2 does not support {device}/{compute}")
-    return {
-        "device": device,
-        "compute_type": compute,
-        "cpu_threads": cpu_threads(settings),
-    }
 
 
 @lru_cache(maxsize=1)

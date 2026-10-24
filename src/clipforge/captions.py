@@ -401,7 +401,7 @@ def with_breaks(text, breaks):
 
 def group_text(tokens, measure, line_px, mode):
     """ASS text for one group; mode is plain, karaoke (fill) or sequential (reveal)."""
-    # Whisper keeps a leading space on English words. Strip caption edges before tags
+    # Recognised English words can keep a leading space. Strip caption edges before tags
     # are added, matching SRT's serialization without changing spacing between words.
     tokens = list(tokens)
     if tokens:

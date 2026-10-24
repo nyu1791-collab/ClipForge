@@ -5,10 +5,6 @@ source "$(dirname "${BASH_SOURCE[0]}")/colab_cache_env.sh"
 if command -v node >/dev/null && node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)'; then
   exit 0
 fi
-if [[ ${CLIPFORGE_OFFLINE:-0} == 1 ]]; then
-  echo 'Node.js 22+ is not cached; offline mode forbids downloading.' >&2
-  exit 1
-fi
 if [[ $(uname -s) != Linux || $(uname -m) != x86_64 ]]; then
   echo 'Install Node.js 22+ for this worker architecture.' >&2
   exit 1

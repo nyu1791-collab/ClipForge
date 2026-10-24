@@ -249,7 +249,7 @@ def execute(
         )
         source = output / "audio.m4a"
         info = audio_first.audio_info(source)
-        if pipeline.saved_transcript(source, info, settings) is None:
+        if pipeline.saved_transcript(settings) is None:
             raise PipelineError(
                 "the saved ASR does not match; no new recognition was started"
             )

@@ -1466,43 +1466,21 @@ def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():
             )
 
 
-def test_captions_run_reaches_every_parallel_render(stage_submitter, tmp_path):
-    module, control, args = stage_submitter
-    control["runs"] = [{"workflow": module.WORKFLOW, "status": "completed"}]
-    argv = render_args(
-        args, tmp_path, "--worker", "colab-auto", "--clips", "3", "--captions-run", "42"
-    )
-    assert module.main(argv) == 0
-    assert {post["inputs"]["captions_run_id"] for post in control["posts"]} == {"42"}
-
-
-@pytest.mark.parametrize("value", ["abc", "1;2", ""])
-def test_captions_run_must_be_a_numeric_run(stage_submitter, tmp_path, value):
-    module, control, args = stage_submitter
-    with pytest.raises(RuntimeError, match="captions-run"):
-        module.main(render_args(args, tmp_path, "--captions-run", value))
-    assert not control["posts"]
-
-
-def test_captions_run_applies_to_render_only(stage_submitter):
-    module, control, args = stage_submitter
-    with pytest.raises(RuntimeError, match="captions-run"):
-        module.main(["--stage", "previews"] + args[2:] + ["--captions-run", "42"])
-    assert not control["posts"]
-
-
-def test_caption_edits_need_a_captions_run(stage_submitter, tmp_path):
+def test_caption_edits_are_sent_with_the_review_and_malformed_ones_refused(
+    stage_submitter, tmp_path
+):
     module, control, args = stage_submitter
     argv = render_args(args, tmp_path)
     clip = {
         "video_reviewed": True,
-        "caption_edits": [{"at": 1.0, "from": "a", "to": "b"}],
+        "caption_edits": [{"at": "1", "from": "a", "to": "b"}],
     }
     (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
-    with pytest.raises(RuntimeError, match="captions-run"):
-        module.main(argv)
-    clip["caption_edits"] = [{"at": "1", "from": "a", "to": "b"}]
-    (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
     with pytest.raises(RuntimeError, match="caption_edits"):
-        module.main(argv + ["--captions-run", "42"])
+        module.main(argv)
     assert not control["posts"]
+    clip["caption_edits"] = [{"at": 1.0, "from": "a", "to": "b"}]
+    (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
+    module.main(argv)
+    review = json.loads(control["posts"][0]["inputs"]["review_json"])
+    assert review["clips"][0]["caption_edits"] == clip["caption_edits"]

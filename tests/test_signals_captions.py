@@ -1,16 +1,8 @@
 import pysubs2
 import pytest
 
-from clipforge import caption_breaks, captions, fonts, quality, signals
+from clipforge import caption_breaks, captions, fonts, quality
 from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
-from clipforge.storage import PipelineError
-
-
-def test_no_audio_skips_model_loading(settings):
-    assert signals.transcribe(None, {"audio": False}, settings) == {
-        "language": "und",
-        "segments": [],
-    }
 
 
 @pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
@@ -824,18 +816,3 @@ def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
     assert captions.event_spans(transcript, clip, configured) == [
         (start / 1000, end / 1000) for start, end, _ in ass
     ]
-
-
-def test_batched_asr_is_refused_on_the_gpu_before_any_recognition(monkeypatch):
-    from clipforge import signals
-    from clipforge.models import Settings
-
-    with pytest.raises(ValueError, match="GPU"):
-        Settings(asr_batch_size=4, whisper_device="cuda")
-    settings = Settings(asr_batch_size=4)
-    gpu = settings.model_copy(update={"whisper_device": "cuda"})
-    monkeypatch.setattr(
-        signals.media, "audio", lambda *a, **k: pytest.fail("audio decoded first")
-    )
-    with pytest.raises(PipelineError, match="CPU-only"):
-        signals.transcribe("source.mp4", {"audio": True, "duration": 10}, gpu)

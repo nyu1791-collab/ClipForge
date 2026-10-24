@@ -256,15 +256,13 @@ def test_main_workflow_ends_transport_before_any_gpu_and_keeps_receipt_private()
         if step.get("name") == "Close YouTube audio transport before allocating a GPU"
     )
     allocate = next(
-        i
-        for i, step in enumerate(steps)
-        if "colab_actions.py start" in step.get("run", "")
+        i for i, step in enumerate(steps) if "split_asr_job.py" in step.get("run", "")
     )
     assert setup < acquire < close < allocate
     assert "youtube_audio_transport == 'warp'" in steps[setup]["if"]
     assert "always()" in steps[close]["if"]
     assert "YOUTUBE_COOKIES_B64" not in json.dumps(steps[setup])
-    assert len(workflow[True]["workflow_dispatch"]["inputs"]) == 10
+    assert len(workflow[True]["workflow_dispatch"]["inputs"]) == 9
 
 
 def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch, tmp_path):

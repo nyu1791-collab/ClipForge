@@ -5,13 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clipforge"
 version = "0.2.1"
-description = "CPU/CUDA video clipping with timestamped transcription, visual Gemini selection and ASS captions"
+description = "Stream clipping: Parakeet transcription on Colab, topic previews, reviewed landscape clips with ASS captions"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "faster-whisper==1.2.1",
-  "scenedetect-headless==0.7.2",
-  "google-genai==2.32.0",
+  "numpy>=2,<3",
   "pysubs2==1.8.1",
   "pydantic>=2.11,<3",
   "budoux==0.10.0",
@@ -30,10 +28,6 @@ media-fetch = [
     "curl-cffi==0.15.0",
     "yt-dlp[default]==2026.10.21",
 ]
-cuda = [
-  "nvidia-cublas-cu12>=12.4,<13; sys_platform == 'linux' and platform_machine == 'x86_64'",
-  "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
 
 [project.urls]
 Repository = "https://github.com/nyu1791-collab/ClipForge"
@@ -47,12 +41,12 @@ testpaths = ["tests"]
 addopts = "--strict-markers"
 markers = [
   "integration: real FFmpeg, font and video checks (GitHub runner)",
-  "asr: real CPU speech recognition with downloaded model weights (GitHub runner)",
 ]
 
 [dependency-groups]
 dev = [
     "pytest==8.4.2",
     "pytest-cov>=6,<8",
+    "pyyaml>=6,<7",
     "ruff==0.14.14",
 ]

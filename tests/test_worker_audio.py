@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from clipforge import audio_first, pipeline, signals, worker_audio as worker
+from clipforge import audio_first, worker_audio as worker
 from clipforge.models import Settings
 from clipforge.storage import PipelineError, digest, write_json
 
@@ -22,7 +22,7 @@ def previous_analysis(tmp_path, monkeypatch):
     settings = Settings.model_validate_json(
         Path("config.landscape.example.json").read_text()
     )
-    key = pipeline.transcript_identity(audio, info, settings)
+    key = "e" * 64
     write_json(
         previous / "transcripts" / (key + ".json"),
         {
@@ -62,11 +62,6 @@ def previous_analysis(tmp_path, monkeypatch):
     }
     write_json(previous / "request-receipt.json", receipt)
     monkeypatch.setattr(audio_first, "audio_info", lambda path: info)
-    monkeypatch.setattr(
-        signals,
-        "transcribe",
-        lambda *a, **k: pytest.fail("a downstream stage started ASR"),
-    )
     return previous, tmp_path / "output", settings
 
 
@@ -241,13 +236,7 @@ def test_previews_write_unapproved_drafts_before_receipting(
 def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(
     previous_analysis, monkeypatch
 ):
-    from clipforge import signals
-
     previous, output, settings = previous_analysis
-    settings.threads = 4
-    monkeypatch.setattr(
-        signals, "transcribe", lambda *a, **k: pytest.fail("recognition started")
-    )
 
     class Reached(Exception):
         pass
@@ -265,14 +254,9 @@ def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(
 def test_missing_recorded_transcript_stops_before_network_or_recognition(
     previous_analysis, monkeypatch
 ):
-    from clipforge import signals
-
     previous, output, settings = previous_analysis
     for path in (previous / "transcripts").glob("*.json"):
         path.unlink()
-    monkeypatch.setattr(
-        signals, "transcribe", lambda *a, **k: pytest.fail("recognition started")
-    )
     monkeypatch.setattr(
         worker,
         "KickVOD",

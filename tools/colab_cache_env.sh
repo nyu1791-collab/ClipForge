@@ -8,7 +8,4 @@ export CLIPFORGE_NODE_ROOT="$CLIPFORGE_CACHE_ROOT/node-v22.23.4"
 if [[ -x "$CLIPFORGE_NODE_ROOT/bin/node" ]]; then
   export PATH="$CLIPFORGE_NODE_ROOT/bin:$PATH"
 fi
-if [[ ${CLIPFORGE_OFFLINE:-0} == 1 ]]; then
-  export HF_HUB_OFFLINE=1
-fi
 unset clipforge_cache_script clipforge_cache_exports

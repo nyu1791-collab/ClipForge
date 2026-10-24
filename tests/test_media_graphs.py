@@ -272,9 +272,7 @@ def test_measure_loudness_parses_the_first_pass_json(monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", stderr)
 
     monkeypatch.setattr(media.subprocess, "run", fake)
-    values = media.measure_loudness(
-        "/in.mp4", CLIP, make(threads=2, encode_threads=6), KEEP, 8.0
-    )
+    values = media.measure_loudness("/in.mp4", CLIP, make(encode_threads=6), KEEP, 8.0)
     assert values["input_i"] == -20.5 and values["target_offset"] == 0.25
     assert "-n" in seen["command"]
     assert seen["command"][-3:] == ["-f", "null", "-"]
@@ -389,7 +387,6 @@ def test_render_passes_render_thread_budget_to_ffmpeg(
         clip_for_render(),
         make(
             height=720,
-            threads=2,
             encode_threads=explicit,
             video_encoder=encoder,
             loudness_two_pass=False,
@@ -415,7 +412,7 @@ def test_preview_passes_render_thread_budget_to_ffmpeg(monkeypatch, tmp_path, pr
         "/in.mp4",
         tmp_path / "preview.mp4",
         CLIP,
-        make(threads=2, encode_threads=6, video_encoder="libx264"),
+        make(encode_threads=6, video_encoder="libx264"),
     )
     command = seen["command"]
     assert command.count("-threads") == 2

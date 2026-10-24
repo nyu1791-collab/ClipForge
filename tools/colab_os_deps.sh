@@ -4,7 +4,6 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 source tools/colab_cache_env.sh
 missing=()
 packages=(ffmpeg fontconfig fonts-noto-cjk git gh)
-if [[ ${CLIPFORGE_CPU_ONLY:-0} != 1 ]]; then packages+=(curl); fi
 for package in "${packages[@]}"; do
   if [[ $(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true) != installed ]]; then
     missing+=("$package")
@@ -21,10 +20,6 @@ if "${apt[@]}" "${cache_options[@]}" --no-download install -y --no-install-recom
   > "$CLIPFORGE_CACHE_ROOT/apt/offline-install.log" 2>&1; then
   echo 'OS dependencies installed from cached packages.'
 else
-  if [[ ${CLIPFORGE_OFFLINE:-0} == 1 ]]; then
-    echo 'OS packages are missing from the cache; offline mode forbids downloading.' >&2
-    exit 1
-  fi
   "${apt[@]}" update -qq
   "${apt[@]}" "${cache_options[@]}" install -y --no-install-recommends "${missing[@]}"
 fi

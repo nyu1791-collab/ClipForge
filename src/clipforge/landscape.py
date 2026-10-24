@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from . import fonts, media, pipeline, signals
+from . import fonts, media, pipeline
 from .models import SelectedClip, validate_picks
 from .quality import READING_CPS_THRESHOLDS
 from .storage import PipelineError, digest, fingerprint, within
@@ -93,18 +93,13 @@ def code_identity(settings=None):
         "python": ".".join(map(str, sys.version_info[:3])),
         "packages": {
             name: version(name)
-            for name in ("clipforge", "faster-whisper", "pysubs2", "fugashi", "budoux")
+            for name in ("clipforge", "pysubs2", "fugashi", "budoux")
         },
     }
     if settings is not None:
         result.update(
             settings_sha256=fingerprint(settings.model_dump()),
             font_sha256=digest(fonts.resolve(settings.font)),
-            asr_model=settings.whisper_model,
-            asr_revision=signals.model_revision(settings),
-            # The recognition conditions this settings file requests. The render itself is
-            # CPU work and recognises nothing; the analysis receipt holds what ran.
-            asr_compute_requested=f"{settings.whisper_device}/{settings.whisper_compute_type}",
         )
         result["ffmpeg"] = subprocess.run(
             ["ffmpeg", "-version"],

@@ -17,7 +17,7 @@ AUDIO_URL = "https://cdn.example/audio.mp3"
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 10 and inputs["probe_only"]["default"] is False
+    assert len(inputs) == 9 and inputs["probe_only"]["default"] is False
     assert "!inputs.probe_only" in workflow["jobs"]["colab-auto"]["if"]
     probe = workflow["jobs"]["url-probe"]
     assert "inputs.probe_only" in probe["if"]
@@ -47,7 +47,7 @@ def acquisition(tmp_path, monkeypatch):
             "max_input_bytes": 8192,
             "max_transport_bytes": 32768,
             "max_source_seconds": 600,
-            "asr_batch_size": 8,
+            "asr_parts": 2,
         },
         "chat_sha256": None,
         "audio_source_url": URL,
@@ -285,75 +285,68 @@ def test_acquisition_refuses_empty_or_oversized_audio(acquisition, audio):
     assert not list(output.parent.glob(".clipforge-acquire-*"))
 
 
-def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
+def test_workflow_acquires_and_verifies_audio_before_any_gpu():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
     assert inputs["settings_json"]["type"] == "string"
     job = workflow["jobs"]["colab-auto"]
     assert job["runs-on"] == "ubuntu-24.04"
     steps = job["steps"]
-    allocate = next(i for i, step in enumerate(steps) if step.get("id") == "allocate")
     acquire = next(
         i
         for i, step in enumerate(steps)
         if "tools/acquire_audio_url.py" in step.get("run", "")
+    )
+    recognise = next(
+        i
+        for i, step in enumerate(steps)
+        if "tools/split_asr_job.py" in step.get("run", "")
     )
     sync = next(
         i
         for i, step in enumerate(steps)
         if step.get("run") == "uv sync --locked --extra media-fetch --no-dev"
     )
-    assert sync < acquire < allocate
+    media_tools = next(
+        i for i, step in enumerate(steps) if "command -v ffmpeg" in step.get("run", "")
+    )
+    assert sync < media_tools < acquire < recognise
     assert steps[sync]["working-directory"] == "clipforge-source"
     assert steps[acquire]["if"] == "inputs.audio_url != ''"
-    assert steps[acquire]["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "GH_TOKEN" not in steps[acquire]["env"]
     assert steps[acquire]["env"]["SETTINGS_JSON"] == "${{ inputs.settings_json }}"
     script = steps[acquire]["run"]
-    assert script.index("gh release create") < script.index(
-        "tools/acquire_audio_url.py"
-    )
-    assert script.index("tools/acquire_audio_url.py") < script.index(
-        "gh release upload"
-    )
     assert '--settings-json "$SETTINGS_JSON"' in script
-    assert "gh release download" not in script
-    assert '"$RUNNER_TEMP/clipforge-input/input-video.bin"' in steps[acquire]["run"]
-    assert '"$RUNNER_TEMP/clipforge-input/request.json"' in steps[acquire]["run"]
+    # The coordinator reads the acquired audio on the runner; it is never staged whole.
+    assert "gh release" not in script
+    assert '--directory "$RUNNER_TEMP/clipforge-input"' in steps[recognise]["run"]
     validate = steps[0]["run"]
     assert validate.index("if os.environ['AUDIO_URL']") < validate.index(
         "if not os.environ.get('COLAB_ADC_JSON')"
     )
-    assert all("AUDIO_URL" not in step.get("env", {}) for step in steps[allocate:])
+    assert all("AUDIO_URL" not in step.get("env", {}) for step in steps[recognise:])
     assert "AUDIO_URL" not in job["env"]
     cleanup = next(step for step in steps if step.get("id") == "input-cleanup")
     assert cleanup["if"] == "always()"
     assert 'gh release delete "$INPUT_TAG"' in cleanup["run"]
-    assert all("tools/audio_url_job.py" not in step.get("run", "") for step in steps)
-    media_tools = next(
-        i for i, step in enumerate(steps) if "command -v ffmpeg" in step.get("run", "")
-    )
-    assert sync < media_tools < acquire
     assert steps[media_tools]["if"] == "inputs.audio_url != ''"
     assert "GH_TOKEN" not in steps[media_tools].get("env", {})
     assert steps[sync]["timeout-minutes"] == 10
     assert steps[acquire]["timeout-minutes"] == 30
-    request = next(i for i, step in enumerate(steps) if step.get("id") == "request")
-    assert acquire < request < allocate
-    run = next(step for step in steps if "colab_actions.py run" in step.get("run", ""))
-    assert "GEMINI_API_KEY" not in run["env"]
+    assert "GEMINI_API_KEY" not in steps[recognise]["env"]
 
 
-def test_workflow_steps_have_timeouts_and_colab_has_execution_and_cleanup_time():
+def test_workflow_steps_have_timeouts_and_recognition_has_cleanup_time():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     for job in workflow["jobs"].values():
         for step in job["steps"]:
             assert 0 < step["timeout-minutes"] <= job["timeout-minutes"]
     job = workflow["jobs"]["colab-auto"]
-    run = next(
-        step for step in job["steps"] if "colab_actions.py run" in step.get("run", "")
+    recognise = next(
+        step for step in job["steps"] if "split_asr_job.py" in step.get("run", "")
     )
-    assert run["timeout-minutes"] == 90
-    assert job["timeout-minutes"] >= 30 + run["timeout-minutes"] + 20
+    assert recognise["timeout-minutes"] == 140
+    assert job["timeout-minutes"] >= 30 + recognise["timeout-minutes"] + 10
 
 
 def test_cpu_render_package_install_retains_media_tools_with_timeout():
@@ -434,7 +427,7 @@ def test_chained_previews_preserve_submitted_settings(tmp_path, monkeypatch):
         if s.get("name") == "Prepare the submitted preview settings"
     )
     settings = json.loads((ROOT / "config.landscape.example.json").read_text())
-    settings.update(clips=4, candidates=9, threads=3, max_source_seconds=43200)
+    settings.update(clips=4, candidates=9, asr_parts=3, max_source_seconds=43200)
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("SETTINGS_JSON", json.dumps(settings))
     code = step["run"].split("python - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
@@ -444,54 +437,10 @@ def test_chained_previews_preserve_submitted_settings(tmp_path, monkeypatch):
     assert config.stat().st_mode & 0o777 == 0o600
 
 
-def test_workflow_reads_asr_parts_from_request(tmp_path, monkeypatch):
-    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    step = next(
-        step
-        for step in workflow["jobs"]["colab-auto"]["steps"]
-        if step.get("id") == "request"
-    )
-    directory = tmp_path / "clipforge-model-request"
-    directory.mkdir()
-    request = {
-        "request_id": "a" * 32,
-        "source_ref": "b" * 40,
-        "video_sha256": None,
-        "audio_source_url": URL,
-    }
-    (directory / "request.json").write_text(json.dumps(request))
-    output = tmp_path / "output"
-    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
-    monkeypatch.setenv("REQUEST_ID", request["request_id"])
-    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", request["source_ref"])
-    monkeypatch.setenv("AUDIO_URL", URL)
-    code = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
-    exec(compile(code, "workflow-request", "exec"), {})
-    assert output.read_text() == "asr_parts=1\n"
-
-
-def test_maintenance_workflow_passes_cache_profile_to_allocation():
-    workflow = yaml.safe_load((ROOT / "deploy/colab-maintenance.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert inputs["cache_profile"] == {
-        "description": "Public asset cache profile for prepare-cache",
-        "type": "choice",
-        "options": ["gpu", "cpu"],
-        "default": "gpu",
-    }
-    allocate = next(
-        step
-        for step in workflow["jobs"]["colab"]["steps"]
-        if "colab_actions.py start" in step.get("run", "")
-    )
-    assert allocate["env"]["CLIPFORGE_CACHE_PROFILE"] == "${{ inputs.cache_profile }}"
-
-
 def test_cookie_secret_is_scoped_to_retrieval_steps():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     allowed = {
-        "Acquire audio and stage verified private input before GPU allocation",
+        "Acquire and verify the audio before GPU allocation",
         "Verify this run's analysis and create previews and an unapproved draft",
     }
     seen = set()
@@ -511,7 +460,7 @@ def colab_step(name):
 
 
 FETCH = "Download the requested verified audio artifact from a successful producer run"
-ACQUIRE = "Acquire audio and stage verified private input before GPU allocation"
+ACQUIRE = "Acquire and verify the audio before GPU allocation"
 VERIFIED_REQUEST = "c" * 32
 
 

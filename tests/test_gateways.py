@@ -349,7 +349,7 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
     module, _, control, _ = submitter
     url = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
     config = tmp_path / "config.json"
-    config.write_text('{"asr_batch_size": 8, "threads": 4}')
+    config.write_text('{"asr_parts": 2, "clips": 4}')
     monkeypatch.setattr(
         sys,
         "argv",
@@ -384,9 +384,8 @@ def test_url_only_audio_dispatch_sends_settings_without_release(
     assert json.loads(inputs["settings_json"]) == request["settings"]
     assert request["settings"] == {
         **json.loads(Path("config.landscape.example.json").read_text()),
-        "asr_batch_size": 8,
-        "asr_parts": 4,
-        "threads": 4,
+        "asr_parts": 2,
+        "clips": 4,
     }
     assert control["playlists"] == ["lowest"] and control["preflight_closed"]
     assert control["preflight_budgets"] == [
@@ -458,15 +457,12 @@ def test_url_preflight_accepts_configured_duration_boundary(
     "overrides",
     [
         {},
-        {"max_source_seconds": 18000, "max_transport_bytes": 8 * 1024**3, "threads": 4},
+        {"max_source_seconds": 18000, "max_transport_bytes": 8 * 1024**3, "clips": 4},
     ],
 )
 def test_url_settings_match_submission_acquisition_and_analysis(
     submitter, tmp_path, monkeypatch, overrides
 ):
-    from clipforge import audio_first
-    from clipforge.storage import write_json
-
     module, _, control, _ = submitter
     config = tmp_path / "config.json"
     config.write_text(json.dumps(overrides))
@@ -528,40 +524,8 @@ def test_url_settings_match_submission_acquisition_and_analysis(
     )
     acquired = json.loads((directory / "request.json").read_text())
     assert acquired["settings"] == submitted
-
-    def allocate(source, root, settings, source_url):
-        assert settings == expected
-        assert source_url == inputs["audio_url"]
-        write_json(root / "asr-receipt.json", {"key": "e" * 64})
-        write_json(
-            root / "transcripts" / ("e" * 64 + ".json"),
-            {"language": "ja", "segments": []},
-        )
-        result = {"status": "topics_allocated", "topics": []}
-        write_json(root / "topics.json", result)
-        return result, None
-
-    monkeypatch.setattr(audio_first, "allocate_audio", allocate)
-    runner = load_tool("run_request")
-    monkeypatch.setenv("GITHUB_REPOSITORY", runner.PRIVATE_REPO)
-    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", inputs["source_ref"])
-    monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    monkeypatch.delenv("CLIPFORGE_REQUIRE_CUDA", raising=False)
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "run_request",
-            "run",
-            "--tag",
-            inputs["input_tag"],
-            "--directory",
-            str(directory),
-            "--output",
-            str(tmp_path / "analysis"),
-        ],
-    )
-    runner.main()
+    # The ASR coordinator reads the same settings from the acquired request.
+    assert Settings.model_validate(acquired["settings"]) == expected
 
 
 @pytest.mark.parametrize(
@@ -1081,144 +1045,6 @@ def test_cleanup_rejects_unrelated_tags(submitter, monkeypatch):
     with pytest.raises(RuntimeError):
         module.main()
     assert not control["releases"]
-
-
-@pytest.fixture
-def runner(tmp_path, monkeypatch, settings):
-    module = load_tool("run_request")
-    identity = "b" * 32
-    tag = "clipforge-input-" + identity
-    source = b"synthetic-private-video" * 100
-    request = {
-        "request_id": identity,
-        "source_ref": "a" * 40,
-        "video_sha256": hashlib.sha256(source).hexdigest(),
-        "video_bytes": len(source),
-        "settings": settings.model_dump(),
-        "chat_sha256": None,
-    }
-    control = {"request": request, "private": True, "deleted": False, "source": source}
-    monkeypatch.setenv("GITHUB_REPOSITORY", module.PRIVATE_REPO)
-    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", "a" * 40)
-    monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "github-output"))
-
-    def gh(*args):
-        if args[:1] == ("api",) and args[1].count("/") == 2 and "--jq" in args:
-            return "true" if control["private"] else "false"
-        if args[:2] == ("release", "view"):
-            return json.dumps(
-                {
-                    "assets": [
-                        {
-                            "name": "request.json",
-                            "size": len(json.dumps(control["request"])),
-                        },
-                        {"name": "input-video.bin", "size": len(source)},
-                    ]
-                }
-            )
-        if args[:2] == ("release", "download"):
-            destination = Path(args[args.index("--dir") + 1])
-            name = args[args.index("--pattern") + 1]
-            (destination / name).write_bytes(
-                json.dumps(control["request"]).encode()
-                if name == "request.json"
-                else control["source"]
-            )
-            return ""
-        if args[:2] == ("release", "delete"):
-            control["deleted"] = True
-            return ""
-        raise AssertionError(args)
-
-    monkeypatch.setattr(module, "gh", gh)
-
-    def invoke(command):
-        monkeypatch.setattr(
-            sys,
-            "argv",
-            [
-                "run_request",
-                command,
-                "--tag",
-                tag,
-                "--directory",
-                str(tmp_path / "input"),
-                "--output",
-                str(tmp_path / "output"),
-            ],
-        )
-        module.main()
-
-    return module, control, invoke
-
-
-def test_private_runner_audio_analysis_cannot_enter_video_or_model_path(
-    runner, tmp_path, monkeypatch
-):
-    from clipforge import audio_first
-    from clipforge.storage import write_json
-
-    _, control, invoke = runner
-    url = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
-    control["request"]["audio_source_url"] = url
-    invoke("prepare")
-
-    def allocate(source, root, settings, source_url):
-        assert source_url == url
-        write_json(root / "asr-receipt.json", {"key": "e" * 64})
-        write_json(
-            root / "transcripts" / ("e" * 64 + ".json"),
-            {"language": "ja", "segments": []},
-        )
-        result = {
-            "status": "topics_allocated",
-            "source_url": url,
-            "topics": [],
-            "model_generation_requests": 0,
-        }
-        write_json(root / "topics.json", result)
-        return result, None
-
-    monkeypatch.setattr(audio_first, "allocate_audio", allocate)
-    invoke("run")
-    output = tmp_path / "output"
-    result = json.loads((output / "request-receipt.json").read_text())
-    assert result["status"] == "topics_allocated" and result["rendered_clips"] == 0
-    submit = load_tool("submit_job")
-    submit.verify_download(output, control["request"], control["request"])
-    (output / "transcripts" / ("e" * 64 + ".json")).write_text(
-        '{"language":"ja", "segments":[]}'
-    )
-    with pytest.raises(RuntimeError, match="checksum"):
-        submit.verify_download(output, control["request"], control["request"])
-
-
-def test_runner_wrong_checksum_stops_before_pipeline(runner):
-    _, control, invoke = runner
-    control["source"] = b"wrong-content"
-    invoke("prepare")
-    with pytest.raises(RuntimeError, match="checksum"):
-        invoke("run")
-
-
-@pytest.mark.parametrize(
-    "patch",
-    [
-        {"request_id": "c" * 32},
-        {"source_ref": "c" * 40},
-        {"video_sha256": "bad"},
-        {"video_bytes": 0},
-        {"video_bytes": True},
-        {"unknown": "field"},
-    ],
-)
-def test_runner_rejects_bad_manifest(runner, patch):
-    _, control, invoke = runner
-    control["request"].update(patch)
-    with pytest.raises(RuntimeError):
-        invoke("prepare")
 
 
 def test_workflow_input_cleanup_checks_tag_and_privacy_and_reports_failure():
