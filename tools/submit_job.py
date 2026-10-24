@@ -45,9 +45,6 @@ SETTINGS_FIELDS = {
     "heading",
     "heading_align",
     "heading_scale",
-    "face_box",
-    "game_box",
-    "zoom",
     "workers",
     "loudness_two_pass",
     "silence_cut",
@@ -57,18 +54,12 @@ SETTINGS_FIELDS = {
     "topics",
     "topic_min_seconds",
     "topic_max_seconds",
-    "diagrams",
-    "image_search",
-    "image_sources",
-    "table_query",
-    "thumbnail",
     "fade_seconds",
     "progress_bar",
     "quality_gate",
     "max_source_seconds",
     "max_input_bytes",
     "max_transport_bytes",
-    "chat_url",
     "chat_offset_seconds",
     "chat_panel",
     "chat_panel_width",
@@ -906,12 +897,6 @@ def dispatch(args, state_root):
         settings["asr_parts"] = args.asr_parts
     if getattr(args, "youtube_audio_transport", None) is not None:
         settings["youtube_audio_transport"] = args.youtube_audio_transport
-    if (
-        settings.get("image_search")
-        or settings.get("table_query")
-        or settings.get("chat_url")
-    ):
-        raise RuntimeError("audio analysis cannot include external lookups or chat")
     if args.clips is not None:
         settings["clips"] = args.clips
     clips = settings.get("clips", 3)

@@ -557,7 +557,7 @@ def _lift_margins(lifts, count, height):
     return [round(lift * height) for lift in lifts]
 
 
-def create(transcript, clip, directory, settings, keep=None, credits=None, lifts=None):
+def create(transcript, clip, directory, settings, keep=None, lifts=None):
     """Write captions.ass and captions.srt.
 
     lifts gives the bottom margin of each caption as a share of the height, in order. Given lifts
@@ -646,34 +646,6 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             )
         )
 
-    if credits:
-        # Source credits for every image used in the clip; small, bottom-right, never in SRT.
-        credit_size = max(14, round(height * 0.026))
-        subtitles.styles["Credit"] = pysubs2.SSAStyle(
-            fontname=settings.font,
-            fontsize=credit_size,
-            primarycolor=pysubs2.Color(235, 235, 235),
-            outlinecolor=pysubs2.Color(0, 0, 0),
-            outline=1.5,
-            alignment=pysubs2.Alignment.BOTTOM_RIGHT,
-            marginl=margin,
-            marginr=margin_right,
-            # Credits stay on the picture, above the bottom edge of the picture.
-            marginv=band + round(height * 0.015),
-        )
-        credit_text = safe(" / ".join(credits))
-        breaks = wrap_breaks(
-            credit_text, fonts.Measure(font_path, credit_size), area - 2 * margin
-        )
-        subtitles.append(
-            pysubs2.SSAEvent(
-                start=0,
-                end=round(duration * 1000),
-                style="Credit",
-                text=with_breaks(credit_text, breaks),
-            )
-        )
-
     groups, spans, plain_lines, cleanup, approximate = _caption_groups(
         transcript, clip, settings, keep, measure, line_px, landscape
     )
@@ -698,7 +670,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             event = pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
         subtitles.append(event)
 
-    corpus = "".join(plain_lines) + (heading_text or "") + "".join(credits or [])
+    corpus = "".join(plain_lines) + (heading_text or "")
     missing = fonts.missing_glyphs(font_path, corpus)
 
     ass, srt = directory / "captions.ass", directory / "captions.srt"

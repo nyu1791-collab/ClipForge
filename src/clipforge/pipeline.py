@@ -7,14 +7,9 @@ import time
 
 
 from . import (
-    assets,
-    diagrams,
-    fonts,
     media,
     quality,
     silence,
-    tables,
-    thumbnail,
 )
 from .captions import (
     FILL_BOTTOM_SHARE,
@@ -47,132 +42,23 @@ def record_failure(output, error, current_stage):
     write_json(output / "manifest.json", {**failure, "rendered": []})
 
 
-REQUIRED_FILES = {
-    "video.mp4",
-    "captions.ass",
-    "captions.srt",
-    "ledger.json",
-    "quality.json",
-}
-OPTIONAL_FILES = {"thumbnail.png", "chat.ass"}  # chat.ass only with the chat panel
-VISUAL_DIR = "visuals"
-REPOSITORY_URL = "https://github.com/nyu1791-collab/ClipForge"
-
-
-def visual_names(ledger):
-    """Overlay files a clip receipt lists, relative to the clip directory."""
-    return {f"{VISUAL_DIR}/{entry['file']}" for entry in ledger}
+REQUIRED_FILES = {"video.mp4", "captions.ass", "captions.srt", "quality.json"}
+OPTIONAL_FILES = {"chat.ass"}  # only with the chat panel
 
 
 def valid_receipt(target, saved, render_key):
     """True when the receipt belongs to this job and every file it lists is unchanged."""
     if not isinstance(saved, dict) or saved.get("key") != render_key:
         return False
-    hashes, ledger = saved.get("sha256"), saved.get("ledger")
-    if not isinstance(hashes, dict) or not isinstance(ledger, list):
-        return False
-    for entry in ledger:
-        name = entry.get("file") if isinstance(entry, dict) else None
-        if not isinstance(name, str) or Path(name).name != name:
-            return False
-    if (
-        not REQUIRED_FILES
-        <= set(hashes)
-        <= REQUIRED_FILES | OPTIONAL_FILES | visual_names(ledger)
+    hashes = saved.get("sha256")
+    if not isinstance(hashes, dict) or not REQUIRED_FILES <= set(hashes) <= (
+        REQUIRED_FILES | OPTIONAL_FILES
     ):
         return False
-    files_intact = all(
+    return all(
         (target / name).is_file() and digest(target / name) == expected
         for name, expected in hashes.items()
     )
-    # render.json is not hashed itself, so its ledger must match the hashed ledger.json.
-    return files_intact and json.loads((target / "ledger.json").read_text()) == ledger
-
-
-def prepare_visuals(clip, settings, directory, duration):
-    """Overlays from original diagrams and tables, and licensed downloads.
-
-    Each overlay is written into the clip's visuals/ folder and gets a ledger entry
-    (file, hash, source, credit, licence), so the clip keeps what it used.
-    """
-    folder = directory / VISUAL_DIR
-    folder.mkdir(parents=True, exist_ok=True)
-    visuals, ledger = [], []
-    if settings.diagrams:
-        font_path = fonts.resolve(settings.font)
-        for index, diagram in enumerate(settings.diagrams, 1):
-            png = folder / f"diagram-{index:02}.png"
-            diagrams.render(diagram, font_path, png)
-            ledger.append(
-                assets.validate_entry(
-                    {
-                        "id": f"diagram-{index:02}",
-                        "file": png.name,
-                        "kind": "diagram",
-                        "sha256": digest(png),
-                        "source_url": REPOSITORY_URL,
-                        "source_credit": "作成: ClipForge（独自図解）",
-                        "license": "ClipForge original",
-                    }
-                )
-            )
-            visuals.append(
-                {
-                    "file": str(png),
-                    "start": diagram.start,
-                    "end": diagram.end,
-                    "position": "center",
-                    "max_fraction": 0.85,
-                }
-            )
-    if settings.image_search and clip.title:
-        items = assets.search(clip.title, settings.image_sources, 2)
-        downloaded = assets.download_all(items, folder)
-        slot = duration / max(1, len(downloaded))
-        for number, entry in enumerate(downloaded):
-            ledger.append(assets.validate_entry(entry))
-            visuals.append(
-                {
-                    "file": str(folder / entry["file"]),
-                    "start": number * slot,
-                    "end": (number + 1) * slot,
-                    "position": "right",
-                    "max_fraction": 0.38,
-                }
-            )
-    if settings.table_query:
-        found = tables.search(settings.table_query)
-        if found:
-            # One original rendering of the best table, with its article as the source.
-            table = found[0]
-            png = folder / "table-01.png"
-            diagrams.table(
-                table["title"][:60], table["rows"], fonts.resolve(settings.font), png
-            )
-            ledger.append(
-                assets.validate_entry(
-                    {
-                        "id": "table-01",
-                        "file": png.name,
-                        "kind": "table",
-                        "sha256": digest(png),
-                        "source_url": table["source_url"],
-                        "source_credit": table["source_credit"],
-                        "license": table["license"],
-                    }
-                )
-            )
-            start = duration / 2
-            visuals.append(
-                {
-                    "file": str(png),
-                    "start": start,
-                    "end": start + min(8.0, duration / 3),
-                    "position": "center",
-                    "max_fraction": 0.85,
-                }
-            )
-    return visuals, ledger
 
 
 def cut_regions(source, transcript, clip, settings):
@@ -541,15 +427,6 @@ def render_clip(
         if settings.chat_panel:
             # Written beside the MP4 under the fixed name the render graph uses.
             (directory / "chat.ass").write_text(chat["ass"], encoding="utf-8")
-        duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
-        visuals, ledger = timed(
-            timings, "visuals", prepare_visuals, clip, settings, directory, duration
-        )
-        write_json(directory / "ledger.json", ledger)
-        # Original diagrams carry no on-screen credit; every other visual does.
-        credits = sorted(
-            {entry["source_credit"] for entry in ledger if entry["kind"] != "diagram"}
-        )
         caption = timed(
             timings,
             "captions",
@@ -559,7 +436,6 @@ def render_clip(
                 directory,
                 settings,
                 keep,
-                credits=credits,
                 lifts=layout["lifts"] if layout else None,
             ),
         )
@@ -573,14 +449,12 @@ def render_clip(
                 settings,
                 ass=directory / "captions.ass",
                 keep=keep,
-                visuals=visuals,
                 **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
                 # Only the chat fill crops by position; standard layouts keep the framing setting.
                 **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
             ),
         )
-        # Checked before the thumbnail, so a strict refusal costs no extra work. The static bands
-        # are the ones the captions were placed by, saved in the layout of render.json.
+        # The static bands are the ones the captions were placed by, saved in render.json.
         report = timed(
             timings,
             "quality",
@@ -590,28 +464,14 @@ def render_clip(
                     directory,
                     info,
                     caption["missing_glyphs"],
-                    ledger,
                     settings,
                     static=layout.get("static") if layout else None,
                 ),
             ),
         )
         quality.enforce(report, settings.quality_gate)
-        if settings.thumbnail:
-            timed(
-                timings,
-                "thumbnail",
-                thumbnail.make,
-                directory / "video.mp4",
-                directory / "thumbnail.png",
-                clip.title,
-                fonts.resolve(settings.font),
-                duration / 2,
-            )
         names = sorted(
-            REQUIRED_FILES
-            | {n for n in OPTIONAL_FILES if (directory / n).is_file()}
-            | visual_names(ledger)
+            REQUIRED_FILES | {n for n in OPTIONAL_FILES if (directory / n).is_file()}
         )
         saved = {
             "key": render_key,
@@ -621,7 +481,6 @@ def render_clip(
             "captions": caption,
             "quality": report,
             "keep": keep,
-            "ledger": ledger,
             "sha256": {n: digest(directory / n) for n in names},
             # The inputs the key was built from; a rerun rebuilds the key from them.
             "render_inputs": {"chat": chat_inputs, "layout": layout_inputs},

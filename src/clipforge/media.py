@@ -8,7 +8,7 @@ import re
 import subprocess
 
 from .hardware import encode_threads, video_options
-from .storage import TIME_TOLERANCE, PipelineError, process
+from .storage import PipelineError, process
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
 FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf,wav,flac,mp3"]
@@ -237,12 +237,6 @@ def frame_size(settings):
     return width, height
 
 
-def _box(box):
-    """Crop expression for normalized x, y, width, height of the source frame."""
-    x, y, w, h = box
-    return f"crop=iw*{w:.6f}:ih*{h:.6f}:iw*{x:.6f}:ih*{y:.6f}"
-
-
 def _video_timeline(clip, keep):
     if not keep:
         return "[0:V:0]setpts=PTS-STARTPTS[vin]"
@@ -286,20 +280,6 @@ def _layout(settings, width, height, src, out):
             f"[fgs]scale={width}:{height}:force_original_aspect_ratio=decrease:"
             "force_divisible_by=2,setsar=1[fg];"
             f"[bg][fg]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2,setsar=1[{out}]"
-        )
-    if settings.layout == "panels":
-        game_h = round(height * 0.6 / 2) * 2
-        face_h = height - game_h
-        game = settings.game_box or (0.0, 0.0, 1.0, 1.0)
-        return (
-            f"[{src}]split=2[gs][fs];"
-            f"[gs]{_box(game)},scale={width}:{game_h}:force_original_aspect_ratio=decrease:"
-            f"force_divisible_by=2,pad={width}:{game_h}:(ow-iw)/2:(oh-ih)/2:black,"
-            f"setsar=1[gp];"
-            f"[fs]{_box(settings.face_box)},scale={width}:{face_h}:"
-            f"force_original_aspect_ratio=decrease:force_divisible_by=2,"
-            f"pad={width}:{face_h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[fp];"
-            f"[gp][fp]vstack=inputs=2,setsar=1[{out}]"
         )
     mode = "decrease" if settings.framing == "fit" else "increase"
     fit = (
@@ -361,12 +341,11 @@ def _video_graph(
     height,
     keep,
     duration,
-    visuals,
     ass,
     chat_ass=None,
     crop_x=None,
 ):
-    """Video chain from [0:V:0] to [vout]; visuals are inputs 1..len(visuals).
+    """Video chain from the source to [vout], with the progress bar and captions.
 
     With the chat panel, the picture and its overlays use the video area left of the chat
     column. The column is padded on after them, so their positions are relative to the area.
@@ -375,63 +354,12 @@ def _video_graph(
     panel = settings.chat_panel_pixels()
     area = width - panel
     picture = settings.chat_video_height() if panel else height
-    zooms = settings.zoom
-    labels = [f"b{i}" for i in range(1 + len(zooms))]
     chain = [_video_timeline(clip, keep)]
-    if len(labels) > 1:
-        chain.append(
-            "[vin]split=" + str(len(labels)) + "".join(f"[{x}]" for x in labels)
-        )
-        base = labels[0]
-    else:
-        base = "vin"
     if panel:
-        chain.append(_chat_fit(settings, area, picture, base, "lay0", crop_x))
+        chain.append(_chat_fit(settings, area, picture, "vin", "lay0", crop_x))
     else:
-        chain.append(_layout(settings, width, height, base, "lay0"))
+        chain.append(_layout(settings, width, height, "vin", "lay0"))
     previous = "lay0"
-    for index, zoom in enumerate(zooms):
-        # Enlarged face shown over the frame while the zoom interval is active.
-        hh = min(
-            round(picture * 0.8 / 2) * 2, round(picture * 0.3 * zoom.scale / 2) * 2
-        )
-        chain.append(
-            f"[{labels[index + 1]}]{_box(settings.face_box)},"
-            f"scale=w='min({area},trunc(iw*{hh}/ih/2)*2)':h={hh},setsar=1[z{index}]"
-        )
-        nxt = f"lay{index + 1}"
-        chain.append(
-            f"[{previous}][z{index}]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2:"
-            f"enable='between(t,{zoom.start:.3f},{zoom.end:.3f})'[{nxt}]"
-        )
-        previous = nxt
-    margin = round(picture * 0.04)
-    # A top overlay sits below the heading when one is shown, so the title stays readable.
-    top = (
-        round(picture * (0.07 + 0.07 * settings.heading_scale))
-        if settings.heading
-        else margin
-    )
-    for index, visual in enumerate(visuals):
-        max_w = round(area * visual["max_fraction"])
-        # An overlay fades in and out over its own interval; a short one fades by half.
-        ramp = min(settings.fade_seconds, (visual["end"] - visual["start"]) / 2)
-        fades = ""
-        if ramp > 0:
-            fades = (
-                f",fade=t=in:st={visual['start']:.3f}:d={ramp:.3f}:alpha=1"
-                f",fade=t=out:st={visual['end'] - ramp:.3f}:d={ramp:.3f}:alpha=1"
-            )
-        chain.append(
-            f"[{index + 1}:v]format=rgba,scale=w='min(iw,{max_w})':h=-2{fades}"
-            f"[vi{index}]"
-        )
-        nxt = f"ov{index}"
-        chain.append(
-            f"[{previous}][vi{index}]overlay={_position(visual['position'], margin, top)}:"
-            f"enable='between(t,{visual['start']:.3f},{visual['end']:.3f})'[{nxt}]"
-        )
-        previous = nxt
     fade = settings.fade_seconds
     if fade > 0 and duration > 2 * fade:
         chain.append(
@@ -466,22 +394,6 @@ def _video_graph(
         tail.append("ass=filename=chat.ass")
     chain.append(f"[{previous}]{','.join(tail) or 'null'}[vout]")
     return ";".join(chain)
-
-
-def _extra_inputs(duration, visuals):
-    """Argument list for the overlay images, in index order after the source."""
-    args = []
-    for visual in visuals:
-        args += [
-            "-loop",
-            "1",
-            "-t",
-            f"{duration:.6f}",
-            *PROTOCOLS,
-            "-i",
-            visual["file"],
-        ]
-    return args
 
 
 def _audio_graph(clip, keep):
@@ -575,21 +487,12 @@ def render(
     settings,
     ass=None,
     keep=None,
-    visuals=(),
     chat_ass=None,
     crop_x=None,
 ):
-    """Render one clip; visuals are dicts with file, start, end, position, max_fraction."""
+    """Render one clip with its captions and, optionally, the chat column."""
     width, height = frame_size(settings)
     duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
-    for zoom in settings.zoom:
-        if zoom.end > duration + TIME_TOLERANCE:
-            raise PipelineError("zoom interval is outside the rendered clip")
-    for visual in visuals:
-        if visual["end"] > duration + TIME_TOLERANCE:
-            raise PipelineError("visual interval is outside the rendered clip")
-        if not Path(visual["file"]).is_file():
-            raise PipelineError("visual file is missing")
     if ass:
         # The graph names captions.ass by its basename, so only that beside the output is used.
         if Path(ass).resolve() != (Path(destination).parent / "captions.ass").resolve():
@@ -620,7 +523,6 @@ def render(
             height,
             keep,
             duration,
-            visuals,
             ass,
             chat_ass,
             crop_x,
@@ -653,7 +555,6 @@ def render(
         *FORMATS,
         "-i",
         str(Path(source).resolve()),
-        *_extra_inputs(duration, visuals),
         "-t",
         f"{clip.end - clip.start:.6f}",
         "-filter_complex",

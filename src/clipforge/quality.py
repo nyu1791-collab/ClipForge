@@ -413,7 +413,7 @@ def _finite(value):
     return value if value is not None and math.isfinite(value) else None
 
 
-def check_clip(directory, rendered, missing_glyphs, ledger, settings=None, static=None):
+def check_clip(directory, rendered, missing_glyphs, settings=None, static=None):
     """Quality report for a rendered clip folder; the caller decides what to do with it."""
     failures, warnings = [], []
     events = caption_events(directory / "captions.ass")
@@ -494,9 +494,6 @@ def check_clip(directory, rendered, missing_glyphs, ledger, settings=None, stati
             failures.append("loudness of the rendered audio could not be measured")
         else:
             failures.extend(loudness_failures(loudness))
-    for entry in ledger:
-        if not entry.get("source_credit") or not entry.get("license"):
-            failures.append(f"{entry.get('file')} has no source credit or licence")
     return {
         "passed": not failures,
         "failures": failures,

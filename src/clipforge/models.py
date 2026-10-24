@@ -51,51 +51,6 @@ class SelectedClip(Span):
     confidence: float = Field(ge=0, le=1)
 
 
-class Zoom(Record):
-    """Enlarged face over the rendered clip; start/end are output-timeline seconds."""
-
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-    scale: float = Field(default=1.6, ge=1, le=2.5)
-
-    @model_validator(mode="after")
-    def ordered(self):
-        if self.end <= self.start:
-            raise ValueError("zoom start must be before end")
-        return self
-
-
-class Diagram(Record):
-    """Original table, bar chart or step diagram drawn by ClipForge."""
-
-    kind: Literal["table", "bars", "steps"]
-    title: str = Field(min_length=1, max_length=60)
-    start: float = Field(ge=0)
-    end: float = Field(gt=0)
-    rows: list[list[str]] = Field(default_factory=list, max_length=12)
-    labels: list[str] = Field(default_factory=list, max_length=8)
-    values: list[float] = Field(default_factory=list, max_length=8)
-    steps: list[str] = Field(default_factory=list, max_length=8)
-
-    @model_validator(mode="after")
-    def valid(self):
-        if self.end <= self.start:
-            raise ValueError("diagram start must be before end")
-        if self.kind == "table" and (
-            not self.rows or not self.rows[0] or len({len(r) for r in self.rows}) != 1
-        ):
-            raise ValueError("table needs rows of equal, non-empty length")
-        if self.kind == "bars" and (
-            not self.labels or len(self.labels) != len(self.values)
-        ):
-            raise ValueError("bars need matching labels and values")
-        if self.kind == "bars" and any(value < 0 for value in self.values):
-            raise ValueError("bar values must not be negative")
-        if self.kind == "steps" and not self.steps:
-            raise ValueError("steps diagram needs at least one step")
-        return self
-
-
 class Settings(Record):
     clips: int = Field(default=3, ge=1, le=10)
     candidates: int = Field(default=8, ge=1, le=10)
@@ -133,15 +88,12 @@ class Settings(Record):
     horizontal_warn_cps: float = Field(default=7, ge=1, le=20)
     horizontal_line_chars: int = Field(default=13, ge=8, le=40)
     # blur fills the frame with a softened copy of the picture; fit leaves black bars.
-    layout: Literal["fit", "blur", "panels"] = "blur"
+    layout: Literal["fit", "blur"] = "blur"
     heading: bool = False
     # left pins the heading to the top-left corner; center is the default.
     heading_align: Literal["center", "left"] = "center"
     # Heading font scale; 1.0 is 7% of the frame height.
     heading_scale: float = Field(default=1.0, ge=0.8, le=1.6)
-    face_box: tuple[float, float, float, float] | None = None
-    game_box: tuple[float, float, float, float] | None = None
-    zoom: list[Zoom] = Field(default_factory=list, max_length=5)
     workers: int = Field(default=2, ge=1, le=4)
     loudness_two_pass: bool = True
     silence_cut: bool = False
@@ -151,14 +103,6 @@ class Settings(Record):
     topics: bool = True
     topic_min_seconds: float = Field(default=25, ge=5, le=120)
     topic_max_seconds: float = Field(default=180, ge=30, le=1800)
-    diagrams: list[Diagram] = Field(default_factory=list, max_length=8)
-    image_search: bool = False
-    image_sources: list[Literal["commons", "openverse"]] = Field(
-        default_factory=lambda: ["commons"], max_length=2
-    )
-    # Searches Japanese Wikipedia tables for this query; off when unset.
-    table_query: str | None = Field(default=None, min_length=1, max_length=100)
-    thumbnail: bool = False
     fade_seconds: float = Field(default=0.3, ge=0, le=2)
     progress_bar: bool = True
     # strict refuses a clip whose quality.json lists failures; report keeps it and records them.
@@ -167,7 +111,6 @@ class Settings(Record):
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
     # Temporary HLS transport may contain video even when only audio is retained.
     max_transport_bytes: int = Field(default=6 * 1024**3, ge=1024, le=16 * 1024**3)
-    chat_url: str | None = None
     chat_offset_seconds: float = Field(default=0, ge=-300, le=300)
     # Chat column beside the video of a landscape 16:9 render; the chat itself comes from a
     # Kick VOD URL (kick_chat). Off by default, so existing renders are unchanged.
@@ -223,18 +166,6 @@ class Settings(Record):
             return max(8, math.floor(usable / self.caption_font_size()))
         return max(8, math.floor(self.horizontal_line_chars * area / frame))
 
-    @field_validator("face_box", "game_box")
-    @classmethod
-    def normalized_box(cls, value):
-        if value is None:
-            return value
-        x, y, w, h = value
-        if min(value) < 0 or w <= 0 or h <= 0 or x + w > 1 or y + h > 1:
-            raise ValueError(
-                "boxes are x, y, width, height in 0..1 of the source frame"
-            )
-        return value
-
     @model_validator(mode="before")
     @classmethod
     def standard_height(cls, data):
@@ -280,10 +211,6 @@ class Settings(Record):
         if self.topic_max_seconds < 2 * self.topic_min_seconds:
             # Splitting an overlong topic in two must leave both halves at least the minimum.
             raise ValueError("topic maximum must be at least twice the topic minimum")
-        if self.layout == "panels" and self.face_box is None:
-            raise ValueError("layout panels needs face_box")
-        if self.zoom and self.face_box is None:
-            raise ValueError("zoom needs face_box")
         if self.candidates < self.clips:
             raise ValueError("candidate count must cover requested clips")
         if any(c in self.font for c in "\r\n,\\{}"):
