@@ -3,30 +3,28 @@
 再開時はまずこのファイルだけを読む。本文はタスクに必要なファイルだけ、`grep -n` で位置を決めて `sed -n` で範囲を読む。
 
 ## 構成
-- Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q`、lint は `ruff`。
-- 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。
+- Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`、lint は `ruff`。
+- 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。Colab 制御のテストは SDK が要る（`tools/dev_setup.sh` が入れる）。
 - 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。
-- 開発環境の準備: `bash tools/dev_setup.sh`／依存・フォント・検証・worker 認証の説明: `docs/DEVELOPMENT.md`。
+- 開発環境の準備: `bash tools/dev_setup.sh`／説明: `docs/DEVELOPMENT.md`。
 
-## 主な流れ（URL 経路）
-Kick / YouTube / Twitch / 直接HTTPSメディア URL → runner で音声取得（`tools/acquire_audio_url.py`）→ Colab GPU で2分割ASR → 結合・話題分割 → previews と未承認の下書き → 承認 → Colab CPU で描画 → 制御 VM で `merge --local`。音声のみのURLは解析まで。
-- 投入と回収: `tools/submit_job.py`（`--auto-previews`）、段階ごとの依頼: `tools/submit_audio_stage.py`
-- Colab 制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`・`tools/colab_cache.py`
-- GPU経路の手順（Kick URL→切り抜き、唯一の手順）: `docs/GPU_ROUTE.md`
-- 2分割ASR: `src/clipforge/asr_split.py`・`tools/split_asr_job.py`／手順: `docs/ASR_SPLIT.md`／連続ASRとの比較: `tools/compare_asr.py`／run の計測: `tools/run_timings.py RUN_ID`
-- URL検証・取得の振り分け: `src/clipforge/media_sources.py`（追加経路はyt-dlp、Kickは従来どおり）
-- 非公開 worker の workflow 原本: `deploy/*.yml`（実行先は非公開リポジトリ）
+## 流れ（唯一の経路）
+Kick / YouTube / Twitch / 直接 HTTPS の URL → runner で音声取得（`tools/acquire_audio_url.py`）→ runner で静かな位置で最大4分割 → Colab GPU（L4・T4）で Parakeet → runner で結合・話題分け → 同じ run で候補映像と未承認の下書き → 承認 → Colab CPU で描画 → 制御VMで `merge --local`。音声だけの URL は解析まで。
+- 手順: `docs/GPU_ROUTE.md`（S0〜S8）／段階の詳細と承認ファイル: `docs/AUDIO_FIRST.md`／文字起こし: `docs/ASR.md`
+- 投入と回収: `tools/submit_job.py`（解析）・`tools/submit_audio_stage.py`（描画・結合）・`tools/run_timings.py RUN_ID`（計測）
+- 文字起こし: runner 側 `tools/split_asr_job.py`・`src/clipforge/asr_split.py`、Colab 側 `src/clipforge/asr.py`
+- Colab 制御: `tools/colab_actions.py`（割り当て・解放）・`tools/colab_remote_job.py`（Colab 上のジョブ）・`tools/colab_bundle.py`（結果の受け渡し）・`tools/colab_setup.sh`（描画の環境）
+- 非公開 worker の workflow 原本: `deploy/*.yml`。一致の確認: `tools/check_worker_workflows.py`
+- YouTube の WARP・Cookie: `src/clipforge/youtube_transport.py`・`youtube_auth.py`、`docs/YOUTUBE_TRANSPORT.md`
 
 ## src/clipforge
-- 時刻・設定の型: `models.py`／外部コマンド・保存・キャッシュ: `storage.py`
-- 描画（ffmpeg グラフ）: `media.py`／工程の管理: `pipeline.py`／URL 経路の段階: `audio_first.py`・`worker_audio.py`
-- チャット欄（Kick チャットの取得と ASS 描画）: `kick_chat.py`（設定 `chat_panel`、説明は `docs/AUDIO_FIRST.md` の「チャット欄」）
-- 音声・信号: `signals.py`・`kick_media.py`・`silence.py`／話題: `topics.py`・`topic_hints.py`・`review_draft.py`
-- 全編の文字起こし（設定 `asr_engine: parakeet`）: `parakeet_asr.py`（`pipeline.recognise` から呼ぶ）
-- 字幕用の文字起こし（Parakeet）: 変換 `parakeet_captions.py`・詰め込み `caption_pack.py`、投入 `tools/submit_captions.py`、承認ファイルへの差し込み `tools/attach_captions.py`、workflow 原本 `deploy/captions.yml`
-- 字幕: `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py`
-- 品質検査: `quality.py`／ローカル動画の Gemini 選定: `selection.py`
-- 図表・素材・サムネイル: `diagrams.py`・`tables.py`・`assets.py`・`thumbnail.py`
+- 時刻・設定の型: `models.py`／保存・ハッシュ: `storage.py`
+- 取得: `media_sources.py`（振り分けと yt-dlp）・`kick_media.py`（Kick）
+- 段階: `audio_first.py`（話題の割り当て・プレビュー・描画・`caption_edits`）・`worker_audio.py`（worker での実行と結合）
+- 話題: `topics.py`・`topic_hints.py`・`review_draft.py`・`chat_activity.py`・`audio_volume.py`
+- 描画: `pipeline.py`（1クリップ）・`media.py`（ffmpeg）・`auto_layout.py`・`kick_chat.py`（チャット欄）
+- 字幕: `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py`／品質: `quality.py`
+- 重ね絵: `diagrams.py`・`tables.py`・`assets.py`・`thumbnail.py`・`silence.py`
 
 ## tests
 `tests/test_<モジュール名>.py` が基本。共通の fixture は `tests/conftest.py`。

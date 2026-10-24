@@ -11,7 +11,7 @@ YouTube の全音声取得に成功した経路を、通常の取得と診断で
 PRをレビューする段階では、`--ref PUBLIC_SOURCE_SHA --workflow-ref WORKER_BRANCH`も指定する。
 `--ref`は公開側のコード、`--workflow-ref`は非公開workerのworkflowを選ぶ。
 worker refもreceiptへ保存し、再開時にmainへ戻さない。PRは未マージのため既定mainへは未反映。
-URLだけの解析・`colab-auto` 用で、ASRは既定2分割。
+URLだけの解析用で、文字起こしは既定4台（[ASR.md](ASR.md)）。
 既定の `standard` は従来どおりで、失敗時にWARPへ自動で切り替えない。
 
 WARPは使い捨てのGitHub-hosted runnerにだけ導入する。
@@ -61,7 +61,7 @@ UTC時刻、各工程の経過秒、依存バージョン、依存ロックの�
 取得容量・音声ハッシュ、失敗した工程と例外型、終了確認を非公開Artifactに残す。
 Cookie、PO Tokenの値、Google資格情報、GitHubトークンを状態ファイルへ入れない。
 Cookie Secretは取得stepに限定し、依存導入・WARP・Dockerの子プロセスとASRへ渡さない。
-Cookie入力の詳細は [AUDIO_FIRST.md](AUDIO_FIRST.md#youtube-の-cookie-入力と匿名診断) を参照。
+Cookie入力の詳細は [AUDIO_FIRST.md](AUDIO_FIRST.md#youtube-の-cookie) を参照。
 
 ## 取得済み音声の再利用
 

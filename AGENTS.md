@@ -15,8 +15,8 @@
 
 ## 実装方針
 
-- 制御用の小容量VMで重い生成・レンダリングを走らせない。URL経路はrunnerで音声取得、Colab GPUで文字起こし・話題分割、同じrunでpreviewsと未承認の下書き、映像確認・承認後にColab CPUで描画し、制御VMで `merge --local` を行う。
-- ローカル動画は `submit_job --input` からGemini選定・描画を行う。workerは既定の `colab-auto` または明示した `cpu`。手順は `docs/COLAB.md` と `docs/OPERATIONS.md` を参照する。
+- 制御用の小容量VMで重い生成・レンダリングを走らせない。経路は1本だけ：runnerで音声取得、Colab GPU（最大4台）で Parakeet の文字起こし、runnerで話題分け、同じrunでpreviewsと未承認の下書き、映像確認・承認後にColab CPUで描画し、制御VMで `merge --local`。手順は `docs/GPU_ROUTE.md`。
+- 取得経路（Kick・YouTube・Twitch・直接HTTPS）は利用者の指示で残す。削らない。
 - 元動画と出力先を分離する。入力動画を上書きしない。
 - 時刻は秒で扱い、開始<終了・動画長内・字幕との整合性を保つ。
 - AIが提案した場面と、実際に出力・確認できた場面を区別する。

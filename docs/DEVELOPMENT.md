@@ -6,7 +6,7 @@
 bash tools/dev_setup.sh
 ```
 
-`uv` が必要。ロックファイルに従って開発・チャット・メディア取得依存を導入し、FFmpeg と日本語フォントを確認する。不足する OS パッケージは Debian / Ubuntu の root または非対話 sudo で導入する。管理権限がない場合は必要なパッケージを表示して終了する。再実行でき、秘密情報や認証設定は変更しない。制御 VM には CUDA を入れない。GPU 開発環境で必要な場合だけ `bash tools/dev_setup.sh --extra cuda` を使う。
+`uv` が必要。ロックファイルに従って開発・チャット・メディア取得依存を導入し、Python 3.12 以上なら Colab 制御 SDK も入れる（入れないと `tests/test_colab_control.py` がまるごと skip される）。FFmpeg と日本語フォントも確かめる。不足する OS パッケージは Debian / Ubuntu の root または非対話 sudo で導入する。管理権限がない場合は必要なパッケージを表示して終了する。再実行でき、秘密情報や認証設定は変更しない。文字起こし（NeMo）は Colab だけで動き、手元には入れない。
 
 検証は変更モジュールのテスト、全テスト、lint、変更した Python ファイルの形式確認の順に行う。
 

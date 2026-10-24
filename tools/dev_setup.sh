@@ -26,8 +26,11 @@ if ! command -v ffmpeg >/dev/null || ! command -v fc-match >/dev/null || \
   "${privilege[@]}" apt-get install -y ffmpeg fontconfig fonts-noto-cjk
 fi
 
-# The controller does not run GPU inference. CUDA is installed only when requested.
 uv sync --locked --group dev --extra chat --extra media-fetch "$@"
+# The Colab control tests import the SDK; CI installs it the same way (Python 3.12+).
+if uv run --no-sync python -c 'import sys; sys.exit(sys.version_info < (3, 12))'; then
+  uv pip install -q --require-hashes -r tools/colab-control-requirements.txt
+fi
 uv run --no-sync python -c 'from clipforge.fonts import resolve; print(resolve("Noto Sans CJK JP"))'
 uv run --no-sync python -m pytest --version
 uv run --no-sync ruff --version
