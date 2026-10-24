@@ -312,10 +312,8 @@ def run(args):
                 **os.environ,
                 "REQUEST_ID": child["request_id"],
                 "INPUT_TAG": "clipforge-input-" + child["request_id"],
-                "CLIPFORGE_NO_MODEL_API": "1",
                 "CLIPFORGE_SHARED_BALANCE": "1",
             }
-            environment.pop("GEMINI_API_KEY", None)
             pool = accelerator_pool(plan, index)
             if pool is None:
                 environment.pop("CLIPFORGE_COLAB_POOL", None)

@@ -6,7 +6,6 @@ from clipforge.models import Segment, Settings, Transcript, Word
 @pytest.fixture
 def settings():
     return Settings(
-        gemini_model="test-video-model",
         clips=2,
         candidates=4,
         min_seconds=3,

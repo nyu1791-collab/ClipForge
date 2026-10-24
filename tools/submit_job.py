@@ -18,11 +18,8 @@ from clipforge.storage import digest, write_json
 REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
 WORKFLOW = "clipforge.yml"
-# One request may own two independent ASR runtimes; do not overlap whole requests.
-MAX_ACTIVE = {"colab-auto": 1}
 MAX_SETTINGS_JSON_BYTES = 16 * 1024
 SETTINGS_FIELDS = {
-    "gemini_model",
     "clips",
     "candidates",
     "min_seconds",
@@ -78,7 +75,6 @@ SETTINGS_FIELDS = {
     "fade_seconds",
     "progress_bar",
     "quality_gate",
-    "analysis_fps",
     "max_source_seconds",
     "max_input_bytes",
     "max_transport_bytes",
@@ -608,11 +604,8 @@ def send_dispatch(state, receipt):
                 "request_id": receipt["request_id"],
                 "input_tag": receipt["input_tag"],
                 "source_ref": receipt["source_ref"],
-                # Receipts written before worker selection ran on the hosted CPU runner.
-                "worker": receipt.get("worker", "cpu"),
                 "audio_url": receipt.get("audio_url", ""),
                 "settings_json": settings_json,
-                "public_cache": receipt.get("public_cache", "off"),
                 **({"auto_previews": True} if receipt.get("auto_previews") else {}),
                 # Sent only when set, so ordinary dispatches keep their exact inputs.
                 **(
@@ -644,142 +637,6 @@ def send_dispatch(state, receipt):
     receipt["status"] = "DISPATCHED"
     receipt["job_submitted"] = True
     save(state / "receipt.json", receipt)
-
-
-def resume_audio_staging(args):
-    """Resume one saved audio request; never create another request ID or redo ASR."""
-    identity = args.resume_audio
-    if not re.fullmatch(r"[a-f0-9]{32}", identity) or args.input is None:
-        raise RuntimeError(
-            "resume requires a valid request ID and the original --input audio"
-        )
-    state_root = Path.home() / ".local/state/clipforge"
-    with (state_root / ".submit.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError("another VM submission is active") from None
-        state = state_root / identity
-        receipt = json.loads((state / "receipt.json").read_text())
-        request_path = state / "request.json"
-        request = json.loads(request_path.read_text())
-        if (
-            receipt.get("repository") != REPO
-            or receipt.get("request_id") != identity
-            or request.get("request_id") != identity
-            or receipt.get("input_tag") != "clipforge-input-" + identity
-            or receipt.get("source_ref") != request.get("source_ref")
-            or not re.fullmatch(r"[a-f0-9]{40}", str(receipt.get("source_ref")))
-            or not request.get("audio_source_url")
-            or request.get("chat_sha256")
-            or request.get("settings", {}).get("gemini_model") != "manual-no-api"
-        ):
-            raise RuntimeError("saved audio request identity mismatch")
-        run_id = receipt.get("run_id") or find_run(identity)
-        if run_id:
-            receipt.update(
-                run_id=run_id, url=f"https://github.com/{REPO}/actions/runs/{run_id}"
-            )
-            save(state / "receipt.json", receipt)
-            print("Existing request already has a workflow; no new job was submitted.")
-            return
-        if receipt.get("status") not in {
-            "STAGING_FAILED",
-            "UPLOAD_FAILED_AUTH",
-            "STAGING_PARTIAL",
-            "DISPATCH_REJECTED",
-        }:
-            raise RuntimeError(
-                "dispatch state is uncertain or not resumable; inspect the existing request"
-            )
-        source = args.input.resolve(strict=True)
-        if (
-            digest(source) != request["video_sha256"]
-            or source.stat().st_size != request["video_bytes"]
-        ):
-            raise RuntimeError("original audio checksum or size mismatch")
-        active = json.loads(
-            gh("run", "list", "--repo", REPO, "--limit", "100", "--json", "status")
-        )
-        if any(row["status"] != "completed" for row in active):
-            raise RuntimeError("another video job is active; wait before resuming")
-        endpoint = f"repos/{REPO}/releases/tags/{receipt['input_tag']}"
-        try:
-            release = json.loads(gh("api", endpoint))
-        except RuntimeError as error:
-            if "HTTP 404" not in str(error):
-                raise
-            release = json.loads(
-                gh(
-                    "api",
-                    "--method",
-                    "POST",
-                    f"repos/{REPO}/releases",
-                    "--input",
-                    "-",
-                    body=json.dumps(
-                        {
-                            "tag_name": receipt["input_tag"],
-                            "target_commitish": "main",
-                            "name": receipt["input_tag"],
-                            "make_latest": "false",
-                        }
-                    ),
-                )
-            )
-
-        def verify_assets(value):
-            expected = {"input-video.bin": source, "request.json": request_path}
-            present = {}
-            for row in value["assets"]:
-                name = row["name"]
-                if name not in expected or name in present:
-                    raise RuntimeError("unexpected or duplicate staged asset")
-                path = expected[name]
-                if (
-                    row.get("digest") != "sha256:" + digest(path)
-                    or row["size"] != path.stat().st_size
-                ):
-                    raise RuntimeError("existing staged asset checksum mismatch")
-                present[name] = path
-            return {
-                name: path for name, path in expected.items() if name not in present
-            }
-
-        missing = verify_assets(release)
-        if missing:
-            with tempfile.TemporaryDirectory(prefix="clipforge-resume-") as temporary:
-                files = []
-                for name, source_path in missing.items():
-                    target = Path(temporary) / name
-                    target.symlink_to(source_path)
-                    files.append(str(target))
-                try:
-                    gh(
-                        "release",
-                        "upload",
-                        receipt["input_tag"],
-                        *files,
-                        "--repo",
-                        REPO,
-                        timeout=1800,
-                    )
-                except Exception as error:
-                    # Only a credential rejection is labelled as auth; other failures
-                    # stay resumable, and the next run re-verifies every asset checksum.
-                    rejected = isinstance(error, RuntimeError) and re.search(
-                        r"HTTP (401|403)\b", str(error)
-                    )
-                    receipt["status"] = (
-                        "UPLOAD_FAILED_AUTH" if rejected else "STAGING_PARTIAL"
-                    )
-                    save(state / "receipt.json", receipt)
-                    raise
-            if verify_assets(json.loads(gh("api", endpoint))):
-                raise RuntimeError("staged input upload is incomplete")
-        # No dispatch is attempted until every staged file matches its saved request.
-        send_dispatch(state, receipt)
-    print("Resumed private audio request " + identity + "; one workflow submitted.")
 
 
 def record_run_status(state, receipt, run):
@@ -866,20 +723,16 @@ def recover(args):
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path)
-    parser.add_argument("--gemini-model")
     parser.add_argument(
         "--audio-analysis-url",
-        help="Kick / YouTube / Twitch または HTTPS の mp4・m4a・mp3・webm・m3u8。あなたが権利を持つファイルを置いた場所の URL。Gemini 呼び出しなし",
+        help="Kick / YouTube / Twitch または HTTPS の mp4・m4a・mp3・webm・m3u8。あなたが権利を持つファイルを置いた場所の URL",
     )
     parser.add_argument("--ref", default="main")
     parser.add_argument(
         "--workflow-ref",
         help="Private worker branch/tag for review runs; default: main (persisted for resume)",
     )
-    parser.add_argument("--worker", choices=["colab-auto", "cpu"], default="colab-auto")
     parser.add_argument("--config", type=Path)
-    parser.add_argument("--chat-file", type=Path)
     parser.add_argument(
         "--cookies-file",
         type=Path,
@@ -891,29 +744,22 @@ def main():
         help="Explicit YouTube acquisition route; warp is verified on the hosted runner before GPU allocation",
     )
     parser.add_argument("--clips", type=int)
-    parser.add_argument("--chat-url")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--auto-previews", action="store_true")
     parser.add_argument(
         "--reuse-audio-run",
         type=int,
-        help="URL-only colab-auto: producer run whose verified audio artifact may be reused (with --reuse-audio-request)",
+        help="producer run whose verified audio artifact may be reused (with --reuse-audio-request)",
     )
     parser.add_argument(
         "--reuse-audio-request",
-        help="URL-only colab-auto: request ID of that verified audio artifact (with --reuse-audio-run)",
+        help="request ID of that verified audio artifact (with --reuse-audio-run)",
     )
     parser.add_argument(
         "--asr-parts",
         type=int,
         choices=(1, 2, 3, 4),
-        help="URL-only ASR runtimes (default: 2, up to 4); use 1 for continuous recognition",
-    )
-    parser.add_argument(
-        "--public-cache",
-        choices=("on", "off"),
-        default="off",
-        help="restore and publish the GPU public cache on Colab (default: off; fresh setup was faster, 40 s vs 104 s)",
+        help="Colab GPU runtimes for recognition (default: 4)",
     )
     parser.add_argument(
         "--wait-timeout",
@@ -945,9 +791,6 @@ def main():
         "--status", help="Show one existing request and GitHub run status"
     )
     modes.add_argument(
-        "--resume-audio", help="Resume a failed audio upload using its saved request ID"
-    )
-    modes.add_argument(
         "--cleanup-tag",
         help="Delete one temporary private input release after inspecting its job",
     )
@@ -956,18 +799,9 @@ def main():
         parser.error("--wait-timeout must be positive")
     if args.collect_stage and not args.collect:
         parser.error("--collect-stage requires --collect")
-    if args.auto_previews and (
-        not args.audio_analysis_url
-        or args.input is not None
-        or args.worker != "colab-auto"
-        or args.collect
-        or args.status
-        or args.resume_audio
-        or args.cleanup_tag
-    ):
-        parser.error(
-            "--auto-previews requires URL-only submission with --worker colab-auto"
-        )
+    existing = args.collect or args.status or args.cleanup_tag
+    if args.auto_previews and (not args.audio_analysis_url or existing):
+        parser.error("--auto-previews requires a URL submission")
     if (args.reuse_audio_run is None) != (args.reuse_audio_request is None):
         parser.error(
             "--reuse-audio-run and --reuse-audio-request must be given together"
@@ -976,16 +810,9 @@ def main():
         args.reuse_audio_run < 1
         or not re.fullmatch(r"[a-f0-9]{32}", args.reuse_audio_request)
         or not args.audio_analysis_url
-        or args.input is not None
-        or args.worker != "colab-auto"
-        or args.collect
-        or args.status
-        or args.resume_audio
-        or args.cleanup_tag
+        or existing
     ):
-        parser.error(
-            "audio reuse requires URL-only submission with --worker colab-auto and a valid request ID"
-        )
+        parser.error("audio reuse requires a URL submission and a valid request ID")
     if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
         raise RuntimeError("use the authenticated owner VM connection")
     if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
@@ -1010,20 +837,13 @@ def main():
     if args.collect or args.status:
         recover(args)
         return
-    if args.resume_audio:
-        resume_audio_staging(args)
-        return
-    if args.audio_analysis_url:
-        from clipforge.media_sources import audio_only_url, canonical
+    if not args.audio_analysis_url:
+        parser.error("--audio-analysis-url is required to submit a job")
+    from clipforge.media_sources import audio_only_url, canonical
 
-        canonical(args.audio_analysis_url)
-        if args.auto_previews and audio_only_url(args.audio_analysis_url):
-            parser.error("audio-only sources cannot produce automatic video previews")
-        args.gemini_model = "manual-no-api"
-    if args.audio_analysis_url and args.input is None and args.worker != "colab-auto":
-        parser.error("URL-only audio analysis requires --worker colab-auto")
-    if (args.input is None and not args.audio_analysis_url) or not args.gemini_model:
-        parser.error("--input and --gemini-model are required to submit a video")
+    canonical(args.audio_analysis_url)
+    if args.auto_previews and audio_only_url(args.audio_analysis_url):
+        parser.error("audio-only sources cannot produce automatic video previews")
     if args.output:
         args.wait = True
         if args.output.exists() or args.output.is_symlink():
@@ -1064,123 +884,75 @@ def dispatch(args, state_root):
             "status",
         )
     )
-    active = sum(run["status"] != "completed" for run in runs)
-    if active >= MAX_ACTIVE.get(args.worker, 1):
-        raise RuntimeError(
-            "another video job is active; wait before submitting a new input"
+    if any(run["status"] != "completed" for run in runs):
+        raise RuntimeError("another job is active; wait before submitting a new one")
+    try:
+        names = [
+            secret["name"]
+            for secret in json.loads(
+                gh("secret", "list", "--repo", REPO, "--json", "name")
+            )
+        ]
+    except RuntimeError as error:
+        # A token without secrets:read gets 403. The worker checks COLAB_ADC_JSON before
+        # any GPU is allocated, so the request may go ahead and fail there instead.
+        if "(HTTP 403)" not in str(error):
+            raise
+        names = None
+        print(
+            "Secret names are not readable with this token; the worker checks them.",
+            flush=True,
         )
-    # Audio analysis on the hosted CPU runner needs neither the Colab nor the Gemini secret.
-    needs_secrets = args.worker == "colab-auto" or not args.audio_analysis_url
-    names = None
-    if needs_secrets:
-        try:
-            names = [
-                secret["name"]
-                for secret in json.loads(
-                    gh("secret", "list", "--repo", REPO, "--json", "name")
-                )
-            ]
-        except RuntimeError as error:
-            # A token without secrets:read gets 403. The worker checks COLAB_ADC_JSON before
-            # any GPU is allocated, so the request may go ahead and fail there instead.
-            if "(HTTP 403)" not in str(error):
-                raise
-            print(
-                "Secret names are not readable with this token; the worker checks them.",
-                flush=True,
-            )
-    if names is not None:
-        if args.worker == "colab-auto" and "COLAB_ADC_JSON" not in names:
-            raise RuntimeError(
-                "COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup"
-            )
-        if not args.audio_analysis_url and "GEMINI_API_KEY" not in names:
-            raise RuntimeError("private worker GEMINI_API_KEY is not registered")
-    source = args.input.resolve(strict=True) if args.input else None
+    if names is not None and "COLAB_ADC_JSON" not in names:
+        raise RuntimeError(
+            "COLAB_ADC_JSON is not registered; complete the intended Google account's one-time OAuth setup"
+        )
+    settings = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "config.landscape.example.json"
+        ).read_text()
+    )
+    validate_settings(settings)
     overrides = json.loads(args.config.read_text()) if args.config else {}
     validate_settings(overrides)
-    url_only = bool(args.audio_analysis_url and source is None)
-    settings = {}
-    if url_only:
-        settings = json.loads(
-            (
-                Path(__file__).resolve().parents[1] / "config.landscape.example.json"
-            ).read_text()
-        )
-        validate_settings(settings)
     settings.update(overrides)
-    if url_only:
-        # Parakeet is fast enough for one runtime; Whisper splits across four.
-        settings.setdefault(
-            "asr_parts", 1 if settings.get("asr_engine") == "parakeet" else 4
-        )
+    # Four Colab runtimes recognise the audio side by side unless fewer are asked for.
+    settings.setdefault("asr_parts", 4)
     if getattr(args, "asr_parts", None) is not None:
         settings["asr_parts"] = args.asr_parts
-    if settings.get("asr_parts", 1) > 1 and (
-        not url_only or args.worker != "colab-auto"
-    ):
-        raise RuntimeError("split ASR requires URL-only analysis on colab-auto")
     if getattr(args, "youtube_audio_transport", None) is not None:
         settings["youtube_audio_transport"] = args.youtube_audio_transport
-    if settings.get("youtube_audio_transport") == "warp" and (
-        not url_only or args.worker != "colab-auto"
-    ):
-        raise RuntimeError(
-            "YouTube WARP transport requires URL-only audio analysis on colab-auto"
-        )
-    settings["gemini_model"] = args.gemini_model
-    if args.audio_analysis_url and (
+    if (
         settings.get("image_search")
         or settings.get("table_query")
         or settings.get("chat_url")
-        or args.chat_url
-        or args.chat_file
     ):
         raise RuntimeError("audio analysis cannot include external lookups or chat")
     if args.clips is not None:
         settings["clips"] = args.clips
     clips = settings.get("clips", 3)
-    if args.chat_url:
-        settings["chat_url"] = args.chat_url
-    if not re.fullmatch(r"(?:models/)?[A-Za-z0-9._-]+", args.gemini_model):
-        raise RuntimeError("invalid Gemini model identifier")
     if type(clips) is not int or not 1 <= clips <= 10:
         raise RuntimeError("clip count must be between 1 and 10")
-    if url_only:
-        parse_settings_json(json.dumps(settings, ensure_ascii=False))
-        if getattr(args, "cookies_file", None):
-            print(
-                "The local cookie file is validated for preflight; remote retrieval requires the worker YOUTUBE_COOKIES_B64 Secret. Cookie contents are never uploaded."
-            )
-        metadata = preflight_audio_url(
-            args.audio_analysis_url,
-            settings,
-            **(
-                {"cookies_file": args.cookies_file}
-                if getattr(args, "cookies_file", None)
-                else {}
-            ),
+    parse_settings_json(json.dumps(settings, ensure_ascii=False))
+    if getattr(args, "cookies_file", None):
+        print(
+            "The local cookie file is validated for preflight; remote retrieval requires the worker YOUTUBE_COOKIES_B64 Secret. Cookie contents are never uploaded."
         )
-        if (
-            args.auto_previews
-            and metadata is not None
-            and metadata.get("has_video") is False
-        ):
-            raise RuntimeError(
-                "audio-only sources cannot produce automatic video previews"
-            )
-    maximum = settings.get("max_input_bytes", 1073741824)
-    if source is not None and (
-        not source.is_file()
-        or type(maximum) is not int
-        or not 0 < source.stat().st_size <= min(maximum, 2147483648)
+    metadata = preflight_audio_url(
+        args.audio_analysis_url,
+        settings,
+        **(
+            {"cookies_file": args.cookies_file}
+            if getattr(args, "cookies_file", None)
+            else {}
+        ),
+    )
+    if (
+        args.auto_previews
+        and metadata is not None
+        and metadata.get("has_video") is False
     ):
-        raise RuntimeError("video must be a regular file within the input size limit")
-    if args.chat_file and (
-        not args.chat_file.is_file()
-        or not 0 < args.chat_file.stat().st_size <= 20000000
-    ):
-        raise RuntimeError("chat JSON must be a file no larger than 20MB")
+        raise RuntimeError("audio-only sources cannot produce automatic video previews")
     sha = json.loads(gh("api", f"repos/{SOURCE}/commits/{args.ref}"))["sha"]
     identity = uuid.uuid4().hex
     tag = "clipforge-input-" + identity
@@ -1192,9 +964,7 @@ def dispatch(args, state_root):
         "source_ref": sha,
         "input_tag": tag,
         "status": "STAGING",
-        "worker": args.worker,
-        "audio_url": args.audio_analysis_url if source is None else "",
-        "public_cache": args.public_cache,
+        "audio_url": args.audio_analysis_url,
         "input_staged": False,
     }
     if getattr(args, "workflow_ref", None) is not None:
@@ -1212,49 +982,12 @@ def dispatch(args, state_root):
     request = {
         "request_id": identity,
         "source_ref": sha,
-        "video_sha256": digest(source) if source is not None else None,
-        "video_bytes": source.stat().st_size if source is not None else None,
+        "video_sha256": None,
+        "video_bytes": None,
         "settings": settings,
-        "chat_sha256": digest(args.chat_file) if args.chat_file else None,
+        "audio_source_url": args.audio_analysis_url,
     }
-    if args.audio_analysis_url:
-        request["audio_source_url"] = args.audio_analysis_url
     save(state / "request.json", request)
-    if source is not None:
-        with tempfile.TemporaryDirectory(prefix="clipforge-submit-") as temporary:
-            directory = Path(temporary)
-            video = directory / "input-video.bin"
-            video.symlink_to(source)
-            manifest = directory / "request.json"
-            manifest.write_bytes((state / "request.json").read_bytes())
-            files = [str(video), str(manifest)]
-            if args.chat_file:
-                chat = directory / "chat.json"
-                chat.symlink_to(args.chat_file.resolve())
-                files.append(str(chat))
-            try:
-                gh(
-                    "release",
-                    "create",
-                    tag,
-                    *files,
-                    "--repo",
-                    REPO,
-                    "--target",
-                    "main",
-                    "--title",
-                    tag,
-                    "--latest=false",
-                    "--notes",
-                    "Temporary private ClipForge job input. Automatically cleaned after execution.",
-                    timeout=1800,
-                )
-            except Exception:
-                receipt["status"] = "STAGING_FAILED"
-                save(receipt_path, receipt)
-                raise
-        receipt.update(status="STAGED", input_staged=True)
-        save(receipt_path, receipt)
     send_dispatch(state, receipt)
     return state, receipt
 

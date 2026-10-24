@@ -28,9 +28,6 @@ def test_invalid_spans(start, end):
 @pytest.mark.parametrize(
     "updates",
     [
-        {"gemini_model": ""},
-        {"gemini_model": "bad\nmodel"},
-        {"gemini_model": "https://example.org/model"},
         {"clips": 0},
         {"clips": 11},
         {"clips": 4, "candidates": 3},
@@ -42,8 +39,6 @@ def test_invalid_spans(start, end):
         {"height": 1000},
         {"framing": "face-track"},
         {"caption": "html"},
-        {"analysis_fps": 0},
-        {"analysis_fps": 6},
         {"max_input_bytes": 0},
         {"max_source_seconds": 43201},
         {"max_transport_bytes": 1023},
@@ -52,7 +47,6 @@ def test_invalid_spans(start, end):
         {"font": "Noto\nInjected"},
         {"font": r"Noto\x"},
         {"font": "Noto,Arial"},
-        {"max_seconds": 180, "analysis_fps": 5, "candidates": 10},
         {"unknown_option": True},
         {"chat_offset_seconds": 301},
     ],
@@ -63,12 +57,11 @@ def test_settings_reject_invalid_configuration(settings, updates):
 
 
 def test_long_source_and_transport_budgets_keep_local_defaults():
-    settings = Settings(gemini_model="manual-no-api")
+    settings = Settings()
     assert settings.max_source_seconds == 3600
     assert settings.max_input_bytes == 1024**3
     assert settings.max_transport_bytes == 6 * 1024**3
     maximum = Settings(
-        gemini_model="manual-no-api",
         max_source_seconds=43200,
         max_transport_bytes=16 * 1024**3,
     )
@@ -339,13 +332,6 @@ def test_long_topic_example_keeps_topics_long_without_the_chat_panel():
     assert example.heading_align == "left" and example.heading_scale > 1
     assert example.topic_min_seconds == 120 and example.max_seconds == 1800
     assert example.caption_scale == 1.6 and example.caption_font_size() == 83
-
-
-def test_frame_budget_applies_only_to_gemini_selection(settings):
-    base = {**settings.model_dump(), "max_seconds": 1800, "candidates": 8}
-    assert Settings.model_validate({**base, "gemini_model": "manual-no-api"})
-    with pytest.raises(ValueError, match="frame budget"):
-        Settings.model_validate({**base, "gemini_model": "gemini-3.8-flash"})
 
 
 def test_review_preview_config_renders_small_and_fast():

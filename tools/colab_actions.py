@@ -401,19 +401,9 @@ class Controller:
         token = os.environ.get("GH_TOKEN", "")
         if not token:
             raise ControlError("Private GitHub input authentication is missing")
-        no_model_api = os.environ.get("CLIPFORGE_NO_MODEL_API") == "1"
-        if (
-            record["mode"] == "pipeline"
-            and not no_model_api
-            and not os.environ.get("GEMINI_API_KEY")
-        ):
-            raise ControlError("GEMINI_API_KEY is missing")
         payload = {
             **record,
             "github_token": token,
-            "gemini_api_key": ""
-            if no_model_api
-            else os.environ.get("GEMINI_API_KEY", ""),
             "workflow_run": os.environ.get("GITHUB_RUN_ID", "manual"),
             "offline": os.environ.get("CLIPFORGE_OFFLINE") == "1",
             "public_cache": record.get("public_cache", "on"),

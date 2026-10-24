@@ -40,7 +40,6 @@ def main():
             ).read_text()
         )
         settings.update(
-            gemini_model="manual-no-api",
             youtube_audio_transport="warp",
             asr_parts=2,
             max_transport_bytes=512 * 1024**2,

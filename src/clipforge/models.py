@@ -1,7 +1,6 @@
 """Validated original-video seconds, job settings and model response contracts."""
 
 import math
-import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -43,27 +42,6 @@ class Segment(Span):
 class Transcript(Record):
     language: str
     segments: list[Segment]
-
-
-class Candidate(Span):
-    id: str = Field(pattern=r"^candidate-[0-9]{3}$")
-    heuristic_score: float
-    speech_seconds: float
-    chat_reactions: float
-    scene_boundaries: int
-
-
-class LocalPick(Span):
-    """start/end are local seconds in the candidate video, not the original."""
-
-    candidate_id: str
-    title: str = Field(min_length=1, max_length=120)
-    reason: str = Field(min_length=1, max_length=1000)
-    confidence: float = Field(ge=0, le=1)
-
-
-class PickEnvelope(Record):
-    clips: list[LocalPick] = Field(min_length=1, max_length=10)
 
 
 class SelectedClip(Span):
@@ -145,7 +123,6 @@ class SoundEffect(Record):
 
 
 class Settings(Record):
-    gemini_model: str = Field(min_length=1, max_length=160)
     clips: int = Field(default=3, ge=1, le=10)
     candidates: int = Field(default=8, ge=1, le=10)
     min_seconds: float = Field(default=20, ge=2, le=120)
@@ -237,7 +214,6 @@ class Settings(Record):
     progress_bar: bool = True
     # strict refuses a clip whose quality.json lists failures; report keeps it and records them.
     quality_gate: Literal["report", "strict"] = "strict"
-    analysis_fps: float = Field(default=2, ge=0.5, le=5)
     max_source_seconds: float = Field(default=3600, ge=5, le=43200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
     # Temporary HLS transport may contain video even when only audio is retained.
@@ -297,13 +273,6 @@ class Settings(Record):
             )
             return max(8, math.floor(usable / self.caption_font_size()))
         return max(8, math.floor(self.horizontal_line_chars * area / frame))
-
-    @field_validator("gemini_model")
-    @classmethod
-    def model_identifier(cls, value):
-        if not re.fullmatch(r"(?:models/)?[A-Za-z0-9._-]+", value):
-            raise ValueError("use an explicit Gemini API model identifier")
-        return value
 
     @field_validator("face_box", "game_box")
     @classmethod
@@ -379,12 +348,6 @@ class Settings(Record):
             )
         if self.candidates < self.clips:
             raise ValueError("candidate count must cover requested clips")
-        # The frame budget bounds Gemini video selection; manual selection sends no frames.
-        if (
-            self.gemini_model != "manual-no-api"
-            and self.analysis_fps * self.max_seconds * self.candidates > 6000
-        ):
-            raise ValueError("analysis frame budget exceeds 6000")
         if any(c in self.font for c in "\r\n,\\{}"):
             raise ValueError("invalid font name")
         return self

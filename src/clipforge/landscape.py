@@ -1,6 +1,5 @@
-"""Offline acceptance runner for 3–5 manually selected landscape clips."""
+"""Reviewed landscape clip selection, code identity and delivery summary."""
 
-import argparse
 from importlib.metadata import version
 import json
 import math
@@ -9,9 +8,9 @@ import subprocess
 import sys
 
 from . import fonts, media, pipeline, signals
-from .models import SelectedClip, Settings, validate_picks
+from .models import SelectedClip, validate_picks
 from .quality import READING_CPS_THRESHOLDS
-from .storage import PipelineError, digest, fingerprint, within, write_json
+from .storage import PipelineError, digest, fingerprint, within
 
 
 METRICS = {
@@ -71,37 +70,6 @@ def validate_selection(value, settings, duration):
     if any(left.end > right.start for left, right in zip(ordered, ordered[1:])):
         raise PipelineError("landscape selections must not overlap")
     return clips
-
-
-def preflight(source, selection_file, settings):
-    """Inspect local metadata and cache without starting ASR, preview, or render."""
-    if (settings.aspect, settings.height, settings.quality_gate) != (
-        "16:9",
-        1080,
-        "strict",
-    ):
-        raise PipelineError("landscape delivery requires 16:9, 1080 and strict quality")
-    if settings.image_search or settings.table_query or settings.chat_url:
-        raise PipelineError("offline landscape delivery must disable network lookups")
-    if (
-        not source.is_file()
-        or not 0 < source.stat().st_size <= settings.max_input_bytes
-    ):
-        raise PipelineError("a local input within the size limit is required")
-    info = media.probe(source)
-    if not info["audio"] or info["duration"] > settings.max_source_seconds:
-        raise PipelineError(
-            "landscape input needs speech audio within the duration limit"
-        )
-    clips = validate_selection(
-        json.loads(selection_file.read_text()), settings, info["duration"]
-    )
-    cached = pipeline.saved_transcript(source, info, settings)
-    if settings.require_transcript_cache and cached is None:
-        raise PipelineError(
-            "a matching valid transcript cache is required; no ASR was started"
-        )
-    return clips, cached is not None
 
 
 def code_identity(settings=None):
@@ -196,83 +164,3 @@ def summarize_delivery(manifest, output, expected, height=1080):
             for k in ("enabled", "key", "reused", "source")
         },
     }
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--selection-file", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--config", type=Path, default=Path("config.landscape.example.json")
-    )
-    parser.add_argument("--transcript-cache", type=str)
-    parser.add_argument("--clips", type=int, choices=(3, 4, 5))
-    parser.add_argument(
-        "--allow-asr", action="store_true", help="explicitly permit ASR on a cache miss"
-    )
-    parser.add_argument(
-        "--execute", action="store_true", help="run rendering on an adequate CPU worker"
-    )
-    parser.add_argument("--resume", action="store_true")
-    args = parser.parse_args(argv)
-    try:
-        config = json.loads(args.config.read_text())
-        config.update(
-            gemini_model="manual-no-api", require_transcript_cache=not args.allow_asr
-        )
-        if args.transcript_cache is not None:
-            config["transcript_cache"] = args.transcript_cache
-        if args.clips is not None:
-            config["clips"] = args.clips
-        settings = Settings.model_validate(config)
-        clips, cache_available = preflight(args.input, args.selection_file, settings)
-        plan = {
-            "status": "prepared",
-            "planned_clips": len(clips),
-            "width": 1920,
-            "height": 1080,
-            "transcript_cache_available": cache_available,
-            "asr_on_miss_allowed": args.allow_asr,
-            "model_generation_requests": 0,
-            "topic_content_review": "required",
-            "human_review_performed": False,
-        }
-        if not args.execute:
-            print(json.dumps(plan))
-            return 0
-        identity = code_identity(settings)
-        result = pipeline.run(
-            args.input,
-            args.output,
-            settings,
-            resume=args.resume,
-            selection_file=args.selection_file,
-        )
-        summary = summarize_delivery(result, args.output, len(clips))
-        summary.update(
-            reproducibility=identity, selection_sha256=digest(args.selection_file)
-        )
-        write_json(args.output / "e2e-summary.json", summary)
-        print(
-            json.dumps(
-                {
-                    "status": "complete",
-                    "rendered_clips": len(clips),
-                    "model_generation_requests": 0,
-                    "human_review_performed": False,
-                }
-            )
-        )
-        return 0
-    except (OSError, ValueError, KeyError, TypeError, PipelineError):
-        # Private quality errors can contain speech examples. Never echo their bodies here.
-        print(
-            "Landscape verification failed; check local inputs, settings and private run records.",
-            file=sys.stderr,
-        )
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

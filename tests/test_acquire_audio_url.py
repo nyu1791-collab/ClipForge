@@ -17,9 +17,8 @@ AUDIO_URL = "https://cdn.example/audio.mp3"
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 12 and inputs["probe_only"]["default"] is False
-    for name in ("clip", "colab-auto"):
-        assert "!inputs.probe_only" in workflow["jobs"][name]["if"]
+    assert len(inputs) == 10 and inputs["probe_only"]["default"] is False
+    assert "!inputs.probe_only" in workflow["jobs"]["colab-auto"]["if"]
     probe = workflow["jobs"]["url-probe"]
     assert "inputs.probe_only" in probe["if"]
     assert "secrets." not in json.dumps(probe)
@@ -45,7 +44,6 @@ def acquisition(tmp_path, monkeypatch):
         "video_sha256": None,
         "video_bytes": None,
         "settings": {
-            "gemini_model": "manual-no-api",
             "max_input_bytes": 8192,
             "max_transport_bytes": 32768,
             "max_source_seconds": 600,
@@ -131,10 +129,9 @@ def test_acquisition_writes_prepare_input_and_preserves_settings(acquisition, ca
     [
         {"unexpected": True},
         {"bgm": "synthetic.mp3"},
-        {"gemini_model": "test-model"},
-        {"gemini_model": "manual-no-api", "image_search": True},
-        {"gemini_model": "manual-no-api", "table_query": "synthetic"},
-        {"gemini_model": "manual-no-api", "chat_url": "https://example.invalid"},
+        {"image_search": True},
+        {"table_query": "synthetic"},
+        {"chat_url": "https://example.invalid"},
     ],
 )
 def test_acquisition_rejects_unknown_local_or_enriched_settings(acquisition, settings):
@@ -343,13 +340,7 @@ def test_workflow_acquires_and_uploads_audio_before_allocating_gpu():
     request = next(i for i, step in enumerate(steps) if step.get("id") == "request")
     assert acquire < request < allocate
     run = next(step for step in steps if "colab_actions.py run" in step.get("run", ""))
-    assert (
-        run["env"]["CLIPFORGE_NO_MODEL_API"]
-        == "${{ steps.request.outputs.no_model_api }}"
-    )
-    assert run["env"]["GEMINI_API_KEY"] == (
-        "${{ steps.request.outputs.no_model_api == '0' && secrets.GEMINI_API_KEY || '' }}"
-    )
+    assert "GEMINI_API_KEY" not in run["env"]
 
 
 def test_workflow_steps_have_timeouts_and_colab_has_execution_and_cleanup_time():
@@ -453,12 +444,7 @@ def test_chained_previews_preserve_submitted_settings(tmp_path, monkeypatch):
     assert config.stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize(
-    "audio_url, local_audio", [(None, True), (URL, False), (URL, True)]
-)
-def test_workflow_detects_model_requirements_from_request(
-    tmp_path, monkeypatch, audio_url, local_audio
-):
+def test_workflow_reads_asr_parts_from_request(tmp_path, monkeypatch):
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     step = next(
         step
@@ -470,19 +456,19 @@ def test_workflow_detects_model_requirements_from_request(
     request = {
         "request_id": "a" * 32,
         "source_ref": "b" * 40,
-        "video_sha256": "c" * 64 if local_audio else None,
+        "video_sha256": None,
+        "audio_source_url": URL,
     }
-    if audio_url:
-        request["audio_source_url"] = audio_url
     (directory / "request.json").write_text(json.dumps(request))
     output = tmp_path / "output"
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("REQUEST_ID", request["request_id"])
     monkeypatch.setenv("CLIPFORGE_SOURCE_REF", request["source_ref"])
+    monkeypatch.setenv("AUDIO_URL", URL)
     code = step["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     exec(compile(code, "workflow-request", "exec"), {})
-    assert output.read_text() == f"no_model_api={int(bool(audio_url))}\nasr_parts=1\n"
+    assert output.read_text() == "asr_parts=1\n"
 
 
 def test_maintenance_workflow_passes_cache_profile_to_allocation():

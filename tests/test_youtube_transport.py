@@ -264,7 +264,7 @@ def test_main_workflow_ends_transport_before_any_gpu_and_keeps_receipt_private()
     assert "youtube_audio_transport == 'warp'" in steps[setup]["if"]
     assert "always()" in steps[close]["if"]
     assert "YOUTUBE_COOKIES_B64" not in json.dumps(steps[setup])
-    assert len(workflow[True]["workflow_dispatch"]["inputs"]) == 12
+    assert len(workflow[True]["workflow_dispatch"]["inputs"]) == 10
 
 
 def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch, tmp_path):
@@ -282,16 +282,11 @@ def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch, tmp_path
         raise AssertionError("local preflight must not change route or contact YouTube")
 
     monkeypatch.setattr(media_sources, "RemoteMedia", forbidden)
-    assert (
-        module.preflight_audio_url(
-            URL, {"gemini_model": "manual-no-api", "youtube_audio_transport": "warp"}
-        )
-        is None
-    )
+    assert module.preflight_audio_url(URL, {"youtube_audio_transport": "warp"}) is None
     with pytest.raises(PipelineError, match="requires a YouTube"):
         module.preflight_audio_url(
             "https://example.com/audio.mp3",
-            {"gemini_model": "manual-no-api", "youtube_audio_transport": "warp"},
+            {"youtube_audio_transport": "warp"},
         )
 
     bad_cookies = tmp_path / "cookies.txt"
@@ -299,7 +294,7 @@ def test_warp_preflight_defers_metadata_to_verified_runner(monkeypatch, tmp_path
     with pytest.raises(PipelineError, match="invalid YouTube cookies"):
         module.preflight_audio_url(
             URL,
-            {"gemini_model": "manual-no-api", "youtube_audio_transport": "warp"},
+            {"youtube_audio_transport": "warp"},
             cookies_file=bad_cookies,
         )
 

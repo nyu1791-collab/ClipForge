@@ -219,9 +219,7 @@ def main():
             }
             write_json(args.output / "manifest.json", result)
     else:
-        from clipforge.pipeline import run
-
-        result = run(source, args.output, settings, resume=True, chat_file=chat_file)
+        raise RuntimeError("only URL audio analysis is supported")
     result_hashes = {}
     if request.get("asr_part") is not None:
         result_hashes = {

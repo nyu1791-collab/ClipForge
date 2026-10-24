@@ -16,11 +16,6 @@ on:
         description: Exact reviewed ClipForge commit SHA
         type: string
         required: true
-      worker:
-        description: Automatic Colab T4 or explicit CPU
-        type: choice
-        options: [colab-auto, cpu]
-        default: colab-auto
       shape:
         description: Colab runtime shape for colab-auto (high-ram has 8 CPU cores and 51 GB)
         type: choice
@@ -38,11 +33,6 @@ on:
         description: Continue URL-only analysis with CPU previews and an unapproved review draft
         type: boolean
         default: false
-      public_cache:
-        description: Restore and publish the GPU public cache on colab-auto (off by default, since a fresh setup took 40 s versus 104 s with the cache)
-        type: choice
-        options: ['on', 'off']
-        default: 'off'
       verified_audio_run:
         description: Optional producer run ID whose verified audio artifact is reused for a URL-only colab-auto request (the producer run must have concluded success)
         type: string
@@ -60,163 +50,14 @@ permissions:
   contents: write
   actions: read
 
-# Each request may own up to four ASR runtimes. Serialize requests across worker kinds.
+# Each request may own up to four ASR runtimes. Serialize requests.
 concurrency:
   group: clipforge-video
   cancel-in-progress: false
 
 jobs:
-  clip:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'cpu' && !inputs.probe_only
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
-      INPUT_TAG: ${{ inputs.input_tag }}
-      REQUEST_ID: ${{ inputs.request_id }}
-      PYTHONUNBUFFERED: '1'
-      HF_HUB_DISABLE_PROGRESS_BARS: '1'
-      HF_HUB_DISABLE_TELEMETRY: '1'
-      CLIPFORGE_REQUIRE_CUDA: '0'
-    steps:
-      - name: Validate request identifiers
-        timeout-minutes: 10
-        env:
-          AUTO_PREVIEWS: ${{ inputs.auto_previews }}
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os, re
-          assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
-          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
-          assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
-          assert os.environ['AUTO_PREVIEWS'] != 'true', 'auto_previews requires colab-auto and audio_url'
-          PY
-      - uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          repository: nyu1791-collab/ClipForge
-          ref: ${{ inputs.source_ref }}
-          path: clipforge-source
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        timeout-minutes: 10
-        with:
-          python-version: '3.11'
-      - uses: astral-sh/setup-uv@v6
-        timeout-minutes: 10
-        with:
-          version: '0.12.23'
-          enable-cache: false
-      - name: Install media tools and Japanese fonts
-        timeout-minutes: 10
-        run: |
-          if [ "$(id -u)" = 0 ]; then APT=(apt-get); else APT=(sudo apt-get); fi
-          "${APT[@]}" update -qq
-          "${APT[@]}" install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk gh libcairo2
-      - name: Install locked Python dependencies without API credentials
-        timeout-minutes: 10
-        working-directory: clipforge-source
-        shell: bash
-        run: |
-          uv sync --locked --extra chat --no-dev
-      - name: Download and validate temporary private input
-        timeout-minutes: 10
-        id: prepare
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py prepare \
-            --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input"
-      - uses: actions/cache/restore@v4
-        timeout-minutes: 10
-        id: stages
-        with:
-          key: clipforge-stages-v1-${{ steps.prepare.outputs.cache_key }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: clipforge-stages-v1-${{ steps.prepare.outputs.cache_key }}-
-          path: |
-            ${{ runner.temp }}/clipforge-out/input.json
-            ${{ runner.temp }}/clipforge-out/transcript.json
-            ${{ runner.temp }}/clipforge-out/scenes.json
-            ${{ runner.temp }}/clipforge-out/chat.json
-            ${{ runner.temp }}/clipforge-out/candidates.json
-            ${{ runner.temp }}/clipforge-out/selection.json
-            ${{ runner.temp }}/clipforge-out/.state
-      - name: Run the requested ClipForge stage (audio analysis makes no model calls)
-        timeout-minutes: 80
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          clipforge-source/.venv/bin/python clipforge-source/tools/run_request.py run \
-            --tag "$INPUT_TAG" --directory "$RUNNER_TEMP/clipforge-input" \
-            --output "$RUNNER_TEMP/clipforge-out"
-      - name: Keep partial transcript privately after failure, timeout or cancellation
-        timeout-minutes: 10
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clipforge-partial-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-out/transcripts/*.partial.jsonl
-          retention-days: 7
-          if-no-files-found: ignore
-      - uses: actions/cache/save@v4
-        timeout-minutes: 10
-        if: always() && steps.prepare.outcome == 'success'
-        continue-on-error: true
-        with:
-          key: ${{ steps.stages.outputs.cache-primary-key }}
-          path: |
-            ${{ runner.temp }}/clipforge-out/input.json
-            ${{ runner.temp }}/clipforge-out/transcript.json
-            ${{ runner.temp }}/clipforge-out/scenes.json
-            ${{ runner.temp }}/clipforge-out/chat.json
-            ${{ runner.temp }}/clipforge-out/candidates.json
-            ${{ runner.temp }}/clipforge-out/selection.json
-            ${{ runner.temp }}/clipforge-out/.state
-      - uses: actions/upload-artifact@v4
-        timeout-minutes: 10
-        if: always()
-        with:
-          name: clipforge-result-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-out/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: warn
-      - name: Delete temporary private input
-        id: input-cleanup
-        timeout-minutes: 10
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # Uses only the preinstalled gh, so cleanup still runs when checkout or setup failed.
-        run: |
-          if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then
-            echo 'Unexpected temporary input tag; nothing was deleted.' >&2
-            exit 1
-          fi
-          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
-            echo 'The worker repository must remain private; nothing was deleted.' >&2
-            exit 1
-          fi
-          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release delete "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
-            echo 'Temporary private input release deleted.'
-          else
-            echo 'No temporary private input release remains.'
-          fi
-      - name: Report a temporary input that could not be deleted
-        timeout-minutes: 5
-        if: always() && steps.input-cleanup.outcome != 'success'
-        run: |
-          echo "::warning title=Temporary private input remains::$INPUT_TAG may still hold private input. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG."
-          {
-            echo '### Temporary private input remains'
-            echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
-          } >> "$GITHUB_STEP_SUMMARY"
-
   colab-auto:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && inputs.worker == 'colab-auto' && !inputs.probe_only
+    if: github.repository == 'nyu1791-collab/ai-model-workers' && !inputs.probe_only
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     env:
@@ -369,7 +210,7 @@ jobs:
             ${{ runner.temp }}/clipforge-input/acquisition-report.json
           retention-days: 7
           if-no-files-found: warn
-      - name: Identify model API requirements from the staged request
+      - name: Read the ASR part count from the staged request
         timeout-minutes: 10
         id: request
         env:
@@ -384,12 +225,11 @@ jobs:
           request = json.loads((Path(os.environ['RUNNER_TEMP']) / 'clipforge-model-request/request.json').read_text())
           assert request['request_id'] == os.environ['REQUEST_ID']
           assert request['source_ref'] == os.environ['CLIPFORGE_SOURCE_REF']
-          no_model_api = '1' if request.get('audio_source_url') else '0'
+          assert request.get('audio_source_url')
           parts = request.get('settings', {}).get('asr_parts', 1)
           assert type(parts) is int and parts in (1, 2, 3, 4)
           assert parts == 1 or (request.get('audio_source_url') and os.environ.get('AUDIO_URL'))
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f'no_model_api={no_model_api}\n')
               output.write(f'asr_parts={parts}\n')
           PY
       - name: Allocate a dedicated T4 for the verified Google account
@@ -399,7 +239,7 @@ jobs:
         env:
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
-          CLIPFORGE_PUBLIC_CACHE: ${{ inputs.public_cache || 'off' }}
+          CLIPFORGE_PUBLIC_CACHE: 'off'
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py start
       - name: Run the pipeline on Colab and retrieve verified private outputs
@@ -407,8 +247,6 @@ jobs:
         if: steps.request.outputs.asr_parts == '1'
         env:
           GH_TOKEN: ${{ github.token }}
-          CLIPFORGE_NO_MODEL_API: ${{ steps.request.outputs.no_model_api }}
-          GEMINI_API_KEY: ${{ steps.request.outputs.no_model_api == '0' && secrets.GEMINI_API_KEY || '' }}
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
       - name: Run owned ASR runtimes in parallel and merge before topic allocation
@@ -418,7 +256,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
           CLIPFORGE_COLAB_SHAPE: ${{ inputs.shape }}
-          CLIPFORGE_PUBLIC_CACHE: ${{ inputs.public_cache || 'off' }}
+          CLIPFORGE_PUBLIC_CACHE: 'off'
         run: |
           clipforge-source/.venv/bin/python clipforge-source/tools/split_asr_job.py \
             --directory "$RUNNER_TEMP/clipforge-input" --output "$RUNNER_TEMP/clipforge-out" \

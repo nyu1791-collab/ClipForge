@@ -614,7 +614,6 @@ class ControlTests(unittest.TestCase):
                             os.environ,
                             {
                                 "GEMINI_API_KEY": key,
-                                "CLIPFORGE_NO_MODEL_API": "1",
                                 "YOUTUBE_COOKIES_B64": "private-cookie-test",
                             },
                         )
@@ -627,23 +626,8 @@ class ControlTests(unittest.TestCase):
                 self.assertNotIn("audio_url", uploaded[0])
                 self.assertNotIn("youtube_cookies_b64", uploaded[0])
                 self.assertNotIn("private-cookie-test", json.dumps(uploaded))
-                self.assertEqual(uploaded[0]["gemini_api_key"], "")
+                self.assertNotIn("gemini_api_key", uploaded[0])
                 self.assertEqual(events, ["stop", "restore"])
-
-    def test_video_pipeline_still_requires_gemini_key(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            controller, _, patches = self._pipeline_controller(temporary, Mock())
-            with contextlib.ExitStack() as stack:
-                for item in patches:
-                    stack.enter_context(item)
-                stack.enter_context(
-                    patch.dict(
-                        os.environ,
-                        {"GEMINI_API_KEY": "", "CLIPFORGE_NO_MODEL_API": "0"},
-                    )
-                )
-                with self.assertRaisesRegex(control.ControlError, "GEMINI_API_KEY"):
-                    controller.run(Path(temporary) / "output")
 
     def test_stage_timings_are_printed_from_the_returned_receipt(self):
         timings = {"cache_restore": 0.25, "setup": 12.5, "pipeline": 300.75}

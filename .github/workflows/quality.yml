@@ -11,7 +11,7 @@ on:
         options: ['1', '10']
         default: '1'
       video_checks:
-        description: Also run the synthetic video and CPU ASR fixture checks
+        description: Also run the real FFmpeg remux checks
         type: boolean
         default: false
 
@@ -67,7 +67,7 @@ jobs:
             done
             exit "$failed"
           fi
-          uv run --no-sync python -m pytest -p no:cacheprovider -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
+          uv run --no-sync python -m pytest -p no:cacheprovider -m 'not integration' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -112,11 +112,6 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || inputs.video_checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      CLIPFORGE_FIXTURE_PATH: ${{ github.workspace }}/artifacts/quality-fixture/source.mp4
-      CLIPFORGE_QA_OUTPUT: ${{ github.workspace }}/artifacts/quality-outputs
-      HF_HUB_DISABLE_PROGRESS_BARS: '1'
-      HF_HUB_DISABLE_TELEMETRY: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,21 +126,14 @@ jobs:
       - name: Install CPU tools and Japanese fonts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2 espeak-ng open-jtalk open-jtalk-mecab-naist-jdic hts-voice-nitech-jp-atr503-m001
+          sudo apt-get install -y --no-install-recommends ffmpeg fontconfig fonts-noto-cjk libcairo2
       - run: uv sync --locked --extra chat --extra media-fetch
-      - name: Generate labelled synthetic video and speech
-        run: uv run --no-sync python tools/make_quality_fixture.py --output artifacts/quality-fixture --japanese
-      - name: Real video and speech-recognition checks
-        run: uv run --no-sync python -m pytest -m 'integration or asr' --junitxml=artifacts/video-results.xml
+      - name: Real FFmpeg checks
+        run: uv run --no-sync python -m pytest -m integration --junitxml=artifacts/video-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: quality-synthetic-video
-          path: |
-            artifacts/quality-fixture/source.mp4
-            artifacts/quality-fixture/source-japanese.mp4
-            artifacts/quality-fixture/fixture.json
-            artifacts/quality-outputs/preview-*.png
-            artifacts/video-results.xml
+          path: artifacts/video-results.xml
           retention-days: 7
           if-no-files-found: warn

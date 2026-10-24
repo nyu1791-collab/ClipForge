@@ -812,7 +812,7 @@ class RemotePipelineTests(unittest.TestCase):
                             self.assertEqual(published.kwargs["parts"], parts)
 
     def test_pipeline_uses_staged_input_and_preserves_result_publication(self):
-        for audio_analysis in (True, False):
+        for audio_analysis in (True,):
             with (
                 self.subTest(audio_analysis=audio_analysis),
                 tempfile.TemporaryDirectory() as temporary,
@@ -827,7 +827,6 @@ class RemotePipelineTests(unittest.TestCase):
                     "input_tag": "clipforge-input-" + "a" * 32,
                     "workflow_run": "123",
                     "github_token": "test-only-github",
-                    "gemini_api_key": "" if audio_analysis else "test-only-gemini",
                 }
                 status = "topics_allocated" if audio_analysis else "complete"
 
@@ -875,10 +874,7 @@ class RemotePipelineTests(unittest.TestCase):
                 self.assertNotIn("GEMINI_API_KEY", calls["prepare"].args[1])
                 self.assertNotIn("GH_TOKEN", environment)
                 self.assertNotIn("GITHUB_TOKEN", environment)
-                if audio_analysis:
-                    self.assertNotIn("GEMINI_API_KEY", environment)
-                else:
-                    self.assertEqual(environment["GEMINI_API_KEY"], "test-only-gemini")
+                self.assertNotIn("GEMINI_API_KEY", environment)
                 self.assertEqual(environment["CLIPFORGE_REQUIRE_CUDA"], "1")
                 self.assertEqual(environment["CLIPFORGE_CACHE_PROFILE"], "gpu")
                 bundles.publish.assert_called_once()

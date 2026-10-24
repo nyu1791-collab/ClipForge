@@ -1,10 +1,8 @@
 {
-  "gemini_model": "manual-no-api",
   "clips": 5,
   "candidates": 8,
   "min_seconds": 60,
   "max_seconds": 1800,
-  "analysis_fps": 1,
   "whisper_model": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
   "asr_engine": "parakeet",
   "asr_parts": 1,

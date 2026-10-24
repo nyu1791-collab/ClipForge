@@ -21,7 +21,6 @@ def main():
     identity = uuid.uuid4().hex
     started = time.monotonic()
     settings = {
-        "gemini_model": "manual-no-api",
         "asr_parts": 2,
         "youtube_audio_transport": "warp",
     }

@@ -23,7 +23,6 @@ def prepared(tmp_path):
         handle.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         handle.writeframes(b"\0\0" * 16000 * 40)
     settings = Settings(
-        gemini_model="manual-no-api",
         asr_parts=2,
         whisper_device="cuda",
         whisper_compute_type="float16",
@@ -551,7 +550,6 @@ def test_url_submission_defaults_to_four_parts_and_respects_explicit_choice(
         clips=None,
         chat_file=None,
         chat_url=None,
-        gemini_model="manual-no-api",
         ref="b" * 40,
         auto_previews=False,
         asr_parts=explicit,
@@ -567,7 +565,7 @@ def test_url_submission_defaults_to_four_parts_and_respects_explicit_choice(
 @pytest.mark.parametrize("value", [True, False, 0, 5, 2.0, "2"])
 def test_asr_parts_requires_an_exact_supported_integer(value):
     with pytest.raises(ValueError, match="asr_parts"):
-        Settings(gemini_model="manual-no-api", asr_parts=value)
+        Settings(asr_parts=value)
 
 
 SPEECH_RATE = 16000
@@ -580,7 +578,6 @@ def cut(tmp_path, name, search, speech=None, origin=None):
         handle.setparams((1, 2, SPEECH_RATE, 0, "NONE", "not compressed"))
         handle.writeframes(b"\0\0" * SPEECH_RATE * 40)
     settings = Settings(
-        gemini_model="manual-no-api",
         asr_parts=2,
         whisper_device="cuda",
         whisper_compute_type="float16",
@@ -789,7 +786,6 @@ def test_more_parts_cover_the_audio_once_and_merge_each_word_once(tmp_path, coun
         handle.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         handle.writeframes(b"\0\0" * 16000 * 40)
     settings = Settings(
-        gemini_model="manual-no-api",
         asr_parts=count,
         asr_split_search_seconds=0,
         whisper_device="cuda",

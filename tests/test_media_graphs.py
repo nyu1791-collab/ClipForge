@@ -15,7 +15,6 @@ KEEP = [(10.0, 12.0), (13.0, 20.0)]
 def make(**overrides):
     return Settings(
         **{
-            "gemini_model": "manual-no-api",
             "min_seconds": 3,
             "max_seconds": 30,
             **overrides,
@@ -353,31 +352,6 @@ def test_audio_extraction_reports_decoding_errors(monkeypatch, tmp_path):
     )
     with pytest.raises(PipelineError, match="decoding error"):
         media.audio("/in.mp4", tmp_path / "a.wav", 10.0)
-
-
-def test_required_tools_include_fontconfig_and_libass(monkeypatch):
-    monkeypatch.setattr(shutil, "which", lambda name: None)
-    with pytest.raises(PipelineError, match="ffmpeg is not installed"):
-        media.require_tools()
-    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
-    monkeypatch.setattr(
-        media,
-        "process",
-        lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0, b" T.. ass  ass\n", b""
-        ),
-    )
-    media.require_tools()
-    monkeypatch.setattr(
-        media,
-        "process",
-        lambda command, **kwargs: subprocess.CompletedProcess(
-            command, 0, b" T.. subtitles\n", b""
-        ),
-    )
-    with pytest.raises(PipelineError, match="libass"):
-        media.require_tools()
-    media.require_tools(captions=False)
 
 
 def clip_for_render():

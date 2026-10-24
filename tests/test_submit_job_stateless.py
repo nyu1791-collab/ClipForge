@@ -302,32 +302,6 @@ def test_stateless_collect_rejects_end_beyond_time_tolerance(collector):
         module.verify_audio_analysis(artifact, REQUEST, REF, AUDIO_SHA, URL)
 
 
-def test_dispatch_sends_public_cache_input(tmp_path, monkeypatch):
-    module = load_tool("submit_job")
-    sent = []
-
-    def gh(*args, body=None, timeout=None):
-        sent.append(json.loads(body))
-        return ""
-
-    monkeypatch.setattr(module, "gh", gh)
-    for value in ("on", "off"):
-        receipt = {
-            "request_id": REQUEST,
-            "input_tag": "clipforge-input-" + REQUEST,
-            "source_ref": REF,
-            "worker": "colab-auto",
-            "public_cache": value,
-        }
-        module.send_dispatch(tmp_path, receipt)
-        assert sent[-1]["inputs"]["public_cache"] == value
-        assert receipt["status"] == "DISPATCHED"
-    # Receipts written before the option existed keep the default.
-    legacy = {"request_id": REQUEST, "input_tag": "t", "source_ref": REF}
-    module.send_dispatch(tmp_path, legacy)
-    assert sent[-1]["inputs"]["public_cache"] == "off"
-
-
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
@@ -394,16 +368,10 @@ def test_dispatch_forwards_verified_audio_reuse_only_when_requested(
 
     def submit_with(**reuse):
         args = SimpleNamespace(
-            input=None,
             config=None,
-            gemini_model="manual-no-api",
             audio_analysis_url=URL,
-            chat_url=None,
-            chat_file=None,
             clips=None,
             ref="main",
-            worker="colab-auto",
-            public_cache="off",
             auto_previews=False,
             asr_parts=None,
             youtube_audio_transport=None,
@@ -441,16 +409,8 @@ def test_dispatch_forwards_verified_audio_reuse_only_when_requested(
             "123",
             "--reuse-audio-request",
             "c" * 32,
-            "--worker",
-            "cpu",
-        ],
-        [
-            "--reuse-audio-run",
-            "123",
-            "--reuse-audio-request",
+            "--status",
             "c" * 32,
-            "--input",
-            "clip.mp4",
         ],
     ],
 )
@@ -464,8 +424,6 @@ def test_reuse_arguments_are_refused_before_any_github_call(monkeypatch, extra):
             "submit_job",
             "--audio-analysis-url",
             URL,
-            "--gemini-model",
-            "manual-no-api",
             *extra,
         ],
     )
@@ -489,8 +447,6 @@ def test_reuse_arguments_reach_submission(monkeypatch):
             "submit_job",
             "--audio-analysis-url",
             URL,
-            "--gemini-model",
-            "manual-no-api",
             "--reuse-audio-run",
             "123",
             "--reuse-audio-request",

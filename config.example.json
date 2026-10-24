@@ -1,6 +1,5 @@
 {
   "clips": 3,
-  "gemini_model": "gemini-3.8-flash",
   "candidates": 8,
   "min_seconds": 20,
   "max_seconds": 75,
@@ -36,7 +35,6 @@
   "progress_bar": true,
   "quality_gate": "strict",
   "thumbnail": false,
-  "analysis_fps": 2,
   "max_source_seconds": 3600,
   "max_input_bytes": 1073741824,
   "chat_offset_seconds": 0

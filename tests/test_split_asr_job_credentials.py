@@ -74,7 +74,6 @@ def two_part_plan(tmp_path):
         handle.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         handle.writeframes(b"\0\0" * 16000 * 40)
     settings = Settings(
-        gemini_model="manual-no-api",
         asr_parts=2,
         whisper_device="cuda",
         whisper_compute_type="float16",
@@ -105,7 +104,6 @@ def test_split_children_receive_colab_credential_and_never_the_model_key(
 ):
     directory, plan, root = two_part_plan
     monkeypatch.setenv("COLAB_ADC_JSON", CREDENTIAL)
-    monkeypatch.setenv("GEMINI_API_KEY", "must-not-reach-colab")
     monkeypatch.setenv("GITHUB_REPOSITORY", split_asr_job.PRIVATE_REPO)
     monkeypatch.setenv("REQUEST_ID", plan["request"]["request_id"])
     monkeypatch.setenv("CLIPFORGE_SOURCE_REF", plan["request"]["source_ref"])
@@ -153,7 +151,6 @@ def test_split_children_receive_colab_credential_and_never_the_model_key(
     ]
     for call in calls:
         assert call["environment"]["COLAB_ADC_JSON"] == CREDENTIAL
-        assert "GEMINI_API_KEY" not in call["environment"]
     assert sorted(
         call["command"] for call in calls if call["state"] == "control-0"
     ) == [

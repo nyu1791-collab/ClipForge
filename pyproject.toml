@@ -35,9 +35,6 @@ cuda = [
   "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
-[project.scripts]
-clipforge = "clipforge.cli:main"
-
 [project.urls]
 Repository = "https://github.com/nyu1791-collab/ClipForge"
 Issues = "https://github.com/nyu1791-collab/ClipForge/issues"

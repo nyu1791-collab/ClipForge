@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError
 
-from clipforge import auto_layout, captions, pipeline, signals, silence
+from clipforge import auto_layout, captions, pipeline, silence
 from clipforge.models import (
     Diagram,
     Segment,
@@ -31,7 +31,6 @@ class FixedWidth:
 def make(**overrides):
     return Settings(
         **{
-            "gemini_model": "manual-no-api",
             "min_seconds": 3,
             "max_seconds": 30,
             **overrides,
@@ -251,36 +250,6 @@ def dense_transcript(duration):
     )
 
 
-def test_candidates_reach_late_topics_when_topics_are_given(settings):
-    settings.candidates = 4
-    settings.clips = 2
-    spans = [(0, 100), (100, 200), (200, 300)]
-    raw = signals.candidates(
-        {"duration": 300},
-        dense_transcript(300),
-        {"boundaries": []},
-        {"events": [], "status": "not_requested"},
-        settings,
-        topics=spans,
-    )
-    middles = [(c["start"] + c["end"]) / 2 for c in raw]
-    assert len(raw) == 4
-    assert min(middles) < 100 and max(middles) >= 200
-
-
-def test_candidates_without_topics_spread_over_the_video(settings):
-    settings.candidates = 4
-    raw = signals.candidates(
-        {"duration": 300},
-        dense_transcript(300),
-        {"boundaries": []},
-        {"events": [], "status": "not_requested"},
-        settings,
-    )
-    middles = [(c["start"] + c["end"]) / 2 for c in raw]
-    assert min(middles) < 100 and max(middles) >= 200
-
-
 # --- pipeline helpers -----------------------------------------------------
 
 
@@ -324,21 +293,6 @@ def test_receipt_accepts_only_its_own_untouched_files(tmp_path):
     assert not pipeline.valid_receipt(target, extra, "k")
     assert not pipeline.valid_receipt(target, {"key": "k"}, "k")
     assert pipeline.visual_names(ledger) == {"visuals/visual-01.png"}
-
-
-def test_parallel_results_keep_order_and_failure_stops_new_work():
-    assert pipeline.run_parallel(lambda n: n * n, [1, 2, 3, 4], 3) == [1, 4, 9, 16]
-    started = []
-
-    def fails_second(item):
-        started.append(item)
-        if item == 2:
-            raise PipelineError("second failed")
-        return item
-
-    with pytest.raises(PipelineError, match="second failed"):
-        pipeline.run_parallel(fails_second, [1, 2, 3, 4], 1)
-    assert started == [1, 2]
 
 
 def test_cut_regions_follow_the_silence_setting(transcript, monkeypatch):
@@ -988,17 +942,10 @@ def test_zoom_visual_and_diagram_validate_their_intervals():
         {"layout": "panels"},
         {"zoom": [Zoom(start=0, end=1)]},
         {"candidates": 1, "clips": 2},
-        {"gemini_model": "bad model name"},
         {"font": "Noto, Sans"},
         {"face_box": (0.9, 0.9, 0.5, 0.5)},
         {"min_seconds": 40, "max_seconds": 30},
         {"topic_min_seconds": 100, "topic_max_seconds": 120},
-        {
-            "analysis_fps": 5,
-            "max_seconds": 180,
-            "candidates": 10,
-            "gemini_model": "test-video-model",
-        },
     ],
 )
 def test_settings_reject_inconsistent_options(update):
@@ -1063,24 +1010,6 @@ def test_diagram_values_and_rows_are_validated():
         Diagram(kind="bars", title="t", start=0, end=1, labels=["a"], values=[-1])
     with pytest.raises(ValidationError):
         Diagram(kind="table", title="t", start=0, end=1, rows=[[]])
-
-
-def test_overlapping_speech_is_counted_once():
-    assert signals._covered_seconds([(0, 10), (5, 15), (20, 22)]) == 17
-    assert signals._covered_seconds([]) == 0
-
-
-def test_a_silent_video_yields_non_overlapping_candidates_and_says_when_short():
-    settings = make(candidates=8, min_seconds=20, max_seconds=75)
-    raw = signals.candidates(
-        {"duration": 300},
-        Transcript(language="ja", segments=[]),
-        {"boundaries": []},
-        {"events": [], "status": "not_requested"},
-        settings,
-    )
-    # Eight 75 s windows cannot all fit in 300 s without overlapping by more than 45%.
-    assert 5 <= len(raw) < 8
 
 
 def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(

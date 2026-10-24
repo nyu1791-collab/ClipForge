@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dedicated Colab worker; receives GitHub/Gemini secrets through a private file."""
+"""Dedicated Colab worker; receives the GitHub token through a private file."""
 
 import ctypes
 import json
@@ -323,10 +323,7 @@ def main():
                     "prepare",
                 )
             arguments = ["tools/run_request.py", "run", *arguments]
-            # API secrets are withheld from dependency setup and cache handling.
             run_env = environment.copy()
-            if payload.get("gemini_api_key"):
-                run_env["GEMINI_API_KEY"] = payload["gemini_api_key"]
             report["stage"] = "pipeline"
             invocation = 'source tools/colab_cache_env.sh && source tools/colab_cuda_env.sh && exec "$@"'
             with timed(timings, "pipeline"):

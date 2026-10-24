@@ -5,7 +5,6 @@ import math
 from fractions import Fraction
 from pathlib import Path
 import re
-import shutil
 import subprocess
 
 from .hardware import encode_threads, video_options
@@ -65,18 +64,6 @@ def final_video_options(settings):
         "-threads",
         str(encode_threads(settings)),
     ]
-
-
-def require_tools(captions=True):
-    for name in ["ffmpeg", "ffprobe"]:
-        if not shutil.which(name):
-            raise PipelineError(name + " is not installed")
-    if captions:
-        output = process(
-            ["ffmpeg", "-hide_banner", "-filters"], stage="filters"
-        ).stdout.decode(errors="replace")
-        if not any(" ass " in line for line in output.splitlines()):
-            raise PipelineError("FFmpeg must include the libass ass filter")
 
 
 def probe(path):

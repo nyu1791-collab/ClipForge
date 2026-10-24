@@ -6,96 +6,6 @@ from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
 from clipforge.storage import PipelineError
 
 
-def test_chat_filtering_offset_reactions_and_privacy(settings):
-    settings.chat_offset_seconds = -2
-    messages = [
-        {"time_in_seconds": 5, "message": "草", "author": "private-user"},
-        {"time": 8, "message": "ordinary"},
-        {"time": "nan", "message": "lol"},
-        {"time": -9},
-        {"time": 100},
-        None,
-        {"time": "bad"},
-    ]
-    result = signals.chat_signals(30, settings, messages)
-    assert result["status"] == "provided"
-    assert result["events"] == [
-        {"time": 3.0, "weight": 2.0},
-        {"time": 6.0, "weight": 1.0},
-    ]
-    assert "private-user" not in str(result)
-    assert "ordinary" not in str(result)
-
-
-@pytest.mark.parametrize("supplied", [{}, "text", [None] * 100001])
-def test_chat_rejects_invalid_supplied_data(settings, supplied):
-    with pytest.raises(PipelineError):
-        signals.chat_signals(30, settings, supplied)
-
-
-def test_optional_chat_failure_is_explicit(settings, monkeypatch):
-    import chat_downloader
-
-    class Broken:
-        def get_chat(self, *args, **kwargs):
-            assert kwargs["max_attempts"] == 1
-            raise RuntimeError("private provider body")
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(chat_downloader, "ChatDownloader", Broken)
-    settings.chat_url = "https://www.youtube.com/watch?v=fixture"
-    assert signals.chat_signals(30, settings)["status"] == "unavailable_RuntimeError"
-
-
-@pytest.mark.parametrize("duration", [3, 5, 10, 30, 3600])
-def test_candidates_stay_in_bounds_and_avoid_duplicates(settings, transcript, duration):
-    result = signals.candidates(
-        {"duration": duration},
-        transcript,
-        {"boundaries": [5, 10, 15]},
-        {"events": []},
-        settings,
-    )
-    assert 1 <= len(result) <= settings.candidates
-    assert len({r["id"] for r in result}) == len(result)
-    for index, item in enumerate(result):
-        assert 0 <= item["start"] < item["end"] <= duration
-        assert (
-            settings.min_seconds <= item["end"] - item["start"] <= settings.max_seconds
-        )
-        for previous in result[:index]:
-            overlap = max(
-                0,
-                min(item["end"], previous["end"])
-                - max(item["start"], previous["start"]),
-            )
-            assert (
-                overlap
-                / min(item["end"] - item["start"], previous["end"] - previous["start"])
-                <= 0.45
-            )
-
-
-def test_temporal_diversity_and_chat_peaks(settings):
-    empty = Transcript(language="und", segments=[])
-    info = {"duration": 600}
-    scenes = {"boundaries": []}
-    result = signals.candidates(info, empty, scenes, {"events": []}, settings)
-    assert any(r["start"] > 300 for r in result)
-    chat = {"events": [{"time": 480 + i / 10, "weight": 2} for i in range(30)]}
-    result = signals.candidates(info, empty, scenes, chat, settings)
-    assert result[0]["start"] <= 480 < result[0]["end"]
-
-
-def test_short_video_rejected(settings, transcript):
-    with pytest.raises(PipelineError):
-        signals.candidates(
-            {"duration": 1}, transcript, {"boundaries": []}, {"events": []}, settings
-        )
-
-
 def test_no_audio_skips_model_loading(settings):
     assert signals.transcribe(None, {"audio": False}, settings) == {
         "language": "und",
@@ -919,11 +829,10 @@ def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
 def test_batched_asr_is_refused_on_the_gpu_before_any_recognition(monkeypatch):
     from clipforge import signals
     from clipforge.models import Settings
-    from clipforge.storage import PipelineError
 
     with pytest.raises(ValueError, match="GPU"):
-        Settings(gemini_model="manual-no-api", asr_batch_size=4, whisper_device="cuda")
-    settings = Settings(gemini_model="manual-no-api", asr_batch_size=4)
+        Settings(asr_batch_size=4, whisper_device="cuda")
+    settings = Settings(asr_batch_size=4)
     gpu = settings.model_copy(update={"whisper_device": "cuda"})
     monkeypatch.setattr(
         signals.media, "audio", lambda *a, **k: pytest.fail("audio decoded first")

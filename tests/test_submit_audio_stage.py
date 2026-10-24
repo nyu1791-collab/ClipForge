@@ -1215,20 +1215,6 @@ def test_audio_stage_workflow_validates_worker_stage_combination(
         assert json.loads((tmp_path / "review.json").read_text())["clips"]
 
 
-def test_video_workflow_uses_only_hosted_cpu_or_automatic_colab():
-    import yaml
-
-    workflow = yaml.safe_load(Path("deploy/clipforge.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert inputs["worker"]["options"] == ["colab-auto", "cpu"]
-    assert inputs["worker"]["default"] == "colab-auto"
-    for name, worker in (("clip", "cpu"), ("colab-auto", "colab-auto")):
-        job = workflow["jobs"][name]
-        assert job["runs-on"] == "ubuntu-24.04"
-        assert f"inputs.worker == '{worker}'" in job["if"]
-    assert workflow["jobs"]["clip"]["env"]["CLIPFORGE_REQUIRE_CUDA"] == "0"
-
-
 CHAT_CONFIG = "config.landscape-chat.example.json"
 
 

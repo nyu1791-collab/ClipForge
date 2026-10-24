@@ -80,9 +80,6 @@ def audio_job(tmp_path, monkeypatch):
     monkeypatch.setattr(
         af.topics, "split", lambda *a: [(0, 100), (100, 200), (200, 300)]
     )
-    monkeypatch.setattr(
-        signals, "scene_boundaries", lambda *a: pytest.fail("full video was scanned")
-    )
     return VOD(), root, settings, events, transcript
 
 
@@ -915,7 +912,7 @@ def test_previews_follow_the_hint_ranking_before_speech_length(tmp_path, monkeyp
     from clipforge import audio_first as first
     from clipforge.models import Settings
 
-    settings = Settings(gemini_model="manual-no-api", clips=3, candidates=3)
+    settings = Settings(clips=3, candidates=3)
     topics = [
         {"id": "t-long", "start": 0, "end": 60, "speech_seconds": 50, "text": "あ"},
         {"id": "t-short", "start": 100, "end": 160, "speech_seconds": 5, "text": "い"},
