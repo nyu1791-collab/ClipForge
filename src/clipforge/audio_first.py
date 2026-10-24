@@ -14,7 +14,7 @@ from pathlib import Path
 import re
 import sys
 
-from . import landscape, media, pipeline, topics
+from . import landscape, media, pipeline, review, topics
 from .kick_media import RANGE_FORMAT, KickVOD
 from .media_sources import canonical, open_source
 from .models import Transcript
@@ -277,44 +277,23 @@ def previews(vod, root, settings, analysis_result=None, topic_ids=None):
 
 
 def crop_anchors(value):
-    """The crop side each reviewed clip requests; "auto" unless its row names one."""
-    anchors = []
-    for row in value["clips"]:
-        anchor = row.get("crop_anchor", "auto")
-        if anchor not in pipeline.CROP_ANCHORS:
-            raise PipelineError("crop_anchor must be auto, left, center or right")
-        anchors.append(anchor)
-    return anchors
+    return [
+        review.crop_anchor(row.get("crop_anchor", "auto")) for row in value["clips"]
+    ]
 
 
 def caption_floors(value):
-    """The caption floor each reviewed clip requests (0 to 0.32 of the height); None if unnamed."""
-    floors = []
-    for row in value["clips"]:
-        floor = row.get("caption_floor")
-        if floor is None:
-            floors.append(None)
-            continue
-        if (
-            type(floor) not in (int, float)
-            or not math.isfinite(floor)
-            or not 0 <= floor <= pipeline.MAX_CAPTION_FLOOR
-        ):
-            raise PipelineError("caption_floor must be from 0 to 0.32")
-        floors.append(float(floor))
-    return floors
+    floors = [review.caption_floor(row.get("caption_floor")) for row in value["clips"]]
+    return [float(floor) if floor is not None else None for floor in floors]
 
 
 def reviewed_clips(value, analysis, preview, settings):
+    review.require_video_review(value)
     if (
         value.get("analysis_key") != analysis["analysis_key"]
         or preview.get("analysis_key") != analysis["analysis_key"]
     ):
         raise PipelineError("video review belongs to a different audio analysis")
-    if not all(row.get("video_reviewed") is True for row in value["clips"]):
-        raise PipelineError("each selected topic requires video review")
-    crop_anchors(value)
-    caption_floors(value)
     cleaned = {
         "clips": [
             {

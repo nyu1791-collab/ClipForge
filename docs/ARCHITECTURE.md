@@ -1,10 +1,10 @@
 # 構成
 
-## 主な経路：音声先行のKick URL
+## 主な経路：音声先行のメディアURL
 
 ```mermaid
 flowchart TD
-  URL[Kick URL] --> AUDIO[GitHub-hosted runner: 音声取得]
+  URL[Kick / YouTube / Twitch / HTTPSメディア] --> AUDIO[GitHub-hosted runner: 音声取得]
   AUDIO --> GPU[Colab GPU: 文字起こし・話題分割]
   GPU --> PREV[同じrunのCPUジョブ: previews・未承認の下書き]
   PREV --> REVIEW[映像・話題・境界の確認と承認]
@@ -55,29 +55,30 @@ flowchart TD
 - クリップは一時ディレクトリへ書き、MP4・字幕・サイズと長さの検査が終わってから確定します。
 - 生成済みクリップの上書きや、別の選定結果での黙示的な再利用は行いません。
 - Gemini選定結果が保存済みなら再利用し、追加推論は行いません。未完了の推論は自動再試行しません。
-- 文字起こしは、入力の SHA-256、音声の長さ・開始位置、Whisperの設定（モデル・リビジョン・言語・スレッド・一括処理）、音声を読む側のコード（`signals.py`・`media.py`）のハッシュから作る鍵で、`transcript_cache` のフォルダに保存します。字幕・描画だけを変えた再実行では、この保存済みの文字起こしを再利用します（認識のやり直しを省く）。
+- 文字起こしは、入力の SHA-256、音声の長さ・開始位置、Whisperの設定（モデル・リビジョン・言語・スレッド・一括処理）、音声を読む側のコード（`signals.py`・`media.py`・`asr_split.py`）のハッシュから作る鍵で、`transcript_cache` のフォルダに保存します。字幕・描画だけを変えた再実行では、この保存済みの文字起こしを再利用します（認識のやり直しを省く）。
 - 成功時は `manifest.json: status=complete`。途中失敗は `failure.json`、描画前は `status=selected`。いずれも人の確認済みとは記録しません。
 
 ## 配置
 
 - `src/clipforge/`：CLI、文字起こし、候補抽出、Gemini、字幕、描画。
   - `quality.py`（字幕・音量・出典の検査と `quality.json`）、`topics.py`（話題の区切り）、`silence.py`（無音カット）、`fonts.py`（フォントの確認）、`assets.py`（画像検索と出典台帳）、`tables.py`（Wikipediaの表の検索）、`diagrams.py`（独自図解とSVG）、`thumbnail.py`（サムネイル）。
-- `tools/submit_job.py`：標準ライブラリだけで動く制御VM用の依頼・回収ツール。
+- `tools/submit_job.py`：制御VM用の依頼・回収ツール。URLの事前検査には対象経路の依存を使う。
 - `tools/run_request.py`：指定の非公開リポジトリで入力を検査し、処理・削除する入口。
 - `deploy/clipforge.yml`：非公開 `ai-model-workers/.github/workflows/clipforge.yml` に配置するワークフロー原本。公開側では実行しません。
 - `deploy/audio-stages.yml`：非公開workerの `.github/workflows/clipforge-stages.yml` に配置する後段workflow原本。`tools/submit_audio_stage.py` がpreviews・承認済みrender・mergeを依頼します。
-- `uv.lock`：Python依存の固定。チャット取得は `chat` extra。
+- `review.py`：入口・worker・描画で共通の承認値検査。`storage.py`：成果物一覧と回収先の共通検査。
+- `uv.lock`：Python依存の固定。チャット取得は `chat` extra。開発の検査方法は [DEVELOPMENT.md](DEVELOPMENT.md)。
 - 公開側の `.github/workflows/build.yml` はコードの構文検査とwheel作成だけです。
 
 ## 実装の到達点
 
 切り抜き、文字起こし・字幕、映像付きGemini選定、非公開Actionsへの依頼・回収を実装。
-検証結果は [QUALITY_REVIEW.md](QUALITY_REVIEW.md)、現在有効な決定と未確認事項は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md) を参照してください。合成検証・実ASR・描画・人による品質確認は別の達成状態として記録します。
+検証結果は [QUALITY_REVIEW.md](archive/QUALITY_REVIEW.md)、現在有効な決定と未確認事項は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md) を参照してください。合成検証・実ASR・描画・人による品質確認は別の達成状態として記録します。
 初期運用は明示依頼1件ずつ。定期的な動画収集・自動公開は追加していません。
 
 ## 音声先行の横動画入口
 
-`tools/kick_audio_first.py` / `clipforge.audio_first` は公開Kick VOD向けの段階式入口。
+`tools/kick_audio_first.py` / `clipforge.audio_first` はメディアURL向けの段階式入口。旧スクリプト名は互換用に残す。
 音声取得だけで停止でき、全編ASR・語彙/間による話題割り振り・候補映像の確認・採用区間の高画質取得を分離する。
 全編の映像場面検出は呼び出さない。全編ASRを各採用区間へ時刻変換して共有し、区間ごとの認識を繰り返さない。
 既存 `clipforge run/analyze` のローカル動画経路とは別。運用と制限は [AUDIO_FIRST.md](AUDIO_FIRST.md)。

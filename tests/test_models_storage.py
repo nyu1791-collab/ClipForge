@@ -330,3 +330,14 @@ def test_chat_panel_fill_is_the_default_and_keeps_the_top_caption_size(settings)
     # Without the chat panel the fit does not change the caption size.
     off = Settings.model_validate({**landscape, "chat_panel": False})
     assert off.caption_font_size() == 52
+
+
+def test_artifact_tree_rejects_a_symlink_as_the_root(tmp_path):
+    from clipforge.storage import PipelineError, plain_tree
+
+    real = tmp_path / "real"
+    real.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    with pytest.raises(PipelineError, match="symlink"):
+        plain_tree(alias)

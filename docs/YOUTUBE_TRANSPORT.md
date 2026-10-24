@@ -1,7 +1,7 @@
 # YouTube 音声取得の運用基盤
 
 YouTube の全音声取得に成功した経路を、通常の取得と診断で共通化する。
-成功した実行と計測値は [YOUTUBE_DIAGNOSTICS.md](YOUTUBE_DIAGNOSTICS.md) を参照。
+成功した実行と計測値は [YOUTUBE_DIAGNOSTICS.md](archive/YOUTUBE_DIAGNOSTICS.md) を参照。
 この経路は音声取得用。ASR、プレビュー、承認後の映像描画は別工程である。
 
 ## 通常の投入
@@ -10,7 +10,7 @@ YouTube の全音声取得に成功した経路を、通常の取得と診断で
 設定JSONでは `"youtube_audio_transport": "warp"` が同じ意味になる。
 PRをレビューする段階では、`--ref PUBLIC_SOURCE_SHA --workflow-ref WORKER_BRANCH`も指定する。
 `--ref`は公開側のコード、`--workflow-ref`は非公開workerのworkflowを選ぶ。
-worker refもreceiptへ保存し、再開時にmainへ戻さない。PRは未マージのため既定mainへは未反映。
+worker refもreceiptへ保存し、再開時に別refへ戻さない。この基盤はPR #12としてmainへ統合済み。
 URLだけの解析・`colab-auto` 用で、ASRは既定2分割。
 既定の `standard` は従来どおりで、失敗時にWARPへ自動で切り替えない。
 
@@ -89,7 +89,7 @@ manifestだけではGitHub実行の真正性を証明しない。ダウンロー
 自動プレビューや後日の描画で元動画を再取得する場合は、その工程の取得経路・Cookieも確認する。
 Data API/RSS/WebSubによる配信検出、住宅用proxy、自宅PC workerは実装していない。
 
-## 見直しの検証
+## 過去の検証（2026-10-23）
 
 最終コードの単体テスト1,295件、依存ロックからの空環境への導入、workflowのshell構文を確認した。
 実環境では、取得拒否時にGPUを使わず、WARP切断・所有provider削除まで完了することを確認した。

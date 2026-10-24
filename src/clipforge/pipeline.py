@@ -19,6 +19,7 @@ from . import (
     fonts,
     media,
     quality,
+    review,
     signals,
     silence,
     tables,
@@ -31,6 +32,7 @@ from .captions import (
     event_spans as caption_spans,
 )
 from .hardware import asr_options, cpu_threads, encode_threads
+from .review import CROP_ANCHORS as CROP_ANCHORS, MAX_CAPTION_FLOOR as MAX_CAPTION_FLOOR
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import (
     TIME_TOLERANCE,
@@ -330,12 +332,6 @@ def cut_regions(source, transcript, clip, settings):
     return regions or None
 
 
-# Crop sides a reviewer may request for a chat render; "auto" lets auto_layout choose.
-CROP_ANCHORS = ("auto", "left", "center", "right")
-# Highest caption floor a reviewer may set for one clip: the cap of auto_layout.MAX_LIFT.
-MAX_CAPTION_FLOOR = 0.32
-
-
 def _crop_fractions(keep):
     """Left edge of each crop side, as a fraction of the source width."""
     return {"left": 0.0, "center": (1 - keep) / 2, "right": 1 - keep}
@@ -621,13 +617,8 @@ def render_clip(
     """
     name = f"clip-{index:03}"
     target = root / name
-    if crop_anchor not in CROP_ANCHORS:
-        raise PipelineError("crop_anchor must be auto, left, center or right")
-    if caption_floor is not None and (
-        type(caption_floor) not in (int, float)
-        or not 0 <= caption_floor <= MAX_CAPTION_FLOOR
-    ):
-        raise PipelineError("caption_floor must be from 0 to 0.32")
+    review.crop_anchor(crop_anchor)
+    review.caption_floor(caption_floor)
     existing = None
     if target.exists():
         receipt = target / "render.json"

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 
-from clipforge import github_cli
+from clipforge import github_cli, review, storage
 from clipforge.storage import PipelineError, digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
@@ -88,16 +88,8 @@ def safe_relative(name):
 
 
 def staged_files(root):
-    names = set()
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise AudioStageError("stage artifact contains a symlink")
-        if path.is_dir():
-            continue
-        if not path.is_file():
-            raise AudioStageError("stage artifact contains a non-regular entry")
-        names.add(path.relative_to(root).as_posix())
-    return names
+    files, _ = storage.plain_tree(root, AudioStageError, "stage artifact")
+    return files
 
 
 def find_stage_run(identity):
@@ -302,15 +294,7 @@ def part_config_file(root, part_runs):
 
 
 def prepare_destination(destination):
-    destination = Path(destination).absolute()
-    if destination.exists() or any(
-        part.is_symlink() for part in [destination, *destination.parents]
-    ):
-        raise AudioStageError(
-            "download destination already exists or uses a symlink; choose a new directory"
-        )
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return destination
+    return storage.prepare_destination(destination, error_type=AudioStageError)
 
 
 def local_merge(part_runs, destination, source_ref=None):
@@ -480,31 +464,8 @@ def collect(identity, destination):
     return 0
 
 
-CROP_ANCHORS = ("auto", "left", "center", "right")
-
-
 def require_video_review(value):
-    """Reject unapproved drafts before any render request is prepared or dispatched."""
-    clips = value.get("clips") if isinstance(value, dict) else None
-    if (
-        not isinstance(clips, list)
-        or not clips
-        or any(
-            not isinstance(row, dict) or row.get("video_reviewed") is not True
-            for row in clips
-        )
-    ):
-        raise AudioStageError("each selected topic requires video review")
-    # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
-    if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
-        raise AudioStageError("crop_anchor must be auto, left, center or right")
-    # Same range as pipeline.MAX_CAPTION_FLOOR; a missing floor means none is set.
-    for row in clips:
-        floor = row.get("caption_floor")
-        if floor is not None and (
-            type(floor) not in (int, float) or not 0 <= floor <= 0.32
-        ):
-            raise AudioStageError("caption_floor must be from 0 to 0.32")
+    review.require_video_review(value, error_type=AudioStageError)
 
 
 def clip_indices(args, worker):

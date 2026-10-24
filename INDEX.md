@@ -1,31 +1,31 @@
 # ClipForge 要約マップ
 
-再開時はまずこのファイルだけを読む。本文はタスクに必要なファイルだけ、`grep -n` で位置を決めて `sed -n` で範囲を読む。
+入口と関連ファイルをここで選び、必要な本文だけ読む。共通ルールは [AGENTS.md](AGENTS.md)、検証は [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。過去の記録は [docs/archive/](docs/archive/README.md) に分け、通常の必読対象にしない。
 
-## 構成
-- Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q`、lint は `ruff`。
-- 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。
-- 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。
+## 主な経路
 
-## 主な流れ（URL 経路）
-Kick / YouTube / Twitch / 直接HTTPSメディア URL → runner で音声取得（`tools/acquire_audio_url.py`）→ Colab GPU で2分割ASR → 結合・話題分割 → previews と未承認の下書き → 承認 → Colab CPU で描画 → 制御 VM で `merge --local`。音声のみのURLは解析まで。
-- 投入と回収: `tools/submit_job.py`（`--auto-previews`）、段階ごとの依頼: `tools/submit_audio_stage.py`
-- Colab 制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`・`tools/colab_cache.py`
-- 2分割ASR: `src/clipforge/asr_split.py`・`tools/split_asr_job.py`／手順: `docs/ASR_SPLIT.md`／連続ASRとの比較: `tools/compare_asr.py`／run の計測: `tools/run_timings.py RUN_ID`
-- URL検証・取得の振り分け: `src/clipforge/media_sources.py`（追加経路はyt-dlp、Kickは従来どおり）
-- 非公開 worker の workflow 原本: `deploy/*.yml`（実行先は非公開リポジトリ）
+URL → runnerで音声取得 → Colab GPUで2分割ASR → 話題分割 → プレビュー・未承認の下書き → 映像確認・承認 → Colab CPUで描画 → 制御VMで結合。音声のみのURLは解析まで。ローカル動画の自動選定だけGeminiを使う。
 
-## src/clipforge
-- 時刻・設定の型: `models.py`／外部コマンド・保存・キャッシュ: `storage.py`
-- 描画（ffmpeg グラフ）: `media.py`／工程の管理: `pipeline.py`／URL 経路の段階: `audio_first.py`・`worker_audio.py`
-- チャット欄（Kick チャットの取得と ASS 描画）: `kick_chat.py`（設定 `chat_panel`、説明は `docs/AUDIO_FIRST.md` の「チャット欄」）
-- 音声・信号: `signals.py`・`kick_media.py`・`silence.py`／話題: `topics.py`・`topic_hints.py`・`review_draft.py`
-- 字幕: `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py`
-- 品質検査: `quality.py`／ローカル動画の Gemini 選定: `selection.py`
-- 図表・素材・サムネイル: `diagrams.py`・`tables.py`・`assets.py`・`thumbnail.py`
+| 担当 | 実装 |
+| --- | --- |
+| 投入・状態確認・回収 | `tools/submit_job.py` |
+| 後段の投入・回収・ローカル結合 | `tools/submit_audio_stage.py` |
+| URL検証・取得 | `media_sources.py`・`kick_media.py`・`tools/acquire_audio_url.py` |
+| ASR・2分割 | `signals.py`・`asr_split.py`・`tools/split_asr_job.py` |
+| 話題・下書き | `topics.py`・`topic_hints.py`・`review_draft.py` |
+| 段階の処理・再利用・描画 | `audio_first.py`・`worker_audio.py`・`pipeline.py` |
+| 設定と共通の承認検査 | `models.py`・`review.py` |
+| 保存・成果物一覧・回収先・外部コマンド | `storage.py`・`github_cli.py` |
+| 字幕・文節・文末・フォント | `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py` |
+| FFmpeg・画面配置・音量・品質 | `media.py`・`auto_layout.py`・`quality.py`・`landscape.py` |
+| チャット | `kick_chat.py`・`chat_activity.py` |
+| 素材・図表・サムネイル | `assets.py`・`diagrams.py`・`tables.py`・`thumbnail.py` |
+| Colab制御・転送・キャッシュ | `tools/colab_actions.py`・`colab_remote_job.py`・`colab_bundle.py`・`colab_cache.py` |
 
-## tests
-`tests/test_<モジュール名>.py` が基本。共通の fixture は `tests/conftest.py`。
+表のファイル名だけのPythonモジュールは `src/clipforge/`。実行用の薄いラッパーは、既存CLI・workflowとの互換性のため `tools/` に残す。非公開workerのworkflow原本は `deploy/`、公開側の検査は `.github/workflows/`。依存は `pyproject.toml` と `uv.lock`、テストは `tests/`。
 
-## 読まないもの
-`.venv/`・生成物（`outputs/`・`artifacts/`・キャッシュ）・動画・音声・画像は `.claude/settings.json` の `permissions.deny` で Read を禁止している。`uv.lock` は `grep` で該当行だけ見る。
+## 文書
+
+[処理構成](docs/ARCHITECTURE.md)・[URLの手順](docs/AUDIO_FIRST.md)・[2分割ASR](docs/ASR_SPLIT.md)・[Colab](docs/COLAB.md)・[運用](docs/OPERATIONS.md)・[品質規則](docs/QUALITY_DECISIONS.md)・[受入条件](docs/LANDSCAPE_PLAN.md)・[YouTube取得](docs/YOUTUBE_TRANSPORT.md)。
+
+ロックファイル・ログは検索して必要な範囲だけ確認する。生成物は依頼された確認に必要なものだけを扱い、通常のコード探索で私有動画・ASR・認証情報を読み込まない。

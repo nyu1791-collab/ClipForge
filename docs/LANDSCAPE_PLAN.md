@@ -1,7 +1,7 @@
 # 横動画の受入条件と未決事項
 
 対象は同じ配信から作る、話題別の16:9・1920×1080動画3〜5本。Shortsは対象外。
-実行手順は [AUDIO_FIRST.md](AUDIO_FIRST.md)、品質の規則と理由は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md)、計測の記録は [QUALITY_REVIEW.md](QUALITY_REVIEW.md) を参照する。
+実行手順は [AUDIO_FIRST.md](AUDIO_FIRST.md)、品質の規則と理由は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md)、計測の記録は [QUALITY_REVIEW.md](archive/QUALITY_REVIEW.md) を参照する。
 
 ## 設定と再現性
 

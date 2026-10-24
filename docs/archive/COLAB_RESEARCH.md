@@ -1,3 +1,5 @@
+> 過去の記録（2026-10-23以前）。現在の作業規則は [AGENTS.md](../../AGENTS.md)、現行の品質規則は [QUALITY_DECISIONS.md](../QUALITY_DECISIONS.md) を参照する。本文の未完了・未統合・実行指示は記録時点のもの。
+
 # Colab自動起動の調査記録
 
 調査日: 2026-10-22。一次資料と実際の上流コード・公開パッケージを確認しました。
@@ -19,4 +21,4 @@
 公式CLIリポジトリの調査時コミット: `4025416a03361d2ff34d06a4523ae76ce4c9bbaf`。
 実行時はPyPIの `google-colab-cli==0.7.5` と `tools/colab-control-requirements.txt` のハッシュを使います。上流READMEと既定認証方式の説明に差があるため、SDKへ認証済みセッションを明示的に渡し、対話ログインをCIで起動しない構成にしています。
 
-設定と実行手順は [COLAB.md](COLAB.md) を参照してください。
+設定と実行手順は [COLAB.md](../COLAB.md) を参照してください。

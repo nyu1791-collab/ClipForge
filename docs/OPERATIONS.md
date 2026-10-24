@@ -18,7 +18,7 @@ Secretsは必要なステップにだけ明示的に渡す。公開ビルドはA
 
 ## 動画ジョブの実行場所
 
-主な経路はKick URL → GitHub-hosted runnerで音声取得 → Colab GPUでASR・話題分割 → 同じrunのCPUジョブでpreviews・未承認の下書き → 映像確認・承認 → Colab CPUで描画 → 制御VMで `merge --local`。Geminiは呼ばない。URL固有の引数と承認は [AUDIO_FIRST.md](AUDIO_FIRST.md) を参照する。
+主な経路はメディアURL → GitHub-hosted runnerで音声取得 → Colab GPUでASR・話題分割 → 同じrunのCPUジョブでpreviews・未承認の下書き → 映像確認・承認 → Colab CPUで描画 → 制御VMで `merge --local`。Geminiは呼ばない。URL固有の引数と承認は [AUDIO_FIRST.md](AUDIO_FIRST.md) を参照する。
 
 ローカル動画は `tools/submit_job.py --input` で依頼し、Gemini選定と描画を行う。workerは既定の `colab-auto`、または `--worker cpu`。`colab-auto` のローカル動画経路はColabでASR・Gemini選定・描画を行う。Colabの認証・起動・解放・キャッシュ手順は [COLAB.md](COLAB.md) を正とする。
 
@@ -33,7 +33,7 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 
 実行上限はローカルCPU動画ジョブ90分、ColabのURL取得を含む全体180分。連続ASRのColab実行ステップは90分、2分割の起動・実行・回収は110分。2分割は1依頼の中で最大2つの所有ランタイムを並列に使い、workflowで依頼同士を直列化する。配信長は横用設定で6時間、設定可能な最大は12時間。待機の上限は実行上限とは別で、既定18,000秒（5時間）、`--wait-timeout SECONDS` で変更できる。
 
-同時に依頼できる動画ジョブは、`cpu` が1件、`colab-auto` が2件まで（T4を同時に2台まで確保できた実測による。`tools/submit_job.py` の `MAX_ACTIVE`）。クリップの並列描画は別枠で4件まで（`tools/submit_audio_stage.py`）。入口とActionsで重複実行を防ぎ、待機ジョブを蓄積する用途には使わない。制御VMは依頼・回収・検証・結合だけを担当する。
+同時に依頼できる初回動画ジョブは、worker種別によらず1件（`tools/submit_job.py` の `MAX_ACTIVE`）。1件の2分割ASRが最大2ランタイムを使うことと、2件の動画ジョブを並行投入することは別。クリップの並列描画は別枠で4件まで（`tools/submit_audio_stage.py`）。入口とActionsで重複実行を防ぎ、待機ジョブを蓄積する用途には使わない。制御VMは依頼・回収・検証・結合だけを担当する。
 
 ## 非公開データの経路と保管
 
@@ -106,7 +106,7 @@ python tools/submit_audio_stage.py --stage merge --local \
 
 `--local` の結合は、描画に使ったコミット（`--source-ref` と同じ SHA）を制御VMでチェックアウトした状態で実行する。手元のコードが違うと `local merge code differs from source_ref` で停止する。例: `git worktree add --detach /tmp/merge-SHA SHA` で別の作業ツリーを作って、その中で実行する。
 
-制御VMで各runのcompleted・success・依頼IDを確認し、artifactを一度取得して `merge_parts` で検証・コピーする。GitHub run・FFmpeg・フォントは使わない。元コミット・本数・前段依頼IDは検証済みpartから取得し、任意の `--source-ref REVIEWED_COMMIT_SHA` で期待値を固定できる。
+制御VMで各runのcompleted・success・依頼IDを確認し、artifactを一度取得して `merge_parts` で検証・コピーする。結合用のGitHub workflowは新規起動せず、FFmpeg・フォントも使わない。元コミット・本数・前段依頼IDは検証済みpartから取得し、任意の `--source-ref REVIEWED_COMMIT_SHA` で期待値を固定できる。
 `delivery/`・manifest・request receiptを通常の回収と同じ検証後に確定し、receiptの `workflow_run` は `"local"` となる。GitHub上の結合では `--local` を付けず、`--previous-run`・`--previous-request`・`--source-ref`・`--part-runs` を指定する。
 
 ## チャットと人による修正

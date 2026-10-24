@@ -1,3 +1,5 @@
+> 過去の記録（2026-10-23以前）。現在の作業規則は [AGENTS.md](../../AGENTS.md)、現行の品質規則は [QUALITY_DECISIONS.md](../QUALITY_DECISIONS.md) を参照する。本文の未完了・未統合・実行指示は記録時点のもの。
+
 # YouTube 取得診断（2026-10-23 UTC）
 
 対象: `https://youtu.be/6ras3m-gFuc`。
@@ -31,7 +33,7 @@ PO Token は IP ベースのログイン要求を解消する保証がない旨�
 worker の Secret は名前だけを確認し、`YOUTUBE_COOKIES_B64` は未設定だった。
 Cookie 入力の実装・テストと、実際の認証 Cookie による取得成功は別。
 現在の結果から「クラウド IP でも100%取得できる」とは判断できない。
-設定方法は [AUDIO_FIRST.md](AUDIO_FIRST.md#youtube-の-cookie-入力と匿名診断) を参照。
+設定方法は [AUDIO_FIRST.md](../AUDIO_FIRST.md#youtube-の-cookie-入力と匿名診断) を参照。
 
 ## Docker・nightly・WARP の追加検証
 
@@ -120,4 +122,4 @@ private Artifact内の状態を実際に回収して確認した結果:
 新requestは`asr_parts=2`・`aspect=16:9`で、入力ハッシュは元の音声と一致した。
 GPU・ASRは開始していない。
 
-運用方法・固定値・失敗時の扱いは [YOUTUBE_TRANSPORT.md](YOUTUBE_TRANSPORT.md) を参照。
+運用方法・固定値・失敗時の扱いは [YOUTUBE_TRANSPORT.md](../YOUTUBE_TRANSPORT.md) を参照。

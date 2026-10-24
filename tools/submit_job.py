@@ -12,7 +12,7 @@ import tempfile
 import time
 import uuid
 
-from clipforge import github_cli
+from clipforge import github_cli, storage
 from clipforge.storage import digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
@@ -205,20 +205,7 @@ def save(path, receipt):
 
 
 def plain_tree(directory):
-    """List regular files and directories; refuse symlinks and special entries."""
-    files, dirs = set(), set()
-    for current, dirnames, filenames in os.walk(directory):
-        for name in dirnames + filenames:
-            if Path(current, name).is_symlink():
-                raise RuntimeError("result contains a symlink")
-        for name in dirnames:
-            dirs.add(Path(current, name).relative_to(directory).as_posix())
-        for name in filenames:
-            path = Path(current, name)
-            if not path.is_file():
-                raise RuntimeError("result contains a non-regular entry")
-            files.add(path.relative_to(directory).as_posix())
-    return files, dirs
+    return storage.plain_tree(directory, error_type=RuntimeError)
 
 
 def verify_audio_analysis(
@@ -399,15 +386,7 @@ def verify_download(directory, receipt, request):
 
 
 def prepare_destination(destination):
-    destination = Path(destination).absolute()
-    if destination.exists() or any(
-        part.is_symlink() for part in [destination, *destination.parents]
-    ):
-        raise RuntimeError(
-            "download destination already exists or uses a symlink; choose a new directory"
-        )
-    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    return destination
+    return storage.prepare_destination(destination, error_type=RuntimeError)
 
 
 def download_verified(run_id, identity, destination, verify, artifact_stage="result"):

@@ -114,3 +114,36 @@ def within(root, path):
     if not path.is_relative_to(root):
         raise PipelineError("output path escapes the selected output directory")
     return path
+
+
+def prepare_destination(destination, error_type=PipelineError):
+    """Reserve a new download location without accepting symlink aliases or overwrites."""
+    destination = Path(destination).absolute()
+    if destination.exists() or any(
+        part.is_symlink() for part in [destination, *destination.parents]
+    ):
+        raise error_type(
+            "download destination already exists or uses a symlink; choose a new directory"
+        )
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return destination
+
+
+def plain_tree(directory, error_type=PipelineError, description="result"):
+    """List regular files/directories without following symlinks or special entries."""
+    directory = Path(directory)
+    files, dirs = set(), set()
+    if directory.is_symlink():
+        raise error_type(description + " contains a symlink")
+    for current, dirnames, filenames in os.walk(directory):
+        for name in dirnames + filenames:
+            if Path(current, name).is_symlink():
+                raise error_type(description + " contains a symlink")
+        for name in dirnames:
+            dirs.add(Path(current, name).relative_to(directory).as_posix())
+        for name in filenames:
+            path = Path(current, name)
+            if not path.is_file():
+                raise error_type(description + " contains a non-regular entry")
+            files.add(path.relative_to(directory).as_posix())
+    return files, dirs

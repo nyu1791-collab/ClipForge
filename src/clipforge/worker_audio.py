@@ -249,7 +249,7 @@ def execute(
             url,
             output / "segments",
             kick_factory=KickVOD,
-            max_bytes=2 * 1024**3,
+            max_bytes=settings.max_transport_bytes,
             max_seconds=settings.max_source_seconds,
         )
         try:

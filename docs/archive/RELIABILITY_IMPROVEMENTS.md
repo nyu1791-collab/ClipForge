@@ -1,3 +1,5 @@
+> 過去の記録（2026-10-23以前）。現在の作業規則は [AGENTS.md](../../AGENTS.md)、現行の品質規則は [QUALITY_DECISIONS.md](../QUALITY_DECISIONS.md) を参照する。本文の未完了・未統合・実行指示は記録時点のもの。
+
 # 字幕・画面分析・チャット・運用の改善
 
 基準は `ccr-7cea37c1-n7u7zz` の `5252e072059cecde8fe1c86e4d04baa2e8bd3d14`。

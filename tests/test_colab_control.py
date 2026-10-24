@@ -373,7 +373,7 @@ class ControlTests(unittest.TestCase):
                 controller = control.Controller(temporary)
                 with self.assertRaisesRegex(control.ControlError, "refused"):
                     controller.start()
-                self.assertEqual(client.assign.call_count, 3)
+                self.assertEqual(client.assign.call_count, 2)
                 sleep.assert_not_called()
                 self.assertEqual(controller.state()["status"], "stopped")
                 self.assertFalse(controller.credentials_path.exists())
@@ -1102,8 +1102,7 @@ class PoolTests(unittest.TestCase):
                     t4_shapes.reverse()
                 self.assertEqual(
                     control.colab_pool("pipeline"),
-                    [(Accelerator.T4, item) for item in t4_shapes]
-                    + [(Accelerator.L4, Shape.STANDARD)],
+                    [(Accelerator.T4, item) for item in t4_shapes],
                 )
 
     def start_stage(self, refusals, pool=None):
@@ -1160,16 +1159,24 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(state["stage"]["clip_index"], "2")
 
     def test_a_412_refusal_moves_to_the_next_runtime_in_the_pool(self):
-        controller, calls, Accelerator = self.start_stage(refusals=2)
+        controller, calls, Accelerator = self.start_stage(refusals=1)
         self.assertEqual(
             calls,
             [
                 (Accelerator.NONE, "HIGH_RAM"),
                 (Accelerator.NONE, "STANDARD"),
-                (Accelerator.T4, "HIGH_RAM"),
             ],
         )
         self.assertEqual(controller.state()["status"], "allocated")
+
+    def test_cpu_stage_refusal_does_not_escalate_to_a_gpu(self):
+        controller, calls, Accelerator = self.start_stage(refusals=2)
+        self.assertEqual(
+            calls,
+            [(Accelerator.NONE, "HIGH_RAM"), (Accelerator.NONE, "STANDARD")],
+        )
+        self.assertEqual(controller.state()["status"], "stopped")
+        self.assertFalse(controller.credentials_path.exists())
 
     def test_a_pool_refused_everywhere_holds_nothing(self):
         controller, calls, _ = self.start_stage(refusals=9, pool="CPU:high-ram,L4")
@@ -1289,12 +1296,10 @@ class AllocationWaitTests(unittest.TestCase):
             [call.args[0] for call in self.sleep.call_args_list], [60, 60, 5]
         )
         self.assertEqual(self.elapsed, 125)
-        self.assertEqual(self.client.assign.call_count, 12)
+        self.assertEqual(self.client.assign.call_count, 8)
         state = self.controller.state()
         self.assertEqual(state["status"], "stopped")
-        self.assertEqual(
-            state["allocation_refused"], ["T4/HIGH_RAM", "T4/STANDARD", "L4/STANDARD"]
-        )
+        self.assertEqual(state["allocation_refused"], ["T4/HIGH_RAM", "T4/STANDARD"])
         self.assertFalse(self.controller.credentials_path.exists())
         self.client._get_assignment.assert_not_called()
         self.client.list_assignments.assert_called_once_with()

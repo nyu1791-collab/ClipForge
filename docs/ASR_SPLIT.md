@@ -16,7 +16,7 @@ URLだけの `tools/submit_job.py --audio-analysis-url URL` は既定で `asr_pa
 
 ## 割り当てと記録
 
-- 2つの部分は音声の長い方から順に割り当てる。各部分の候補は通常のGPU順（T4 high-ram → T4 standard → L4）のまま。2026-10-22・23の実測ではT4 high-ramは同時に1台しか割り当てられず、2台目はT4 standardになった。high-ram（8コア）はstandard（2コア）より環境構築と入力準備が速い（実測で約37秒短い）ので、長い方の部分をhigh-ramに割り当てる。
+- 2つの部分は音声の長い方から順に割り当てる。各部分の候補は通常のGPU順（T4 high-ram → T4 standard）のまま。2026-10-22・23の実測ではT4 high-ramは同時に1台しか割り当てられず、2台目はT4 standardになった。high-ram（8コア）はstandard（2コア）より環境構築と入力準備が速い（実測で約37秒短い）ので、長い方の部分をhigh-ramに割り当てる。
 - 各部分のログには `Runtime held:`（形状と保持秒数）と、`Colab stage:` 行の `host:`（コア数・メモリ）を出す。CU残高はアカウント全体で共有するため、部分ごとの差分は「account-wide」と表示し、その部分だけの使用量としては扱わない。合計は解放後に `Compute units used by both ASR parts:` として1回だけ出す。最後の解放時に他のランタイムが動いていれば `not determinable` とする。
 - CPU描画（`audio-stages.yml` の `--mode audio-stage`）の候補は従来どおりCPU high-ramが最初。上の変更はGPUの2分割だけに関係する。
 

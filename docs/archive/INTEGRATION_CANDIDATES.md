@@ -1,3 +1,5 @@
+> 過去の記録（2026-10-23以前）。現在の作業規則は [AGENTS.md](../../AGENTS.md)、現行の品質規則は [QUALITY_DECISIONS.md](../QUALITY_DECISIONS.md) を参照する。本文の未完了・未統合・実行指示は記録時点のもの。
+
 # 活用する公開リポジトリの調査
 
 調査日: 2026-10-23 UTC。Tavily で候補を探し、公式 GitHub API と README、現在の pyproject.toml で確認した。スター数は調査時点の値であり、品質保証ではない。

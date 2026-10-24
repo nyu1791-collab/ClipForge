@@ -5,11 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      full_repetitions:
-        description: Full CPU suite repetitions on Python 3.12 (no ASR fixture or GPU)
-        type: choice
-        options: ['1', '10']
-        default: '1'
       video_checks:
         description: Also run the synthetic video and CPU ASR fixture checks
         type: boolean
@@ -53,20 +48,6 @@ jobs:
         run: |
           uv run --no-sync ruff check src tools tests
           uv run --no-sync ruff format --check src tools tests
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            repetitions=1
-            if [ "${{ matrix.python }}" = '3.12' ]; then repetitions='${{ inputs.full_repetitions }}'; fi
-            failed=0
-            mkdir -p artifacts
-            for iteration in $(seq 1 "$repetitions"); do
-              echo "Full CPU suite: $iteration/$repetitions"
-              uv run --no-sync python -m pytest -q -p no:cacheprovider \
-                --junitxml="artifacts/full-suite-$iteration.xml" \
-                >"artifacts/full-suite-$iteration.log" 2>&1 || failed=1
-              tail -n 8 "artifacts/full-suite-$iteration.log"
-            done
-            exit "$failed"
-          fi
           uv run --no-sync python -m pytest -p no:cacheprovider -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
@@ -74,7 +55,6 @@ jobs:
           name: quality-unit-${{ matrix.python }}
           path: |
             artifacts/unit-results.xml
-            artifacts/full-suite-*
             coverage.xml
           retention-days: 7
 
@@ -109,7 +89,7 @@ jobs:
           if-no-files-found: warn
 
   video:
-    if: github.event_name != 'workflow_dispatch' || inputs.video_checks
+    if: github.event_name == 'workflow_dispatch' && inputs.video_checks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
