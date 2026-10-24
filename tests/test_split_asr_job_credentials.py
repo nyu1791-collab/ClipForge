@@ -125,9 +125,12 @@ def test_every_part_receives_the_colab_credential_and_is_stopped(
     with pytest.raises(PipelineError, match="ASR failed"):
         split_asr_job.run(args)
 
+    # Each failed run is retried once on a fresh runtime, and every runtime is stopped.
     assert sorted(call["state"] for call in calls if call["command"] == "start") == [
         "control-0",
+        "control-0-retry1",
         "control-1",
+        "control-1-retry1",
     ]
     for call in calls:
         assert call["environment"]["COLAB_ADC_JSON"] == CREDENTIAL

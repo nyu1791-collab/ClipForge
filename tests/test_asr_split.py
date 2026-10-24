@@ -442,3 +442,40 @@ def test_recognise_runs_every_piece_once_and_writes_source_seconds(
     assert value["language"] == "ja"
     starts = [row["start"] for row in value["segments"]]
     assert starts[0] == 1.0 and 481 < starts[1] < 482.5
+
+
+@pytest.mark.parametrize("failing", ["run", "start", "stop"])
+def test_a_failed_runtime_is_retried_once_only_after_a_confirmed_release(
+    tmp_path, monkeypatch, failing
+):
+    source, plan = prepare(tmp_path, monkeypatch, speech(120, [(59, 61)]), 2)
+    args, _ = coordinator(tmp_path, monkeypatch, source, plan)
+    calls = []
+
+    def control(python, state, command, output, environment):
+        index = int(state.name.split("-")[1])
+        calls.append((index, state.name, command))
+        if command == "start":
+            write_json(state / "state.json", {"status": "allocated"})
+        first = state.name == "control-0"
+        if first and command == failing:
+            raise PipelineError("synthetic first-attempt failure")
+        if command == "run":
+            write_part_result(output, plan["parts"][index], results(plan)[index][1])
+
+    monkeypatch.setattr(split_asr_job, "control", control)
+    if failing == "run":
+        split_asr_job.run(args)
+        assert [c for c in calls if c[0] == 0] == [
+            (0, "control-0", "start"),
+            (0, "control-0", "run"),
+            (0, "control-0", "stop"),
+            (0, "control-0-retry1", "start"),
+            (0, "control-0-retry1", "run"),
+            (0, "control-0-retry1", "stop"),
+        ]
+        assert (args.output / "topics.json").exists()
+    else:
+        with pytest.raises(PipelineError, match="ASR failed"):
+            split_asr_job.run(args)
+        assert not any(name.endswith("retry1") for _, name, _ in calls)

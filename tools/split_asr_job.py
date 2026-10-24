@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 FAST_POOL = "L4,T4:high-ram,T4:standard"
 POOL = "T4:high-ram,T4:standard,L4"
 ALLOCATION_WAIT_SECONDS = 2700
+# A part whose runtime failed after allocation is recognised once more on a fresh runtime
+# (2026-10-24: one of four runtimes failed in its first seconds; the other three finished).
+ATTEMPTS = 2
 TIMEOUTS = {"start": ALLOCATION_WAIT_SECONDS + 300, "run": 5400, "stop": 600}
 
 
@@ -171,6 +174,19 @@ def read_record(path):
     return record if isinstance(record, dict) else {}
 
 
+def state_name(index, attempt=0):
+    return f"control-{index}" + (f"-retry{attempt}" if attempt else "")
+
+
+def last_state(state_root, index):
+    """The control record of the part's last attempt."""
+    for attempt in reversed(range(ATTEMPTS)):
+        record = read_record(state_root / state_name(index, attempt) / "state.json")
+        if record:
+            return record
+    return {}
+
+
 def pools(plan):
     """The Colab pool of each part: the two longest try L4 first."""
     durations = [
@@ -189,7 +205,7 @@ def part_summary(plan, state_root, part_directories):
     """
     lines, before, after = [], [], []
     for index, directory in enumerate(part_directories):
-        state = read_record(state_root / f"control-{index}" / "state.json")
+        state = last_state(state_root, index)
         receipt = read_record(directory / "gpu-receipt.json")
         timings = (
             receipt.get("timings") if isinstance(receipt.get("timings"), dict) else {}
@@ -300,16 +316,29 @@ def run(args):
                 "CLIPFORGE_COLAB_POOL": part_pools[index],
                 "CLIPFORGE_ALLOCATION_WAIT_SECONDS": str(ALLOCATION_WAIT_SECONDS),
             }
-            state, output = (
-                args.state_root / f"control-{index}",
-                part_directories[index],
-            )
-            try:
-                control(args.control_python, state, "start", output, environment)
-                control(args.control_python, state, "run", output, environment)
-            finally:
-                if (state / "state.json").exists():
-                    control(args.control_python, state, "stop", output, environment)
+            output = part_directories[index]
+            for attempt in range(ATTEMPTS):
+                state = args.state_root / state_name(index, attempt)
+                if attempt:
+                    print(
+                        f"ASR part {index + 1}: retrying on a new runtime", flush=True
+                    )
+                    shutil.rmtree(output, ignore_errors=True)
+                try:
+                    # No GPU within the allocation wait is final; waiting again would
+                    # only double it.
+                    control(args.control_python, state, "start", output, environment)
+                    try:
+                        control(args.control_python, state, "run", output, environment)
+                        return
+                    except PipelineError:
+                        if attempt + 1 == ATTEMPTS:
+                            raise
+                finally:
+                    # A release that is not confirmed stops the part, so no retry can
+                    # hold a second runtime for it.
+                    if (state / "state.json").exists():
+                        control(args.control_python, state, "stop", output, environment)
 
         with ThreadPoolExecutor(max_workers=count) as executor:
             futures = [executor.submit(recognise, index) for index in range(count)]
