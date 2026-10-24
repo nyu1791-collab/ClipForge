@@ -31,6 +31,7 @@ SETTINGS_FIELDS = {
     "whisper_revision",
     "asr_batch_size",
     "asr_parts",
+    "asr_engine",
     "asr_split_search_seconds",
     "youtube_audio_transport",
     "language",
@@ -1109,7 +1110,10 @@ def dispatch(args, state_root):
         validate_settings(settings)
     settings.update(overrides)
     if url_only:
-        settings.setdefault("asr_parts", 4)
+        # Parakeet is fast enough for one runtime; Whisper splits across four.
+        settings.setdefault(
+            "asr_parts", 1 if settings.get("asr_engine") == "parakeet" else 4
+        )
     if getattr(args, "asr_parts", None) is not None:
         settings["asr_parts"] = args.asr_parts
     if settings.get("asr_parts", 1) > 1 and (

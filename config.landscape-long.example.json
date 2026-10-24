@@ -6,6 +6,8 @@
   "max_seconds": 1800,
   "analysis_fps": 1,
   "whisper_model": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+  "asr_engine": "parakeet",
+  "asr_parts": 1,
   "language": "ja",
   "threads": 2,
   "aspect": "16:9",

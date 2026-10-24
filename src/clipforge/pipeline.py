@@ -851,6 +851,7 @@ def timed(timings, name, function, *args):
 # recognises it, not on captions or rendering. Its own identity lets a saved transcript serve any
 # later run, so a change to captions does not repeat the recognition.
 TRANSCRIPT_CODE = ("signals.py", "media.py", "asr_split.py")
+PARAKEET_CODE = ("parakeet_asr.py", "parakeet_captions.py", "caption_pack.py")
 
 
 def asr_identity(settings):
@@ -895,6 +896,12 @@ def transcript_identity(source, info, settings, split=None):
         "asr_batch_size": settings.asr_batch_size,
         "asr_parts": settings.asr_parts,
     }
+    if settings.asr_engine != "whisper":
+        # Whisper keys stay as they were; another recogniser names itself and its code.
+        value["asr_engine"] = settings.asr_engine
+        value["engine_code"] = {
+            name: digest(Path(__file__).parent / name) for name in PARAKEET_CODE
+        }
     if split is not None:
         value["split"] = split
     return fingerprint(value)
@@ -917,6 +924,17 @@ def saved_transcript(source, info, settings):
     return None
 
 
+def recognise(source, info, settings, journal=None):
+    """The settings' recogniser: Parakeet, or faster-whisper."""
+    if settings.asr_engine == "parakeet":
+        from . import parakeet_asr
+
+        return parakeet_asr.transcribe(source, info, settings)
+    if journal is None:
+        return signals.transcribe(source, info, settings)
+    return signals.transcribe(source, info, settings, journal=journal)
+
+
 def transcribe_once(source, info, settings, receipt=None):
     """Recognised transcript, reused from settings.transcript_cache when its identity matches."""
     receipt = receipt if receipt is not None else {}
@@ -925,7 +943,7 @@ def transcribe_once(source, info, settings, receipt=None):
         if settings.asr_parts != 1:
             raise PipelineError("two-part ASR requires the split job coordinator")
         receipt["key"] = None
-        return signals.transcribe(source, info, settings)
+        return recognise(source, info, settings)
     # The receipt is output metadata, never authority to select another input's cache.
     key = transcript_key(source, info, settings)
     receipt["key"] = key
@@ -951,7 +969,7 @@ def transcribe_once(source, info, settings, receipt=None):
     journal = path.with_suffix(".partial.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     journal.unlink(missing_ok=True)
-    value = signals.transcribe(source, info, settings, journal=journal)
+    value = recognise(source, info, settings, journal=journal)
     write_json(path, value)
     journal.unlink(missing_ok=True)
     return value

@@ -15,7 +15,7 @@
 | S1 分析＋プレビュー | `submit_job.py --audio-analysis-url` を `--worker colab-auto --asr-parts 4 --auto-previews --wait` で投入。音声取得 → 4部分のASR（T4 2台・L4 2台）→ 話題分割 → 同じrunのCPUジョブでプレビュー・未承認の下書き | Actions | `topics.json`・`review-draft.json`・`preview-contact-sheet.jpg`・`asr-receipt.json` |
 | S2 確認 | 話題・下書き・静止画シートを読み、候補を決める。採用する候補だけ映像を確認する | 私 | 採用候補の一覧 |
 | S3 承認ファイル | 採用候補だけを残し、`video_reviewed: true` と確認した根拠を書く。確認していない候補は含めない | 私 | 承認ファイル（JSON） |
-| S3.5 字幕用の文字起こし | `submit_captions.py --previous-run ANALYSIS_RUN_ID --source-ref "$SHA" --review-file 承認ファイル --wait` で、承認した区間だけを Parakeet（Colab GPU 1台）で起こし直し、字幕データを `clipforge-captions-RUN_ID` artifact に保存 | Actions（Colab GPU） | 字幕のrun ID |
+| S3.5 字幕用の文字起こし（Whisperで解析した配信だけ） | `submit_captions.py --previous-run ANALYSIS_RUN_ID --source-ref "$SHA" --review-file 承認ファイル --wait` で、承認した区間だけを Parakeet（Colab GPU 1台）で起こし直し、字幕データを `clipforge-captions-RUN_ID` artifact に保存 | Actions（Colab GPU） | 字幕のrun ID |
 | S4 描画 | `submit_audio_stage.py --stage render --worker colab-auto --clips N --config-file config.landscape-chat.example.json` を承認ファイルで投入。1本ずつ並列に描画 | Actions（Colab CPU） | 各クリップの依頼ID・run ID |
 | S5 結合 | 全クリップの run が成功したことを確認し、`--stage merge --local` で制御VMに結合 | 私 | `merged-*/delivery/` |
 | S6 検査 | `e2e-summary.json`・各 `quality.json`・フレームを確認。1920×1080・30fps、音量、真ピーク、字幕の位置 | 私 | 合否の記録 |
@@ -34,6 +34,8 @@ git ls-remote origin ccr-7cea37c1-n7u7zz  # 同じSHAであること（未push�
 workflow の一致は、非公開 worker の `clipforge.yml` と `clipforge-stages.yml` のブロブSHAを、`deploy/clipforge.yml` と `deploy/audio-stages.yml` の `git hash-object` と比べて確かめる。違えば投入せず、同期を先に行う。
 
 ## S1 分析＋プレビュー
+
+`config.landscape-long.example.json` は `asr_engine: parakeet`・`asr_parts: 1`。全編を Parakeet（Colab GPU 1台、約8分ずつに静かな位置で分けて一括処理）で一度だけ起こし、その結果を話題分けと字幕の両方に使う。この設定では S3.5 は不要。NeMo は固定環境と混ぜず、Colab標準のPython（`CLIPFORGE_PARAKEET_PYTHON`、既定 `/usr/bin/python3`）で動かす。
 
 ```bash
 python tools/submit_job.py --audio-analysis-url 'URL' \

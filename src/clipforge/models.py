@@ -163,6 +163,8 @@ class Settings(Record):
     asr_batch_size: int = Field(default=0, ge=0, le=16)
     # URL jobs may recognise overlapping parts on separate Colab runtimes (up to four).
     asr_parts: Literal[1, 2, 3, 4] = 1
+    # parakeet recognises the whole audio in one runtime with NVIDIA Parakeet (Japanese).
+    asr_engine: Literal["whisper", "parakeet"] = "whisper"
     # 2-part ASR: cut at the longest silence within this many seconds of the middle (0 cuts at the middle).
     asr_split_search_seconds: int = Field(default=1800, ge=0, le=3600)
     # Explicit hosted-runner audio acquisition route; not an automatic fallback.
@@ -369,6 +371,12 @@ class Settings(Record):
             raise ValueError("layout panels needs face_box")
         if self.zoom and self.face_box is None:
             raise ValueError("zoom needs face_box")
+        if self.asr_engine == "parakeet" and (
+            self.asr_parts != 1 or self.asr_batch_size
+        ):
+            raise ValueError(
+                "Parakeet recognises the whole audio in one part, unbatched"
+            )
         if self.candidates < self.clips:
             raise ValueError("candidate count must cover requested clips")
         # The frame budget bounds Gemini video selection; manual selection sends no frames.
