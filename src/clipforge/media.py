@@ -22,7 +22,6 @@ LOUDNESS = "I=-16:TP=-2.0:LRA=11"
 # keeps the decoded true peak under -1 dBTP and moved integrated loudness by 0.2 LU at most.
 PEAK_LIMIT = 0.7079
 MAX_KEEP_REGIONS = 60
-MAX_SOUND_EFFECTS = 20
 SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio
 VIDEO_CRF = (
     18  # x264 quality: lower is sharper and larger; 18 is near visually lossless
@@ -469,8 +468,8 @@ def _video_graph(
     return ";".join(chain)
 
 
-def _extra_inputs(settings, duration, visuals):
-    """Argument list for visuals, background music and sound effects, in index order."""
+def _extra_inputs(duration, visuals):
+    """Argument list for the overlay images, in index order after the source."""
     args = []
     for visual in visuals:
         args += [
@@ -482,63 +481,12 @@ def _extra_inputs(settings, duration, visuals):
             "-i",
             visual["file"],
         ]
-    if settings.bgm:
-        args += [
-            "-stream_loop",
-            "-1",
-            "-t",
-            f"{duration:.6f}",
-            *PROTOCOLS,
-            "-i",
-            settings.bgm,
-        ]
-    for effect in settings.sound_effects:
-        args += [*PROTOCOLS, "-i", effect.file]
     return args
 
 
-def _audio_graph(clip, settings, keep, duration, has_audio, first_extra):
-    """Narration, optional ducked background music and sound effects, loudness-normalized."""
-    if has_audio:
-        base = _audio_timeline(clip, keep)
-    else:
-        base = f"anullsrc=r={AUDIO_RATE}:cl=mono,atrim=0:{duration:.6f},asetpts=PTS-STARTPTS[ain]"
-    parts = [base]
-    mix_inputs = []
-    if settings.bgm:
-        bgm_index = first_extra
-        parts.append(
-            f"[{bgm_index}:a]atrim=0:{duration:.6f},asetpts=PTS-STARTPTS,"
-            f"volume={settings.bgm_gain_db:.2f}dB[bg0]"
-        )
-        if settings.ducking and has_audio:
-            parts.append("[ain]asplit=2[nk][nm]")
-            parts.append(
-                "[bg0][nk]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=300[bgd]"
-            )
-        else:
-            parts.append("[ain]anull[nm]")
-            parts.append("[bg0]anull[bgd]")
-        mix_inputs += ["[nm]", "[bgd]"]
-        offset = first_extra + 1
-    else:
-        parts.append("[ain]anull[nm]")
-        mix_inputs.append("[nm]")
-        offset = first_extra
-    for index, effect in enumerate(settings.sound_effects):
-        parts.append(
-            f"[{offset + index}:a]aresample={AUDIO_RATE},"
-            f"volume={effect.gain_db:.2f}dB,adelay={round(effect.time * 1000)}:all=1[se{index}]"
-        )
-        mix_inputs.append(f"[se{index}]")
-    if len(mix_inputs) > 1:
-        parts.append(
-            "".join(mix_inputs)
-            + f"amix=inputs={len(mix_inputs)}:duration=first:normalize=0[mix]"
-        )
-    else:
-        parts.append("[nm]anull[mix]")
-    return ";".join(parts)
+def _audio_graph(clip, keep):
+    """The narration on the clip clock, labelled [mix]."""
+    return _audio_timeline(clip, keep) + ";[ain]anull[mix]"
 
 
 def _loudness_args(measured):
@@ -566,13 +514,12 @@ def _audio_tail(settings, duration, measured):
 
 
 def measure_loudness(source, clip, settings, keep, duration):
-    """First pass: measure the same audio chain (including music and effects) the render uses.
+    """First pass: measure the same audio chain the render uses.
 
     Returns None when the audio is silent, so the render falls back to a single pass.
     """
-    extra = _extra_inputs(settings, duration, [])
     graph = (
-        _audio_graph(clip, settings, keep, duration, True, first_extra=1)
+        _audio_graph(clip, keep)
         + f";[mix]loudnorm={LOUDNESS}:print_format=json,aresample={AUDIO_RATE}[aout]"
     )
     command = [
@@ -590,7 +537,6 @@ def measure_loudness(source, clip, settings, keep, duration):
         *FORMATS,
         "-i",
         str(Path(source).resolve()),
-        *extra,
         "-t",
         f"{duration:.6f}",
         "-filter_complex",
@@ -662,20 +608,10 @@ def render(
             raise PipelineError("chat must be chat.ass beside the rendered clip")
         if not Path(chat_ass).is_file():
             raise PipelineError("chat file is missing")
-    if settings.bgm and not Path(settings.bgm).is_file():
-        raise PipelineError("background music file is missing")
-    if len(settings.sound_effects) > MAX_SOUND_EFFECTS:
-        raise PipelineError("too many sound effects")
-    for effect in settings.sound_effects:
-        if not Path(effect.file).is_file():
-            raise PipelineError("sound effect file is missing")
-        if effect.time >= duration:
-            raise PipelineError("sound effect time is outside the rendered clip")
     if keep and len(keep) > MAX_KEEP_REGIONS:
         raise PipelineError("silence cut produced too many regions")
     source_info = probe(source)
     has_audio = source_info["audio"]
-    first_extra = 1 + len(visuals)
     graph = [
         _video_graph(
             clip,
@@ -690,15 +626,13 @@ def render(
             crop_x,
         )
     ]
-    if has_audio or settings.bgm or settings.sound_effects:
+    if has_audio:
         measured = (
             measure_loudness(source, clip, settings, keep, duration)
-            if settings.loudness_two_pass and has_audio
+            if settings.loudness_two_pass
             else None
         )
-        graph.append(
-            _audio_graph(clip, settings, keep, duration, has_audio, first_extra)
-        )
+        graph.append(_audio_graph(clip, keep))
         graph.append(_audio_tail(settings, duration, measured))
     command = [
         "ffmpeg",
@@ -719,7 +653,7 @@ def render(
         *FORMATS,
         "-i",
         str(Path(source).resolve()),
-        *_extra_inputs(settings, duration, visuals),
+        *_extra_inputs(duration, visuals),
         "-t",
         f"{clip.end - clip.start:.6f}",
         "-filter_complex",
@@ -727,7 +661,7 @@ def render(
         "-map",
         "[vout]",
     ]
-    if has_audio or settings.bgm or settings.sound_effects:
+    if has_audio:
         command += [
             "-map",
             "[aout]",

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from clipforge import hardware, media
-from clipforge.models import SelectedClip, Settings, SoundEffect, Zoom
+from clipforge.models import SelectedClip, Settings, Zoom
 from clipforge.storage import PipelineError
 
 CLIP = SimpleNamespace(start=10.0, end=20.0)
@@ -180,45 +180,20 @@ def test_plain_video_graph_has_no_optional_stages():
     assert graph.endswith("null[vout]")
 
 
-def test_extra_inputs_are_ordered_visuals_then_music_then_effects():
-    settings = make(
-        bgm="/local/bg.mp3",
-        sound_effects=[SoundEffect(file="/local/fx.wav", time=1.0)],
+def test_extra_inputs_are_the_overlay_images_in_order():
+    args = media._extra_inputs(
+        10.0, [{"file": "/local/a.png"}, {"file": "/local/b.png"}]
     )
-    visuals = [{"file": "/local/v.png"}]
-    args = media._extra_inputs(settings, 10.0, visuals)
     inputs = [args[i + 1] for i, value in enumerate(args) if value == "-i"]
-    assert inputs == ["/local/v.png", "/local/bg.mp3", "/local/fx.wav"]
-    assert args[args.index("-stream_loop") + 1] == "-1"
+    assert inputs == ["/local/a.png", "/local/b.png"]
     # Every extra input gets the same local-only protocol whitelist as the source.
     assert args.count("-protocol_whitelist") == len(inputs)
 
 
-def test_audio_graph_ducks_music_only_when_narration_exists():
-    settings = make(bgm="/local/bg.mp3", ducking=True)
-    ducked = media._audio_graph(CLIP, settings, None, 10.0, True, first_extra=1)
-    assert "sidechaincompress=threshold=0.03:ratio=6:attack=20:release=300" in ducked
-    assert "asplit=2[nk][nm]" in ducked
-    silent = media._audio_graph(CLIP, settings, None, 10.0, False, first_extra=1)
-    assert "anullsrc" in silent and "sidechaincompress" not in silent
-    plain = media._audio_graph(
-        CLIP, make(bgm="/b.mp3", ducking=False), None, 10.0, True, 1
-    )
-    assert "sidechaincompress" not in plain and "[bg0]anull[bgd]" in plain
-
-
-def test_sound_effects_are_delayed_to_their_time_and_mixed():
-    settings = make(sound_effects=[SoundEffect(file="/fx.wav", time=2.5, gain_db=-9)])
-    graph = media._audio_graph(CLIP, settings, KEEP, 10.0, True, first_extra=1)
-    assert "adelay=2500:all=1" in graph
-    assert "volume=-9.00dB" in graph
-    assert "amix=inputs=2:duration=first:normalize=0[mix]" in graph
-    assert "atrim=start=0.000000:end=2.000000" in graph  # narration follows the cut
-
-
-def test_narration_only_mix_passes_through():
-    graph = media._audio_graph(CLIP, make(), None, 10.0, True, first_extra=1)
-    assert graph.endswith("[nm]anull[mix]")
+def test_audio_graph_is_the_narration_on_the_clip_clock():
+    graph = media._audio_graph(CLIP, KEEP)
+    assert graph.endswith(";[ain]anull[mix]")
+    assert "amix" not in graph and "anullsrc" not in graph
 
 
 def test_loudness_arguments_use_the_first_pass_measurement():
@@ -429,12 +404,6 @@ def test_preview_passes_render_thread_budget_to_ffmpeg(monkeypatch, tmp_path, pr
             {"face_box": (0.1, 0.1, 0.5, 0.5), "zoom": [Zoom(start=1, end=50)]},
             "zoom interval",
         ),
-        ({"bgm": "/definitely/missing.mp3"}, "background music"),
-        (
-            {"sound_effects": [SoundEffect(file="/definitely/missing.wav", time=1)]},
-            "sound effect file",
-        ),
-        ({"sound_effects": [SoundEffect(file=__file__, time=12)]}, "sound effect time"),
     ],
 )
 def test_render_refuses_inputs_outside_the_clip_or_missing(

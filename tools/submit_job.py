@@ -61,8 +61,6 @@ SETTINGS_FIELDS = {
     "image_search",
     "image_sources",
     "table_query",
-    "bgm_gain_db",
-    "ducking",
     "thumbnail",
     "fade_seconds",
     "progress_bar",
@@ -77,14 +75,8 @@ SETTINGS_FIELDS = {
     "chat_panel_fit",
     "chat_anonymize",
 }
-# These name files on the submitting machine; the remote worker cannot read them.
-LOCAL_FILE_FIELDS = {
-    "visuals",
-    "bgm",
-    "sound_effects",
-    "transcript_cache",
-    "require_transcript_cache",
-}
+# These name a stage's own saved transcript; the worker sets them itself.
+LOCAL_FILE_FIELDS = {"transcript_cache", "require_transcript_cache"}
 
 
 def validate_settings(settings):
@@ -97,7 +89,7 @@ def validate_settings(settings):
         )
     if set(settings) & LOCAL_FILE_FIELDS:
         raise RuntimeError(
-            "visuals, bgm, sound_effects and transcript_cache name local files; render those clips locally"
+            "transcript_cache names a stage's own files; the worker sets it"
         )
 
 

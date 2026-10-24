@@ -2,7 +2,6 @@
 
 import json
 from pathlib import Path
-import shutil
 import tempfile
 import time
 
@@ -57,7 +56,6 @@ REQUIRED_FILES = {
 }
 OPTIONAL_FILES = {"thumbnail.png", "chat.ass"}  # chat.ass only with the chat panel
 VISUAL_DIR = "visuals"
-SUPPLIED_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
 REPOSITORY_URL = "https://github.com/nyu1791-collab/ClipForge"
 
 
@@ -92,53 +90,14 @@ def valid_receipt(target, saved, render_key):
 
 
 def prepare_visuals(clip, settings, directory, duration):
-    """Overlays from supplied files, original diagrams and licensed downloads.
+    """Overlays from original diagrams and tables, and licensed downloads.
 
-    Each overlay is copied into the clip's visuals/ folder and gets a ledger entry
-    (file, hash, source, credit, licence), so the clip keeps what it used. A supplied
-    file without a complete source is refused.
+    Each overlay is written into the clip's visuals/ folder and gets a ledger entry
+    (file, hash, source, credit, licence), so the clip keeps what it used.
     """
     folder = directory / VISUAL_DIR
     folder.mkdir(parents=True, exist_ok=True)
     visuals, ledger = [], []
-    for index, visual in enumerate(settings.visuals, 1):
-        if not (visual.source_credit and visual.source_url and visual.license):
-            raise PipelineError("visual needs source_credit, source_url and license")
-        source = Path(visual.file)
-        if not source.is_file():
-            raise PipelineError("visual file is missing")
-        suffix = source.suffix.lower()
-        if suffix == ".svg":
-            target = folder / f"visual-{index:02}.png"
-            diagrams.svg_to_png(source, target)
-        elif suffix in SUPPLIED_SUFFIXES:
-            target = folder / f"visual-{index:02}{suffix}"
-            shutil.copy2(source, target)
-            assets.check_image(target)
-        else:
-            raise PipelineError("visual must be an SVG, PNG, JPEG or WebP file")
-        ledger.append(
-            assets.validate_entry(
-                {
-                    "id": f"visual-{index:02}",
-                    "file": target.name,
-                    "kind": "supplied",
-                    "sha256": digest(target),
-                    "source_url": visual.source_url,
-                    "source_credit": visual.source_credit,
-                    "license": visual.license,
-                }
-            )
-        )
-        visuals.append(
-            {
-                "file": str(target),
-                "start": visual.start,
-                "end": visual.end,
-                "position": visual.position,
-                "max_fraction": visual.max_fraction,
-            }
-        )
     if settings.diagrams:
         font_path = fonts.resolve(settings.font)
         for index, diagram in enumerate(settings.diagrams, 1):

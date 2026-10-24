@@ -328,8 +328,8 @@ def test_gateway_settings_field_list_tracks_model(submitter):
 def test_configuration_cannot_name_local_files(submitter, tmp_path):
     _, _, control, invoke = submitter
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({"bgm": "/home/someone/music.mp3"}))
-    with pytest.raises(RuntimeError, match="local files"):
+    config.write_text(json.dumps({"transcript_cache": "/home/someone/transcripts"}))
+    with pytest.raises(RuntimeError, match="worker sets it"):
         invoke("--config", str(config))
     assert not control["releases"] and not control["posts"]
 
@@ -532,7 +532,7 @@ def test_url_settings_match_submission_acquisition_and_analysis(
     "settings, message",
     [
         ({"unexpected": True}, "unknown fields"),
-        ({"bgm": "synthetic.mp3"}, "local files"),
+        ({"transcript_cache": "synthetic"}, "worker sets it"),
         ({"heading": "あ" * 6000}, "16 KB"),
         ({"max_source_seconds": 43201}, "max_source_seconds.*43200"),
     ],

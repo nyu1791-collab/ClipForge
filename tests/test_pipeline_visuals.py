@@ -14,7 +14,6 @@ from clipforge.models import (
     SelectedClip,
     Settings,
     Transcript,
-    Visual,
     Word,
     Zoom,
 )
@@ -312,106 +311,6 @@ def test_cut_regions_follow_the_silence_setting(transcript, monkeypatch):
     ) == [(0.85, 2.15)]
 
 
-def test_prepare_visuals_copies_supplied_images_and_converts_svg(tmp_path):
-    card = png(tmp_path / "card.png")
-    vector = tmp_path / "shape.svg"
-    vector.write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
-        '<rect width="40" height="20" fill="#333"/></svg>'
-    )
-    settings = make(
-        visuals=[
-            Visual(
-                file=str(card),
-                start=1,
-                end=3,
-                source_credit="作者 / CC0",
-                source_url="https://e/c",
-                license="CC0",
-            ),
-            Visual(
-                file=str(vector),
-                start=4,
-                end=6,
-                source_credit="SVG",
-                source_url="https://e/s",
-                license="CC0",
-            ),
-        ]
-    )
-    folder = tmp_path / "clip"
-    folder.mkdir()
-    visuals, ledger = pipeline.prepare_visuals(
-        SelectedClip(
-            start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
-        ),
-        settings,
-        folder,
-        10.0,
-    )
-    assert [e["file"] for e in ledger] == ["visual-01.png", "visual-02.png"]
-    assert all(e["kind"] == "supplied" for e in ledger)
-    assert all((folder / "visuals" / e["file"]).is_file() for e in ledger)
-    assert visuals[0]["position"] == "right" and visuals[1]["file"].endswith(
-        "visual-02.png"
-    )
-
-
-@pytest.mark.parametrize(
-    ("visual", "message"),
-    [
-        (Visual(file="/x.png", start=0, end=1), "needs source_credit"),
-        (
-            Visual(
-                file="/does/not/exist.png",
-                start=0,
-                end=1,
-                source_credit="a",
-                source_url="u",
-                license="CC0",
-            ),
-            "visual file is missing",
-        ),
-    ],
-)
-def test_supplied_visuals_need_a_complete_source(tmp_path, visual, message):
-    with pytest.raises(PipelineError, match=message):
-        pipeline.prepare_visuals(
-            SelectedClip(
-                start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
-            ),
-            make(visuals=[visual]),
-            tmp_path,
-            10.0,
-        )
-
-
-def test_unsupported_visual_formats_are_refused(tmp_path):
-    gif = tmp_path / "anim.gif"
-    gif.write_bytes(b"GIF89a")
-    settings = make(
-        visuals=[
-            Visual(
-                file=str(gif),
-                start=0,
-                end=1,
-                source_credit="a",
-                source_url="u",
-                license="CC0",
-            )
-        ]
-    )
-    with pytest.raises(PipelineError, match="SVG, PNG, JPEG or WebP"):
-        pipeline.prepare_visuals(
-            SelectedClip(
-                start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
-            ),
-            settings,
-            tmp_path,
-            10.0,
-        )
-
-
 def test_diagrams_and_searched_images_are_recorded_in_the_ledger(
     tmp_path, monkeypatch, japanese_font
 ):
@@ -464,18 +363,7 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
     source.write_bytes(b"source")
     root = tmp_path / "out" / "clips"
     root.mkdir(parents=True)
-    card = png(tmp_path / "card.png")
     settings = make(
-        visuals=[
-            Visual(
-                file=str(card),
-                start=1,
-                end=3,
-                source_credit="作者 / CC0",
-                source_url="https://e/c",
-                license="CC0",
-            )
-        ],
         diagrams=[Diagram(kind="steps", title="手順", start=4, end=6, steps=["一"])],
         thumbnail=True,
     )
@@ -513,7 +401,7 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
     result = pipeline.render_clip(
         source, root, 1, clip, transcript, settings, "job-key"
     )
-    assert seen["credits"] == ["作者 / CC0"]
+    assert seen["credits"] == []
     assert result["quality"]["passed"] is True
     assert set(result["sha256"]) == {
         "captions.ass",
@@ -522,7 +410,6 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
         "quality.json",
         "thumbnail.png",
         "video.mp4",
-        "visuals/visual-01.png",
         "visuals/diagram-01.png",
     }
     target = root / "clip-001"
@@ -535,7 +422,7 @@ def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
     monkeypatch.setattr(pipeline.media, "render", must_not_render)
     again = pipeline.render_clip(source, root, 1, clip, transcript, settings, "job-key")
     assert again["sha256"] == result["sha256"]
-    (target / "visuals" / "visual-01.png").write_bytes(b"tampered")
+    (target / "visuals" / "diagram-01.png").write_bytes(b"tampered")
     with pytest.raises(PipelineError, match="differs from the saved render receipt"):
         pipeline.render_clip(source, root, 1, clip, transcript, settings, "job-key")
 
@@ -921,11 +808,9 @@ def test_receipt_without_saved_inputs_is_matched_as_before(
 # --- models ---------------------------------------------------------------
 
 
-def test_zoom_visual_and_diagram_validate_their_intervals():
+def test_zoom_and_diagram_validate_their_intervals():
     with pytest.raises(ValidationError):
         Zoom(start=3, end=2)
-    with pytest.raises(ValidationError):
-        Visual(file="x.png", start=3, end=3)
     with pytest.raises(ValidationError):
         Diagram(kind="table", title="t", start=0, end=1, rows=[["a"], ["b", "c"]])
     with pytest.raises(ValidationError):

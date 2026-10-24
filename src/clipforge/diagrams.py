@@ -5,12 +5,10 @@ external resources: SVG files that reference URLs, images, or other files are re
 """
 
 import re
-from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 from .fonts import Measure
-from .storage import PipelineError
 
 WIDTH = 1000
 SUPERSAMPLE = 2
@@ -170,27 +168,3 @@ def render(diagram, font_path, destination):
             diagram.title, diagram.labels, diagram.values, font_path, destination
         )
     return steps(diagram.title, diagram.steps, font_path, destination)
-
-
-def sanitized_svg(path):
-    """Return SVG text only if it has no external or file references."""
-    text = Path(path).read_text(encoding="utf-8")
-    if len(text.encode("utf-8")) > 2 * 1024 * 1024:
-        raise PipelineError("SVG is larger than the allowed size")
-    if EXTERNAL.search(text):
-        raise PipelineError("SVG references external resources and is refused")
-    return text
-
-
-def svg_to_png(path, destination, width=1280):
-    """Rasterize a self-contained SVG with CairoSVG; the input is never modified."""
-    try:
-        import cairosvg
-    except ImportError as error:
-        raise PipelineError("cairosvg is required to render SVG visuals") from error
-    cairosvg.svg2png(
-        bytestring=sanitized_svg(path).encode("utf-8"),
-        write_to=str(destination),
-        output_width=width,
-    )
-    return destination

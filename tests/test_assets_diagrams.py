@@ -321,47 +321,6 @@ def test_oversize_downloads_are_refused_and_leave_no_partial_file(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_svg_with_external_reference_is_refused(tmp_path):
-    path = tmp_path / "bad.svg"
-    path.write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg"><image href="file:///etc/passwd"/></svg>'
-    )
-    with pytest.raises(PipelineError, match="external"):
-        diagrams.sanitized_svg(path)
-
-
-@pytest.mark.parametrize(
-    "markup",
-    [
-        '<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]><svg/>',
-        '<svg><svg:image xmlns:svg="http://www.w3.org/2000/svg"/></svg>',
-        '<svg><rect fill="url(#g)"/></svg>',
-        '<svg><style>@import "x.css";</style></svg>',
-        "<svg><script>alert(1)</script></svg>",
-    ],
-)
-def test_svg_refuses_dtds_prefixed_elements_and_remote_styles(tmp_path, markup):
-    path = tmp_path / "x.svg"
-    path.write_text(markup)
-    with pytest.raises(PipelineError):
-        diagrams.sanitized_svg(path)
-
-
-def test_svg_size_limit_and_clean_rasterising(tmp_path):
-    big = tmp_path / "big.svg"
-    big.write_text("<svg>" + " " * (2 * 1024 * 1024) + "</svg>")
-    with pytest.raises(PipelineError, match="larger"):
-        diagrams.sanitized_svg(big)
-    clean = tmp_path / "clean.svg"
-    clean.write_text(
-        '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20">'
-        '<rect width="40" height="20" fill="#1e88e5"/></svg>'
-    )
-    output = tmp_path / "clean.png"
-    diagrams.svg_to_png(clean, output)
-    assert Image.open(output).size[0] == 1280
-
-
 def test_each_diagram_kind_renders_a_fixed_width_png(japanese_font, tmp_path):
     specs = [
         Diagram(
