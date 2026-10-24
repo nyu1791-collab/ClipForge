@@ -202,7 +202,12 @@ def merge(parts, duration):
         or any(
             descriptors[0][key] != row[key]
             for row in descriptors
-            for key in ("parent_request_id", "source_sha256", "transcript_key")
+            for key in (
+                "parent_request_id",
+                "source_sha256",
+                "transcript_key",
+                "split_key",
+            )
         )
         or any(
             abs(left["end"] - right["start"]) > 1e-6
@@ -215,16 +220,17 @@ def merge(parts, duration):
         transcript = Transcript.model_validate(raw)
         languages.add(transcript.language)
         start, length = descriptor["start"], descriptor["end"] - descriptor["start"]
+        limit = min(descriptor["end"], duration)
         for segment in transcript.segments:
             if segment.end > length + 0.3:
                 raise PipelineError("ASR part transcript exceeds its audio")
             value = segment.model_dump()
             value["start"] += start
-            value["end"] = min(value["end"] + start, duration)
+            value["end"] = min(value["end"] + start, limit)
             value["words"] = [
                 {**word, "start": word["start"] + start, "end": end}
                 for word in value["words"]
-                if (end := min(word["end"] + start, duration)) > word["start"] + start
+                if (end := min(word["end"] + start, limit)) > word["start"] + start
             ]
             if value["end"] > value["start"]:
                 segments.append(value)

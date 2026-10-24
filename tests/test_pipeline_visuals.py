@@ -1,21 +1,17 @@
 import json
-import math
 
 import pysubs2
 import numpy as np
 import pytest
-from PIL import Image
 from pydantic import ValidationError
 
-from clipforge import auto_layout, captions, pipeline, silence
+from clipforge import auto_layout, captions, pipeline
 from clipforge.models import (
-    Diagram,
     Segment,
     SelectedClip,
     Settings,
     Transcript,
     Word,
-    Zoom,
 )
 from clipforge.storage import PipelineError, digest, fingerprint
 
@@ -35,11 +31,6 @@ def make(**overrides):
             **overrides,
         }
     )
-
-
-def png(path, size=(40, 30)):
-    Image.new("RGB", size, (200, 40, 40)).save(path, format="PNG")
-    return path
 
 
 # --- captions -------------------------------------------------------------
@@ -75,32 +66,6 @@ def test_wrapping_prefers_phrase_edges_and_respects_the_line_limit():
     assert breaks and all(0 < b < len("日本語字幕の表示と時刻を") for b in breaks)
 
 
-def test_collect_tokens_divides_a_word_cut_by_silence_removal():
-    transcript = Transcript(
-        language="ja",
-        segments=[
-            Segment(
-                start=9,
-                end=13,
-                text="abcdefgh",
-                words=[Word(start=9, end=13, text="abcdefgh")],
-            )
-        ],
-    )
-    clip = SelectedClip(
-        start=10, end=14, candidate_id="m", title="t", reason="r", confidence=1
-    )
-    tokens, approximate = captions.collect_tokens(
-        transcript, clip, [(10.0, 11.0), (12.0, 14.0)]
-    )
-    # Both kept halves last one second, so the eight characters divide evenly between them.
-    assert approximate == 1
-    assert [(start, end, text) for start, end, text in tokens] == [
-        (0.0, 1.0, "abcd"),
-        (1.0, 2.0, "efgh"),
-    ]
-
-
 def _collect(words, language):
     """Tokens from (start, end, text) words, all in one segment, with no silence cuts."""
     transcript = Transcript(
@@ -117,7 +82,7 @@ def _collect(words, language):
     clip = SelectedClip(
         start=0, end=10, candidate_id="m", title="t", reason="r", confidence=1
     )
-    tokens, _ = captions.collect_tokens(transcript, clip, None)
+    tokens, _ = captions.collect_tokens(transcript, clip)
     return tokens
 
 
@@ -198,26 +163,18 @@ def test_heading_align_left_pins_the_heading_to_the_top_left(
     assert subtitles.styles["Heading"].alignment == pysubs2.Alignment.TOP_LEFT
 
 
-def test_heading_and_credits_stay_out_of_the_srt_and_wrap_inside_the_frame(
+def test_heading_stays_out_of_the_spoken_srt(
     tmp_path, monkeypatch, japanese_font, transcript
 ):
     monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
     clip = SelectedClip(
         start=0, end=30, candidate_id="m", title="テスト題名", reason="r", confidence=1
     )
-    credits = [
-        "とても長い作者の名前 / CC BY-SA 4.0 / Wikimedia Commons",
-        "Another author / CC0 / Openverse",
-    ]
-    result = captions.create(
-        transcript, clip, tmp_path, make(heading=True), credits=credits
-    )
+    result = captions.create(transcript, clip, tmp_path, make(heading=True))
     ass = (tmp_path / "captions.ass").read_text()
     assert "Heading" in ass and "テスト題名" in ass
-    credit_line = next(line for line in ass.splitlines() if ",Credit," in line)
-    assert "\\N" in credit_line
     srt = (tmp_path / "captions.srt").read_text()
-    assert "テスト題名" not in srt and "Wikimedia" not in srt
+    assert "テスト題名" not in srt
     assert result["heading"] is True and result["caption_mode"] == "karaoke"
 
 
@@ -236,195 +193,30 @@ def test_caption_parser_is_loaded_once():
     assert captions.parser() is captions.parser()
 
 
-# --- signals --------------------------------------------------------------
-
-
-def dense_transcript(duration):
-    return Transcript(
-        language="ja",
-        segments=[
-            Segment(start=s, end=s + 10, text="同じ話題の発話です")
-            for s in range(0, int(duration) - 10, 12)
-        ],
-    )
-
-
 # --- pipeline helpers -----------------------------------------------------
 
 
 def test_receipt_accepts_only_its_own_untouched_files(tmp_path):
     target = tmp_path / "clip-001"
     target.mkdir()
-    (target / "visuals").mkdir()
     names = {
         "video.mp4": b"video",
         "captions.ass": b"ass",
         "captions.srt": b"srt",
-        "ledger.json": json.dumps([{"file": "visual-01.png"}]).encode(),
         "quality.json": b"{}",
-        "visuals/visual-01.png": b"png",
     }
     for name, data in names.items():
         (target / name).write_bytes(data)
-    ledger = [{"file": "visual-01.png"}]
-    saved = {
-        "key": "k",
-        "ledger": ledger,
-        "sha256": {name: digest(target / name) for name in names},
-    }
+    saved = {"key": "k", "sha256": {name: digest(target / name) for name in names}}
     assert pipeline.valid_receipt(target, saved, "k")
     assert not pipeline.valid_receipt(target, saved, "other-job")
-    (target / "visuals/visual-01.png").write_bytes(b"changed")
-    assert not pipeline.valid_receipt(target, saved, "k")
-    assert not pipeline.valid_receipt(
-        target, {**saved, "ledger": [{"file": "../x.png"}]}, "k"
-    )
-    # An edited ledger in render.json alone must not be accepted on resume.
-    assert not pipeline.valid_receipt(
-        target,
-        {**saved, "ledger": [{"file": "visual-01.png", "source_credit": "Bob"}]},
-        "k",
-    )
     extra = {
         **saved,
-        "sha256": {**saved["sha256"], "notes.txt": digest(target / "ledger.json")},
+        "sha256": {**saved["sha256"], "notes.txt": digest(target / "quality.json")},
     }
     assert not pipeline.valid_receipt(target, extra, "k")
-    assert not pipeline.valid_receipt(target, {"key": "k"}, "k")
-    assert pipeline.visual_names(ledger) == {"visuals/visual-01.png"}
-
-
-def test_cut_regions_follow_the_silence_setting(transcript, monkeypatch):
-    clip = SelectedClip(
-        start=0, end=30, candidate_id="m", title="t", reason="r", confidence=1
-    )
-    assert pipeline.cut_regions("/in.mp4", transcript, clip, make()) is None
-    keep = pipeline.cut_regions("/in.mp4", transcript, clip, make(silence_cut=True))
-    assert keep and all(0 <= a < b <= 30 for a, b in keep)
-    empty = Transcript(language="ja", segments=[])
-    assert pipeline.cut_regions("/in.mp4", empty, clip, make(silence_cut=True)) is None
-    monkeypatch.setattr(
-        silence, "silero_spans", lambda source, start, end: [(1.0, 2.0)]
-    )
-    assert pipeline.cut_regions(
-        "/in.mp4", transcript, clip, make(silence_cut=True, vad="silero")
-    ) == [(0.85, 2.15)]
-
-
-def test_diagrams_and_searched_images_are_recorded_in_the_ledger(
-    tmp_path, monkeypatch, japanese_font
-):
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
-    entry = {
-        "id": "image-01",
-        "file": "image-01.png",
-        "kind": "photo",
-        "sha256": "0" * 64,
-        "provider": "wikimedia-commons",
-        "source_url": "https://e/i",
-        "source_credit": "A / CC0",
-        "license": "CC0",
-        "license_url": "",
-        "query": "q",
-        "retrieved_at": "2026-10-21T00:00:00+00:00",
-    }
-    monkeypatch.setattr(
-        pipeline.assets, "search", lambda query, sources, limit: [{"image_url": "u"}]
-    )
-    monkeypatch.setattr(
-        pipeline.assets, "download_all", lambda items, directory: [entry]
-    )
-    settings = make(
-        diagrams=[
-            Diagram(kind="steps", title="手順", start=1, end=2, steps=["一", "二"])
-        ],
-        image_search=True,
-    )
-    visuals, ledger = pipeline.prepare_visuals(
-        SelectedClip(
-            start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
-        ),
-        settings,
-        tmp_path,
-        10.0,
-    )
-    kinds = {e["id"]: e["kind"] for e in ledger}
-    assert kinds == {"diagram-01": "diagram", "image-01": "photo"}
-    searched = next(v for v in visuals if v["file"].endswith("image-01.png"))
-    assert searched["start"] == 0 and searched["end"] == 10
-    assert (tmp_path / "visuals" / "diagram-01.png").is_file()
-
-
-def test_clip_directory_lists_its_visuals_and_skips_diagram_credits(
-    tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
-):
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
-    source = tmp_path / "in.mp4"
-    source.write_bytes(b"source")
-    root = tmp_path / "out" / "clips"
-    root.mkdir(parents=True)
-    settings = make(
-        diagrams=[Diagram(kind="steps", title="手順", start=4, end=6, steps=["一"])],
-        thumbnail=True,
-    )
-    clip = SelectedClip(
-        start=0, end=10, candidate_id="m", title="題", reason="r", confidence=1
-    )
-    seen = {}
-
-    def fake_render(
-        source, destination, clip, settings, ass=None, keep=None, visuals=()
-    ):
-        destination.write_bytes(b"video")
-        return {
-            "duration": 10,
-            "width": 404,
-            "height": 720,
-            "audio": True,
-            "audio_sample_rate": 48000,
-        }
-
-    def fake_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
-        seen["credits"] = credits
-        pysubs2.SSAFile().save(str(directory / "captions.ass"))
-        pysubs2.SSAFile().save(str(directory / "captions.srt"))
-        return {"events": 0, "heading": False, "missing_glyphs": []}
-
-    def fake_thumbnail(video, destination, title, font_path, at_seconds):
-        destination.write_bytes(b"thumb")
-
-    monkeypatch.setattr(pipeline.media, "render", fake_render)
-    monkeypatch.setattr(pipeline, "create_captions", fake_captions)
-    monkeypatch.setattr(pipeline.thumbnail, "make", fake_thumbnail)
-    result = pipeline.render_clip(
-        source, root, 1, clip, transcript, settings, "job-key"
-    )
-    assert seen["credits"] == []
-    assert result["quality"]["passed"] is True
-    assert set(result["sha256"]) == {
-        "captions.ass",
-        "captions.srt",
-        "ledger.json",
-        "quality.json",
-        "thumbnail.png",
-        "video.mp4",
-        "visuals/diagram-01.png",
-    }
-    target = root / "clip-001"
-    saved = json.loads((target / "render.json").read_text())
-    assert pipeline.valid_receipt(target, saved, saved["key"])
-
-    def must_not_render(*args, **kwargs):
-        raise AssertionError("a verified clip must be reused, not rendered again")
-
-    monkeypatch.setattr(pipeline.media, "render", must_not_render)
-    again = pipeline.render_clip(source, root, 1, clip, transcript, settings, "job-key")
-    assert again["sha256"] == result["sha256"]
-    (target / "visuals" / "diagram-01.png").write_bytes(b"tampered")
-    with pytest.raises(PipelineError, match="differs from the saved render receipt"):
-        pipeline.render_clip(source, root, 1, clip, transcript, settings, "job-key")
+    (target / "video.mp4").write_bytes(b"changed")
+    assert not pipeline.valid_receipt(target, saved, "k")
 
 
 def test_existing_clip_without_receipt_is_not_trusted(tmp_path, transcript):
@@ -445,7 +237,7 @@ def test_existing_clip_without_receipt_is_not_trusted(tmp_path, transcript):
 
 def _chat_clip_render(tmp_path, monkeypatch, japanese_font, transcript, chat, layout):
     """Renders clip 1 with a chat panel and a fixed layout; media and planning are synthetic."""
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
     source = tmp_path / "in.mp4"
     source.write_bytes(b"source")
     root = tmp_path / "clips"
@@ -465,14 +257,11 @@ def _chat_clip_render(tmp_path, monkeypatch, japanese_font, transcript, chat, la
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
+    def fake_captions(transcript, clip, directory, settings, lifts=None):
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
         return {"events": 0, "heading": False, "missing_glyphs": []}
 
-    monkeypatch.setattr(pipeline, "cut_regions", lambda *args: [])
     monkeypatch.setattr(pipeline, "landscape_layout", lambda *args, **kwargs: layout)
     monkeypatch.setattr(pipeline.media, "render", fake_render)
     monkeypatch.setattr(pipeline, "create_captions", fake_captions)
@@ -511,7 +300,6 @@ def test_rerun_returns_a_rendered_clip_without_planning_or_fetching_again(
         "chat": {"ass_sha256": fingerprint(chat["ass"]), "reason": None},
         "layout": {"x": 0.25, "lifts": [0.2, 0.12], "requested": "auto"},
     }
-    monkeypatch.setattr(pipeline, "cut_regions", _forbidden)
     monkeypatch.setattr(pipeline, "landscape_layout", _forbidden)
     monkeypatch.setattr(pipeline.media, "render", _forbidden)
     again = pipeline.render_clip(
@@ -582,7 +370,6 @@ def test_rerun_refuses_another_crop_side_or_caption_floor(
     source, root, _, clip, first = _chat_clip_render(
         tmp_path, monkeypatch, japanese_font, transcript, chat, layout
     )
-    monkeypatch.setattr(pipeline, "cut_regions", _forbidden)
     monkeypatch.setattr(pipeline, "landscape_layout", _forbidden)
     settings = make(aspect="16:9", height=1080, chat_panel=True)
     again = pipeline.render_clip(
@@ -618,7 +405,7 @@ def test_rerun_refuses_another_crop_side_or_caption_floor(
 
 def _plain_clip(tmp_path, monkeypatch, japanese_font, transcript, settings):
     """Renders clip 1 of a 16:9 render without chat; media and captions are synthetic."""
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
     source = tmp_path / "in.mp4"
     source.write_bytes(b"source")
     root = tmp_path / "plain"
@@ -637,14 +424,11 @@ def _plain_clip(tmp_path, monkeypatch, japanese_font, transcript, settings):
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
+    def fake_captions(transcript, clip, directory, settings, lifts=None):
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
         return {"events": 0, "heading": False, "missing_glyphs": []}
 
-    monkeypatch.setattr(pipeline, "cut_regions", lambda *args: [])
     monkeypatch.setattr(pipeline.media, "render", fake_render)
     monkeypatch.setattr(pipeline, "create_captions", fake_captions)
     result = pipeline.render_clip(source, root, 1, clip, transcript, settings, "job")
@@ -689,7 +473,6 @@ def test_old_receipt_without_layout_refuses_a_layout_now_asked_for(
     stored = json.loads(receipt.read_text())
     del stored["render_inputs"]
     receipt.write_text(json.dumps(stored), encoding="utf-8")
-    monkeypatch.setattr(pipeline, "cut_regions", _forbidden)
     monkeypatch.setattr(pipeline.media, "render", _forbidden)
     again = pipeline.render_clip(source, root, 1, clip, transcript, settings, "job")
     assert again["sha256"] == first["sha256"]
@@ -757,7 +540,6 @@ def test_receipt_without_saved_inputs_is_matched_as_before(
     del stored["render_inputs"]
     receipt.write_text(json.dumps(stored), encoding="utf-8")
     # Without saved inputs the clip is planned again; the same plan and chat give the same key.
-    monkeypatch.setattr(pipeline, "cut_regions", lambda *args: [])
     monkeypatch.setattr(pipeline, "landscape_layout", lambda *args, **kwargs: layout)
     monkeypatch.setattr(pipeline.media, "render", _forbidden)
     again = pipeline.render_clip(
@@ -781,9 +563,7 @@ def test_receipt_without_saved_inputs_is_matched_as_before(
 
     monkeypatch.setattr(pipeline.media, "render", plain_render)
 
-    def plain_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
+    def plain_captions(transcript, clip, directory, settings, lifts=None):
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
         return {"events": 0, "heading": False, "missing_glyphs": []}
@@ -800,7 +580,6 @@ def test_receipt_without_saved_inputs_is_matched_as_before(
         json.dumps(stored), encoding="utf-8"
     )
     monkeypatch.setattr(pipeline, "landscape_layout", _forbidden)
-    monkeypatch.setattr(pipeline, "cut_regions", _forbidden)
     again = pipeline.render_clip(source, plain_root, 1, clip, transcript, plain, "job")
     assert again["sha256"] == rendered["sha256"]
 
@@ -808,24 +587,10 @@ def test_receipt_without_saved_inputs_is_matched_as_before(
 # --- models ---------------------------------------------------------------
 
 
-def test_zoom_and_diagram_validate_their_intervals():
-    with pytest.raises(ValidationError):
-        Zoom(start=3, end=2)
-    with pytest.raises(ValidationError):
-        Diagram(kind="table", title="t", start=0, end=1, rows=[["a"], ["b", "c"]])
-    with pytest.raises(ValidationError):
-        Diagram(kind="bars", title="t", start=0, end=1, labels=["a"], values=[])
-    with pytest.raises(ValidationError):
-        Diagram(kind="steps", title="t", start=0, end=1)
-    with pytest.raises(ValidationError):
-        Diagram(kind="table", title="t", start=2, end=1, rows=[["a"]])
-
-
 @pytest.mark.parametrize(
     "update",
     [
         {"layout": "panels"},
-        {"zoom": [Zoom(start=0, end=1)]},
         {"candidates": 1, "clips": 2},
         {"font": "Noto, Sans"},
         {"face_box": (0.9, 0.9, 0.5, 0.5)},
@@ -838,13 +603,6 @@ def test_settings_reject_inconsistent_options(update):
         make(**update)
 
 
-def test_settings_accept_a_consistent_panel_layout():
-    settings = make(
-        layout="panels", face_box=(0.1, 0.1, 0.4, 0.4), game_box=(0, 0, 1, 1)
-    )
-    assert settings.layout == "panels" and math.isclose(settings.face_box[2], 0.4)
-
-
 def test_numbers_with_their_units_never_split_across_lines():
     text = "あいう1,234万円えお"
     # "1,234万円" is 70 px here, so it fits on an 80 px line and must not be broken.
@@ -854,53 +612,10 @@ def test_numbers_with_their_units_never_split_across_lines():
     assert captions.wrap_breaks("1,234万円", FixedWidth(), 60)
 
 
-def test_table_query_adds_a_sourced_table_overlay(tmp_path, monkeypatch, japanese_font):
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
-    found = [
-        {
-            "title": "日本の人口",
-            "rows": [["年", "人口"], ["2020", "1億2千万"], ["2021", "1億2千万"]],
-            "source_url": "https://ja.wikipedia.org/wiki/x",
-            "source_credit": "日本語版Wikipedia「日本の人口」の表 / CC BY-SA 4.0",
-            "license": "CC BY-SA 4.0",
-        }
-    ]
-    monkeypatch.setattr(pipeline.tables, "search", lambda query, limit=3: found)
-    settings = make(table_query="日本の人口")
-    clip = SelectedClip(
-        start=0, end=30, candidate_id="m", title="題", reason="r", confidence=1
-    )
-    visuals, ledger = pipeline.prepare_visuals(clip, settings, tmp_path, 30.0)
-    assert [entry["kind"] for entry in ledger] == ["table"]
-    assert ledger[0]["license"] == "CC BY-SA 4.0"
-    assert (tmp_path / "visuals" / "table-01.png").is_file()
-    overlay = visuals[0]
-    assert overlay["position"] == "center"
-    assert (overlay["start"], overlay["end"]) == (15, 23)
-
-
-def test_no_table_query_means_no_table_search(tmp_path, monkeypatch):
-    def must_not_search(query, limit=3):
-        raise AssertionError("table search runs only when table_query is set")
-
-    monkeypatch.setattr(pipeline.tables, "search", must_not_search)
-    clip = SelectedClip(
-        start=0, end=30, candidate_id="m", title="題", reason="r", confidence=1
-    )
-    assert pipeline.prepare_visuals(clip, make(), tmp_path, 30.0) == ([], [])
-
-
-def test_diagram_values_and_rows_are_validated():
-    with pytest.raises(ValidationError):
-        Diagram(kind="bars", title="t", start=0, end=1, labels=["a"], values=[-1])
-    with pytest.raises(ValidationError):
-        Diagram(kind="table", title="t", start=0, end=1, rows=[[]])
-
-
 def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
     tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
 ):
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
     source = tmp_path / "in.mp4"
     source.write_bytes(b"source")
     root = tmp_path / "out" / "clips"
@@ -923,8 +638,6 @@ def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
         clip,
         settings,
         ass=None,
-        keep=None,
-        visuals=(),
         chat_ass=None,
         crop_x=None,
     ):
@@ -939,9 +652,7 @@ def test_chat_panel_clip_writes_chat_beside_the_video_and_records_diagnostics(
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
+    def fake_captions(transcript, clip, directory, settings, lifts=None):
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
         return {"events": 0, "heading": False, "missing_glyphs": []}
@@ -1116,13 +827,13 @@ def test_standard_layout_raises_a_bug_instead_of_keeping_the_margin(monkeypatch)
 
     monkeypatch.setattr(pipeline, "_auto_layout_window", bug)
     with pytest.raises(TypeError, match="bug in the layout planner"):
-        pipeline.standard_layout("in.mp4", clip, transcript, settings, None)
+        pipeline.standard_layout("in.mp4", clip, transcript, settings)
 
 
 def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
     tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
 ):
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
     source = tmp_path / "in.mp4"
     source.write_bytes(b"source")
     settings = make(aspect="16:9", height=1080, chat_panel=True)
@@ -1145,8 +856,6 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
         clip,
         settings,
         ass=None,
-        keep=None,
-        visuals=(),
         chat_ass=None,
         crop_x=None,
     ):
@@ -1160,9 +869,7 @@ def test_render_clip_records_the_chat_layout_and_keys_the_requested_side(
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
+    def fake_captions(transcript, clip, directory, settings, lifts=None):
         seen.append(lifts)
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))
@@ -1287,7 +994,7 @@ def test_standard_layout_takes_the_crop_of_a_wide_source_and_its_lifts(monkeypat
         }
 
     monkeypatch.setattr(pipeline, "_auto_layout_window", window)
-    layout = pipeline.standard_layout("in.mp4", clip, transcript, settings, None)
+    layout = pipeline.standard_layout("in.mp4", clip, transcript, settings)
     # A 16:9 frame of a 2560 wide source is a centred crop keeping three quarters of its width.
     assert windows == [("center", 0.75)]
     assert layout == {
@@ -1312,7 +1019,7 @@ def test_standard_layout_of_a_16_9_source_keeps_the_whole_picture(monkeypatch):
         lambda source, start, end, events, anchor, keep: windows.append(keep)
         or {"crop": {"x": 0.0}, "lifts": [0.12, 0.12], "bands": [[], []]},
     )
-    layout = pipeline.standard_layout("in.mp4", clip, transcript, settings, None)
+    layout = pipeline.standard_layout("in.mp4", clip, transcript, settings)
     assert windows == [1.0] and layout["anchor"] == "full"
 
 
@@ -1326,7 +1033,7 @@ def test_standard_layout_failure_and_unmodelled_cases_keep_the_base_margin(monke
         raise PipelineError("no video frames in the layout sample window")
 
     monkeypatch.setattr(pipeline, "_auto_layout_window", broken)
-    assert pipeline.standard_layout("in.mp4", clip, transcript, settings, None) == {
+    assert pipeline.standard_layout("in.mp4", clip, transcript, settings) == {
         "anchor": "full",
         "requested": "auto",
         "x": None,
@@ -1334,48 +1041,29 @@ def test_standard_layout_failure_and_unmodelled_cases_keep_the_base_margin(monke
         "static": None,
         "reason": "no video frames in the layout sample window",
     }
-    panels = make(aspect="16:9", height=1080, layout="panels", face_box=(0, 0, 1, 1))
-    assert (
-        pipeline.standard_layout("in.mp4", clip, transcript, panels, None)["reason"]
-        == "panels"
-    )
     off = make(aspect="16:9", height=1080, caption_lift=False)
     assert (
-        pipeline.standard_layout("in.mp4", clip, transcript, off, None)["reason"]
+        pipeline.standard_layout("in.mp4", clip, transcript, off)["reason"]
         == "disabled"
     )
     assert make().caption_lift is True
 
 
-def test_caption_times_map_back_to_the_source_after_silence_cuts():
-    clip = SelectedClip(
-        start=5, end=20, candidate_id="m", title="題", reason="r", confidence=1
-    )
-    keep = [(10.0, 12.0), (20.0, 25.0)]
-    assert pipeline._source_time(1.5, clip, keep) == pytest.approx(11.5)
-    assert pipeline._source_time(2.5, clip, keep) == pytest.approx(20.5)
-    assert pipeline._source_time(1.5, clip, None) == pytest.approx(6.5)
-
-
 def test_landscape_layout_refusals_and_floor_without_lifts(monkeypatch):
     transcript, clip, settings = _standard_clip_case()
     with pytest.raises(PipelineError, match="landscape 16:9"):
-        pipeline.landscape_layout("in.mp4", clip, transcript, make(), None, "auto", 0.2)
+        pipeline.landscape_layout("in.mp4", clip, transcript, make(), "auto", 0.2)
     top = make(aspect="16:9", height=1080, chat_panel=True, chat_panel_fit="top")
     with pytest.raises(PipelineError, match="chat fill"):
-        pipeline.landscape_layout("in.mp4", clip, transcript, top, None, "auto", 0.2)
+        pipeline.landscape_layout("in.mp4", clip, transcript, top, "auto", 0.2)
     assert (
-        pipeline.landscape_layout("in.mp4", clip, transcript, top, None, "auto", None)
-        is None
+        pipeline.landscape_layout("in.mp4", clip, transcript, top, "auto", None) is None
     )
     off = make(aspect="16:9", height=1080, caption_lift=False)
     assert (
-        pipeline.landscape_layout("in.mp4", clip, transcript, off, None, "auto", None)
-        is None
+        pipeline.landscape_layout("in.mp4", clip, transcript, off, "auto", None) is None
     )
-    floored = pipeline.landscape_layout(
-        "in.mp4", clip, transcript, off, None, "auto", 0.2
-    )
+    floored = pipeline.landscape_layout("in.mp4", clip, transcript, off, "auto", 0.2)
     assert floored["lifts"] == [0.2, 0.2]
     assert floored["floor"] == 0.2 and floored["reason"] == "disabled"
 
@@ -1383,7 +1071,7 @@ def test_landscape_layout_refusals_and_floor_without_lifts(monkeypatch):
 def test_render_clip_applies_the_reviewed_caption_floor(
     tmp_path, monkeypatch, japanese_font, transcript, on_target_loudness
 ):
-    monkeypatch.setattr(pipeline.fonts, "resolve", lambda family: japanese_font)
+    monkeypatch.setattr(captions.fonts, "resolve", lambda family: japanese_font)
     source = tmp_path / "in.mp4"
     source.write_bytes(b"source")
     settings = make(aspect="16:9", height=1080)
@@ -1399,8 +1087,6 @@ def test_render_clip_applies_the_reviewed_caption_floor(
         clip,
         settings,
         ass=None,
-        keep=None,
-        visuals=(),
         chat_ass=None,
         crop_x=None,
     ):
@@ -1414,9 +1100,7 @@ def test_render_clip_applies_the_reviewed_caption_floor(
             "audio_sample_rate": 48000,
         }
 
-    def fake_captions(
-        transcript, clip, directory, settings, keep=None, credits=None, lifts=None
-    ):
+    def fake_captions(transcript, clip, directory, settings, lifts=None):
         seen.append(("lifts", lifts))
         pysubs2.SSAFile().save(str(directory / "captions.ass"))
         pysubs2.SSAFile().save(str(directory / "captions.srt"))

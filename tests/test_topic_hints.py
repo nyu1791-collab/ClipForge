@@ -1,14 +1,10 @@
 import math
 import json
-from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
 from clipforge import topic_hints as th
 
-TOOL = Path(__file__).resolve().parents[1] / "tools" / "topic_hints.py"
 SECRET = "秘密の本文マーカーXYZ"
 
 
@@ -22,9 +18,9 @@ def topic(id_, start, end, speech, text="通常の話題です。"):
     }
 
 
-def hint_for(row, duration=1000, terms=None):
+def hint_for(row, duration=1000):
     analysis = {"duration": duration, "topics": [row]}
-    return th.hint_topics(analysis, profanity_terms=terms)["topics"][0]
+    return th.hint_topics(analysis)["topics"][0]
 
 
 def test_edge_start_and_end_positive_and_negative():
@@ -79,13 +75,6 @@ def test_flags_lower_score_and_sort_order():
     rows = th.hint_topics(analysis)["topics"]
     assert [r["id"] for r in rows] == ["plain", "greet"]
     assert rows[0]["score"] > rows[1]["score"]
-
-
-def test_profanity_not_judged_by_default_and_judged_with_terms():
-    text = "禁止語A を含む"
-    assert hint_for(topic("a", 300, 360, 30, text))["profanity"] is None
-    assert hint_for(topic("a", 300, 360, 30, text), terms=["禁止語A"])["profanity"]
-    assert not hint_for(topic("a", 300, 360, 30, text), terms=["別語"])["profanity"]
 
 
 @pytest.mark.parametrize(
@@ -176,7 +165,7 @@ def test_near_duplicate_threshold_is_inclusive():
 def test_output_never_contains_body_text():
     text = SECRET * 3 + "おはよう" * 2 + "はっ" * 10
     analysis = {"duration": 1000, "topics": [topic("a", 0, 60, 30, text)]}
-    result = th.hint_topics(analysis, profanity_terms=[SECRET])
+    result = th.hint_topics(analysis)
     dumped = json.dumps(result, ensure_ascii=False)
     assert SECRET not in dumped
     assert "text" not in result["topics"][0]
@@ -187,51 +176,6 @@ def test_invalid_input_is_rejected_without_echoing_body():
         th.hint_topics({"topics": "nope"})
     with pytest.raises(ValueError):
         th.hint_topics({"topics": [{"id": "a", "start": 1, "end": 2, "text": SECRET}]})
-
-
-def test_cli_outputs_json_without_body(tmp_path):
-    source = tmp_path / "topics.json"
-    analysis = {
-        "duration": 1000,
-        "topics": [
-            topic("topic-001", 0, 60, 30, SECRET + "おはよう" * 2),
-            topic("topic-002", 300, 360, 20, SECRET + "おはよう" * 2),
-        ],
-    }
-    source.write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
-    completed = subprocess.run(
-        [sys.executable, str(TOOL), str(source)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert SECRET not in completed.stdout
-    assert SECRET not in completed.stderr
-    data = json.loads(completed.stdout)
-    assert data["topics"][0]["id"] == "topic-001"
-    assert data["topics"][0]["greeting"] is True
-    assert data["topics"][0]["near_duplicates"] == ["topic-002"]
-    assert data["topics"][0]["max_similarity"] == 1.0
-
-
-def test_cli_profanity_dictionary_and_failure(tmp_path, capsys):
-    source = tmp_path / "topics.json"
-    source.write_text(
-        json.dumps({"duration": 1000, "topics": [topic("a", 0, 60, 30, SECRET)]}),
-        encoding="utf-8",
-    )
-    terms = tmp_path / "terms.txt"
-    terms.write_text(f"\n{SECRET}\n", encoding="utf-8")
-    assert th.main([str(source), "--profanity-dict", str(terms)]) == 0
-    out = capsys.readouterr().out
-    assert SECRET not in out
-    assert json.loads(out)["topics"][0]["profanity"] is True
-
-    broken = tmp_path / "broken.json"
-    broken.write_text("{}", encoding="utf-8")
-    assert th.main([str(broken)]) == 1
-    assert SECRET not in capsys.readouterr().err
 
 
 def volume_series(levels, start=0.0):

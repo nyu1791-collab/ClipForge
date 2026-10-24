@@ -1,9 +1,5 @@
-import json
 import math
-from pathlib import Path
 import shutil
-import subprocess
-import sys
 import wave
 
 import numpy as np
@@ -12,7 +8,6 @@ import pytest
 from clipforge import audio_volume as av
 from clipforge import topic_hints as th
 
-TOOL = Path(__file__).resolve().parents[1] / "tools" / "topic_hints.py"
 RATE = 16000
 
 
@@ -76,7 +71,7 @@ def test_stream_without_samples_reports_no_audio(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is not installed")
-def test_cli_adds_volume_weight_only_when_audio_is_given(tmp_path):
+def test_hints_add_volume_weight_only_when_audio_is_given(tmp_path):
     audio = tmp_path / "audio.wav"
     write_wav(audio, np.concatenate([np.zeros(RATE), tone(1, 0.5), np.zeros(RATE)]))
     analysis = {
@@ -91,26 +86,8 @@ def test_cli_adds_volume_weight_only_when_audio_is_given(tmp_path):
             }
         ],
     }
-    topics = tmp_path / "topics.json"
-    topics.write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
-    plain = subprocess.run(
-        [sys.executable, str(TOOL), str(topics)], capture_output=True, text=True
-    )
-    assert plain.returncode == 0
-    assert "volume_weight" not in json.loads(plain.stdout)
-    with_audio = subprocess.run(
-        [sys.executable, str(TOOL), str(topics), "--audio", str(audio)],
-        capture_output=True,
-        text=True,
-    )
-    assert with_audio.returncode == 0
-    result = json.loads(with_audio.stdout)
+    plain = th.hint_topics(analysis)
+    assert "volume_weight" not in plain
+    result = th.hint_topics(analysis, volume=av.loudness_series(audio))
     assert result["volume_weight"] == th.VOLUME_WEIGHT
     assert result["topics"][0]["volume_bump_db"] is not None
-    bad = subprocess.run(
-        [sys.executable, str(TOOL), str(topics), "--audio", str(topics)],
-        capture_output=True,
-        text=True,
-    )
-    assert bad.returncode == 1
-    assert "invalid input" in bad.stderr

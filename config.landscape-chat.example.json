@@ -19,10 +19,7 @@
   "topics": true,
   "topic_min_seconds": 25,
   "topic_max_seconds": 180,
-  "image_search": false,
-  "table_query": null,
   "quality_gate": "strict",
   "chat_panel": true,
-  "chat_panel_fit": "fill",
-  "silence_cut": false
+  "chat_panel_fit": "fill"
 }

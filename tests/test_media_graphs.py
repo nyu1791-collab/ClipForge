@@ -5,11 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from clipforge import hardware, media
-from clipforge.models import SelectedClip, Settings, Zoom
+from clipforge.models import SelectedClip, Settings
 from clipforge.storage import PipelineError
 
 CLIP = SimpleNamespace(start=10.0, end=20.0)
-KEEP = [(10.0, 12.0), (13.0, 20.0)]
 
 
 def make(**overrides):
@@ -45,37 +44,7 @@ def test_default_height_is_the_standard_size_for_each_aspect():
         make(aspect="16:9", height=1920)
 
 
-def test_crop_expression_uses_normalized_box():
-    assert media._box((0.1, 0.2, 0.5, 0.25)) == (
-        "crop=iw*0.500000:ih*0.250000:iw*0.100000:ih*0.200000"
-    )
-
-
-def test_timelines_join_kept_regions_only_when_cut():
-    assert media._video_timeline(CLIP, None) == "[0:V:0]setpts=PTS-STARTPTS[vin]"
-    assert media._audio_timeline(CLIP, None) == "[0:a:0]asetpts=PTS-STARTPTS[ain]"
-    video = media._video_timeline(CLIP, KEEP)
-    assert "trim=start=0.000000:end=2.000000" in video
-    assert "trim=start=3.000000:end=10.000000" in video
-    assert video.endswith("concat=n=2:v=1:a=0[vin]")
-    assert media._audio_timeline(CLIP, KEEP).endswith("concat=n=2:v=0:a=1[ain]")
-
-
-def test_each_kept_audio_piece_fades_at_both_ends_to_hide_splices():
-    audio = media._audio_timeline(CLIP, KEEP)
-    # First piece is 2 s long, second is 7 s; both use the full splice fade.
-    assert "atrim=start=0.000000:end=2.000000,asetpts=PTS-STARTPTS," in audio
-    assert "afade=t=in:st=0:d=0.015,afade=t=out:st=1.985:d=0.015[ak0]" in audio
-    assert "afade=t=in:st=0:d=0.015,afade=t=out:st=6.985:d=0.015[ak1]" in audio
-
-
-def test_a_very_short_kept_piece_fades_by_at_most_half_its_length():
-    audio = media._audio_timeline(CLIP, [(10.0, 10.02)])
-    assert "afade=t=in:st=0:d=0.010,afade=t=out:st=0.010:d=0.010[ak0]" in audio
-
-
 def test_layouts_end_with_the_requested_label():
-    box = (0.0, 0.0, 1.0, 1.0)
     fit = media._layout(make(framing="fit", layout="fit"), 404, 720, "vin", "out")
     assert "pad=404:720" in fit and fit.endswith("[out]")
     crop = media._layout(
@@ -86,113 +55,28 @@ def test_layouts_end_with_the_requested_label():
     assert (
         "boxblur=8:2" in blur and "split=2[bgs][fgs]" in blur and blur.endswith("[out]")
     )
-    panels = media._layout(
-        make(layout="panels", face_box=(0.3, 0.1, 0.4, 0.4), game_box=box),
-        404,
-        720,
-        "vin",
-        "out",
-    )
-    assert "vstack=inputs=2" in panels and panels.endswith("[out]")
 
 
-def test_overlay_positions_cover_each_named_place():
-    assert (
-        media._position("right", 10, 100) == "main_w-overlay_w-10:(main_h-overlay_h)/2"
-    )
-    assert media._position("top", 10, 100) == "(main_w-overlay_w)/2:100"
-    assert (
-        media._position("center", 10, 100)
-        == "(main_w-overlay_w)/2:(main_h-overlay_h)/2"
-    )
-    assert (
-        media._position("bottom", 10, 100) == "(main_w-overlay_w)/2:main_h-overlay_h-10"
-    )
-
-
-def test_video_graph_chains_zoom_visuals_fade_progress_and_captions():
-    settings = make(
-        face_box=(0.1, 0.1, 0.5, 0.5),
-        zoom=[Zoom(start=1, end=3, scale=1.5)],
-        heading=True,
-        progress_bar=True,
-        fade_seconds=0.5,
-    )
-    visuals = [
-        {"file": "v.png", "start": 1, "end": 4, "position": "top", "max_fraction": 0.5}
-    ]
-    graph = media._video_graph(
-        CLIP, settings, 404, 720, None, 10.0, visuals, "captions.ass"
-    )
-    top = round(720 * 0.14)  # below the heading when one is shown
-    assert "split=2[b0][b1]" in graph
-    assert "enable='between(t,1.000,3.000)'" in graph
-    assert "[1:v]format=rgba" in graph
-    assert f"overlay=(main_w-overlay_w)/2:{top}" in graph
+def test_video_graph_chains_fade_progress_and_captions():
+    settings = make(progress_bar=True, fade_seconds=0.5)
+    graph = media._video_graph(CLIP, settings, 404, 720, 10.0, "captions.ass")
     assert "fade=t=in:st=0:d=0.500" in graph
-    # The overlay itself fades in at its start and out before its end (alpha only).
-    assert "fade=t=in:st=1.000:d=0.500:alpha=1" in graph
-    assert "fade=t=out:st=3.500:d=0.500:alpha=1" in graph
-    assert "color=c=black@0:s=404x8:r=30:d=10.000000" in graph
+    assert "fade=t=out:st=9.500:d=0.500" in graph
+    assert "color=c=black@0:s=404x8" in graph
     assert "overlay=0:712:shortest=1[pb]" in graph
-    assert graph.endswith("ass=filename=captions.ass[vout]")
-
-
-def test_short_overlays_fade_by_at_most_half_their_length():
-    visuals = [
-        {
-            "file": "v.png",
-            "start": 2,
-            "end": 2.4,
-            "position": "center",
-            "max_fraction": 0.5,
-        }
-    ]
-    graph = media._video_graph(
-        CLIP,
-        make(fade_seconds=0.5, progress_bar=False),
-        404,
-        720,
-        None,
-        10.0,
-        visuals,
-        None,
-    )
-    assert "fade=t=in:st=2.000:d=0.200:alpha=1" in graph
-    assert "fade=t=out:st=2.200:d=0.200:alpha=1" in graph
-    still = media._video_graph(
-        CLIP,
-        make(fade_seconds=0, progress_bar=False),
-        404,
-        720,
-        None,
-        10.0,
-        visuals,
-        None,
-    )
-    assert "alpha=1" not in still
+    assert graph.endswith("[pb]ass=filename=captions.ass[vout]")
 
 
 def test_plain_video_graph_has_no_optional_stages():
     settings = make(progress_bar=False, fade_seconds=0, layout="fit")
-    graph = media._video_graph(CLIP, settings, 404, 720, None, 10.0, [], None)
+    graph = media._video_graph(CLIP, settings, 404, 720, 10.0, None)
     assert "split=" not in graph and "fade=" not in graph and "geq=" not in graph
     assert graph.endswith("null[vout]")
 
 
-def test_extra_inputs_are_the_overlay_images_in_order():
-    args = media._extra_inputs(
-        10.0, [{"file": "/local/a.png"}, {"file": "/local/b.png"}]
-    )
-    inputs = [args[i + 1] for i, value in enumerate(args) if value == "-i"]
-    assert inputs == ["/local/a.png", "/local/b.png"]
-    # Every extra input gets the same local-only protocol whitelist as the source.
-    assert args.count("-protocol_whitelist") == len(inputs)
-
-
 def test_audio_graph_is_the_narration_on_the_clip_clock():
-    graph = media._audio_graph(CLIP, KEEP)
-    assert graph.endswith(";[ain]anull[mix]")
+    graph = media._audio_graph()
+    assert graph == "[0:a:0]asetpts=PTS-STARTPTS[mix]"
     assert "amix" not in graph and "anullsrc" not in graph
 
 
@@ -247,7 +131,7 @@ def test_measure_loudness_parses_the_first_pass_json(monkeypatch):
         return subprocess.CompletedProcess(command, 0, "", stderr)
 
     monkeypatch.setattr(media.subprocess, "run", fake)
-    values = media.measure_loudness("/in.mp4", CLIP, make(encode_threads=6), KEEP, 8.0)
+    values = media.measure_loudness("/in.mp4", CLIP, make(encode_threads=6), 8.0)
     assert values["input_i"] == -20.5 and values["target_offset"] == 0.25
     assert "-n" in seen["command"]
     assert seen["command"][-3:] == ["-f", "null", "-"]
@@ -264,7 +148,7 @@ def test_measure_loudness_parses_the_first_pass_json(monkeypatch):
 def test_measure_loudness_rejects_failed_or_unusable_output(monkeypatch, result):
     monkeypatch.setattr(media.subprocess, "run", lambda command, **kwargs: result)
     with pytest.raises(PipelineError, match="loudness measurement"):
-        media.measure_loudness("/in.mp4", CLIP, make(), None, 10.0)
+        media.measure_loudness("/in.mp4", CLIP, make(), 10.0)
 
 
 def test_silent_audio_falls_back_to_a_single_loudness_pass(monkeypatch):
@@ -277,7 +161,7 @@ def test_silent_audio_falls_back_to_a_single_loudness_pass(monkeypatch):
         "run",
         lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", silent),
     )
-    assert media.measure_loudness("/in.mp4", CLIP, make(), None, 10.0) is None
+    assert media.measure_loudness("/in.mp4", CLIP, make(), 10.0) is None
 
 
 def test_preview_removes_stale_output_and_reports_decoding_errors(
@@ -397,60 +281,6 @@ def test_preview_passes_render_thread_budget_to_ffmpeg(monkeypatch, tmp_path, pr
             assert command[i + 1] == "6"
 
 
-@pytest.mark.parametrize(
-    ("settings_update", "message"),
-    [
-        (
-            {"face_box": (0.1, 0.1, 0.5, 0.5), "zoom": [Zoom(start=1, end=50)]},
-            "zoom interval",
-        ),
-    ],
-)
-def test_render_refuses_inputs_outside_the_clip_or_missing(
-    tmp_path, probed, settings_update, message
-):
-    settings = make(**settings_update)
-    with pytest.raises(PipelineError, match=message):
-        media.render("/in.mp4", tmp_path / "out.mp4", clip_for_render(), settings)
-
-
-def test_render_refuses_visuals_outside_the_clip_or_missing(tmp_path, probed):
-    late = [
-        {
-            "file": __file__,
-            "start": 1,
-            "end": 50,
-            "position": "right",
-            "max_fraction": 0.4,
-        }
-    ]
-    with pytest.raises(PipelineError, match="visual interval"):
-        media.render(
-            "/in.mp4", tmp_path / "out.mp4", clip_for_render(), make(), visuals=late
-        )
-    absent = [
-        {
-            "file": "/nope.png",
-            "start": 0,
-            "end": 1,
-            "position": "right",
-            "max_fraction": 0.4,
-        }
-    ]
-    with pytest.raises(PipelineError, match="visual file is missing"):
-        media.render(
-            "/in.mp4", tmp_path / "out.mp4", clip_for_render(), make(), visuals=absent
-        )
-
-
-def test_render_refuses_silence_cuts_with_too_many_regions(tmp_path, probed):
-    keep = [(10 + i * 0.15, 10 + i * 0.15 + 0.1) for i in range(61)]
-    with pytest.raises(PipelineError, match="too many regions"):
-        media.render(
-            "/in.mp4", tmp_path / "out.mp4", clip_for_render(), make(), keep=keep
-        )
-
-
 CHAT_PANEL = {
     "chat_panel": True,
     "aspect": "16:9",
@@ -461,9 +291,7 @@ CHAT_PANEL = {
 
 def test_video_graph_without_the_chat_panel_is_unchanged():
     settings = make(progress_bar=False, fade_seconds=0, layout="fit")
-    assert media._video_graph(
-        CLIP, settings, 404, 720, None, 10.0, [], "captions.ass"
-    ) == (
+    assert media._video_graph(CLIP, settings, 404, 720, 10.0, "captions.ass") == (
         "[0:V:0]setpts=PTS-STARTPTS[vin];"
         "[vin]scale=404:720:force_original_aspect_ratio=decrease:force_divisible_by=2,"
         "pad=404:720:(ow-iw)/2:(oh-ih)/2,setsar=1[lay0];"
@@ -476,7 +304,7 @@ def test_chat_panel_crops_the_video_left_of_the_column_and_pads_the_right():
         **CHAT_PANEL, chat_panel_fit="crop", progress_bar=False, fade_seconds=0
     )
     graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+        CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
     )
     assert (
         "[vin]scale=1440:1080:force_original_aspect_ratio=increase:"
@@ -493,9 +321,7 @@ def test_chat_panel_letterbox_shrinks_the_video_between_bands():
     settings = make(
         **CHAT_PANEL, chat_panel_fit="letterbox", progress_bar=False, fade_seconds=0
     )
-    graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, [], None, "chat.ass"
-    )
+    graph = media._video_graph(CLIP, settings, 1920, 1080, 10.0, None, "chat.ass")
     assert (
         "[vin]scale=1440:1080:force_original_aspect_ratio=decrease:"
         "force_divisible_by=2,pad=1440:1080:(ow-iw)/2:(oh-ih)/2:color=0x111114,setsar=1[lay0]"
@@ -507,33 +333,14 @@ def test_chat_panel_letterbox_shrinks_the_video_between_bands():
     )
 
 
-def test_chat_panel_overlays_and_progress_use_the_video_area():
-    settings = make(
-        **CHAT_PANEL,
-        chat_panel_fit="crop",
-        face_box=(0.1, 0.1, 0.5, 0.5),
-        zoom=[Zoom(start=1, end=3, scale=1.5)],
-        fade_seconds=0,
-    )
-    visuals = [
-        {
-            "file": "v.png",
-            "start": 1,
-            "end": 4,
-            "position": "right",
-            "max_fraction": 0.5,
-        }
-    ]
+def test_chat_panel_progress_use_the_video_area():
+    settings = make(**CHAT_PANEL, fade_seconds=0)
     graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, visuals, "captions.ass", "chat.ass"
+        CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
     )
-    # Zoomed face and the visual are sized to the 1440 px area; the visual sits at its right.
-    assert "scale=w='min(1440,trunc(iw*486/ih/2)*2)':h=486" in graph
-    assert "scale=w='min(iw,720)':h=-2" in graph
-    assert "overlay=main_w-overlay_w-43:(main_h-overlay_h)/2" in graph
     assert "color=c=black@0:s=1440x8:r=30:d=10.000000" in graph
-    assert r"lte(X\,1440*T/10.000000)" in graph
     assert "overlay=0:1072:shortest=1[pb]" in graph
+    assert "ass=filename=captions.ass,ass=filename=chat.ass" in graph
 
 
 TOP = {**CHAT_PANEL, "chat_panel_fit": "top"}
@@ -542,7 +349,7 @@ TOP = {**CHAT_PANEL, "chat_panel_fit": "top"}
 def test_chat_panel_top_puts_the_picture_above_a_caption_band():
     settings = make(**TOP, progress_bar=False, fade_seconds=0)
     graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+        CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
     )
     # The 16:9 picture is 1440x810 at the top left; the band under it has the column colour.
     assert (
@@ -557,61 +364,20 @@ def test_chat_panel_top_puts_the_picture_above_a_caption_band():
     )
 
 
-def test_chat_panel_top_overlays_and_progress_use_the_picture():
-    settings = make(
-        **TOP,
-        face_box=(0.1, 0.1, 0.5, 0.5),
-        zoom=[Zoom(start=1, end=3, scale=1.5)],
-        fade_seconds=0,
-    )
-    visuals = [
-        {
-            "file": "v.png",
-            "start": 1,
-            "end": 4,
-            "position": "right",
-            "max_fraction": 0.5,
-        }
-    ]
+def test_chat_panel_top_progress_use_the_picture():
+    settings = make(**TOP, fade_seconds=0)
     graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, visuals, "captions.ass", "chat.ass"
+        CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
     )
-    # Zoom, visual and progress are sized to the 1440x810 picture, not the 1080 frame.
-    assert "scale=w='min(1440,trunc(iw*364/ih/2)*2)':h=364" in graph
-    assert "scale=w='min(iw,720)':h=-2" in graph
-    assert "overlay=main_w-overlay_w-32:(main_h-overlay_h)/2" in graph
     assert "color=c=black@0:s=1440x8:r=30:d=10.000000" in graph
     assert "overlay=0:802:shortest=1[pb]" in graph
-    heading = media._video_graph(
-        CLIP,
-        make(**TOP, heading=True, fade_seconds=0),
-        1920,
-        1080,
-        None,
-        10.0,
-        [{**visuals[0], "position": "top"}],
-        "captions.ass",
-    )
-    # With a heading the top overlay starts below it, at 14 percent of the picture height.
-    assert "overlay=(main_w-overlay_w)/2:113:" in heading
-    larger = media._video_graph(
-        CLIP,
-        make(**TOP, heading=True, heading_scale=1.4, fade_seconds=0),
-        1920,
-        1080,
-        None,
-        10.0,
-        [{**visuals[0], "position": "top"}],
-        "captions.ass",
-    )
-    # A larger heading pushes the top overlay down with it.
-    assert "overlay=(main_w-overlay_w)/2:136:" in larger
+    assert "ass=filename=captions.ass,ass=filename=chat.ass" in graph
 
 
 def test_chat_panel_top_scales_the_picture_with_the_column_width():
     settings = make(**{**TOP, "chat_panel_width": 400}, fade_seconds=0)
     graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+        CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
     )
     # The video area is 1520 px wide; its 16:9 picture is 856 px high (855 rounded to even).
     assert "[vin]scale=1520:856:" in graph
@@ -704,7 +470,7 @@ FILL = {**CHAT_PANEL, "chat_panel_fit": "fill"}
 def test_chat_panel_fill_scales_the_picture_to_the_area_and_centres_the_crop():
     settings = make(**FILL, progress_bar=False, fade_seconds=0)
     graph = media._video_graph(
-        CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+        CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
     )
     # The picture is scaled to the frame height and cut to the 1440 px area, centred.
     assert (
@@ -727,9 +493,7 @@ def test_chat_panel_fill_crops_from_the_planned_x_fraction():
         settings,
         1920,
         1080,
-        None,
         10.0,
-        [],
         "captions.ass",
         "chat.ass",
         crop_x=0.1,
@@ -741,7 +505,7 @@ def test_chat_panel_fill_accepts_the_whole_range_of_crop_positions():
     settings = make(**FILL, progress_bar=False, fade_seconds=0)
     for crop_x in (0.0, 0.25):
         media._video_graph(
-            CLIP, settings, 1920, 1080, None, 10.0, [], None, "chat.ass", crop_x=crop_x
+            CLIP, settings, 1920, 1080, 10.0, None, "chat.ass", crop_x=crop_x
         )
     for crop_x in (-0.01, 0.26, 1.0):
         with pytest.raises(PipelineError, match="crop position is outside"):
@@ -750,9 +514,7 @@ def test_chat_panel_fill_accepts_the_whole_range_of_crop_positions():
                 settings,
                 1920,
                 1080,
-                None,
                 10.0,
-                [],
                 None,
                 "chat.ass",
                 crop_x=crop_x,
@@ -763,16 +525,14 @@ def test_crop_position_does_not_change_the_other_chat_fits():
     for fit in ("crop", "letterbox", "top"):
         settings = make(**{**CHAT_PANEL, "chat_panel_fit": fit}, progress_bar=False)
         plain = media._video_graph(
-            CLIP, settings, 1920, 1080, None, 10.0, [], "captions.ass", "chat.ass"
+            CLIP, settings, 1920, 1080, 10.0, "captions.ass", "chat.ass"
         )
         moved = media._video_graph(
             CLIP,
             settings,
             1920,
             1080,
-            None,
             10.0,
-            [],
             "captions.ass",
             "chat.ass",
             crop_x=0.1,

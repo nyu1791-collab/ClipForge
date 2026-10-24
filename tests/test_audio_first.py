@@ -335,16 +335,12 @@ def test_changed_preview_blocks_all_high_quality_fetch(audio_job):
     assert "1080p" not in [e[0] for e in events]
 
 
-@pytest.mark.parametrize("silence_cut", [False, True])
-def test_render_aligns_segment_clip_word_clock_and_keep(
-    audio_job, monkeypatch, silence_cut
-):
+def test_render_aligns_segment_clip_and_word_clock(audio_job, monkeypatch):
     from clipforge import captions
     from clipforge.models import SelectedClip
 
     vod, root, settings, _, _ = audio_job
     review = reviewed_intervals(audio_job)
-    settings.silence_cut = silence_cut
     clip = SelectedClip(
         start=12.5,
         end=20,
@@ -382,9 +378,7 @@ def test_render_aligns_segment_clip_word_clock_and_keep(
         segment = shifted.segments[0]
         assert (segment.start, segment.end) == (2.5, 10.0)
         assert (segment.words[0].start, segment.words[0].end) == (2.5, 10.0)
-        keep = pipeline.cut_regions(source, shifted, local, settings)
-        assert keep == ([(2.5, 10.0)] if silence_cut else None)
-        tokens, _ = captions.collect_tokens(shifted, local, keep)
+        tokens, _ = captions.collect_tokens(shifted, local)
         assert tokens[0][0] == 0.0
         assert tokens[-1][1] == 7.5
         observed.append(source)

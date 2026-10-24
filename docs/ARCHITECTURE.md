@@ -21,7 +21,6 @@ flowchart TD
   - 段階：`audio_first.py`（話題の割り当て・プレビュー・描画）・`worker_audio.py`（非公開 worker での段階の実行と結合）・`audio_inputs.py`（検証済み音声の再利用）
   - 話題：`topics.py`・`topic_hints.py`・`review_draft.py`・`chat_activity.py`・`audio_volume.py`
   - 描画：`pipeline.py`（1クリップの描画）・`media.py`（ffmpeg）・`captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`auto_layout.py`・`kick_chat.py`・`fonts.py`・`quality.py`・`landscape.py`
-  - 重ね絵：`assets.py`・`diagrams.py`・`tables.py`・`thumbnail.py`・`silence.py`
   - 共通：`models.py`（設定と時刻の型）・`storage.py`（保存・ハッシュ）・`hardware.py`・`github_cli.py`
 - `tools/`
   - 制御VM：`submit_job.py`（解析の投入・回収）・`submit_audio_stage.py`（描画の投入・結合）・`run_timings.py`・`check_worker_workflows.py`・`configure_colab_oauth.py`

@@ -23,8 +23,6 @@
   "topics": true,
   "topic_min_seconds": 120,
   "topic_max_seconds": 1800,
-  "image_search": false,
-  "table_query": null,
   "quality_gate": "strict",
   "chat_panel": false
 }

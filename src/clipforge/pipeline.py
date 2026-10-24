@@ -5,12 +5,7 @@ from pathlib import Path
 import tempfile
 import time
 
-
-from . import (
-    media,
-    quality,
-    silence,
-)
+from . import media, quality
 from .captions import (
     FILL_BOTTOM_SHARE,
     create as create_captions,
@@ -59,20 +54,6 @@ def valid_receipt(target, saved, render_key):
         (target / name).is_file() and digest(target / name) == expected
         for name, expected in hashes.items()
     )
-
-
-def cut_regions(source, transcript, clip, settings):
-    """Original-time intervals to keep when silence cutting is enabled, else None."""
-    if not settings.silence_cut:
-        return None
-    if settings.vad == "transcript":
-        spans = silence.transcript_spans(transcript, clip.start, clip.end)
-    else:
-        spans = silence.silero_spans(source, clip.start, clip.end)
-    regions = silence.keep_regions(
-        spans, clip.start, clip.end, settings.silence_pad, settings.silence_min_gap
-    )
-    return regions or None
 
 
 # Crop sides a reviewer may request for a chat render; "auto" lets auto_layout choose.
@@ -149,24 +130,11 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
         }
 
 
-def _source_time(moment, clip, keep):
-    """Source-file seconds of a caption time on the output timeline (after silence cuts, if any)."""
-    if not keep:
-        return clip.start + moment
-    elapsed = 0.0
-    for start, end in keep:
-        if moment <= elapsed + (end - start):
-            return start + max(0.0, moment - elapsed)
-        elapsed += end - start
-    return keep[-1][1]
-
-
-def standard_layout(source, clip, transcript, settings, keep):
+def standard_layout(source, clip, transcript, settings):
     """Caption lifts for a 16:9 render without the chat column, from the source picture.
 
     The window is the whole picture, or the centred crop of a source wider than 16:9 when framing
-    is center-crop. The panels layout stacks two boxes, so its picture is not the source's: it
-    keeps the base margin (reason "panels"). A failed analysis also keeps the base margin.
+    is center-crop. A failed analysis keeps the base margin.
     """
     base = {
         "anchor": "full",
@@ -176,8 +144,6 @@ def standard_layout(source, clip, transcript, settings, keep):
         "static": None,
         "reason": None,
     }
-    if settings.layout == "panels":
-        return {**base, "reason": "panels"}
     if not settings.caption_lift:
         return {**base, "reason": "disabled"}
     try:
@@ -190,8 +156,8 @@ def standard_layout(source, clip, transcript, settings, keep):
                 1.0, frame_width * info["height"] / (frame_height * info["width"])
             )
         events = [
-            (_source_time(start, clip, keep), _source_time(end, clip, keep))
-            for start, end in caption_spans(transcript, clip, settings, keep)
+            (clip.start + start, clip.start + end)
+            for start, end in caption_spans(transcript, clip, settings)
         ]
         plan = _auto_layout_window(
             source, clip.start, clip.end, events, "center", share
@@ -221,9 +187,7 @@ def _with_floor(layout, count, floor):
     return {**layout, "lifts": auto_layout.apply_floor(lifts, floor), "floor": floor}
 
 
-def landscape_layout(
-    source, clip, transcript, settings, keep, crop_anchor, caption_floor
-):
+def landscape_layout(source, clip, transcript, settings, crop_anchor, caption_floor):
     """The caption layout of a 16:9 render, or None when the render has none.
 
     With the chat panel's fill fit the layout is chat_layout's (crop and lifts); the other chat fits
@@ -244,12 +208,12 @@ def landscape_layout(
             return None
         layout = chat_layout(source, clip, transcript, settings, crop_anchor)
     elif settings.caption_lift or caption_floor is not None:
-        layout = standard_layout(source, clip, transcript, settings, keep)
+        layout = standard_layout(source, clip, transcript, settings)
     else:
         return None
     if caption_floor is None:
         return layout
-    count = len(caption_spans(transcript, clip, settings, keep))
+    count = len(caption_spans(transcript, clip, settings))
     return _with_floor(layout, count, caption_floor)
 
 
@@ -411,11 +375,10 @@ def render_clip(
     if settings.chat_panel and chat is None:
         raise PipelineError("chat panel needs a Kick VOD URL source")
     timings = {}
-    keep = timed(timings, "silence", cut_regions, source, transcript, clip, settings)
     # The layout (chat crop and lifts, or caption lifts) is planned before the render key, so a
     # different plan is a different render.
     layout = landscape_layout(
-        source, clip, transcript, settings, keep, crop_anchor, caption_floor
+        source, clip, transcript, settings, crop_anchor, caption_floor
     )
     chat_inputs = _chat_inputs(chat) if settings.chat_panel else None
     layout_inputs = _layout_inputs(layout)
@@ -435,7 +398,6 @@ def render_clip(
                 clip,
                 directory,
                 settings,
-                keep,
                 lifts=layout["lifts"] if layout else None,
             ),
         )
@@ -448,7 +410,6 @@ def render_clip(
                 clip,
                 settings,
                 ass=directory / "captions.ass",
-                keep=keep,
                 **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
                 # Only the chat fill crops by position; standard layouts keep the framing setting.
                 **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
@@ -480,7 +441,6 @@ def render_clip(
             "media": info,
             "captions": caption,
             "quality": report,
-            "keep": keep,
             "sha256": {n: digest(directory / n) for n in names},
             # The inputs the key was built from; a rerun rebuilds the key from them.
             "render_inputs": {"chat": chat_inputs, "layout": layout_inputs},

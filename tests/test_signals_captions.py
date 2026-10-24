@@ -66,8 +66,7 @@ def test_empty_captions_valid(tmp_path, settings):
     }
 
 
-@pytest.mark.parametrize("keep", [None, [(10, 12), (15, 20)]])
-def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings, keep):
+def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings):
     words = [
         Word(start=15 + i * 0.5, end=15.5 + i * 0.5, text="うん") for i in range(4)
     ]
@@ -89,12 +88,10 @@ def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings, kee
     clip = SelectedClip(
         start=10, end=20, candidate_id="manual", title="t", reason="r", confidence=1
     )
-    result = captions.create(transcript, clip, tmp_path, settings, keep=keep)
+    result = captions.create(transcript, clip, tmp_path, settings)
     srt = pysubs2.load(str(tmp_path / "captions.srt"))
     assert [event.plaintext for event in srt] == ["うんうん", "続き"]
-    assert [event.start for event in srt] == (
-        [5000, 8000] if keep is None else [2000, 5000]
-    )
+    assert [event.start for event in srt] == [5000, 8000]
     assert result["asr_cleanup"] == {
         "repetitions": 2,
         "boilerplate_segments": 1,
@@ -469,12 +466,11 @@ def test_chat_panel_moves_caption_margins_into_the_video_area(tmp_path, settings
                 "chat_panel_fit": "crop",
             }
         )
-        captions.create(transcript, clip, directory, chat, credits=["作者 / CC0"])
+        captions.create(transcript, clip, directory, chat)
         subtitles = pysubs2.load(str(directory / "captions.ass"))
         column = 480 if chat_panel else 0
         assert subtitles.styles["Default"].marginl == margin
         assert subtitles.styles["Default"].marginr == margin + column
-        assert subtitles.styles["Credit"].marginr == margin + column
         limit = 9 if chat_panel else 13
         for event in subtitles:
             for line in event.plaintext.splitlines():
@@ -538,7 +534,7 @@ def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
         }
     )
     assert chat.chat_panel_fit == "top" and chat.caption_line_chars() == 18
-    captions.create(transcript, clip, tmp_path, chat, credits=["作者 / CC0"])
+    captions.create(transcript, clip, tmp_path, chat)
     subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
     style = subtitles.styles["Default"]
     assert style.fontsize == 72
@@ -547,7 +543,6 @@ def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
     assert style.marginl == captions.margin_px(1080)
     assert style.marginr == captions.margin_px(1080) + 480
     # The credit stays on the picture: its bottom edge is 16 px above the picture's bottom.
-    assert subtitles.styles["Credit"].marginv == 270 + 16
     for event in subtitles:
         for line in event.plaintext.splitlines():
             assert len(line) <= 18

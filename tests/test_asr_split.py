@@ -479,3 +479,33 @@ def test_a_failed_runtime_is_retried_once_only_after_a_confirmed_release(
         with pytest.raises(PipelineError, match="ASR failed"):
             split_asr_job.run(args)
         assert not any(name.endswith("retry1") for _, name, _ in calls)
+
+
+def test_merge_clips_rounding_overrun_to_each_part_boundary(tmp_path, monkeypatch):
+    _, plan = prepare(tmp_path, monkeypatch, speech(8), 2)
+    first, second = (child["asr_part"] for child in plan["parts"])
+    boundary = first["end"]
+    merged = asr_split.merge(
+        [
+            (first, part_transcript([(boundary - 0.1, boundary + 0.2, "前")])),
+            (second, part_transcript([(0, 0.1, "後")])),
+        ],
+        8,
+    )
+    left, right = merged["segments"]
+    assert left["end"] == boundary == right["start"]
+    assert left["words"][-1]["end"] == boundary
+
+
+def test_merge_refuses_different_split_keys(tmp_path, monkeypatch):
+    _, plan = prepare(tmp_path, monkeypatch, speech(8), 2)
+    first, second = (dict(child["asr_part"]) for child in plan["parts"])
+    second["split_key"] = "f" * 64
+    with pytest.raises(PipelineError, match="same source"):
+        asr_split.merge(
+            [
+                (first, part_transcript([(0, 1, "前")])),
+                (second, part_transcript([(0, 1, "後")])),
+            ],
+            8,
+        )

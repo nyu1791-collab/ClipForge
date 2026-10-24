@@ -3,8 +3,8 @@ from itertools import pairwise
 
 import pytest
 
-from clipforge import fonts, silence, topics
-from clipforge.models import Segment, Transcript, Word
+from clipforge import fonts, topics
+from clipforge.models import Segment, Transcript
 from clipforge.storage import PipelineError
 
 
@@ -65,44 +65,6 @@ def test_boundary_strengths_are_higher_for_longer_pauses():
     )
     assert [index for index, _, _, _ in strengths] == [0, 1]
     assert strengths[1][2] > strengths[0][2]
-
-
-def test_silence_spans_use_words_and_clip_to_the_interval():
-    transcript = Transcript(
-        language="ja",
-        segments=[
-            Segment(
-                start=0,
-                end=6,
-                text="語",
-                words=[
-                    Word(start=0, end=2, text="語"),
-                    Word(start=4, end=6, text="句"),
-                ],
-            ),
-            Segment(start=8, end=9, text="外", words=[]),
-            Segment(start=20, end=21, text="遠い", words=[]),
-        ],
-    )
-    assert silence.transcript_spans(transcript, 1, 8.5) == [(1, 2), (4, 6), (8, 8.5)]
-
-
-def test_keep_regions_cut_only_long_pauses_and_pad_speech():
-    spans = [(0, 2), (2.3, 4), (6, 8)]
-    keep = silence.keep_regions(spans, 0, 10, pad=0.1, min_gap=0.5)
-    # The 2.0 -> 6.0 pause is cut; the 0.3 s pause between the first two runs is kept.
-    assert keep == [(0.0, 4.1), (5.9, 8.1)]
-
-
-def test_keep_regions_clamp_to_the_interval_and_drop_slivers():
-    assert silence.keep_regions([(5.0, 5.01)], 5, 9, pad=0, min_gap=0.4) == []
-    assert silence.keep_regions([(0, 1)], 0.5, 3, pad=1, min_gap=0.4) == [(0.5, 2.0)]
-
-
-def test_interval_pieces_split_where_cuts_remove_audio():
-    keep = [(0.0, 4.0), (6.0, 10.0)]
-    assert silence.pieces(3.0, 7.0, keep) == [(3.0, 4.0, 0), (4.0, 5.0, 1)]
-    assert silence.pieces(4.5, 5.5, keep) == []
 
 
 def test_font_resolution_refuses_a_missing_family():

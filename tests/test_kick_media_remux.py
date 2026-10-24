@@ -13,8 +13,7 @@ from clipforge.storage import process
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("silence_cut", [False, True])
-def test_synthetic_ts_remux_and_final_cut(tmp_path, monkeypatch, settings, silence_cut):
+def test_synthetic_ts_remux_and_final_cut(tmp_path, monkeypatch, settings):
     if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
         pytest.skip("FFmpeg is required for the synthetic TS regression")
     process(
@@ -145,9 +144,6 @@ def test_synthetic_ts_remux_and_final_cut(tmp_path, monkeypatch, settings, silen
     settings.font = "DejaVu Sans"
     settings.encode_threads = 1
     settings.video_encoder = "libx264"
-    settings.silence_cut = silence_cut
-    settings.silence_pad = 0.0
-    settings.silence_min_gap = 0.0
     settings.fade_seconds = 0.0
     settings.progress_bar = False
     settings.quality_gate = "report"
@@ -156,36 +152,36 @@ def test_synthetic_ts_remux_and_final_cut(tmp_path, monkeypatch, settings, silen
     output = tmp_path / "clips"
     output.mkdir()
     row = pipeline.render_clip(target, output, 1, local, shifted, settings, "synthetic")
-    expected_duration = 2.0 if silence_cut else requested_end - requested_start
+    expected_duration = requested_end - requested_start
     assert row["media"]["duration"] == pytest.approx(expected_duration, abs=0.06)
     captions = pysubs2.load(str(output / "clip-001/captions.srt"))
-    assert captions[0].start == (0 if silence_cut else 320)
+    assert captions[0].start == 320
     measured = quality.measure_output(output / "clip-001/video.mp4")
     assert measured["integrated_lufs"] == pytest.approx(-16.0, abs=0.5)
-    if not silence_cut:
-        # Before the first caption, compare the final picture with the exact
-        # requested source frame, so matching durations alone cannot hide drift.
-        def frame(path, start):
-            return process(
-                [
-                    "ffmpeg",
-                    "-v",
-                    "error",
-                    "-ss",
-                    str(start),
-                    "-i",
-                    path,
-                    "-frames:v",
-                    "1",
-                    "-pix_fmt",
-                    "rgb24",
-                    "-f",
-                    "rawvideo",
-                    "-",
-                ]
-            ).stdout
 
-        reference = frame(target, offset)
-        rendered = frame(output / "clip-001/video.mp4", 0)
-        assert len(reference) == len(rendered) == 160 * 90 * 3
-        assert sum(abs(a - b) for a, b in zip(reference, rendered)) / len(reference) < 3
+    # Before the first caption, compare the final picture with the exact
+    # requested source frame, so matching durations alone cannot hide drift.
+    def frame(path, start):
+        return process(
+            [
+                "ffmpeg",
+                "-v",
+                "error",
+                "-ss",
+                str(start),
+                "-i",
+                path,
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "rgb24",
+                "-f",
+                "rawvideo",
+                "-",
+            ]
+        ).stdout
+
+    reference = frame(target, offset)
+    rendered = frame(output / "clip-001/video.mp4", 0)
+    assert len(reference) == len(rendered) == 160 * 90 * 3
+    assert sum(abs(a - b) for a, b in zip(reference, rendered)) / len(reference) < 3

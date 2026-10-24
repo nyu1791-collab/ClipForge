@@ -21,8 +21,6 @@ LOUDNESS = "I=-16:TP=-2.0:LRA=11"
 # +1.2 dB on a sharp transient (2026-10-23: -2 dBFS gave -0.8 dBTP on one clip); -3 dBFS
 # keeps the decoded true peak under -1 dBTP and moved integrated loudness by 0.2 LU at most.
 PEAK_LIMIT = 0.7079
-MAX_KEEP_REGIONS = 60
-SPLICE_FADE = 0.015  # seconds at each end of a kept piece of audio
 VIDEO_CRF = (
     18  # x264 quality: lower is sharper and larger; 18 is near visually lossless
 )
@@ -237,36 +235,6 @@ def frame_size(settings):
     return width, height
 
 
-def _video_timeline(clip, keep):
-    if not keep:
-        return "[0:V:0]setpts=PTS-STARTPTS[vin]"
-    parts = [
-        f"[0:V:0]trim=start={a - clip.start:.6f}:end={b - clip.start:.6f},"
-        f"setpts=PTS-STARTPTS[vk{i}]"
-        for i, (a, b) in enumerate(keep)
-    ]
-    labels = "".join(f"[vk{i}]" for i in range(len(keep)))
-    return ";".join(parts) + f";{labels}concat=n={len(keep)}:v=1:a=0[vin]"
-
-
-def _audio_timeline(clip, keep):
-    if not keep:
-        return "[0:a:0]asetpts=PTS-STARTPTS[ain]"
-    parts = []
-    for i, (a, b) in enumerate(keep):
-        # Each kept piece fades briefly at both ends, so a splice where silence was removed
-        # does not click when the background noise is not zero at that point.
-        length = b - a
-        fade = min(SPLICE_FADE, length / 2)
-        parts.append(
-            f"[0:a:0]atrim=start={a - clip.start:.6f}:end={b - clip.start:.6f},"
-            f"asetpts=PTS-STARTPTS,afade=t=in:st=0:d={fade:.3f},"
-            f"afade=t=out:st={length - fade:.3f}:d={fade:.3f}[ak{i}]"
-        )
-    labels = "".join(f"[ak{i}]" for i in range(len(keep)))
-    return ";".join(parts) + f";{labels}concat=n={len(keep)}:v=0:a=1[ain]"
-
-
 def _layout(settings, width, height, src, out):
     """Turn [src] into [out] for the selected layout; split labels stay internal."""
     if settings.layout == "blur":
@@ -325,21 +293,11 @@ def _chat_fit(settings, width, height, src, out, crop_x=None):
     return f"[{src}]{fit},setsar=1[{out}]"
 
 
-def _position(position, margin, top):
-    return {
-        "right": f"main_w-overlay_w-{margin}:(main_h-overlay_h)/2",
-        "top": f"(main_w-overlay_w)/2:{top}",
-        "center": "(main_w-overlay_w)/2:(main_h-overlay_h)/2",
-        "bottom": f"(main_w-overlay_w)/2:main_h-overlay_h-{margin}",
-    }[position]
-
-
 def _video_graph(
     clip,
     settings,
     width,
     height,
-    keep,
     duration,
     ass,
     chat_ass=None,
@@ -347,14 +305,14 @@ def _video_graph(
 ):
     """Video chain from the source to [vout], with the progress bar and captions.
 
-    With the chat panel, the picture and its overlays use the video area left of the chat
+    With the chat panel, the picture and progress bar use the video area left of the chat
     column. The column is padded on after them, so their positions are relative to the area.
-    With fit top the picture is shorter than the frame; overlays and progress use its height.
+    With fit top the picture is shorter than the frame; progress uses its height.
     """
     panel = settings.chat_panel_pixels()
     area = width - panel
     picture = settings.chat_video_height() if panel else height
-    chain = [_video_timeline(clip, keep)]
+    chain = ["[0:V:0]setpts=PTS-STARTPTS[vin]"]
     if panel:
         chain.append(_chat_fit(settings, area, picture, "vin", "lay0", crop_x))
     else:
@@ -396,9 +354,9 @@ def _video_graph(
     return ";".join(chain)
 
 
-def _audio_graph(clip, keep):
+def _audio_graph():
     """The narration on the clip clock, labelled [mix]."""
-    return _audio_timeline(clip, keep) + ";[ain]anull[mix]"
+    return "[0:a:0]asetpts=PTS-STARTPTS[mix]"
 
 
 def _loudness_args(measured):
@@ -425,13 +383,13 @@ def _audio_tail(settings, duration, measured):
     return tail + "[aout]"
 
 
-def measure_loudness(source, clip, settings, keep, duration):
+def measure_loudness(source, clip, settings, duration):
     """First pass: measure the same audio chain the render uses.
 
     Returns None when the audio is silent, so the render falls back to a single pass.
     """
     graph = (
-        _audio_graph(clip, keep)
+        _audio_graph()
         + f";[mix]loudnorm={LOUDNESS}:print_format=json,aresample={AUDIO_RATE}[aout]"
     )
     command = [
@@ -486,13 +444,12 @@ def render(
     clip,
     settings,
     ass=None,
-    keep=None,
     chat_ass=None,
     crop_x=None,
 ):
     """Render one clip with its captions and, optionally, the chat column."""
     width, height = frame_size(settings)
-    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
+    duration = clip.end - clip.start
     if ass:
         # The graph names captions.ass by its basename, so only that beside the output is used.
         if Path(ass).resolve() != (Path(destination).parent / "captions.ass").resolve():
@@ -511,8 +468,6 @@ def render(
             raise PipelineError("chat must be chat.ass beside the rendered clip")
         if not Path(chat_ass).is_file():
             raise PipelineError("chat file is missing")
-    if keep and len(keep) > MAX_KEEP_REGIONS:
-        raise PipelineError("silence cut produced too many regions")
     source_info = probe(source)
     has_audio = source_info["audio"]
     graph = [
@@ -521,7 +476,6 @@ def render(
             settings,
             width,
             height,
-            keep,
             duration,
             ass,
             chat_ass,
@@ -530,11 +484,11 @@ def render(
     ]
     if has_audio:
         measured = (
-            measure_loudness(source, clip, settings, keep, duration)
+            measure_loudness(source, clip, settings, duration)
             if settings.loudness_two_pass
             else None
         )
-        graph.append(_audio_graph(clip, keep))
+        graph.append(_audio_graph())
         graph.append(_audio_tail(settings, duration, measured))
     command = [
         "ffmpeg",

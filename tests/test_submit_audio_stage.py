@@ -936,11 +936,9 @@ def local_merge_env(collector, tmp_path, monkeypatch):
             (clip / name).write_bytes(b"synthetic clip")
         quality = {"passed": True, "failures": [], "warnings": [], "metrics": {}}
         (clip / "quality.json").write_text(json.dumps(quality))
-        (clip / "ledger.json").write_text("[]")
         row = {
             "directory": f"delivery/clips/clip-{index:03}",
             "key": "synthetic-render-key",
-            "ledger": [],
             "quality": quality,
             "media": {"width": 1920, "height": 1080, "audio_sample_rate": 48000},
             "sha256": {path.name: sha(path) for path in clip.iterdir()},

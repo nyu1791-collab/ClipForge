@@ -239,7 +239,7 @@ def outside_frame_captions(path):
     """Bottom-aligned captions whose text would rise above the top edge of the frame.
 
     Each event's own MarginV sets its bottom edge, or the style's when the event's is 0. The
-    text is as tall as its lines; heading and credit styles, which are not bottom-aligned, are
+    text is as tall as its lines; heading styles, which are not bottom-aligned, are
     not checked.
     """
     subtitles = pysubs2.load(str(path))

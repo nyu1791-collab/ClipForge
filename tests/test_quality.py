@@ -34,7 +34,6 @@ RENDERED = {
     "audio": True,
     "audio_sample_rate": 48000,
 }
-LEDGER = [{"file": "visuals/visual-01.png", "source_credit": "作者", "license": "CC0"}]
 
 
 def write_ass(folder, events):
@@ -116,7 +115,7 @@ def test_reading_speed_and_overlaps_are_measured_for_spoken_captions_only(tmp_pa
 
 def test_a_clean_clip_passes_and_reports_its_metrics(tmp_path, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 1000, "あ" * 10)])
-    report = quality.check_clip(folder, RENDERED, [], LEDGER)
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is True
     assert report["failures"] == [] and report["warnings"] == []
     assert report["metrics"]["caption_count"] == 1
@@ -134,7 +133,7 @@ def test_fast_captions_are_warnings_and_off_target_audio_fails(
         "measure_output",
         lambda video: {"integrated_lufs": -11.0, "true_peak_dbtp": 0.5},
     )
-    report = quality.check_clip(folder, RENDERED, [], LEDGER)
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["metrics"]["captions_over_limit"] == 1
     assert any("faster than 15" in text for text in report["warnings"])
     # Audio outside the delivery bar is a failure: the clip is refused, not merely noted.
@@ -143,16 +142,13 @@ def test_fast_captions_are_warnings_and_off_target_audio_fails(
     assert any("true peak" in text for text in report["failures"])
 
 
-def test_overlap_missing_glyph_and_unlicensed_visual_are_failures(
-    tmp_path, on_target_loudness
-):
+def test_overlap_and_missing_glyph_are_failures(tmp_path, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 2000, "あ"), (1000, 3000, "い")])
-    report = quality.check_clip(folder, RENDERED, ["ー"], [{"file": "visuals/x.png"}])
+    report = quality.check_clip(folder, RENDERED, ["ー"])
     assert report["passed"] is False
-    assert len(report["failures"]) == 3
+    assert len(report["failures"]) == 2
     assert "overlap" in report["failures"][0]
     assert "font lacks: ー" in report["failures"][1]
-    assert "no source credit or licence" in report["failures"][2]
 
 
 def test_silent_audio_and_unmeasurable_audio_fail(
@@ -164,7 +160,7 @@ def test_silent_audio_and_unmeasurable_audio_fail(
         "measure_output",
         lambda video: {"integrated_lufs": -math.inf, "true_peak_dbtp": -math.inf},
     )
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert report["failures"] == ["the rendered audio is silent"]
     assert report["metrics"]["integrated_lufs"] is None
@@ -174,7 +170,7 @@ def test_silent_audio_and_unmeasurable_audio_fail(
         raise PipelineError("loudness of the rendered clip could not be measured")
 
     monkeypatch.setattr(quality, "measure_output", unreadable)
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert "could not be measured" in report["failures"][0]
 
@@ -186,7 +182,7 @@ def test_clip_without_audio_is_not_measured(tmp_path, monkeypatch, on_target_lou
         raise AssertionError("a clip without audio has no loudness to measure")
 
     monkeypatch.setattr(quality, "measure_output", must_not_measure)
-    report = quality.check_clip(folder, {**RENDERED, "audio": False}, [], [])
+    report = quality.check_clip(folder, {**RENDERED, "audio": False}, [])
     assert report["passed"] is True
     assert report["metrics"]["integrated_lufs"] is None
 
@@ -210,7 +206,7 @@ def test_captions_shown_under_a_second_or_over_four_seconds_are_warnings(
     tmp_path, on_target_loudness
 ):
     folder = write_ass(tmp_path, [(0, 400, "あ"), (400, 5400, "いいいい")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is True
     assert report["metrics"]["captions_under_1s"] == 1
     assert report["metrics"]["captions_over_4s"] == 1
@@ -222,14 +218,14 @@ def test_a_caption_of_half_a_second_or_more_is_not_flicker(
     tmp_path, on_target_loudness
 ):
     folder = write_ass(tmp_path, [(0, 500, "あ"), (500, 2000, "いいいい")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["metrics"]["captions_under_1s"] == 0
     assert not any("less than 0.5 second" in text for text in report["warnings"])
 
 
 def test_a_caption_with_three_lines_fails(tmp_path, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 2000, "一\\N二\\N三")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert any("more than 2 lines" in failure for failure in report["failures"])
 
@@ -239,7 +235,7 @@ def test_srt_and_ass_must_carry_the_same_captions(tmp_path, on_target_loudness):
     (folder / "captions.srt").write_text(
         "1\n00:00:00,000 --> 00:00:02,000\nかきく\n", encoding="utf-8"
     )
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert any("differ in timing or text" in failure for failure in report["failures"])
 
@@ -254,16 +250,14 @@ def test_a_video_that_does_not_decode_cleanly_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(
         quality, "decode_errors", lambda video: ["[h264] error while decoding MB"]
     )
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert "does not decode cleanly" in report["failures"][0]
 
 
 def test_audio_that_is_not_48_khz_fails(tmp_path, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 1000, "あ")])
-    report = quality.check_clip(
-        folder, {**RENDERED, "audio_sample_rate": 44100}, [], []
-    )
+    report = quality.check_clip(folder, {**RENDERED, "audio_sample_rate": 44100}, [])
     assert report["passed"] is False
     assert any("48000 Hz" in failure for failure in report["failures"])
 
@@ -298,7 +292,7 @@ def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
 def test_a_line_break_inside_a_word_is_a_counted_warning(tmp_path, on_target_loudness):
     # 情報 is one morpheme, so the break after 情 is inside a word (情報|処理 is a morpheme edge).
     folder = write_ass(tmp_path, [(0, 2000, "情\\N報処理")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is True
     assert report["metrics"]["word_splits"] == 1
     assert any("inside a word" in text for text in report["warnings"])
@@ -308,7 +302,7 @@ def test_a_caption_break_inside_a_word_is_a_counted_warning(
     tmp_path, on_target_loudness
 ):
     folder = write_ass(tmp_path, [(0, 1000, "仕事が奪"), (1000, 2000, "われる")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["metrics"]["word_splits"] == 1
     # The text shown is the last three characters before the break and the first three after.
     assert quality.word_splits(quality.caption_events(folder / "captions.ass")) == [
@@ -322,7 +316,7 @@ def test_breaks_between_words_and_particles_are_not_flagged(
     folder = write_ass(
         tmp_path, [(0, 2000, "仕事が\\N奪われる"), (2000, 4000, "ソフトの\\Nこと")]
     )
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["metrics"]["word_splits"] == 0
     assert not any("inside a word" in text for text in report["warnings"])
 
@@ -403,7 +397,7 @@ def test_a_line_wider_than_the_frame_fails_when_measured_again(
 ):
     # 40 characters at 92 px are 3680 px, far wider than the 1080 px frame.
     folder = write_framed_ass(tmp_path, [(0, 2000, "あ" * 40)])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert any("wider than the frame" in text for text in report["failures"])
     assert report["metrics"]["line_overflows"] == 1
@@ -411,7 +405,7 @@ def test_a_line_wider_than_the_frame_fails_when_measured_again(
 
 def test_a_line_that_fits_the_frame_passes(tmp_path, on_target_loudness):
     folder = write_framed_ass(tmp_path, [(0, 2000, "あ" * 10)])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["metrics"]["line_overflows"] == 0
     assert not any("wider than the frame" in text for text in report["failures"])
 
@@ -420,7 +414,7 @@ def test_a_caption_that_starts_with_a_punctuation_mark_fails(
     tmp_path, on_target_loudness
 ):
     folder = write_ass(tmp_path, [(0, 2000, "。次の話")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is False
     assert any("starts with a punctuation mark" in text for text in report["failures"])
 
@@ -429,7 +423,7 @@ def test_a_caption_that_starts_with_a_sentence_final_particle_is_a_counted_warni
     tmp_path, on_target_loudness
 ):
     folder = write_ass(tmp_path, [(0, 2000, "ね、そうです"), (2000, 4000, "次の話")])
-    report = quality.check_clip(folder, RENDERED, [], [])
+    report = quality.check_clip(folder, RENDERED, [])
     assert report["passed"] is True
     assert report["metrics"]["orphan_particles"] == 1
     assert any("sentence-final particle" in text for text in report["warnings"])
@@ -441,10 +435,10 @@ def test_landscape_frames_are_checked_against_seven_characters_a_second(
     # Twenty characters over two seconds read at 10 a second: fine for a portrait frame, too fast here.
     folder = write_ass(tmp_path, [(0, 2000, "あ" * 20)])
     landscape = {**RENDERED, "width": 1920, "height": 1080}
-    report = quality.check_clip(folder, landscape, [], [])
+    report = quality.check_clip(folder, landscape, [])
     assert report["metrics"]["reading_limit_cps"] == 7
     assert any("faster than 7 characters" in text for text in report["warnings"])
-    portrait = quality.check_clip(folder, RENDERED, [], [])
+    portrait = quality.check_clip(folder, RENDERED, [])
     assert portrait["metrics"]["reading_limit_cps"] == 15
     assert not any("faster than" in text for text in portrait["warnings"])
 
@@ -455,7 +449,7 @@ def test_landscape_reading_and_real_font_width_are_independent(
     folder = write_ass(tmp_path, [(0, 2000, "あ" * 10), (2000, 4000, "i" * 20)])
     settings.horizontal_warn_cps = 7
     landscape = {**RENDERED, "width": 1920, "height": 1080}
-    report = quality.check_clip(folder, landscape, [], [], settings)
+    report = quality.check_clip(folder, landscape, [], settings)
     metrics = report["metrics"]
     assert metrics["reading_target_cps"] == 7
     assert metrics["reading_limit_cps"] == 7
@@ -464,7 +458,7 @@ def test_landscape_reading_and_real_font_width_are_independent(
     assert metrics["lines_over_horizontal_limit"] == 0
     assert metrics["line_max_fullwidth_equivalents"] == 10
     settings.horizontal_line_chars = 8
-    narrower = quality.check_clip(folder, landscape, [], [], settings)
+    narrower = quality.check_clip(folder, landscape, [], settings)
     assert narrower["metrics"]["lines_over_horizontal_limit"] == 1
     assert any("caption line(s) exceed 8" in text for text in narrower["warnings"])
     assert not any("caption line(s) exceed" in text for text in report["warnings"])
@@ -601,9 +595,7 @@ def test_japanese_style_checks_only_warn_and_do_not_use_font_width(
             (6000, 9000, "う、!", "Heading"),
         ],
     )
-    report = quality.check_clip(
-        folder, {**RENDERED, "width": 1920, "height": 1080}, [], []
-    )
+    report = quality.check_clip(folder, {**RENDERED, "width": 1920, "height": 1080}, [])
     assert report["passed"] is True
     assert report["failures"] == []
     assert quality.enforce(report, "strict") is report

@@ -24,7 +24,6 @@ Kick / YouTube / Twitch / 直接 HTTPS の URL → runner で音声取得（`too
 - 話題: `topics.py`・`topic_hints.py`・`review_draft.py`・`chat_activity.py`・`audio_volume.py`
 - 描画: `pipeline.py`（1クリップ）・`media.py`（ffmpeg）・`auto_layout.py`・`kick_chat.py`（チャット欄）
 - 字幕: `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py`／品質: `quality.py`
-- 重ね絵: `diagrams.py`・`tables.py`・`assets.py`・`thumbnail.py`・`silence.py`
 
 ## tests
 `tests/test_<モジュール名>.py` が基本。共通の fixture は `tests/conftest.py`。

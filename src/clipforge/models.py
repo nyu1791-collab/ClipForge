@@ -96,10 +96,6 @@ class Settings(Record):
     heading_scale: float = Field(default=1.0, ge=0.8, le=1.6)
     workers: int = Field(default=2, ge=1, le=4)
     loudness_two_pass: bool = True
-    silence_cut: bool = False
-    silence_pad: float = Field(default=0.15, ge=0, le=1)
-    silence_min_gap: float = Field(default=0.4, ge=0, le=3)
-    vad: Literal["transcript", "silero"] = "transcript"
     topics: bool = True
     topic_min_seconds: float = Field(default=25, ge=5, le=120)
     topic_max_seconds: float = Field(default=180, ge=30, le=1800)
@@ -200,11 +196,6 @@ class Settings(Record):
             ):
                 raise ValueError(
                     "chat panel width must be an even 20 to 40 percent of the frame width"
-                )
-            if self.silence_cut:
-                # Kick chat is timed on the original video; cut silence would shift it.
-                raise ValueError(
-                    "chat panel cannot be combined with silence_cut: the chat would drift"
                 )
         if self.min_seconds >= self.max_seconds:
             raise ValueError("minimum duration must be less than maximum")

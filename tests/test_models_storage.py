@@ -280,7 +280,7 @@ def test_caption_scale_and_the_landscape_chat_config_are_valid(settings):
     path = Path(__file__).resolve().parents[1] / "config.landscape-chat.example.json"
     example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
     assert example.chat_panel is True and example.chat_panel_fit == "fill"
-    assert example.silence_cut is False and example.aspect == "16:9"
+    assert example.aspect == "16:9"
 
 
 def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):

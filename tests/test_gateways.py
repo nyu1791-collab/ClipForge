@@ -971,11 +971,11 @@ def test_url_only_collection_checks_runner_audio_hash_and_submitted_url(
     assert not destination.exists()
 
 
-def test_audio_analysis_rejects_network_enrichment(submitter, tmp_path):
+def test_audio_analysis_rejects_removed_settings(submitter, tmp_path):
     _, _, control, invoke = submitter
     config = tmp_path / "config.json"
     config.write_text('{"image_search": true}')
-    with pytest.raises(RuntimeError, match="external lookups"):
+    with pytest.raises(RuntimeError, match="unknown fields"):
         invoke("--config", str(config))
     assert not control["releases"]
 
