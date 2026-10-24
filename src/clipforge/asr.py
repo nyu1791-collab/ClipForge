@@ -125,21 +125,27 @@ def segments(chars, start, end):
         for c in chars
         if _text(c).strip()
     ]
+    first_tick, last_tick = round(start, 2), round(end, 2)
+    if first_tick < start:
+        first_tick = round(first_tick + 0.01, 2)
+    if last_tick > end:
+        last_tick = round(last_tick - 0.01, 2)
     out = []
     for members in _runs(stamps):
         words = []
         for index, (text, a, b) in enumerate(members):
             following = members[index + 1][1] if index + 1 < len(members) else b + 0.3
-            first = start + a
+            first = max(start, start + a)
             last = start + max(b, min(following, a + MIN_CHAR_SECONDS))
             if words and first < words[-1]["end"]:
                 first = words[-1]["end"]
-            last = max(last, first + 0.01)
-            if last > end:
-                break
-            words.append(
-                {"text": text, "start": round(first, 2), "end": round(last, 2)}
-            )
+            last = min(end, max(last, first + 0.01))
+            # Keep centisecond timestamps inside this piece even when its sample
+            # boundary is fractional. A minimum duration must not erase a final char.
+            first = max(round(first, 2), first_tick)
+            last = min(round(last, 2), last_tick)
+            if last > first:
+                words.append({"text": text, "start": first, "end": last})
         words = [w for w in words if w["end"] > w["start"]]
         if words:
             out.append(

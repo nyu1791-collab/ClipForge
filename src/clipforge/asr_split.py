@@ -6,6 +6,7 @@ own runtime (asr.py), and the parts' segments are shifted by their start and con
 """
 
 import hashlib
+import math
 from pathlib import Path
 import re
 import wave
@@ -182,7 +183,10 @@ def validate_part(part):
     ):
         raise PipelineError("invalid ASR part identity")
     if (
-        any(type(part[key]) not in (int, float) for key in ("start", "end"))
+        any(
+            type(part[key]) not in (int, float) or not math.isfinite(part[key])
+            for key in ("start", "end")
+        )
         or not 0 <= part["start"] < part["end"]
     ):
         raise PipelineError("invalid ASR part interval")

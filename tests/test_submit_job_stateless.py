@@ -84,6 +84,7 @@ def make_result(root):
             {
                 "request_id": REQUEST,
                 "source_ref": REF,
+                "workflow_run": RUN,
                 "status": "topics_allocated",
                 "audio_source_url": URL,
                 "sha256": {name: digest(root / name) for name in names},
@@ -456,3 +457,18 @@ def test_reuse_arguments_reach_submission(monkeypatch):
     module.main()
     assert seen["reuse_audio_run"] == 123
     assert seen["reuse_audio_request"] == REQUEST
+
+
+@pytest.mark.parametrize("returned_run", [RUN + 1, None])
+def test_stateless_collect_rejects_another_or_missing_run_in_artifact(
+    collector, returned_run
+):
+    module, artifact, _, tmp_path, monkeypatch = collector
+    receipt = artifact / "request-receipt.json"
+    value = json.loads(receipt.read_text())
+    value["workflow_run"] = returned_run
+    receipt.write_text(json.dumps(value))
+    output = tmp_path / "recovered"
+    with pytest.raises(RuntimeError, match="identity"):
+        invoke(monkeypatch, module, *standard_args(output))
+    assert not output.exists()

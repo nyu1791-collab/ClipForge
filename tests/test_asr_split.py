@@ -509,3 +509,31 @@ def test_merge_refuses_different_split_keys(tmp_path, monkeypatch):
             ],
             8,
         )
+
+
+def test_final_character_is_retained_when_its_minimum_length_crosses_piece_end():
+    rows = asr.segments([{"char": "語", "start": 0.96, "end": 0.98}], 10.0, 11.0)
+    assert len(rows) == 1
+    assert rows[0]["text"] == "語"
+    assert rows[0]["words"] == [{"text": "語", "start": 10.96, "end": 11.0}]
+
+
+def test_character_rounding_stays_inside_fractional_piece_boundaries():
+    rows = asr.segments([{"char": "語", "start": 0.0, "end": 0.012}], 10.004, 10.029)
+    assert len(rows) == 1
+    word = rows[0]["words"][0]
+    assert 10.004 <= word["start"] < word["end"] <= 10.029
+
+
+@pytest.mark.parametrize("end", [float("inf"), float("nan")])
+def test_asr_part_rejects_nonfinite_end(tmp_path, monkeypatch, end):
+    _, plan = prepare(tmp_path, monkeypatch, speech(1), 1)
+    descriptor = {**plan["parts"][0]["asr_part"], "end": end}
+    with pytest.raises(PipelineError, match="interval"):
+        asr_split.validate_part(descriptor)
+
+
+@pytest.mark.parametrize("start,end", [(0.07, 0.29), (1.13, 1.29)])
+def test_centisecond_piece_edges_do_not_lose_a_tick_to_float_multiplication(start, end):
+    rows = asr.segments([{"char": "語", "start": 0.0, "end": end - start}], start, end)
+    assert rows[0]["words"] == [{"text": "語", "start": start, "end": end}]

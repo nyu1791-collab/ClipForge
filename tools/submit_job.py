@@ -513,7 +513,7 @@ def collect_without_record(args):
         identity,
         destination,
         lambda staging: verify_audio_analysis(
-            staging, identity, args.source_ref, args.audio_sha256
+            staging, identity, args.source_ref, args.audio_sha256, run_id=args.run_id
         ),
     )
     print("Completed; private outputs verified and downloaded.")
