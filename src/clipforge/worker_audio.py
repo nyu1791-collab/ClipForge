@@ -34,6 +34,10 @@ DEFAULT_CONFIG_FILE = "config.landscape.example.json"
 CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
 
 
+# Reviewed video stages keep their own cap, independent of full-audio acquisition.
+MAX_VIDEO_TRANSPORT_BYTES = 2 * 1024**3
+
+
 def gh(*args):
     return run_gh(
         *args,
@@ -249,7 +253,7 @@ def execute(
             url,
             output / "segments",
             kick_factory=KickVOD,
-            max_bytes=settings.max_transport_bytes,
+            max_bytes=min(settings.max_transport_bytes, MAX_VIDEO_TRANSPORT_BYTES),
             max_seconds=settings.max_source_seconds,
         )
         try:

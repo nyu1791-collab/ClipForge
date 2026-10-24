@@ -102,14 +102,22 @@ def test_restore_refuses_mismatched_analysis(previous_analysis, fault):
         worker.restore_analysis(previous, output, IDENTITY)
 
 
+@pytest.mark.parametrize(
+    "max_transport_bytes,expected_budget",
+    [(1024, 1024), (6 * 1024**3, 2 * 1024**3)],
+)
 def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
-    previous_analysis, monkeypatch
+    previous_analysis, monkeypatch, max_transport_bytes, expected_budget
 ):
     previous, output, settings = previous_analysis
-    calls = []
-    monkeypatch.setattr(
-        worker, "KickVOD", lambda *a, **k: SimpleNamespace(close=lambda: None)
-    )
+    settings = settings.model_copy(update={"max_transport_bytes": max_transport_bytes})
+    calls, budgets = [], []
+
+    def source(*args, **kwargs):
+        budgets.append(kwargs["max_bytes"])
+        return SimpleNamespace(close=lambda: None)
+
+    monkeypatch.setattr(worker, "KickVOD", source)
 
     def previews(vod, root, settings, analysis_result=None):
         calls.append(analysis_result)
@@ -123,6 +131,7 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
     monkeypatch.setattr(worker, "preview_contact_sheet", lambda *a: None)
     result = worker.execute(previous, output, IDENTITY, settings, "previews")
     assert result["asr_reused"] is True and result["model_generation_requests"] == 0
+    assert budgets == [expected_budget]
     assert calls[0][1].segments
     assert json.loads((output / "asr-receipt.json").read_text())["reused"] is True
 

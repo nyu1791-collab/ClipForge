@@ -20,7 +20,7 @@ URL → runnerで音声取得 → Colab GPUで2分割ASR → 話題分割 → �
 | FFmpeg・画面配置・音量・品質 | `media.py`・`auto_layout.py`・`quality.py`・`landscape.py` |
 | チャット | `kick_chat.py`・`chat_activity.py` |
 | 素材・図表・サムネイル | `assets.py`・`diagrams.py`・`tables.py`・`thumbnail.py` |
-| Colab制御・転送・キャッシュ | `tools/colab_actions.py`・`colab_remote_job.py`・`colab_bundle.py`・`colab_cache.py` |
+| Colab制御・転送・キャッシュ | `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`・`tools/colab_cache.py` |
 
 表のファイル名だけのPythonモジュールは `src/clipforge/`。実行用の薄いラッパーは、既存CLI・workflowとの互換性のため `tools/` に残す。非公開workerのworkflow原本は `deploy/`、公開側の検査は `.github/workflows/`。依存は `pyproject.toml` と `uv.lock`、テストは `tests/`。
 
