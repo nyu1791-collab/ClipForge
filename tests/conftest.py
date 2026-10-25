@@ -42,9 +42,15 @@ def transcript():
 
 
 @pytest.fixture
-def on_target_loudness():
-    """Compatibility fixture: production no longer performs a media scan."""
-    return None
+def on_target_loudness(monkeypatch):
+    """A single successful completed-media scan, without invoking FFmpeg."""
+    from clipforge import quality
+
+    monkeypatch.setattr(
+        quality,
+        "inspect_output",
+        lambda *a: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
+    )
 
 
 @pytest.fixture

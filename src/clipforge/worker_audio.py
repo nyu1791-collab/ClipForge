@@ -346,8 +346,8 @@ def execute(
             human_review_performed=False,
         )
         write_json(output / "manifest.json", result)
-        if mode == "render" and clip_index is not None:
-            # Merge reads the ASR identity receipt, not the source or working media.
+        if mode == "render":
+            # Final deliveries retain clips and receipts, not input media or ASR bodies.
             for name in ("ranges", "previews", "transcripts", ".state"):
                 if (output / name).exists():
                     shutil.rmtree(output / name)

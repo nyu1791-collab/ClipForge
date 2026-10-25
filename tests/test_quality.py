@@ -1,6 +1,7 @@
 import json
 import shutil
 import subprocess
+from types import SimpleNamespace
 
 import pysubs2
 import pytest
@@ -78,8 +79,8 @@ def test_a_clean_clip_passes_and_reports_its_metrics(tmp_path, on_target_loudnes
     assert report["failures"] == [] and report["warnings"] == []
     assert report["metrics"]["caption_count"] == 1
     assert report["metrics"]["caption_max_cps"] == 10.0
-    assert report["metrics"]["integrated_lufs"] is None
-    assert report["metrics"]["true_peak_dbtp"] is None
+    assert report["metrics"]["integrated_lufs"] == -16.0
+    assert report["metrics"]["true_peak_dbtp"] == -2.0
 
 
 def test_overlap_and_missing_glyph_are_failures(tmp_path, on_target_loudness):
@@ -645,17 +646,61 @@ def test_static_overlaps_counts_captions_over_a_band_they_were_placed_by(tmp_pat
     assert quality.static_overlaps(path, [[]], rendered) is None
 
 
-def test_production_quality_never_decodes_or_measures_audio(tmp_path, monkeypatch):
+def test_output_scan_decodes_video_and_measures_audio_once(monkeypatch, tmp_path):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stderr=SUMMARY)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    measured = quality.inspect_output(tmp_path / "video.mp4", True, 4)
+    assert len(calls) == 1
+    assert "0:V:0" in calls[0] and "0:a:0" in calls[0]
+    assert "-vn" not in calls[0] and "-xerror" in calls[0]
+    assert measured == {"integrated_lufs": -16.2, "true_peak_dbtp": -1.4}
+
+
+@pytest.mark.parametrize(
+    "code,stderr", [(1, SUMMARY), (0, "no summary"), (0, "[error] corrupt" + SUMMARY)]
+)
+def test_output_scan_refuses_corruption_or_missing_measurement(
+    monkeypatch, tmp_path, code, stderr
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=code, stderr=stderr),
+    )
+    with pytest.raises(PipelineError):
+        quality.inspect_output(tmp_path / "video.mp4", True, 4)
+
+
+def test_output_scan_handles_silent_video_without_audio_filter(monkeypatch, tmp_path):
+    def run(command, **kwargs):
+        assert "-af" not in command and "0:V:0" in command
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert (
+        quality.inspect_output(tmp_path / "video.mp4", False, 4)["integrated_lufs"]
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "lufs,peak", [(-11.0, -2.0), (-16.0, 0.5), (-float("inf"), -float("inf"))]
+)
+def test_single_scan_audio_gate_still_refuses_bad_output(
+    tmp_path, monkeypatch, lufs, peak
+):
     folder = write_ass(tmp_path, [])
-
-    def forbidden(*a, **k):
-        raise AssertionError("no extra media scan")
-
-    monkeypatch.setattr(subprocess, "run", forbidden)
+    monkeypatch.setattr(
+        quality,
+        "inspect_output",
+        lambda *a: {"integrated_lufs": lufs, "true_peak_dbtp": peak},
+    )
     report = quality.check_clip(folder, RENDERED, [])
-    assert report["passed"]
-    assert report["verification_scope"] == "encode_exit_probe_and_captions"
-    assert not report["full_decode_performed"]
-    assert not report["loudness_measured"]
-    assert report["metrics"]["integrated_lufs"] is None
+    assert not report["passed"]
+    assert report["full_decode_performed"] and report["loudness_measured"]
     json.dumps(report, allow_nan=False)

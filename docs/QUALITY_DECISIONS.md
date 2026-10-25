@@ -1,6 +1,6 @@
 # 現行の品質・速度方針
 
-通常経路はGPU_ROUTE.md。文字起こしはParakeetのみ、4分割WAV、NeMo準備と入力取得の並行を維持する。描画はGPU/NVENC。旧Whisper、CPU描画、cut経由の制作、事前音量2パス、完成後の全編デコード・音量再測定は通常経路から外した。
+通常経路はGPU_ROUTE.md。文字起こしはParakeetのみ、4分割WAV、NeMo準備と入力取得の並行を維持する。描画はGPU/NVENC。旧Whisper、CPU描画、cut経由の制作、事前音量2パス、完成後の映像デコードと音量測定は1走査へ統合した。
 
 ## 字幕と内容
 
@@ -10,11 +10,11 @@ BudouXとfugashiで文節・語の境界を使い、実フォント幅で最大2
 
 通常設定はconfig.landscape-long-preview.example.json（16:9、360p、NVENC）。1080p依頼時はconfig.landscape-long.example.json。見出しは左上1.4倍、字幕は下中央。固定画面の上への持ち上げは高さの32%まで。ソースfpsは30を上限に保持する。字幕・overlay等のフィルターはCPUで実行されるため、NVENCだけで描画全体がGPU化されるわけではない。
 
-## 音声と軽量検査
+## 音声と統合検査
 
-描画中に1パスloudnormとリミッターを適用し、48kHz AACへ出力する。完成値の別測定は行わない。FFmpeg終了コードとFFprobeの尺・寸法・音声情報、字幕を確認する。検査を通った場合だけファイルを確定する。
+事前音量測定は行わず、描画中の1パスloudnormとリミッターで48kHz AACへ出力する。完成MP4を1回読み、映像デコードとebur128音量・真ピーク測定を同じFFmpegで実行する。-vnは付けず、破損エラー・欠けた測定結果を失敗とする。無音、-17〜-15 LUFS外、真ピーク-1 dBTP超をstrictで拒否する。字幕の整合性・配置とFFprobeの検査も維持する。
 
-quality.jsonと共有summaryのverification_scopeはencode_exit_probe_and_captions、full_decode_performed=false、loudness_measured=false。integrated_lufsとtrue_peak_dbtpはnull。passedはこの範囲の合格であり、全編復号・無音検出・実測LUFS・真ピーク・内容の合格を意味しない。旧レポートの測定値を今回の結果へ転記しない。
+検査の成功時だけfull_decode_performed=true、音声を測れた場合だけloudness_measured=trueとし、実測値を保存する。無音の-inf等はJSONではnullにして失敗理由を記録する。qualityと共有summaryのverification_scopeはsingle_pass_full_decode_loudness_and_captions。passedを内容の合格と混同しない。
 
 ## 計測
 

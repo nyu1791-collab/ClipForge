@@ -631,9 +631,34 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
             )
     # Total wall-clock seconds spent waiting, fetching and rendering, summed over clips.
     timings["wall_seconds"] = round(time.monotonic() - wall_started, 2)
+    timings["wall_clock_sec"] = timings["wall_seconds"]
     timings["total"] = round(
         sum(v for t in timings.values() if isinstance(t, dict) for v in t.values()), 2
     )
+    timings["substep_breakdown"] = {
+        "queue_wait_sec": None,
+        "setup_sec": None,
+        "encode_pipeline_sec": round(
+            sum(row.get("timings", {}).get("encode", 0) for row in rows), 3
+        ),
+        "verify_sec": round(
+            sum(row.get("quality", {}).get("verify_seconds", 0) for row in rows), 3
+        ),
+        "prefetch_wait_sec": round(
+            sum(
+                t.get("prefetch_wait", 0)
+                for t in timings.values()
+                if isinstance(t, dict)
+            ),
+            3,
+        ),
+        "fetch_sec": round(
+            sum(t.get("fetch", 0) for t in timings.values() if isinstance(t, dict)), 3
+        ),
+        "render_pipeline_sec": round(
+            sum(t.get("render", 0) for t in timings.values() if isinstance(t, dict)), 3
+        ),
+    }
     if only is not None:
         # One clip's part; the whole-delivery summary waits for the merge stage.
         manifest = {

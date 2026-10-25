@@ -170,7 +170,7 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     returned = json.loads((root / "request-receipt.json").read_text())
     hashes = returned.get("sha256")
     status = expected_status(stage, request)
-    delivery_only = stage == "merge" or status == "clip_rendered"
+    delivery_only = stage in {"render", "merge"}
     if (
         returned.get("request_id") != identity
         or returned.get("source_ref") != request["source_ref"]
@@ -522,7 +522,7 @@ def require_video_review(value):
 
 
 def clip_indices(args, worker):
-    """The clip numbers to request: one request per clip when rendering in parallel."""
+    """One GPU owns the reviewed batch; clip-index remains for a targeted repair."""
     if args.clips is not None and args.clip_index is not None:
         raise AudioStageError("use either --clips or --clip-index")
     if args.stage != "render" and (args.clips or args.clip_index):
@@ -534,9 +534,9 @@ def clip_indices(args, worker):
     if args.clips is not None:
         if not 1 <= args.clips <= MAX_ACTIVE["colab-auto"] or worker != "colab-auto":
             raise AudioStageError(
-                "parallel clips need --worker colab-auto and 1 to 5 clips"
+                "batch rendering needs --worker colab-auto and 1 to 5 clips"
             )
-        return list(range(1, args.clips + 1))
+        return [None]
     return [None]
 
 
@@ -666,6 +666,8 @@ def main(argv=None):
         if review is None:
             raise AudioStageError("render requires reviewed topic intervals")
         require_video_review(review)
+        if args.clips is not None and args.clips != len(review["clips"]):
+            raise AudioStageError("--clips must match the number of approved clips")
     worker = args.worker or ("colab-auto" if args.stage == "render" else "cpu")
     if args.stage == "render" and worker != "colab-auto":
         raise AudioStageError("render requires the Parakeet GPU/NVENC production route")

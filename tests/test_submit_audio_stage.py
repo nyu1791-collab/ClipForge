@@ -13,6 +13,14 @@ import pytest
 from clipforge.storage import PipelineError
 
 
+def _validation_run(job):
+    return next(
+        step["run"]
+        for step in job["steps"]
+        if "os.environ['CONFIG_FILE']" in step.get("run", "")
+    )
+
+
 @pytest.fixture
 def stage_submitter(tmp_path, monkeypatch):
     spec = importlib.util.spec_from_file_location(
@@ -31,6 +39,7 @@ def stage_submitter(tmp_path, monkeypatch):
         "configs": {
             "config.landscape.example.json",
             "config.landscape-chat.example.json",
+            "config.landscape-long-preview.example.json",
         },
     }
 
@@ -685,9 +694,7 @@ def test_collect_verifies_listed_files_and_writes_new_directory(
 
 
 @pytest.mark.parametrize("clip_index", [None, ""])
-def test_collect_full_render_keeps_analysis_requirements(
-    collector, tmp_path, clip_index
-):
+def test_collect_full_render_requires_completed_clips(collector, tmp_path, clip_index):
     module, control, state = collector
     for name in ("request.json", "receipt.json"):
         path = state / name
@@ -704,14 +711,8 @@ def test_collect_full_render_keeps_analysis_requirements(
     receipt.update(audio_stage="render", status="complete")
     receipt["sha256"]["manifest.json"] = sha(manifest_path)
     receipt_path.write_text(json.dumps(receipt))
-    assert module.main(collect_args(tmp_path / "collected")) == 0
-    (root / "audio.m4a").unlink()
-    del receipt["sha256"]["audio.m4a"]
-    receipt_path.write_text(json.dumps(receipt))
-    destination = tmp_path / "incomplete"
-    with pytest.raises(RuntimeError, match="omits required files"):
-        module.main(collect_args(destination))
-    assert not destination.exists()
+    with pytest.raises(RuntimeError, match="omits required rendered clips"):
+        module.main(collect_args(tmp_path / "collected"))
 
 
 def test_collect_rejects_sha_mismatch(collector, tmp_path):
@@ -880,15 +881,17 @@ def test_render_rejects_empty_or_malformed_reviews(stage_submitter, tmp_path, re
     assert not control["posts"]
 
 
-def test_parallel_clips_dispatch_one_colab_request_per_clip(stage_submitter, tmp_path):
+def test_batch_clips_dispatch_one_colab_request_for_all_clips(
+    stage_submitter, tmp_path
+):
     module, control, args = stage_submitter
     control["runs"] = [{"workflow": module.WORKFLOW, "status": "completed"}]
     argv = render_args(args, tmp_path, "--worker", "colab-auto", "--clips", "3")
     assert module.main(argv) == 0
     inputs = [post["inputs"] for post in control["posts"]]
-    assert [i["clip_index"] for i in inputs] == ["1", "2", "3"]
+    assert [i["clip_index"] for i in inputs] == [""]
     assert {i["worker"] for i in inputs} == {"colab-auto"}
-    assert len({i["request_id"] for i in inputs}) == 3
+    assert len({i["request_id"] for i in inputs}) == 1
 
 
 @pytest.mark.parametrize(
@@ -1171,7 +1174,7 @@ def test_deployment_yaml_loads(path):
     import yaml
 
     workflow = yaml.safe_load(path.read_text())
-    assert workflow[True]["workflow_dispatch"] is not None
+    assert workflow.get(True, workflow.get("on"))["workflow_dispatch"] is not None
     assert workflow["jobs"]
 
 
@@ -1201,7 +1204,7 @@ def test_audio_stage_workflow_validates_worker_stage_combination(
         "RUNNER_TEMP": str(tmp_path),
     }.items():
         monkeypatch.setenv(name, value)
-    code = job["steps"][0]["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    code = _validation_run(job).split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     if worker == "colab-auto" and stage != "render":
         with pytest.raises(
             SystemExit, match="worker=colab-auto requires audio_stage=render"
@@ -1261,7 +1264,7 @@ def test_config_file_is_part_of_the_request_identity_and_receipt(
     assert module.main(render) == 0
     assert module.main([*render, "--config-file", CHAT_CONFIG]) == 0
     default_inputs, chat_inputs = (post["inputs"] for post in control["posts"])
-    assert default_inputs["config_file"] == "config.landscape.example.json"
+    assert default_inputs["config_file"] == "config.landscape-long-preview.example.json"
     assert chat_inputs["config_file"] == CHAT_CONFIG
     assert default_inputs["request_id"] != chat_inputs["request_id"]
     receipt_path = tmp_path / ".local/state/clipforge" / chat_inputs["request_id"]
@@ -1359,12 +1362,12 @@ def test_audio_stage_workflow_passes_a_validated_config_file_to_both_paths():
     import yaml
 
     workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
     assert inputs["config_file"]["default"] == "config.landscape.example.json"
     for name in ("audio-stage", "colab-render"):
         job = workflow["jobs"][name]
         assert job["env"]["CONFIG_FILE"] == "${{ inputs.config_file }}"
-        assert "os.environ['CONFIG_FILE']" in job["steps"][0]["run"]
+        assert "os.environ['CONFIG_FILE']" in _validation_run(job)
     steps = workflow["jobs"]["audio-stage"]["steps"]
     run = next(
         step["run"]
@@ -1389,7 +1392,7 @@ def test_audio_stage_workflow_rejects_unlisted_config_files(
 
     workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
     code = (
-        workflow["jobs"]["audio-stage"]["steps"][0]["run"]
+        _validation_run(workflow["jobs"]["audio-stage"])
         .split("python3 - <<'PY'\n", 1)[1]
         .rsplit("\nPY", 1)[0]
     )
@@ -1482,3 +1485,20 @@ def test_caption_edits_are_sent_with_the_review_and_malformed_ones_refused(
     module.main(argv)
     review = json.loads(control["posts"][0]["inputs"]["review_json"])
     assert review["clips"][0]["caption_edits"] == clip["caption_edits"]
+
+
+def test_collect_batch_without_retransmitting_input_media(collector, tmp_path):
+    module, control, state = build_delivery_collector(collector, "merge")
+    for name in ("request.json", "receipt.json"):
+        path = state / name
+        value = json.loads(path.read_text())
+        value.update(audio_stage="render", clip_index="", part_runs="")
+        path.write_text(json.dumps(value))
+    path = control["artifact"] / "request-receipt.json"
+    value = json.loads(path.read_text())
+    value.update(audio_stage="render", previous_run_id=PREVIOUS_RUN, clip_index="")
+    path.write_text(json.dumps(value))
+    destination = tmp_path / "batch-output"
+    assert module.main(collect_args(destination)) == 0
+    assert len(list(destination.glob("delivery/clips/clip-*/video.mp4"))) == 2
+    assert not (destination / "audio.m4a").exists()

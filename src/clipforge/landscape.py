@@ -54,6 +54,7 @@ def safe_quality_summary(report):
         "verification_scope": report.get("verification_scope", "unknown"),
         "full_decode_performed": report.get("full_decode_performed", False),
         "loudness_measured": report.get("loudness_measured", False),
+        "verify_seconds": report.get("verify_seconds"),
         "failure_count": len(report.get("failures", [])),
         "warning_count": len(report.get("warnings", [])),
         "metrics": metrics,

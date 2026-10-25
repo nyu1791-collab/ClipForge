@@ -7,6 +7,8 @@ which are always reported. The result is written beside the clip as quality.json
 import math
 import re
 import statistics
+import subprocess
+import time
 import unicodedata
 from pathlib import Path
 
@@ -31,6 +33,50 @@ MAX_CAPTION_LINES = 2
 READING_CPS_THRESHOLDS = (4, 7, 10)
 SHORT_CAPTION_MS = round(MIN_DISPLAY_SECONDS * 1000)  # shorter captions flicker
 LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
+
+
+def inspect_output(video, has_audio, duration):
+    """Decode video and measure final AAC in one FFmpeg pass; never suppress video decode."""
+    command = [
+        "ffmpeg",
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel",
+        "level+info",
+        "-xerror",
+        "-err_detect",
+        "explode",
+        "-i",
+        str(Path(video).resolve()),
+        "-map",
+        "0:V:0",
+    ]
+    if has_audio:
+        command += ["-map", "0:a:0", "-af", "ebur128=peak=true:framelog=quiet"]
+    command += ["-f", "null", "-"]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=max(600, duration * 4),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise PipelineError("completed media scan could not finish") from None
+    if result.returncode or "[error]" in result.stderr or "[fatal]" in result.stderr:
+        raise PipelineError("completed media did not decode cleanly")
+    loudness = {"integrated_lufs": None, "true_peak_dbtp": None}
+    if has_audio:
+        summary = result.stderr[result.stderr.rfind("Summary") :]
+        values = [
+            re.search(r"I:\s+(-?[\d.]+|-inf) LUFS", summary),
+            re.search(r"Peak:\s+(-?[\d.]+|-inf) dBFS", summary),
+        ]
+        if not all(values):
+            raise PipelineError("completed audio loudness summary is missing")
+        loudness = dict(zip(loudness, [float(value.group(1)) for value in values]))
+    return loudness
 
 
 def caption_events(path):
@@ -389,16 +435,33 @@ def check_clip(directory, rendered, missing_glyphs, settings=None, static=None):
             events, rendered["width"] > rendered["height"], settings
         )
     )
-    # Rendering already checks the encoder exit and probes output duration/dimensions.
-    # No second full-file decode or loudness scan in the production route.
     if rendered["audio"] and rendered["audio_sample_rate"] != AUDIO_RATE:
         failures.append(f"the rendered audio is not {AUDIO_RATE} Hz")
     loudness = {"integrated_lufs": None, "true_peak_dbtp": None}
+    verified = False
+    verify_started = time.monotonic()
+    try:
+        loudness = inspect_output(
+            directory / "video.mp4", rendered["audio"], rendered["duration"]
+        )
+        verified = True
+        if rendered["audio"]:
+            lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
+            if not math.isfinite(lufs):
+                failures.append("the rendered audio is silent")
+            elif not -17 <= lufs <= -15:
+                failures.append("completed audio loudness is outside -17 to -15 LUFS")
+            if math.isfinite(peak) and peak > -1:
+                failures.append("completed audio true peak is above -1 dBTP")
+    except PipelineError as error:
+        failures.append(str(error))
+    verify_seconds = round(time.monotonic() - verify_started, 3)
     return {
         "passed": not failures,
-        "verification_scope": "encode_exit_probe_and_captions",
-        "full_decode_performed": False,
-        "loudness_measured": False,
+        "verification_scope": "single_pass_full_decode_loudness_and_captions",
+        "full_decode_performed": verified,
+        "loudness_measured": verified and rendered["audio"],
+        "verify_seconds": verify_seconds,
         "failures": failures,
         "warnings": warnings,
         "metrics": {
