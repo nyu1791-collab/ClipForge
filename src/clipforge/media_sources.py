@@ -314,6 +314,19 @@ class RemoteMedia:
             ) from None
 
     def _download(self, audio_only, quality):
+        saved = os.environ.get("CLIPFORGE_SAVED_SOURCE_DIRECTORY")
+        if saved:
+            # Explicit private-source reuse must never fall through to another fetch.
+            directory = Path(saved)
+            receipt = json.loads((directory / "acquisition-receipt.json").read_text())
+            source = directory / "source.mp4"
+            if (receipt.get("status") != "success" or receipt.get("source_url") != self.url
+                    or source.is_symlink() or not 0 < source.stat().st_size <= self.max_bytes
+                    or not 0 < receipt.get("duration", 0) <= self.max_seconds
+                    or not 0 < receipt.get("height", 0) <= 360):
+                raise PipelineError("Saved source does not match this request")
+            return source, {"duration": receipt["duration"], "height": receipt["height"],
+                            "video_start": 0, "has_video": True}
         from yt_dlp import YoutubeDL
         from yt_dlp.utils import DownloadError
 

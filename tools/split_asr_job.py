@@ -348,22 +348,10 @@ def run(args):
         finish(source, args.output, plan, part_directories, os.environ["GITHUB_RUN_ID"])
         print("All ASR parts verified and merged; topics allocated once.", flush=True)
     finally:
-        for tag in staged:
-            try:
-                github_cli.run(
-                    "release",
-                    "delete",
-                    tag,
-                    "--repo",
-                    PRIVATE_REPO,
-                    "--yes",
-                    "--cleanup-tag",
-                )
-            except RuntimeError:
-                print(
-                    "Temporary ASR input cleanup remains for the workflow cleanup step.",
-                    file=sys.stderr,
-                )
+        # Returned transcripts share these releases with the input WAV. Only the
+        # caller can confirm that the merged output has been durably uploaded.
+        if staged:
+            print("Private ASR part releases retained until merged output is saved.", flush=True)
 
 
 def main():

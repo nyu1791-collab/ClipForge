@@ -367,6 +367,22 @@ def render_stage(payload, output, report, timings, environment):
             raise RuntimeError("Invalid configuration file")
         arguments += ["--config", stage["config_file"]]
     stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
+    if payload.get("saved_source_release"):
+        tag = payload["saved_source_release"]
+        if not re.fullmatch(r"clipforge-youtube-source-[0-9]+", tag):
+            raise RuntimeError("Invalid saved source release")
+        bundles = ReleaseBundles(payload["github_token"])
+        release = bundles.json_request("GET", "https://api.github.com/repos/nyu1791-collab/ai-model-workers/releases/tags/" + tag)
+        assets = {a["name"]: a for a in release["assets"]}
+        saved = WORK / "saved-source"
+        saved.mkdir(mode=0o700)
+        with timed(timings, "saved_source_transfer"):
+            bundles.download_asset(assets["acquisition-receipt.json"], saved / "acquisition-receipt.json", 65536)
+            receipt = json.loads((saved / "acquisition-receipt.json").read_text())
+            if receipt.get("status") != "success" or receipt.get("files") != ["source.mp4"]:
+                raise RuntimeError("Saved source acquisition did not succeed")
+            bundles.download_asset(assets["source.mp4"], saved / "source.mp4", 6 * 1024**3)
+        stage_env["CLIPFORGE_SAVED_SOURCE_DIRECTORY"] = str(saved)
     if payload.get("youtube_cookies_b64"):
         stage_env["YOUTUBE_COOKIES_B64"] = payload["youtube_cookies_b64"]
     invocation = 'source tools/colab_cache_env.sh && exec "$@"'
