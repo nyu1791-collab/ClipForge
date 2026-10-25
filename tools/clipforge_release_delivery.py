@@ -169,17 +169,38 @@ def deliver():
     if transfer.get("source_ref") != source:
         raise RuntimeError("Render source identity differs")
     auth = authorize_target()
-    print("DELIVERY_STAGE=create_folder", flush=True)
-    with request(
-        "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
-        "POST",
-        payload={
-            "name": "ClipForge 切り抜き " + request_id[:8],
-            "mimeType": "application/vnd.google-apps.folder",
-        },
-        headers=auth,
-    ) as response:
-        folder = json.load(response)
+    resume_file = os.environ.get("DRIVE_RESUME_FROM_FILE", "")
+    if resume_file:
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", resume_file):
+            raise RuntimeError("DRIVE_INVALID_RESUME_FILE")
+        print("DELIVERY_STAGE=resolve_existing_folder", flush=True)
+        with request("https://www.googleapis.com/drive/v3/files/" + resume_file
+                     + "?fields=id,name,parents,size,appProperties,trashed", headers=auth) as response:
+            anchor = json.load(response)
+        anchor_name = "delivery/clips/clip-001/video.mp4"
+        if (anchor.get("trashed") or anchor.get("name") != "clip-01.mp4"
+                or len(anchor.get("parents", [])) != 1
+                or anchor.get("appProperties", {}).get("sha256") != transfer["producer_sha256"].get(anchor_name)
+                or int(anchor.get("size", -1)) != transfer["files"][anchor_name]["bytes"]):
+            raise RuntimeError("DRIVE_RESUME_SOURCE_MISMATCH")
+        with request("https://www.googleapis.com/drive/v3/files/" + anchor["parents"][0]
+                     + "?fields=id,mimeType,trashed,webViewLink", headers=auth) as response:
+            folder = json.load(response)
+        if folder.get("trashed") or folder.get("mimeType") != "application/vnd.google-apps.folder":
+            raise RuntimeError("DRIVE_RESUME_FOLDER_INVALID")
+    else:
+        print("DELIVERY_STAGE=create_folder", flush=True)
+        with request(
+            "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
+            "POST",
+            payload={
+                "name": "ClipForge 切り抜き " + request_id[:8],
+                "mimeType": "application/vnd.google-apps.folder",
+            },
+            headers=auth,
+        ) as response:
+            folder = json.load(response)
+    print("DRIVE_FOLDER=" + folder["webViewLink"], flush=True)
     transfer_started = time.monotonic()
     print("DELIVERY_STAGE=fetch_outputs", flush=True)
     download(run_id, name, root)
@@ -208,6 +229,18 @@ def deliver():
     outputs = [(clip, f"clip-{i:02}.mp4") for i, clip in enumerate(clips, 1)] + [
         (records, records.name)
     ]
+    existing = {}
+    if resume_file:
+        query = urllib.parse.urlencode({
+            "q": "'" + folder["id"] + "' in parents and trashed = false",
+            "fields": "files(id,name,size,webViewLink,appProperties),nextPageToken", "pageSize": 100,
+        })
+        with request("https://www.googleapis.com/drive/v3/files?" + query, headers=auth) as response:
+            listing = json.load(response)
+        if listing.get("nextPageToken"):
+            raise RuntimeError("DRIVE_RESUME_FOLDER_TOO_LARGE")
+        for item in listing.get("files", []):
+            existing.setdefault(item["name"], []).append(item)
     for path, filename in outputs:
         file_started = time.monotonic()
         expected = (
@@ -216,6 +249,16 @@ def deliver():
             else None
         )
         size = path.stat().st_size
+        if filename in existing:
+            matches = existing[filename]
+            if (len(matches) != 1 or int(matches[0].get("size", -1)) != size
+                    or (expected and matches[0].get("appProperties", {}).get("sha256") != expected)):
+                raise RuntimeError("DRIVE_EXISTING_FILE_MISMATCH")
+            print("DRIVE_FILE_REUSED=" + json.dumps({
+                "name": filename, "link": matches[0]["webViewLink"], "bytes": size,
+                "sha256": expected, "remote_readback_performed": False,
+            }), flush=True)
+            continue
         print("DELIVERY_STAGE=upload:" + filename, flush=True)
         mime = "video/mp4" if path.suffix == ".mp4" else "application/zip"
         with request(
