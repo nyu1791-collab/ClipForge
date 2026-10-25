@@ -37,7 +37,7 @@
             "GH_TOKEN": "${{ github.token }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/5c3166b02b93089240977ed12bae46a47b91ec60...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the direct-transfer production source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
@@ -186,7 +186,7 @@
             "GH_TOKEN": "${{ github.token }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/5c3166b02b93089240977ed12bae46a47b91ec60...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the direct-transfer production source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {

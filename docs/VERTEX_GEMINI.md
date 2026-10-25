@@ -15,7 +15,7 @@
 2. 次のコマンドを実行する。
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/nyu1791-collab/ClipForge/fix/pr18-verified-transfer/tools/setup_vertex_actions.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/nyu1791-collab/ClipForge/b3898a6f3035817ace8bb0b1a04fb6d724c08789/tools/setup_vertex_actions.sh | bash
    ```
 
    Vertex APIの有効化、専用サービスアカウントと鍵なしGitHub OIDC接続を作る。サービスアカウントキー・APIキーは作らない。
