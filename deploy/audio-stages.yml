@@ -42,6 +42,11 @@ on:
         description: Committed config.NAME.example.json at source_ref (render; merge uses the parts' file)
         type: string
         default: 'config.landscape.example.json'
+      result_store:
+        description: Temporary private output transfer; the final delivery is Google Drive
+        type: choice
+        options: [artifact, release]
+        default: artifact
 permissions:
   contents: write
   actions: read
@@ -159,13 +164,22 @@ jobs:
             uv run --no-sync python tools/run_audio_stage.py --stage "$AUDIO_STAGE" "$@"
           fi
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.result_store != 'release'
         with:
           name: clipforge-result-${{ inputs.request_id }}
           path: artifacts/audio-stage/
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+      - name: Save the verified private result transfer
+        if: success() && inputs.result_store == 'release'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/src
+          RESULT_DIRECTORY: ${{ github.workspace }}/artifacts/audio-stage
+          RESULT_NAME: clipforge-result-${{ inputs.request_id }}
+        run: python3 -m clipforge.github_cli publish "$RESULT_DIRECTORY" "$RESULT_NAME"
   colab-render:
     if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto'
     runs-on: ubuntu-24.04
@@ -245,13 +259,22 @@ jobs:
         run: |
           "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && inputs.result_store != 'release'
         with:
           name: clipforge-result-${{ inputs.request_id }}
           path: ${{ runner.temp }}/clipforge-out/
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+      - name: Save the verified private result transfer
+        if: success() && inputs.result_store == 'release'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/clipforge-source/src
+          RESULT_DIRECTORY: ${{ runner.temp }}/clipforge-out
+          RESULT_NAME: clipforge-result-${{ inputs.request_id }}
+        run: python3 -m clipforge.github_cli publish "$RESULT_DIRECTORY" "$RESULT_NAME"
       - name: Delete the private transfer release
         id: input-cleanup
         timeout-minutes: 10

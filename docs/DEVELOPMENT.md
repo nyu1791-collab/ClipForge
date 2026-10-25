@@ -34,6 +34,8 @@ uv run --no-sync ruff format --check PATH_TO_CHANGED_FILE
 
 動画・CPU ASRの合成素材検査は、アプリコード・動画fixture・このworkflowの変更時に自動実行する。文書や開発ツールだけの変更では省略する。差分の基点が浅い履歴にない場合は、安全側で実行する。手動実行では `video_checks=true` を明示する。モデルのダウンロードと実際のCPU処理が発生するが、Colabや外部LLMは起動しない。
 
+検査結果のArtifact保存は報告用。保存枠の上限で添付できない場合も検査本体の成功・失敗を保持し、保存失敗はActionsに警告として残す。
+
 依存スキャンは報告用で、検出0件を保証しない。`Build package` は必要なときに手動実行し、構文とwheelを確認する。動画生成や公開は行わない。
 
 ## 変更後の見直し
