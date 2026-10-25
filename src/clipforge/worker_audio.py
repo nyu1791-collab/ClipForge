@@ -92,7 +92,7 @@ def restore_analysis(previous, output, previous_id):
         or receipt.get("status")
         not in {"topics_allocated", "awaiting_video_review", "selection_ready"}
         or manifest.get("status") != receipt["status"]
-        or manifest.get("model_generation_requests") not in {0, 1, 2}
+        or manifest.get("model_generation_requests") not in {0, 1, 2, 4}
     ):
         raise PipelineError("previous analysis identity or completion state mismatch")
     url = canonical(manifest["source_url"])
@@ -318,6 +318,8 @@ def execute(
                         "elapsed_sec": diagnostics["elapsed_sec"],
                         "generation_requests": diagnostics["generation_requests"],
                         "source_tool": diagnostics["source_tool"],
+                        "requests": diagnostics["requests"],
+                        "model_roles": diagnostics["identity"]["model_roles"],
                         "usage": diagnostics.get("usage", {}),
                     },
                 )

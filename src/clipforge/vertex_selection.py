@@ -1,6 +1,8 @@
 """One Vertex Gemini call to select long, coherent topics from saved ASR."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+import threading
 import os
 from pathlib import Path
 import time
@@ -11,6 +13,10 @@ from .storage import PipelineError, write_json
 from .media_sources import canonical
 
 MODEL = "gemini-3.8-flash"
+MODEL_ROLES = {
+    "director": {"model": MODEL, "thinking_level": "MEDIUM"},
+    "simple_worker": {"model": "gemini-3.5-flash", "thinking_level": "MINIMAL"},
+}
 PROJECT = "project-fdadb4dd-cb77-4270-9cd"
 LOCATION = "global"
 
@@ -26,7 +32,8 @@ def select(analysis, settings, output):
         "project": PROJECT,
         "location": LOCATION,
         "requested_count": settings.clips,
-        "instruction_version": 2,
+        "instruction_version": 3,
+        "model_roles": MODEL_ROLES,
     }
     if state.exists():
         saved = json.loads(state.read_text())
@@ -68,7 +75,6 @@ def select(analysis, settings, output):
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.2,
             "maxOutputTokens": 8192,
             "responseMimeType": "application/json",
             "responseSchema": {
@@ -135,11 +141,19 @@ def select(analysis, settings, output):
     }
     write_json(state, record)
     started = time.monotonic()
-    endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{LOCATION}/publishers/google/models/{MODEL}:generateContent"
 
-    def generate(payload, purpose):
-        record["generation_requests"] += 1
-        write_json(state, record)
+    record_lock = threading.Lock()
+
+    def generate(payload, purpose, role="director"):
+        profile = MODEL_ROLES[role]
+        model = profile["model"]
+        payload.setdefault("generationConfig", {})["thinkingConfig"] = {
+            "thinkingLevel": profile["thinking_level"]
+        }
+        endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{LOCATION}/publishers/google/models/{model}:generateContent"
+        with record_lock:
+            record["generation_requests"] += 1
+            write_json(state, record)
         tick = time.monotonic()
         req = urllib.request.Request(
             endpoint,
@@ -155,64 +169,67 @@ def select(analysis, settings, output):
         if len(raw) > 2 * 1024**2:
             raise PipelineError("VERTEX_RESPONSE_TOO_LARGE")
         response = json.loads(raw)
-        record["requests"].append(
-            {
-                "purpose": purpose,
-                "elapsed_sec": round(time.monotonic() - tick, 3),
-                "usage": response.get("usageMetadata", {}),
-                "model_version": response.get("modelVersion"),
-            }
-        )
-        write_json(state, record)
+        with record_lock:
+            record["requests"].append(
+                {
+                    "purpose": purpose,
+                    "role": role,
+                    "requested_model": model,
+                    "thinking_level": profile["thinking_level"],
+                    "elapsed_sec": round(time.monotonic() - tick, 3),
+                    "usage": response.get("usageMetadata", {}),
+                    "model_version": response.get("modelVersion"),
+                }
+            )
+            write_json(state, record)
         return response
 
     try:
         source_url = canonical(analysis["source_url"])
-        tools = [
-            {
-                "functionDeclarations": [
-                    {
-                        "name": "resolve_source_url",
-                        "description": "Resolve a supplied source URL and retrieve its saved metadata. The render worker later downloads only the selected media intervals.",
-                        "parameters": {
-                            "type": "OBJECT",
-                            "required": ["url"],
-                            "properties": {"url": {"type": "STRING"}},
-                        },
-                    }
-                ]
-            }
-        ]
+        tool = {
+            "name": "delegate_simple_work",
+            "description": "Give two simple tasks to two parallel Gemini 3.5 Flash workers.",
+            "parameters": {
+                "type": "OBJECT",
+                "required": ["url_task", "format_task"],
+                "properties": {
+                    "url_task": {"type": "STRING"},
+                    "format_task": {"type": "STRING"},
+                },
+            },
+        }
+        tools = [{"functionDeclarations": [tool]}]
         intro = {
             "role": "user",
             "parts": [
                 {
-                    "text": "配信URLの解決ツールを使い、保存済み音声・ASRを再利用して編集を計画してください。"
-                    "対象はこのURLだけです。署名付きURLや認証情報を要求せず、元配信を変更しないでください: "
-                    + source_url
+                    "text": "あなたはGemini 3.8 Flashの指示役です。Gemini 3.5 Flashの作業役2体に、"
+                    "それぞれ非常に簡単な作業を1つ指示してください。url_taskは対象URLの解決ツールの呼び出し、"
+                    "format_taskは字幕と見出しの短い整形ルールの作成です。分析・区間選定はあなた自身が担当し、"
+                    "作業役へは全文ASRを渡しません。別モデル・追加生成・監査・承認待ちは指示しないでください。"
+                    "対象URL: " + source_url
                 }
             ],
         }
-        resolved = generate(
+        delegated = generate(
             {
                 "contents": [intro],
                 "tools": tools,
                 "toolConfig": {
                     "functionCallingConfig": {
                         "mode": "ANY",
-                        "allowedFunctionNames": ["resolve_source_url"],
+                        "allowedFunctionNames": [tool["name"]],
                     }
                 },
                 "generationConfig": {"maxOutputTokens": 1024},
             },
-            "source_url_tool",
+            "director_delegation",
         )
-        content = resolved["candidates"][0]["content"]
+        content = delegated["candidates"][0]["content"]
         calls = [p["functionCall"] for p in content["parts"] if "functionCall" in p]
-        if len(calls) != 1 or calls[0]["name"] != "resolve_source_url":
-            raise PipelineError("VERTEX_SOURCE_TOOL_INVALID")
-        if canonical(calls[0]["args"]["url"]) != source_url:
-            raise PipelineError("VERTEX_SOURCE_URL_MISMATCH")
+        if len(calls) != 1 or calls[0]["name"] != tool["name"]:
+            raise PipelineError("VERTEX_DELEGATION_INVALID")
+        tasks = calls[0]["args"]
         source = {
             "source_url": source_url,
             "duration": analysis["duration"],
@@ -220,21 +237,125 @@ def select(analysis, settings, output):
             "saved_asr_available": True,
             "supported_routes": ["Kick", "YouTube", "Twitch", "HTTPS"],
         }
+
+        def work_url():
+            url_tool = {
+                "name": "resolve_source_url",
+                "description": "Resolve only the supplied source URL using saved metadata.",
+                "parameters": {
+                    "type": "OBJECT",
+                    "required": ["url"],
+                    "properties": {"url": {"type": "STRING"}},
+                },
+            }
+            result = generate(
+                {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": "指示役の指示: "
+                                    + tasks["url_task"]
+                                    + "\n対象URLはこれだけです: "
+                                    + source_url
+                                }
+                            ],
+                        }
+                    ],
+                    "tools": [{"functionDeclarations": [url_tool]}],
+                    "toolConfig": {
+                        "functionCallingConfig": {
+                            "mode": "ANY",
+                            "allowedFunctionNames": [url_tool["name"]],
+                        }
+                    },
+                    "generationConfig": {"maxOutputTokens": 512},
+                },
+                "simple_worker_1_url",
+                "simple_worker",
+            )
+            calls = [
+                p["functionCall"]
+                for p in result["candidates"][0]["content"]["parts"]
+                if "functionCall" in p
+            ]
+            if (
+                len(calls) != 1
+                or calls[0]["name"] != url_tool["name"]
+                or canonical(calls[0]["args"]["url"]) != source_url
+            ):
+                raise PipelineError("VERTEX_SOURCE_TOOL_INVALID")
+            return source
+
+        def work_format():
+            result = generate(
+                {
+                    "contents": [
+                        {
+                            "role": "user",
+                            "parts": [
+                                {
+                                    "text": "指示役の指示: "
+                                    + tasks["format_task"]
+                                    + "\n内容分析や事実の推測はせず、整形ルールだけを短い日本語の箇条書きにしてください。"
+                                    "見出し20文字以内、字幕は1行"
+                                    + str(settings.horizontal_line_chars)
+                                    + "文字が目安。発言を創作しない。"
+                                }
+                            ],
+                        }
+                    ],
+                    "generationConfig": {
+                        "maxOutputTokens": 768,
+                        "responseMimeType": "application/json",
+                        "responseSchema": {
+                            "type": "OBJECT",
+                            "required": ["formatting_notes"],
+                            "properties": {
+                                "formatting_notes": {
+                                    "type": "ARRAY",
+                                    "maxItems": 5,
+                                    "items": {"type": "STRING"},
+                                }
+                            },
+                        },
+                    },
+                },
+                "simple_worker_2_format",
+                "simple_worker",
+            )
+            candidate = result["candidates"][0]
+            if candidate.get("finishReason") != "STOP":
+                raise PipelineError("VERTEX_FORMAT_WORKER_INCOMPLETE")
+            text = "".join(
+                p.get("text", "")
+                for p in candidate["content"]["parts"]
+                if not p.get("thought")
+            )
+            return json.loads(text)
+
+        with ThreadPoolExecutor(max_workers=2) as workers:
+            first = workers.submit(work_url)
+            second = workers.submit(work_format)
+            source = first.result()
+            formatting = second.result()
+        record["delegation"] = {
+            "director_instructions": tasks,
+            "workers": {
+                "simple_worker_1_url": source,
+                "simple_worker_2_format": formatting,
+            },
+            "parallel_workers": 2,
+        }
         record["source_tool"] = {"name": "resolve_source_url", "result": source}
+        response = {"name": tool["name"], "response": record["delegation"]["workers"]}
+        if calls[0].get("id"):
+            response["id"] = calls[0]["id"]
         body["contents"] = [
             intro,
             content,
-            {
-                "role": "user",
-                "parts": [
-                    {
-                        "functionResponse": {
-                            "name": "resolve_source_url",
-                            "response": source,
-                        }
-                    }
-                ],
-            },
+            {"role": "user", "parts": [{"functionResponse": response}]},
             *body["contents"],
         ]
         body["tools"] = tools
