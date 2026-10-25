@@ -943,7 +943,7 @@ def local_merge_env(collector, tmp_path, monkeypatch):
             "directory": f"delivery/clips/clip-{index:03}",
             "key": "synthetic-render-key",
             "quality": quality,
-            "media": {"width": 1920, "height": 1080, "audio_sample_rate": 48000},
+            "media": {"width": 640, "height": 360, "audio_sample_rate": 48000},
             "sha256": {path.name: sha(path) for path in clip.iterdir()},
         }
         manifest = {
