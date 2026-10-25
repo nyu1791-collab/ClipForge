@@ -60,6 +60,14 @@ python tools/submit_job.py --collect REQUEST_ID --output /private/result-NEW
 
 音声後段の回収には `python tools/submit_audio_stage.py --collect REQUEST_ID --output /private/stage-NEW` を使う。回収は新しい出力先へ行い、依頼ID・元コミットSHA・前段run・manifest・各ファイルのSHA-256を検査する。`complete` やActions成功は、人による内容・字幕確認や公開とは別。
 
+### Actions保存枠が満杯の場合の一時転送
+
+workerの `result_store=release` は、結果を非公開 `clipforge-output-result-REQUEST_ID`（中間解析は `clipforge-output-analysis-REQUEST_ID`）へ保存する明示指定。最終納品先はGoogle Driveで、Releaseは段階間の受け渡しだけに使う。動画やASRをGitへ入れない。
+
+同じ依頼のActions artifactがない場合、共通GitHub runnerはこの固定名のReleaseを確認する。非公開repo、run ID、資料名、コードSHA、サイズとSHA-256を照合し、展開前にパス・symlink・件数・2GiBの予算を検査する。既存の出力先は上書きしない。段階ごとのreceipt・ASR再利用検査も続けて行う。
+
+Releaseの `expires_at` は7日後の削除予定を示す記録であり、GitHubの自動期限ではない。Driveへの転送とチェックサム確認後に、その依頼で作った一時Releaseだけを削除する。途中で停止した場合は記録したタグを確認して整理する。応答不明時に同じ処理を自動再送しない。
+
 ### ローカル受付票がない環境での音声解析の回収
 
 期待値を明示し、成功run・依頼ID・元コミット・音声SHA-256・ASR・話題・manifestを検査する。ローカル記録は書き込まない。受付票がある場合は通常の回収を使う。
