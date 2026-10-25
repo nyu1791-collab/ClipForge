@@ -52,3 +52,7 @@
 ## ユーザー指定のVertex接続
 
 話題選定と明示的なOpenCode作業は`n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`で`gemini-3.8-flash`を使う。Cloudクレジット利用はユーザーが選択済み。Colab用の別アカウントや既存の不明なGeminiキーを流用しない。GitHub OIDCで短期認証し、候補選定は1リクエスト、失敗時の再送・モデル変更なし。OpenCodeの通常動画制作への追加、監査・確認工程の復活はしない。モデル提供と実推論成功は未確認のまま保証しない。
+
+## 公開ClipForgeへの実行入口統合
+
+ユーザーが公開リポジトリへの統合を指定したため、制作・段階再開・OpenCode・Drive upload-releaseのActions定義をClipForgeで管理する。動画・ASRの公開許可は含まないため、ai-model-workersの非公開Releaseを保存庫として維持する。公開Artifactへ制作データを出さない。Google OIDC許可先はClipForgeの検証ブランチへ変更する。Secretsは所有者がClipForgeへ登録する。以前のmainマージ禁止は維持し、workflowのdefault branch登録前に稼働済みと報告しない。移行状態はdocs/PUBLIC_ACTIONS.md。

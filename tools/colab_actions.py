@@ -380,6 +380,9 @@ class Controller:
         payload = {
             **record,
             "github_token": token,
+            "github_repository": os.environ.get(
+                "GITHUB_REPOSITORY", "nyu1791-collab/ClipForge"
+            ),
             "workflow_run": record.get("workflow_run")
             or os.environ.get("GITHUB_RUN_ID", "manual"),
         }

@@ -1,6 +1,8 @@
+> 公開ClipForgeへのActions統合を準備中です。移行設定と未完了事項は[PUBLIC_ACTIONS.md](docs/PUBLIC_ACTIONS.md)を参照してください。動画・ASRの保存庫は非公開を維持します。
+
 # ClipForge
 
-同じ配信から、話題別の**横動画（16:9）**を作るパイプラインです。動画・音声・文字起こしは非公開の worker（`nyu1791-collab/ai-model-workers`）の GitHub Actions と Colab で扱い、このリポジトリにはコードだけを置きます。
+同じ配信から、話題別の**横動画（16:9）**を作るパイプラインです。コードと実行用Actionsはこの公開リポジトリで管理し、計算はActionsとColabで行います。動画・音声・文字起こしは非公開の保存庫へ転送します。
 
 通常経路の設定・工程は [GPU_ROUTE.md](docs/GPU_ROUTE.md) を正本とする。
 

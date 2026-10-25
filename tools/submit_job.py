@@ -16,7 +16,8 @@ from clipforge import github_cli
 from clipforge.release_transfer import download_stage
 from clipforge.storage import digest, write_json
 
-REPO = "nyu1791-collab/ai-model-workers"
+REPO = os.environ.get("CLIPFORGE_ACTIONS_REPO", "nyu1791-collab/ClipForge")
+STORAGE_REPO = "nyu1791-collab/ai-model-workers"
 SOURCE = "nyu1791-collab/ClipForge"
 WORKFLOW = "clipforge.yml"
 MAX_SETTINGS_JSON_BYTES = 16 * 1024
@@ -454,7 +455,7 @@ def input_cleanup_status(tag):
     if not re.fullmatch(r"clipforge-input-[a-f0-9]{32}", str(tag)):
         return "UNKNOWN"
     try:
-        gh("api", f"repos/{REPO}/releases/tags/{tag}", "--jq", ".tag_name")
+        gh("api", f"repos/{STORAGE_REPO}/releases/tags/{tag}", "--jq", ".tag_name")
     except RuntimeError as error:
         return "DELETED" if "HTTP 404" in str(error) else "UNKNOWN"
     except Exception:
@@ -782,7 +783,7 @@ def main():
         parser.error("audio reuse requires a URL submission and a valid request ID")
     if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
         raise RuntimeError("use the authenticated owner VM connection")
-    if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
+    if not gh("api", "repos/" + STORAGE_REPO, "--jq", ".private").strip() == "true":
         raise RuntimeError("worker repository must remain private")
     if args.cleanup_tag:
         if not re.fullmatch(r"clipforge-input-[a-f0-9]{32}", args.cleanup_tag):
@@ -792,7 +793,7 @@ def main():
             "delete",
             args.cleanup_tag,
             "--repo",
-            REPO,
+            STORAGE_REPO,
             "--yes",
             "--cleanup-tag",
         )

@@ -15,19 +15,19 @@
 2. 次のコマンドを実行する。
 
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/nyu1791-collab/ClipForge/b3898a6f3035817ace8bb0b1a04fb6d724c08789/tools/setup_vertex_actions.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/nyu1791-collab/ClipForge/fix/pr18-verified-transfer/tools/setup_vertex_actions.sh | bash
    ```
 
    Vertex APIの有効化、専用サービスアカウントと鍵なしGitHub OIDC接続を作る。サービスアカウントキー・APIキーは作らない。
 3. 最後に表示されるプロジェクト番号を、private workerのActions変数`CLIPFORGE_VERTEX_PROJECT_NUMBER`へ登録する。番号は秘密情報ではない。
 
-Google側で権限を与えるのは`nyu1791-collab/ai-model-workers`の`fix/pr18-verified-transfer`ブランチだけ。専用の権限はVertexの推論とそのプロジェクト利用に限定する。他のGoogleアカウントの資格情報は流用しない。mainの変更は行わない。
+Google側で権限を与えるのは`nyu1791-collab/ClipForge`の`fix/pr18-verified-transfer`ブランチだけ。専用の権限はVertexの推論とそのプロジェクト利用に限定する。他のGoogleアカウントの資格情報は流用しない。mainの変更は行わない。
 
 Cloud Shell:
 https://console.cloud.google.com/home/dashboard?project=project-fdadb4dd-cb77-4270-9cd&cloudshell=true
 
 GitHub変数の登録:
-https://github.com/nyu1791-collab/ai-model-workers/settings/variables/actions/new
+https://github.com/nyu1791-collab/ClipForge/settings/variables/actions/new
 
 ## ClipForge Actionsでの自動呼び出し
 
@@ -50,10 +50,10 @@ ActionsでOpenCodeを実行する場合は、Google認証Actionの`create_creden
 
 Vertexハーネスは1タスク・同時1起動・起動再試行なし。ローカルのOpenCodeサーバーのイベントへ先に接続し、通信再試行の通知が来たらサーバーとクライアントを停止する。監視接続の再接続もしない。自動タイトル生成と自動コンテキスト要約は無効にする。コード編集やツール操作に伴うエージェントの複数ターンは、候補選定の1回のAPI呼び出しとは別に料金が発生し得る。OpenCodeからテスト・監査・追加生成を勝手に起動させない。
 
-private workerの既存登録済みworkflowパス`clipforge-colab-status.yml`を、検証ブランチ上だけOpenCodeタスク用に置き換える。新規workflowをmainへ入れずに手動起動できるよう、ファイル名のみ既存のものを使う。旧ステータス監査は復活しない。
+OpenCodeの実行定義はClipForgeの`clipforge-opencode.yml`へ統合する。default branchへの登録前は手動dispatchできない。移行状態は[PUBLIC_ACTIONS.md](PUBLIC_ACTIONS.md)を参照。
 
 ```bash
-gh workflow run clipforge-colab-status.yml --repo nyu1791-collab/ai-model-workers \
+gh workflow run clipforge-opencode.yml --repo nyu1791-collab/ClipForge \
   --ref fix/pr18-verified-transfer -f source_ref=FULL_SOURCE_SHA \
   -f mode=read -f task='実行したい具体的な作業をここに書く'
 ```

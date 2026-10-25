@@ -16,7 +16,8 @@ from clipforge import github_cli
 from clipforge.release_transfer import download_stage
 from clipforge.storage import PipelineError, digest, write_json
 
-REPO = "nyu1791-collab/ai-model-workers"
+REPO = os.environ.get("CLIPFORGE_ACTIONS_REPO", "nyu1791-collab/ClipForge")
+STORAGE_REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "fix/pr18-verified-transfer"
 WORKFLOW = "clipforge-stages.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
@@ -723,7 +724,7 @@ def main(argv=None):
                 )
         if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
             raise AudioStageError("the approved owner connection is required")
-        if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
+        if not gh("api", "repos/" + STORAGE_REPO, "--jq", ".private").strip() == "true":
             raise AudioStageError("audio stages require the private worker repository")
         runs = json.loads(
             gh(

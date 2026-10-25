@@ -24,14 +24,14 @@ gcloud projects add-iam-policy-binding "$vertex_project" --member="serviceAccoun
 if ! gcloud iam workload-identity-pools describe clipforge-actions --location=global --project="$vertex_project" >/dev/null 2>&1; then
   gcloud iam workload-identity-pools create clipforge-actions --location=global --display-name='ClipForge Actions' --project="$vertex_project" --quiet
 fi
-vertex_condition="assertion.repository == 'nyu1791-collab/ai-model-workers' && assertion.ref == 'refs/heads/fix/pr18-verified-transfer'"
+vertex_condition="assertion.repository == 'nyu1791-collab/ClipForge' && assertion.ref == 'refs/heads/fix/pr18-verified-transfer'"
 vertex_mapping='google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref'
 if gcloud iam workload-identity-pools providers describe github --workload-identity-pool=clipforge-actions --location=global --project="$vertex_project" >/dev/null 2>&1; then
   gcloud iam workload-identity-pools providers update-oidc github --workload-identity-pool=clipforge-actions --location=global --project="$vertex_project" --issuer-uri='https://token.actions.githubusercontent.com' --attribute-mapping="$vertex_mapping" --attribute-condition="$vertex_condition" --quiet
 else
   gcloud iam workload-identity-pools providers create-oidc github --workload-identity-pool=clipforge-actions --location=global --project="$vertex_project" --issuer-uri='https://token.actions.githubusercontent.com' --attribute-mapping="$vertex_mapping" --attribute-condition="$vertex_condition" --quiet
 fi
-gcloud iam service-accounts add-iam-policy-binding "$vertex_sa" --project="$vertex_project" --role=roles/iam.workloadIdentityUser --member="principalSet://iam.googleapis.com/projects/$vertex_number/locations/global/workloadIdentityPools/clipforge-actions/attribute.repository/nyu1791-collab/ai-model-workers" --quiet >/dev/null
+gcloud iam service-accounts add-iam-policy-binding "$vertex_sa" --project="$vertex_project" --role=roles/iam.workloadIdentityUser --member="principalSet://iam.googleapis.com/projects/$vertex_number/locations/global/workloadIdentityPools/clipforge-actions/attribute.repository/nyu1791-collab/ClipForge" --quiet >/dev/null
 printf '\nGoogle Cloud setup completed. No API key or service-account key was created.\n'
 printf 'GitHub Actions variable name: CLIPFORGE_VERTEX_PROJECT_NUMBER\nValue: %s\n' "$vertex_number"
-printf 'Register here: https://github.com/nyu1791-collab/ai-model-workers/settings/variables/actions/new\n'
+printf 'Register here: https://github.com/nyu1791-collab/ClipForge/settings/variables/actions/new\n'

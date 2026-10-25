@@ -425,7 +425,9 @@ def main():
             "CLIPFORGE_REQUIRE_CUDA": "0",
             "CLIPFORGE_SETUP_TIMINGS": str(WORK / "setup-timings.tsv"),
             "CLIPFORGE_SOURCE_REF": payload["source_ref"],
-            "GITHUB_REPOSITORY": "nyu1791-collab/ai-model-workers",
+            "GITHUB_REPOSITORY": payload.get(
+                "github_repository", "nyu1791-collab/ai-model-workers"
+            ),
             "GITHUB_RUN_ID": payload["workflow_run"],
             "PYTHONUNBUFFERED": "1",
         }
