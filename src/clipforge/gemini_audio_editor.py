@@ -225,7 +225,7 @@ def run(args):
             "phase": phase, "model": model, "thinking_level": thinking,
             "status": "submitting", "request_bytes": len(encoded),
             "audio_file_count": len(audio_payloads), "audio_bytes": audio_bytes,
-            "transport": "streamGenerateContent_sse",
+            "transport": "streamGenerateContent_sse" if phase == "careful-clip-transcript" else "generateContent",
             "max_output_tokens": min(MAX_OUTPUT_TOKENS, max_tokens),
         }
         record["requests"].append(item)
@@ -235,27 +235,50 @@ def run(args):
         tick = time.monotonic()
         item["started_at_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         try:
+            streaming = phase == "careful-clip-transcript"
             endpoint = (
                 f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/"
-                f"publishers/google/models/{model}:streamGenerateContent?alt=sse"
+                f"publishers/google/models/{model}:"
+                + ("streamGenerateContent?alt=sse" if streaming else "generateContent")
             )
             headers = {
                 "Authorization": "Bearer " + token,
                 "Content-Type": "application/json",
-                "Accept": "text/event-stream",
             }
+            if streaming:
+                headers["Accept"] = "text/event-stream"
             request = urllib.request.Request(endpoint, method="POST", data=encoded, headers=headers)
             with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
                 item["http_status"] = response.status
-                result, response_text, response_bytes, event_count = collect_sse_response(
-                    response, out / (phase + ".stream.sse.txt"), item, save
-                )
-            item.update(stream_bytes=response_bytes, stream_events=event_count)
+                for key in ("x-goog-request-id", "x-cloud-trace-context", "x-guploader-uploadid"):
+                    value = response.headers.get(key)
+                    if value:
+                        item.setdefault("response_ids", {})[key] = value
+                if streaming:
+                    item["transport"] = "streamGenerateContent_sse"
+                    result, response_text, response_bytes, event_count = collect_sse_response(
+                        response, out / (phase + ".stream.sse.txt"), item, save
+                    )
+                    item.update(stream_bytes=response_bytes, stream_events=event_count)
+                else:
+                    raw_response = response.read(MAX_RESPONSE_BYTES + 1)
+                    if len(raw_response) > MAX_RESPONSE_BYTES:
+                        raise PipelineError("Gemini response exceeded the bounded size")
+                    item["response_bytes"] = len(raw_response)
+                    response_object = json.loads(raw_response)
+                    write_json(out / (phase + ".api-response.json"), response_object)
+                    result = response_object
+                    candidate = result["candidates"][0]
+                    response_text = "".join(
+                        part.get("text", "")
+                        for part in candidate.get("content", {}).get("parts", [])
+                        if not part.get("thought")
+                    )
             item.update(usage=result.get("usageMetadata", {}), model_version=result.get("modelVersion"))
             candidate = result["candidates"][0]
             item["finish_reason"] = candidate.get("finishReason")
             if item["finish_reason"] != "STOP":
-                raise PipelineError("Gemini response did not finish with STOP; raw stream was preserved")
+                raise PipelineError("Gemini response did not finish with STOP; raw response was preserved")
             raw_path = out / (phase + ".raw.txt")
             raw_path.write_text(response_text, encoding="utf-8")
             if phase == "whole-audio-transcript":
@@ -466,7 +489,8 @@ def main():
     try:
         run(args)
     except Exception as error:
-        print("GEMINI_AUDIO_EDITOR_FAILED=" + type(error).__name__, flush=True)
+        safe_error = re.sub(r"(?i)Bearer\s+[^\s,;]+", "Bearer [REDACTED]", str(error))[:2000]
+        print("GEMINI_AUDIO_EDITOR_FAILED=" + type(error).__name__ + ": " + safe_error, flush=True)
         raise SystemExit(1) from None
 
 
