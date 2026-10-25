@@ -11,7 +11,12 @@ def main():
         description="CPU/CUDA video clipping and visual Gemini selection"
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ["run", "analyze", "cut"]:
+    cut = sub.add_parser("cut", help="fast keyframe-based cut without encoding")
+    cut.add_argument("input", type=Path)
+    cut.add_argument("--output", type=Path, required=True, help="new output directory")
+    cut.add_argument("--start", type=float, required=True)
+    cut.add_argument("--end", type=float, required=True)
+    for name in ["run", "analyze"]:
         p = sub.add_parser(name)
         p.add_argument("input", type=Path)
         p.add_argument("--output", type=Path, required=True)
@@ -24,37 +29,30 @@ def main():
             "--threads", type=int, help="CPU threads; 0 detects available cores"
         )
         p.add_argument("--video-encoder", choices=["auto", "libx264", "h264_nvenc"])
-        if name in {"run", "analyze"}:
-            p.add_argument("--gemini-model")
-            p.add_argument("--clips", type=int)
-            p.add_argument("--candidates", type=int)
-            p.add_argument("--whisper-model")
-            p.add_argument("--language")
-            p.add_argument(
-                "--device", dest="whisper_device", choices=["auto", "cpu", "cuda"]
-            )
-            p.add_argument(
-                "--compute-type",
-                dest="whisper_compute_type",
-                choices=["auto", "int8", "float16", "float32", "int8_float16"],
-            )
-            p.add_argument("--chat-url")
-            p.add_argument("--chat-offset-seconds", type=float)
-            p.add_argument("--chat-file", type=Path)
-            if name == "run":
-                p.add_argument("--selection-file", type=Path)
-            p.add_argument(
-                "--require-transcript-cache", action="store_true", default=None
-            )
-            p.add_argument(
-                "--transcript-cache",
-                type=str,
-                help="folder of saved transcripts to reuse",
-            )
-        else:
-            p.add_argument("--start", type=float, required=True)
-            p.add_argument("--end", type=float, required=True)
-            p.add_argument("--transcript", type=Path)
+        p.add_argument("--gemini-model")
+        p.add_argument("--clips", type=int)
+        p.add_argument("--candidates", type=int)
+        p.add_argument("--whisper-model")
+        p.add_argument("--language")
+        p.add_argument(
+            "--device", dest="whisper_device", choices=["auto", "cpu", "cuda"]
+        )
+        p.add_argument(
+            "--compute-type",
+            dest="whisper_compute_type",
+            choices=["auto", "int8", "float16", "float32", "int8_float16"],
+        )
+        p.add_argument("--chat-url")
+        p.add_argument("--chat-offset-seconds", type=float)
+        p.add_argument("--chat-file", type=Path)
+        if name == "run":
+            p.add_argument("--selection-file", type=Path)
+        p.add_argument("--require-transcript-cache", action="store_true", default=None)
+        p.add_argument(
+            "--transcript-cache",
+            type=str,
+            help="folder of saved transcripts to reuse",
+        )
     batch = sub.add_parser("batch", help="several videos, each in its own folder")
     batch.add_argument("inputs", type=Path, nargs="+")
     batch.add_argument("--output-root", type=Path, required=True)
@@ -64,8 +62,15 @@ def main():
     batch.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     try:
+        if args.command == "cut":
+            from .media import cut
+
+            result = cut(args.input, args.output, args.start, args.end)
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
+
         from .models import Settings
-        from .pipeline import cut, default_concurrency, run, run_batch
+        from .pipeline import default_concurrency, run, run_batch
 
         config = json.loads(args.config.read_text()) if args.config else {}
         for key in [
@@ -89,7 +94,7 @@ def main():
             value = getattr(args, key, None)
             if value is not None:
                 config[key] = value
-        if args.command in {"cut", "analyze"} or getattr(args, "selection_file", None):
+        if args.command == "analyze" or getattr(args, "selection_file", None):
             config.setdefault("gemini_model", "manual-no-api")
         if (
             args.command == "run"
@@ -129,7 +134,7 @@ def main():
                 args.chat_file,
                 analyze_only=True,
             )
-        elif args.command == "run":
+        else:
             result = run(
                 args.input,
                 args.output,
@@ -137,16 +142,6 @@ def main():
                 args.resume,
                 args.chat_file,
                 args.selection_file,
-            )
-        else:
-            result = cut(
-                args.input,
-                args.output,
-                args.start,
-                args.end,
-                settings,
-                args.transcript,
-                args.resume,
             )
         print(
             json.dumps(

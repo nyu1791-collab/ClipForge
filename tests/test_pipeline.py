@@ -224,16 +224,6 @@ def test_failed_generation_records_failure_and_can_resume(job, settings, monkeyp
     assert not (output / "failure.json").exists()
 
 
-def test_cut_failure_cannot_leave_stale_success(job, settings, monkeypatch):
-    source, output, _ = job
-    pipeline.cut(source, output, 1, 7, settings)
-    (output / "clips/clip-001/video.mp4").write_bytes(b"corrupted")
-    with pytest.raises(PipelineError):
-        pipeline.cut(source, output, 1, 7, settings, resume=True)
-    assert json.loads((output / "manifest.json").read_text())["status"] == "failed"
-    assert (output / "failure.json").is_file()
-
-
 def test_modified_input_during_processing_cannot_complete(job, settings, monkeypatch):
     source, output, _ = job
     original = media.render
@@ -291,14 +281,6 @@ def test_manual_selection_bypasses_gemini(job, settings, tmp_path):
     result = pipeline.run(source, output, settings, selection_file=manual)
     assert result["selection_receipt"]["generation_requests"] == 0
     assert counts["generate"] == counts["preview"] == 0
-
-
-def test_manual_cut_does_not_transcribe_or_call_model(job, settings):
-    source, output, counts = job
-    result = pipeline.cut(source, output, 2, 5, settings)
-    assert result["status"] == "complete"
-    assert counts["asr"] == counts["generate"] == counts["preview"] == 0
-    assert counts["render"] == 1
 
 
 def missing_a_glyph(monkeypatch):

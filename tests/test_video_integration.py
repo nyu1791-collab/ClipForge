@@ -35,7 +35,7 @@ def source_video():
 @pytest.mark.integration
 @pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
 @pytest.mark.parametrize("framing", ["fit", "center-crop"])
-def test_real_cut_subtitles_frames_audio_and_resume(
+def test_real_render_subtitles_frames_audio_and_resume(
     source_video, tmp_path, settings, aspect, framing
 ):
     settings.aspect, settings.framing = aspect, framing
@@ -48,15 +48,19 @@ def test_real_cut_subtitles_frames_audio_and_resume(
             )
         ],
     )
-    reference = tmp_path / "transcript.json"
-    write_json(reference, transcript.model_dump())
     root = Path(os.environ.get("CLIPFORGE_QA_OUTPUT", str(tmp_path)))
     output = root / (aspect.replace(":", "x") + "-" + framing)
     before = digest(source_video)
-    result = pipeline.cut(source_video, output, 13, 19, settings, reference)
+    output.mkdir()
+    clip = SelectedClip(
+        start=13, end=19, candidate_id="manual", title="t", reason="r", confidence=1
+    )
+    result = pipeline.render_clips(
+        source_video, output, [clip], transcript, settings, "fixture"
+    )
     target = output / "clips/clip-001/video.mp4"
     info = media.probe(target)
-    assert result["status"] == "complete"
+    assert len(result) == 1
     assert abs(info["duration"] - 6) < 0.15
     assert info["audio"]
     assert info["height"] == 720
@@ -105,7 +109,9 @@ def test_real_cut_subtitles_frames_audio_and_resume(
     finally:
         capture.release()
     assert (
-        pipeline.cut(source_video, output, 13, 19, settings, reference, resume=True)
+        pipeline.render_clips(
+            source_video, output, [clip], transcript, settings, "fixture"
+        )
         == result
     )
 
@@ -135,7 +141,7 @@ def test_preview_preserves_original_interval(source_video, tmp_path, settings):
 
 
 @pytest.mark.integration
-def test_silent_video_render_has_no_audio(source_video, tmp_path, settings):
+def test_silent_video_cut_has_no_audio(source_video, tmp_path, settings):
     silent = tmp_path / "silent.mp4"
     subprocess.run(
         [
@@ -154,7 +160,7 @@ def test_silent_video_render_has_no_audio(source_video, tmp_path, settings):
         capture_output=True,
         timeout=30,
     )
-    result = pipeline.cut(silent, tmp_path / "result", 13, 19, settings)
+    result = media.cut(silent, tmp_path / "result", 13, 19)
     assert result["status"] == "complete"
     assert not media.probe(tmp_path / "result/clips/clip-001/video.mp4")["audio"]
 

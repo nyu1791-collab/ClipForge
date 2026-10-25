@@ -35,7 +35,6 @@ from .hardware import asr_options, cpu_threads, encode_threads
 from .review import CROP_ANCHORS as CROP_ANCHORS, MAX_CAPTION_FLOOR as MAX_CAPTION_FLOOR
 from .models import Candidate, SelectedClip, Transcript, validate_picks
 from .storage import (
-    TIME_TOLERANCE,
     PipelineError,
     digest,
     failure_fields,
@@ -1228,44 +1227,3 @@ def default_concurrency(settings):
 def _folder_name(path):
     stem = re.sub(r"[^\w-]", "_", Path(path).stem)[:40].strip("._")
     return stem or "video"
-
-
-def cut(source, output, start, end, settings, transcript_file=None, resume=False):
-    os.umask(0o077)
-    source, output, info, key, lock = prepare(source, output, resume, settings)
-    current_stage = "clip_validation"
-    try:
-        start_job(source, output)
-        clip = SelectedClip(
-            start=start,
-            end=end,
-            candidate_id="manual",
-            title="Manual clip",
-            reason="User-selected interval",
-            confidence=1,
-        )
-        if end > info["duration"] + TIME_TOLERANCE:
-            raise PipelineError("clip interval exceeds the input video")
-        transcript = (
-            Transcript.model_validate_json(Path(transcript_file).read_text())
-            if transcript_file
-            else Transcript(language="und", segments=[])
-        )
-        current_stage = "rendering"
-        results = render_clips(source, output, [clip], transcript, settings, key)
-        current_stage = "verification"
-        value = {
-            "status": "complete",
-            "source_sha256": verify_source(source, output),
-            "rendered": results,
-            "selection_receipt": {"provider": "manual", "generation_requests": 0},
-            "human_review_performed": False,
-        }
-        write_json(output / "manifest.json", value)
-        (output / "failure.json").unlink(missing_ok=True)
-        return value
-    except Exception as error:
-        record_failure(output, error, current_stage)
-        raise
-    finally:
-        lock.close()

@@ -8,6 +8,66 @@ from clipforge.models import SelectedClip
 from clipforge.storage import PipelineError
 
 
+def test_cut_copies_streams_without_filters_or_full_input_hash(monkeypatch, tmp_path):
+    source, output = tmp_path / "source.mp4", tmp_path / "out"
+    source.write_bytes(b"source")
+    monkeypatch.setattr(media, "require_tools", lambda captions: None)
+    monkeypatch.setattr(
+        media,
+        "probe",
+        lambda path: {
+            "duration": 12 if path == source else 4.2,
+            "audio": True,
+            "width": 320,
+            "height": 180,
+        },
+    )
+    calls = []
+
+    def execute(command, **kwargs):
+        calls.append(command)
+        command[-1].write_bytes(b"copied")
+
+    monkeypatch.setattr(media, "process", execute)
+    result = media.cut(source, output, 2.5, 6)
+    command = calls[0]
+    assert command.index("-ss") < command.index("-i")
+    assert command[command.index("-c") + 1] == "copy"
+    assert command[command.index("-t") + 1] == "3.500000"
+    assert "-filter_complex" not in command and "-vf" not in command
+    assert "0:a:0?" in command and "0:V:0" in command
+    assert result["duration"] == 4.2 and result["frame_accurate"] is False
+    assert json.loads((output / "manifest.json").read_text()) == result
+    assert source.read_bytes() == b"source"
+    with pytest.raises(PipelineError, match="already exists"):
+        media.cut(source, output, 2.5, 6)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "start,end", [(0, 0), (-1, 3), (3, 2), (float("nan"), 3), (0, float("inf"))]
+)
+def test_cut_rejects_invalid_interval_before_any_work(tmp_path, start, end):
+    with pytest.raises(PipelineError, match="finite times"):
+        media.cut(tmp_path / "missing", tmp_path / "out", start, end)
+    assert not (tmp_path / "out").exists()
+
+
+def test_cut_failure_does_not_record_success(monkeypatch, tmp_path):
+    source, output = tmp_path / "source.mp4", tmp_path / "out"
+    source.touch()
+    monkeypatch.setattr(media, "require_tools", lambda captions: None)
+    monkeypatch.setattr(media, "probe", lambda path: {"duration": 10})
+
+    def fail(*args, **kwargs):
+        raise PipelineError("copy failed")
+
+    monkeypatch.setattr(media, "process", fail)
+    with pytest.raises(PipelineError, match="copy failed"):
+        media.cut(source, output, 2, 5)
+    assert not (output / "manifest.json").exists()
+
+
 @pytest.mark.parametrize(
     "data",
     [

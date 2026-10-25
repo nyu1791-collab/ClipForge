@@ -2,7 +2,68 @@ import sys
 
 import pytest
 
-from clipforge import cli, pipeline
+from clipforge import cli, media, pipeline
+
+
+def test_cut_uses_stream_copy_without_loading_pipeline(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "clipforge",
+            "cut",
+            "input.mp4",
+            "--start",
+            "2",
+            "--end",
+            "5",
+            "--output",
+            "out",
+        ],
+    )
+    monkeypatch.setitem(sys.modules, "clipforge.pipeline", None)
+    calls = []
+
+    def cut(*args):
+        calls.append(args)
+        return {"status": "complete", "mode": "stream_copy", "frame_accurate": False}
+
+    monkeypatch.setattr(media, "cut", cut)
+    assert cli.main() == 0
+    assert calls[0][2:] == (2, 5)
+    assert '"frame_accurate": false' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "option", ["--config", "--transcript", "--aspect", "--video-encoder", "--resume"]
+)
+def test_cut_rejects_removed_render_options(monkeypatch, option):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "clipforge",
+            "cut",
+            "input.mp4",
+            "--start",
+            "2",
+            "--end",
+            "5",
+            "--output",
+            "out",
+            option,
+        ],
+    )
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2
+
+
+def test_copy_is_not_a_separate_command(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["clipforge", "copy"])
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize(

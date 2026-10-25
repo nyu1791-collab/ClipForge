@@ -9,7 +9,13 @@ import shutil
 import subprocess
 
 from .hardware import encode_threads, video_options
-from .storage import TIME_TOLERANCE, PipelineError, process
+from .storage import (
+    TIME_TOLERANCE,
+    PipelineError,
+    prepare_destination,
+    process,
+    write_json,
+)
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
 FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf,wav,flac,mp3"]
@@ -46,6 +52,70 @@ STANDARD_FRAME_RATES = tuple(
         "60",
     )
 )
+
+
+def cut(source, output, start, end):
+    """Copy the first video/audio streams; boundaries may include keyframe preroll."""
+    if not (math.isfinite(start) and math.isfinite(end) and 0 <= start < end):
+        raise PipelineError("cut requires finite times with 0 <= start < end")
+    source = Path(source).resolve(strict=True)
+    if not source.is_file():
+        raise PipelineError("cut input must be a regular video file")
+    require_tools(captions=False)
+    info = probe(source)
+    if end > info["duration"] + TIME_TOLERANCE:
+        raise PipelineError("cut interval exceeds the input video")
+    output = prepare_destination(output)
+    output.mkdir(mode=0o700)
+    destination = output / "clips" / "clip-001" / "video.mp4"
+    destination.parent.mkdir(parents=True, mode=0o700)
+    process(
+        [
+            "ffmpeg",
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-n",
+            "-ss",
+            f"{start:.6f}",
+            *PROTOCOLS,
+            *FORMATS,
+            "-i",
+            source,
+            "-t",
+            f"{end - start:.6f}",
+            "-map",
+            "0:V:0",
+            "-map",
+            "0:a:0?",
+            "-sn",
+            "-dn",
+            "-c",
+            "copy",
+            "-avoid_negative_ts",
+            "make_zero",
+            "-movflags",
+            "+faststart",
+            destination,
+        ],
+        timeout=max(300, (end - start) * 4),
+        stage="stream_copy",
+    )
+    destination.chmod(0o600)
+    copied = probe(destination)
+    result = {
+        "status": "complete",
+        "mode": "stream_copy",
+        "requested_start": start,
+        "requested_end": end,
+        "duration": copied["duration"],
+        "rendered": [{"directory": "clips/clip-001", "media": copied}],
+        "frame_accurate": False,
+        "human_review_performed": False,
+    }
+    write_json(output / "manifest.json", result)
+    return result
 
 
 def final_video_options(settings):
