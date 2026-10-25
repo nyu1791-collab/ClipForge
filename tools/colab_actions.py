@@ -388,6 +388,11 @@ class Controller:
         }
         if record["mode"] == "audio-stage":
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
+            saved = os.environ.get("CLIPFORGE_SAVED_SOURCE_RELEASE", "")
+            if saved:
+                if not re.fullmatch(r"clipforge-youtube-source-[0-9]+", saved):
+                    raise ControlError("Invalid saved source release")
+                payload["saved_source_release"] = saved
         # Google OAuth/Colab proxy credentials are NOT uploaded to the GPU worker.
         for name in ("url", "token", "endpoint", "status"):
             payload.pop(name, None)
