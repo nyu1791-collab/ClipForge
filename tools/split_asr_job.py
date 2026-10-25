@@ -246,11 +246,14 @@ def part_summary(plan, state_root, part_directories):
 
 def run(args):
     if (
-        os.environ.get("GITHUB_REPOSITORY") != PRIVATE_REPO
+        os.environ.get("GITHUB_REPOSITORY")
+        not in {"nyu1791-collab/ClipForge", PRIVATE_REPO}
         or github_cli.run("api", "repos/" + PRIVATE_REPO, "--jq", ".private").strip()
         != "true"
     ):
-        raise PipelineError("ASR requires the designated private worker")
+        raise PipelineError(
+            "ASR requires the designated execution repository and private storage"
+        )
     request = json.loads((args.directory / "request.json").read_text())
     if (
         request.get("request_id") != os.environ.get("REQUEST_ID")

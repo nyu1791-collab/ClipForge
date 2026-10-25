@@ -50,7 +50,7 @@ ActionsでOpenCodeを実行する場合は、Google認証Actionの`create_creden
 
 Vertexハーネスは1タスク・同時1起動・起動再試行なし。ローカルのOpenCodeサーバーのイベントへ先に接続し、通信再試行の通知が来たらサーバーとクライアントを停止する。監視接続の再接続もしない。自動タイトル生成と自動コンテキスト要約は無効にする。コード編集やツール操作に伴うエージェントの複数ターンは、候補選定の1回のAPI呼び出しとは別に料金が発生し得る。OpenCodeからテスト・監査・追加生成を勝手に起動させない。
 
-OpenCodeの実行定義はClipForgeの`clipforge-opencode.yml`へ統合する。default branchへの登録前は手動dispatchできない。移行状態は[PUBLIC_ACTIONS.md](PUBLIC_ACTIONS.md)を参照。
+OpenCodeの実行定義はClipForgeの`clipforge-opencode.yml`へ統合する。PR #19でdefault branchへの登録は完了。実行にはGoogle/Secretsの移行設定が必要。移行状態は[PUBLIC_ACTIONS.md](PUBLIC_ACTIONS.md)を参照。
 
 ```bash
 gh workflow run clipforge-opencode.yml --repo nyu1791-collab/ClipForge \

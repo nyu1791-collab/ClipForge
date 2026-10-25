@@ -48,6 +48,7 @@ def gh(*args):
         timeout=300,
         error_type=PipelineError,
         message="private analysis artifact operation failed",
+        include_http_status=True,
     )
 
 
@@ -60,6 +61,27 @@ def successful_stage_run(run, request):
         and run.get("workflowName") in STAGE_WORKFLOWS
         and run.get("headBranch") in STAGE_BRANCHES
     )
+
+
+def producer_run(run_id):
+    """Resolve a unique historical run ID across execution migration, never on 403/5xx."""
+    for repository in dict.fromkeys((REPO, "nyu1791-collab/ai-model-workers")):
+        try:
+            return json.loads(
+                gh(
+                    "run",
+                    "view",
+                    str(run_id),
+                    "--repo",
+                    repository,
+                    "--json",
+                    RUN_FIELDS,
+                )
+            )
+        except PipelineError as error:
+            if "(HTTP 404)" not in str(error):
+                raise
+    raise PipelineError("previous run was not found in either execution repository")
 
 
 def restore_analysis(previous, output, previous_id):
@@ -710,17 +732,7 @@ def main(argv=None):
                 "previous_request_id": args.previous_request,
             }
         else:
-            run = json.loads(
-                gh(
-                    "run",
-                    "view",
-                    args.previous_run,
-                    "--repo",
-                    REPO,
-                    "--json",
-                    RUN_FIELDS,
-                )
-            )
+            run = producer_run(args.previous_run)
             if not successful_stage_run(run, args.previous_request):
                 raise PipelineError("previous analysis did not complete successfully")
             with tempfile.TemporaryDirectory(prefix="clipforge-previous-") as temporary:
