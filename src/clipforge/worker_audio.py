@@ -14,7 +14,6 @@ from . import (
     audio_first,
     landscape,
     media,
-    pipeline,
     review_draft,
 )
 from .github_cli import run as run_gh
