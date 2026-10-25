@@ -157,13 +157,13 @@ def make_prompt_and_audio(analysis, out, transcript, whole, selection):
     merge_elapsed = round(time.monotonic() - merge_started, 3)
 
     prompt = (
-        "採用された5区間の音声を丁寧に聴き、日本語で文字起こしを作成してください。"
-        "audio_layoutにあるaudio_start_secとaudio_end_secが、連結音声内の各区間を示します。"
-        "slotsにはParakeetのsegment_id、区間時刻、既存文字起こしがあり、照合資料として利用できます。"
-        "全体文字起こしも参考にしながら、音声の内容、文脈、語尾、否定、数字、固有名詞をよく確かめてください。"
-        "早口候補を含む各区間を聴き、文字起こしと早口箇所の査読を行ってください。"
-        "聞き取りに迷う箇所や字幕に役立つ観察、読みやすい区切りなどがあればnotesに記載してください。"
-        "必要と考える観点を十分に検討し、詳細に記録してください。データ:"
+        "5つの採用区間の音声をよく聴き、日本語の文字起こしと早口箇所の査読をしてください。"
+        "連結音声の各区間はaudio_layoutにあり、slotsにはParakeetのsegment_id、時刻、既存文字起こしがあります。"
+        "全体文字起こしも参考にしつつ、音声を中心に内容と文脈を確かめてください。"
+        "fast_segment_idsは早口候補です。該当するすべての候補を音声で聞いて確認してください。"
+        "各発言や査読した箇所を後から特定できるよう、関係するsegment_idと区間を添えてください。"
+        "回答の長さや記述の詳しさを限定せず、必要と思う説明、候補、曖昧さ、字幕向けの区切りなどを自由に含めてください。"
+        "日本語で、読みやすい形式を選んで記録してください。データ:"
         + json.dumps({
             "audio_layout": audio_layout,
             "slots": slots,
@@ -185,27 +185,11 @@ def stream_generate(parts, output, record):
     if audio_part_count != 1:
         raise PipelineError("Gemini 3.8 Flash HIGH review requires exactly one audio input file")
     record["audio_input_file_count"] = audio_part_count
-    schema = {
-        "type": "OBJECT",
-        "required": ["audio_access", "segments", "reviewed_fast_segment_ids", "uncertain_segment_ids", "notes"],
-        "properties": {
-            "audio_access": {"type": "STRING", "enum": ["heard", "unavailable"]},
-            "segments": {"type": "ARRAY", "items": {
-                "type": "OBJECT", "required": ["segment_id", "text"],
-                "properties": {"segment_id": {"type": "STRING"}, "text": {"type": "STRING"}},
-            }},
-            "reviewed_fast_segment_ids": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "uncertain_segment_ids": {"type": "ARRAY", "items": {"type": "STRING"}},
-            "notes": {"type": "ARRAY", "items": {"type": "STRING"}},
-        },
-    }
     body = {
         "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "thinkingConfig": {"thinkingLevel": "HIGH"},
             "maxOutputTokens": 65536,
-            "responseMimeType": "application/json",
-            "responseSchema": schema,
         },
     }
     encoded = json.dumps(body).encode()
@@ -311,13 +295,10 @@ def stream_generate(parts, output, record):
         record.update(status="incomplete", billing_status="unknown")
         raise PipelineError(f"HIGH stream ended without STOP (finish_reason={finish_reason})")
     response_text = "".join(text_parts)
-    try:
-        value = json.loads(response_text)
-    except json.JSONDecodeError as error:
-        record.update(status="invalid_json", billing_status="unknown_after_request_started")
-        raise PipelineError("HIGH stream completed but the assembled JSON is invalid") from error
-    return value
-
+    if not response_text.strip():
+        record.update(status="empty_response", billing_status="unknown")
+        raise PipelineError("HIGH stream completed without transcript text")
+    return response_text
 
 def run(args):
     if not args.confirm_new_high_attempt:
@@ -392,7 +373,7 @@ def run(args):
         receipt["requests"][0]["status"] = "submitting"
         save()
         try:
-            careful = stream_generate(parts, out, receipt["requests"][0])
+            careful_text = stream_generate(parts, out, receipt["requests"][0])
             receipt["requests"][0]["status"] = "complete"
             receipt["requests"][0]["elapsed_sec"] = receipt["requests"][0].get("api_elapsed_sec")
         except Exception as error:
@@ -401,7 +382,50 @@ def run(args):
             receipt["requests"][0]["error_message"] = safe_error_message(error)
             raise
 
-        rows = careful.get("segments", [])
+        response_path = out / "careful-clip-transcript.txt"
+        response_path.write_text(careful_text, encoding="utf-8")
+        mentioned = {sid for sid in slots if sid in careful_text}
+        fast_mentioned = set(fast_ids) & mentioned
+        write_json(out / "careful-clip-transcript.json", {
+            "format": "freeform_text",
+            "response_file": response_path.name,
+            "response_characters": len(careful_text),
+            "segment_ids_mentioned": sorted(mentioned),
+            "fast_segment_ids_mentioned": sorted(fast_mentioned),
+        })
+        write_json(out / "audio-review-summary.json", {
+            "whole_audio_model": "gemini-3.5-flash",
+            "whole_audio_requests": 1,
+            "selection_model": MODEL,
+            "selection_thinking": "MEDIUM",
+            "careful_transcription_model": MODEL,
+            "careful_thinking": "HIGH",
+            "selected_segments_expected": len(slots),
+            "selected_segment_ids_referenced": len(mentioned),
+            "fast_segments_expected": len(fast_ids),
+            "fast_segment_ids_referenced": len(fast_mentioned),
+            "response_format": "freeform_text",
+            "response_needs_manual_alignment": True,
+            "full_video_quality_audit": "not_run",
+        })
+        write_json(out / "recovery-summary.json", {
+            "recovery_of_run_id": args.prior_run_id,
+            "reused_whole_audio_transcription": True,
+            "reused_whole_stream_selection": True,
+            "new_high_requests": 1,
+            "previous_high_usage": prior_high.get("usage", "unknown"),
+            "previous_high_error_type": prior_high.get("error_type"),
+        })
+        receipt.update(
+            status="response_received_freeform",
+            response_needs_manual_alignment=True,
+            selected_segment_ids_referenced=len(mentioned),
+            fast_segment_ids_referenced=len(fast_mentioned),
+            fast_segments_expected=len(fast_ids),
+        )
+        save()
+        return receipt
+
         ids = [row.get("segment_id") for row in rows]
         if careful.get("audio_access") != "heard" or len(ids) != len(set(ids)) or set(ids) != set(slots):
             raise PipelineError("Careful transcription did not cover every selected ASR segment")
