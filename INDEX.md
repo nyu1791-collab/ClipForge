@@ -9,8 +9,8 @@
 - 開発環境の準備: `bash tools/dev_setup.sh`／説明: `docs/DEVELOPMENT.md`。
 
 ## 流れ（唯一の経路）
-Kick / YouTube / Twitch / 直接 HTTPS の URL → runner で音声取得（`tools/acquire_audio_url.py`）→ runner で静かな位置で最大4分割 → Colab GPU（L4・T4）で Parakeet → runner で結合・話題分け → 同じ run で候補映像と未承認の下書き → 承認 → Colab CPU で描画 → 制御VMで `merge --local`。音声だけの URL は解析まで。
-- 手順: `docs/GPU_ROUTE.md`（S0〜S8）／段階の詳細と承認ファイル: `docs/AUDIO_FIRST.md`／文字起こし: `docs/ASR.md`
+Kick / YouTube / Twitch / 直接 HTTPS の URL → runner で音声取得（`tools/acquire_audio_url.py`）→ runner で静かな位置で最大4分割 → Colab GPU（L4・T4）で Parakeet → runner で結合・話題分け → 同じ run で候補映像と未承認の下書き → 承認 → Colab GPU/NVENC で描画 → 制御VMで `merge --local`。音声だけの URL は解析まで。
+- 手順: `docs/GPU_ROUTE.md`（現行の統合手順）／段階の詳細と承認ファイル: `docs/AUDIO_FIRST.md`／文字起こし: `docs/ASR.md`
 - 投入と回収: `tools/submit_job.py`（解析）・`tools/submit_audio_stage.py`（描画・結合）・`tools/run_timings.py RUN_ID`（計測）
 - 文字起こし: runner 側 `tools/split_asr_job.py`・`src/clipforge/asr_split.py`、Colab 側 `src/clipforge/asr.py`
 - Colab 制御: `tools/colab_actions.py`（割り当て・解放）・`tools/colab_remote_job.py`（Colab 上のジョブ）・`tools/colab_bundle.py`（結果の受け渡し）・`tools/colab_setup.sh`（描画の環境）
