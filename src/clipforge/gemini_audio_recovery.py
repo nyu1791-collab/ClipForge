@@ -314,6 +314,9 @@ def run(args):
         receipt["fast_segment_count"] = len(fast_ids)
         save()
 
+        receipt["generation_requests"] = 1
+        receipt["requests"][0]["status"] = "submitting"
+        save()
         try:
             careful = stream_generate(parts, out, receipt["requests"][0])
             receipt["requests"][0]["status"] = "complete"
