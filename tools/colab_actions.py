@@ -186,8 +186,12 @@ def stage_request():
     ):
         raise ControlError("Invalid audio stage request")
     review = Path(os.environ.get("REVIEW_FILE", "")).read_text(encoding="utf-8")
-    # The workflow input is bounded at 60,000 bytes; this is the same bound for the file.
-    if len(review.encode()) > 60_000:
+    # A completed private audio review can contain many timestamped subtitle edits.
+    editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
+    if editorial and not re.fullmatch(r"clipforge-kick-editorial-[0-9]+", editorial):
+        raise ControlError("Invalid audio review release")
+    bound = 4 * 1024**2 if editorial else 60_000
+    if len(review.encode()) > bound:
         raise ControlError("Review is too large")
     json.loads(review)
     stage["review"] = review
@@ -388,6 +392,11 @@ class Controller:
         }
         if record["mode"] == "audio-stage":
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
+            editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
+            if editorial:
+                if not re.fullmatch(r"clipforge-kick-editorial-[0-9]+", editorial):
+                    raise ControlError("Invalid audio review release")
+                payload["audio_review_release"] = editorial
             saved = os.environ.get("CLIPFORGE_SAVED_SOURCE_RELEASE", "")
             if saved:
                 if not re.fullmatch(r"clipforge-youtube-source-[0-9]+", saved):

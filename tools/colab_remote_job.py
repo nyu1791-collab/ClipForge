@@ -367,6 +367,22 @@ def render_stage(payload, output, report, timings, environment):
             raise RuntimeError("Invalid configuration file")
         arguments += ["--config", stage["config_file"]]
     stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
+    if payload.get("audio_review_release"):
+        tag = payload["audio_review_release"]
+        if not re.fullmatch(r"clipforge-kick-editorial-[0-9]+", tag):
+            raise RuntimeError("Invalid audio review release")
+        bundles = ReleaseBundles(payload["github_token"])
+        release = bundles.json_request("GET", "https://api.github.com/repos/nyu1791-collab/ai-model-workers/releases/tags/" + tag)
+        records = output / "audio-review"
+        records.mkdir(parents=True, mode=0o700)
+        assets = {a["name"]: a for a in release["assets"]}
+        bundles.download_asset(assets["audio-editor-receipt.json"], records / "audio-editor-receipt.json", 8 * 1024**2)
+        if json.loads((records / "audio-editor-receipt.json").read_text()).get("status") != "complete":
+            raise RuntimeError("Audio review did not complete")
+        with timed(timings, "audio_review_transfer"):
+            for name, asset in assets.items():
+                if name != "audio-editor-receipt.json" and re.fullmatch(r"[a-z0-9-]+\.(json|txt)", name):
+                    bundles.download_asset(asset, records / name, 8 * 1024**2)
     if payload.get("saved_source_release"):
         tag = payload["saved_source_release"]
         if not re.fullmatch(r"clipforge-youtube-source-[0-9]+", tag):
