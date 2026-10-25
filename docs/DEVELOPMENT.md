@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 文書・ルール | 差分、参照先、現行コードとの一致 | pytest全体、ASR、動画生成 |
 | Python・設定 | 変更箇所のテスト、Ruff、呼び出し元の確認 | 無関係な全extra、同じテストの反復 |
-| 共通処理・複数の入口 | 関連テスト、その後CIの全単体テストを1回 | 編集前後の全テストを毎回繰り返すこと |
+| 共通処理・複数の入口 | 影響する入口の関連テスト | 編集前後の全テストを毎回繰り返すこと |
 | 字幕・FFmpeg・ASR | 関連単体テスト、必要なら合成動画・CPU ASRを明示実行 | 実配信全工程、Colab GPUの自動起動 |
 | worker配備 | 固定SHA、workflow原本との一致、依頼・回収契約 | 実動画の再生成だけで配備確認を代用すること |
 
@@ -22,7 +22,7 @@ Linux、Python 3.11以上。通常は `uv sync --locked`。チャット取得を
 
 ```bash
 uv run --no-sync python -m pytest -q -p no:cacheprovider tests/test_models_storage.py tests/test_review.py
-uv run --no-sync ruff check src tools tests
+uv run --no-sync ruff check PATH_TO_CHANGED_FILE
 uv run --no-sync ruff format --check PATH_TO_CHANGED_FILE
 ```
 
@@ -30,13 +30,13 @@ uv run --no-sync ruff format --check PATH_TO_CHANGED_FILE
 
 ## CI
 
-`Quality` はPython 3.11/3.12でRuff・単体テスト・カバレッジ90%以上を各1回確認する。手動実行も同じ単体テストを使う。10回反復と、単体ジョブ内での動画・ASRテストの重複実行は行わない。
+`Quality` はPython 3.11/3.12の単体テスト・カバレッジ90%以上を確認し、Python版に依存しないRuffは3.12側だけで実行する。ローカルでCI一式を重ねて実行する必要はない。
 
 動画・CPU ASRの合成素材検査は、アプリコード・動画fixture・このworkflowの変更時に自動実行する。文書や開発ツールだけの変更では省略する。差分の基点が浅い履歴にない場合は、安全側で実行する。手動実行では `video_checks=true` を明示する。モデルのダウンロードと実際のCPU処理が発生するが、Colabや外部LLMは起動しない。
 
 検査結果のArtifact保存は報告用。保存枠の上限で添付できない場合も検査本体の成功・失敗を保持し、保存失敗はActionsに警告として残す。
 
-依存スキャンは報告用で、検出0件を保証しない。`Build package` は必要なときに手動実行し、構文とwheelを確認する。動画生成や公開は行わない。
+依存スキャンは手動実行時の報告用。通常のPRでは起動しない。検出0件を保証しない。`Build package` は必要なときに手動実行し、構文とwheelを確認する。動画生成や公開は行わない。
 
 ## 変更後の見直し
 

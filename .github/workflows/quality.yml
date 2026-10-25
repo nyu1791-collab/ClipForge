@@ -73,8 +73,10 @@ jobs:
         run: uv pip install --require-hashes -r tools/colab-control-requirements.txt
       - name: Static checks and unit regressions
         run: |
-          uv run --no-sync ruff check src tools tests
-          uv run --no-sync ruff format --check src tools tests
+          if [ "${{ matrix.python }}" = "3.12" ]; then
+            uv run --no-sync ruff check src tools tests
+            uv run --no-sync ruff format --check src tools tests
+          fi
           uv run --no-sync python -m pytest -p no:cacheprovider -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
       - uses: actions/upload-artifact@v4
         continue-on-error: true
@@ -87,6 +89,7 @@ jobs:
           retention-days: 7
 
   dependencies:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

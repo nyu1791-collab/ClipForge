@@ -37,9 +37,9 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 
 ## 実行前の照合
 
-dispatch前に、固定したコードSHAと実際の非公開workflowの入力名・既定値・出力名を照合する。`python tools/check_worker_workflows.py --help` から対象workflowの検査方法を確認し、配備原本との差分がある場合は意味を確認する。保存先（artifactまたは `result_store=release`）、ファイル上限、受け側の展開予算・空き容量、GPU追加receiptの検証対応を確認する。artifact削除後もquota反映には時間がかかるため、削除成功だけで転送可能と判断しない。
+初回利用または配備・認証・保存先を変えたときに、実workflowとの対応と保存容量を確認する。同じ構成の各ジョブで全項目を監査し直す必要はない。依頼・出力の同一性やハッシュは通常の投入・回収処理で検証する。
 
-Drive納品を含む依頼では、重い処理の前に納品workflowのbranch、必要入力、Drive認証と対象フォルダへの書込可否を確認する。音声SHA-256・ASR設定・段階receipt・完了成果物は工程ごとに保存し、納品検証が済むまで保持する。ASR完了後の転送や後段の失敗では、保存済み結果を検証して再利用し、同じ認識を再依頼しない。
+完了したASRと工程成果物は納品まで保持し、後段の失敗で再認識しない。dispatch応答が不明なら依頼IDで既存runを照合し、重ねて投入しない。
 
 ## 非公開データの経路と保管
 
