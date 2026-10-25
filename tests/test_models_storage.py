@@ -331,7 +331,8 @@ def test_long_topic_example_keeps_topics_long_without_the_chat_panel():
     assert example.chat_panel is False and example.heading is True
     assert example.heading_align == "left" and example.heading_scale > 1
     assert example.topic_min_seconds == 120 and example.max_seconds == 1800
-    assert example.caption_scale == 1.6 and example.caption_font_size() == 83
+    assert example.height == 360
+    assert example.caption_scale == 1.6 and example.caption_font_size() == 28
 
 
 def test_review_preview_config_renders_small_and_fast():

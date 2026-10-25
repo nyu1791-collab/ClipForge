@@ -958,11 +958,11 @@ class PoolTests(unittest.TestCase):
                 pass
         return controller, calls, Accelerator
 
-    def test_clip_rendering_tries_the_cheapest_runtime_first(self):
+    def test_clip_rendering_requires_gpu_first(self):
         controller, calls, Accelerator = self.start_stage(refusals=0)
-        self.assertEqual(calls, [(Accelerator.NONE, "HIGH_RAM")])
+        self.assertEqual(calls, [(Accelerator.L4, "STANDARD")])
         state = controller.state()
-        self.assertEqual((state["accelerator"], state["shape"]), ("NONE", "HIGH_RAM"))
+        self.assertEqual((state["accelerator"], state["shape"]), ("L4", "STANDARD"))
         self.assertEqual(state["stage"]["clip_index"], "2")
 
     def test_a_412_refusal_moves_to_the_next_runtime_in_the_pool(self):
@@ -970,9 +970,9 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                (Accelerator.NONE, "HIGH_RAM"),
-                (Accelerator.NONE, "STANDARD"),
+                (Accelerator.L4, "STANDARD"),
                 (Accelerator.T4, "HIGH_RAM"),
+                (Accelerator.T4, "STANDARD"),
             ],
         )
         self.assertEqual(controller.state()["status"], "allocated")

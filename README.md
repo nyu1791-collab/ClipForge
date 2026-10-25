@@ -2,6 +2,8 @@
 
 同じ配信から、話題別の**横動画（16:9）**を作るパイプラインです。動画・音声・文字起こしは非公開の worker（`nyu1791-collab/ai-model-workers`）の GitHub Actions と Colab で扱い、このリポジトリにはコードだけを置きます。
 
+通常経路の設定・検査範囲は [GPU_ROUTE.md](docs/GPU_ROUTE.md) を正本とする。
+
 ## 流れ
 
 | 段 | 処理 | 使うもの | 実行場所 |
@@ -10,7 +12,7 @@
 | 2 | 全編を最大4台で文字起こしする | NVIDIA Parakeet（`nvidia/parakeet-tdt_ctc-0.6b-ja`） | Colab GPU（L4・T4） |
 | 3 | 話題に分け、候補の低画質映像と未承認の下書きを作る | 規則（間と語彙の変化）・ffmpeg | Actions runner |
 | 4 | 候補を確認し、承認ファイルを作る | 人（または Claude） | 手元 |
-| 5 | 採用した区間だけ取得し、字幕を焼き込んで描画する | ffmpeg・BudouX・fugashi | Colab CPU |
+| 5 | 採用した区間だけ取得し、字幕を焼き込んで描画する | ffmpeg・BudouX・fugashi | Colab GPU/NVENC |
 | 6 | クリップを検証してまとめる | — | 制御VM |
 
 文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。外部の生成AIは呼びません。

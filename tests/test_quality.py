@@ -1,5 +1,4 @@
 import json
-import math
 import shutil
 import subprocess
 from types import SimpleNamespace
@@ -58,46 +57,6 @@ def write_ass(folder, events):
     return folder
 
 
-def test_summary_gives_integrated_loudness_and_true_peak():
-    assert quality.parse_ebur128_summary(SUMMARY) == {
-        "integrated_lufs": -16.2,
-        "true_peak_dbtp": -1.4,
-    }
-
-
-def test_silence_measures_negative_infinity_and_no_summary_is_unknown():
-    silent = SUMMARY.replace("-16.2", "-inf").replace("-1.4", "-inf")
-    parsed = quality.parse_ebur128_summary(silent)
-    assert parsed == {"integrated_lufs": -math.inf, "true_peak_dbtp": -math.inf}
-    assert quality.parse_ebur128_summary("no summary") == {
-        "integrated_lufs": None,
-        "true_peak_dbtp": None,
-    }
-
-
-def test_measurement_reads_the_summary_and_refuses_when_it_is_missing(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setattr(
-        quality.subprocess,
-        "run",
-        lambda *a, **k: SimpleNamespace(returncode=0, stderr=SUMMARY),
-    )
-    assert quality.measure_output(tmp_path / "video.mp4") == {
-        "integrated_lufs": -16.2,
-        "true_peak_dbtp": -1.4,
-    }
-    for result in [
-        SimpleNamespace(returncode=1, stderr=SUMMARY),
-        SimpleNamespace(returncode=0, stderr="no summary"),
-    ]:
-        monkeypatch.setattr(
-            quality.subprocess, "run", lambda *a, _result=result, **k: _result
-        )
-        with pytest.raises(PipelineError, match="could not be measured"):
-            quality.measure_output(tmp_path / "video.mp4")
-
-
 def test_reading_speed_and_overlaps_are_measured_for_spoken_captions_only(tmp_path):
     folder = write_ass(
         tmp_path,
@@ -124,24 +83,6 @@ def test_a_clean_clip_passes_and_reports_its_metrics(tmp_path, on_target_loudnes
     assert report["metrics"]["true_peak_dbtp"] == -2.0
 
 
-def test_fast_captions_are_warnings_and_off_target_audio_fails(
-    tmp_path, monkeypatch, on_target_loudness
-):
-    folder = write_ass(tmp_path, [(0, 1000, "あ" * 30)])
-    monkeypatch.setattr(
-        quality,
-        "measure_output",
-        lambda video: {"integrated_lufs": -11.0, "true_peak_dbtp": 0.5},
-    )
-    report = quality.check_clip(folder, RENDERED, [])
-    assert report["metrics"]["captions_over_limit"] == 1
-    assert any("faster than 15" in text for text in report["warnings"])
-    # Audio outside the delivery bar is a failure: the clip is refused, not merely noted.
-    assert report["passed"] is False
-    assert any("LUFS is outside" in text for text in report["failures"])
-    assert any("true peak" in text for text in report["failures"])
-
-
 def test_overlap_and_missing_glyph_are_failures(tmp_path, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 2000, "あ"), (1000, 3000, "い")])
     report = quality.check_clip(folder, RENDERED, ["ー"])
@@ -149,42 +90,6 @@ def test_overlap_and_missing_glyph_are_failures(tmp_path, on_target_loudness):
     assert len(report["failures"]) == 2
     assert "overlap" in report["failures"][0]
     assert "font lacks: ー" in report["failures"][1]
-
-
-def test_silent_audio_and_unmeasurable_audio_fail(
-    tmp_path, monkeypatch, on_target_loudness
-):
-    folder = write_ass(tmp_path, [])
-    monkeypatch.setattr(
-        quality,
-        "measure_output",
-        lambda video: {"integrated_lufs": -math.inf, "true_peak_dbtp": -math.inf},
-    )
-    report = quality.check_clip(folder, RENDERED, [])
-    assert report["passed"] is False
-    assert report["failures"] == ["the rendered audio is silent"]
-    assert report["metrics"]["integrated_lufs"] is None
-    json.dumps(report, allow_nan=False)
-
-    def unreadable(video):
-        raise PipelineError("loudness of the rendered clip could not be measured")
-
-    monkeypatch.setattr(quality, "measure_output", unreadable)
-    report = quality.check_clip(folder, RENDERED, [])
-    assert report["passed"] is False
-    assert "could not be measured" in report["failures"][0]
-
-
-def test_clip_without_audio_is_not_measured(tmp_path, monkeypatch, on_target_loudness):
-    folder = write_ass(tmp_path, [(0, 1000, "あ" * 5)])
-
-    def must_not_measure(video):
-        raise AssertionError("a clip without audio has no loudness to measure")
-
-    monkeypatch.setattr(quality, "measure_output", must_not_measure)
-    report = quality.check_clip(folder, {**RENDERED, "audio": False}, [])
-    assert report["passed"] is True
-    assert report["metrics"]["integrated_lufs"] is None
 
 
 def test_report_gate_keeps_failures_and_strict_gate_refuses_them():
@@ -240,21 +145,6 @@ def test_srt_and_ass_must_carry_the_same_captions(tmp_path, on_target_loudness):
     assert any("differ in timing or text" in failure for failure in report["failures"])
 
 
-def test_a_video_that_does_not_decode_cleanly_fails(tmp_path, monkeypatch):
-    folder = write_ass(tmp_path, [(0, 1000, "あ")])
-    monkeypatch.setattr(
-        quality,
-        "measure_output",
-        lambda video: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
-    )
-    monkeypatch.setattr(
-        quality, "decode_errors", lambda video: ["[h264] error while decoding MB"]
-    )
-    report = quality.check_clip(folder, RENDERED, [])
-    assert report["passed"] is False
-    assert "does not decode cleanly" in report["failures"][0]
-
-
 def test_audio_that_is_not_48_khz_fails(tmp_path, on_target_loudness):
     folder = write_ass(tmp_path, [(0, 1000, "あ")])
     report = quality.check_clip(folder, {**RENDERED, "audio_sample_rate": 44100}, [])
@@ -283,10 +173,11 @@ def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
         ],
         check=True,
     )
-    assert quality.decode_errors(good) == []
+    assert quality.inspect_output(good, False, 1)["integrated_lufs"] is None
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"not a video stream" * 64)
-    assert quality.decode_errors(broken)
+    with pytest.raises(PipelineError, match="decode cleanly"):
+        quality.inspect_output(broken, False, 1)
 
 
 def test_a_line_break_inside_a_word_is_a_counted_warning(tmp_path, on_target_loudness):
@@ -754,3 +645,63 @@ def test_static_overlaps_counts_captions_over_a_band_they_were_placed_by(tmp_pat
     assert quality.static_overlaps(path, [[[0.0, 0.1, "left"]], []], rendered) == 0
     # Captions and bands that do not correspond one to one cannot be checked.
     assert quality.static_overlaps(path, [[]], rendered) is None
+
+
+def test_output_scan_decodes_video_and_measures_audio_once(monkeypatch, tmp_path):
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stderr=SUMMARY)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    measured = quality.inspect_output(tmp_path / "video.mp4", True, 4)
+    assert len(calls) == 1
+    assert "0:V:0" in calls[0] and "0:a:0" in calls[0]
+    assert "-vn" not in calls[0] and "-xerror" in calls[0]
+    assert measured == {"integrated_lufs": -16.2, "true_peak_dbtp": -1.4}
+
+
+@pytest.mark.parametrize(
+    "code,stderr", [(1, SUMMARY), (0, "no summary"), (0, "[error] corrupt" + SUMMARY)]
+)
+def test_output_scan_refuses_corruption_or_missing_measurement(
+    monkeypatch, tmp_path, code, stderr
+):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=code, stderr=stderr),
+    )
+    with pytest.raises(PipelineError):
+        quality.inspect_output(tmp_path / "video.mp4", True, 4)
+
+
+def test_output_scan_handles_silent_video_without_audio_filter(monkeypatch, tmp_path):
+    def run(command, **kwargs):
+        assert "-af" not in command and "0:V:0" in command
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert (
+        quality.inspect_output(tmp_path / "video.mp4", False, 4)["integrated_lufs"]
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "lufs,peak", [(-11.0, -2.0), (-16.0, 0.5), (-float("inf"), -float("inf"))]
+)
+def test_single_scan_audio_gate_still_refuses_bad_output(
+    tmp_path, monkeypatch, lufs, peak
+):
+    folder = write_ass(tmp_path, [])
+    monkeypatch.setattr(
+        quality,
+        "inspect_output",
+        lambda *a: {"integrated_lufs": lufs, "true_peak_dbtp": peak},
+    )
+    report = quality.check_clip(folder, RENDERED, [])
+    assert not report["passed"]
+    assert report["full_decode_performed"] and report["loudness_measured"]
+    json.dumps(report, allow_nan=False)

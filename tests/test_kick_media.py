@@ -242,6 +242,31 @@ def test_prefetch_refuses_an_interval_outside_the_archive(vod):
     assert not [c for c in calls if c.endswith(".ts")]
 
 
+def test_production_prefetch_and_retrieve_use_same_360p_segments(vod, tmp_path):
+    value, data, calls, commands = vod
+    playlist = "https://stream.kick.com/archive/360/media.m3u8"
+    value.variants.append({"height": 360, "bandwidth": 600, "url": playlist})
+    data[playlist] = PLAYLIST
+    data["https://stream.kick.com/archive/360/1.ts"] = b"G" + b"synthetic" * 10
+    value.prefetch(12, 17)
+    receipt = value.retrieve(tmp_path / "360.mp4", 12, 17, quality="360p")
+    assert receipt["rendition_height"] == 360
+    assert [url for url in calls if url.endswith(".ts")] == [
+        "https://stream.kick.com/archive/360/1.ts"
+    ]
+    assert not any("1080.m3u8" in url for url in calls)
+    command = next(row for row in commands if row[0] == "ffmpeg")
+    assert command[command.index("-c") + 1] == "copy"
+
+
+def test_production_refuses_only_high_resolution_renditions(vod):
+    value, _, calls, _ = vod
+    value.variants = [row for row in value.variants if row["height"] == 1080]
+    with pytest.raises(PipelineError, match="quality unavailable"):
+        value.prefetch(0, 5)
+    assert not any(url.endswith(".ts") for url in calls)
+
+
 def test_concurrent_prefetch_and_segment_never_download_a_url_twice(vod):
     value, _, calls, _ = vod
     url = "https://stream.kick.com/archive/0.ts"

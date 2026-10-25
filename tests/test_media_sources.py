@@ -55,6 +55,84 @@ def test_invalid_sources_fail_before_network(url):
         sources.canonical(url)
 
 
+def test_360p_format_selection_keeps_best_audio_without_hd_fallback(tmp_path):
+    from yt_dlp import YoutubeDL
+
+    source = sources.RemoteMedia("https://youtu.be/abcdefghijk", tmp_path / "cache")
+    formats = [
+        {
+            "format_id": "audio",
+            "url": "https://cdn.example/audio.m4a",
+            "vcodec": "none",
+            "acodec": "aac",
+            "ext": "m4a",
+        },
+        *[
+            {
+                "format_id": str(height),
+                "url": f"https://cdn.example/{height}.mp4",
+                "height": height,
+                "vcodec": "avc1",
+                "acodec": "none",
+                "ext": "mp4",
+            }
+            for height in (240, 360, 720, 1080)
+        ],
+    ]
+    try:
+        with YoutubeDL(source._options(False, "360p")) as downloader:
+            selector = downloader.build_format_selector(downloader.params["format"])
+            context = {
+                "formats": formats,
+                "has_merged_format": False,
+                "incomplete_formats": False,
+            }
+            selected = list(selector(context))
+            assert [row["format_id"] for row in selected[0]["requested_formats"]] == [
+                "360",
+                "audio",
+            ]
+            context["formats"] = [formats[0], formats[-1]]
+            assert list(selector(context)) == []
+    finally:
+        source.close()
+
+
+def test_360p_rejects_high_resolution_metadata_before_transfer(tmp_path, monkeypatch):
+    import yt_dlp
+
+    class Downloader:
+        def __init__(self, options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def extract_info(self, url, download):
+            assert download is False
+            return {
+                "url": "https://cdn.example/source.mp4",
+                "protocol": "https",
+                "duration": 5,
+                "height": 1080,
+                "vcodec": "avc1",
+            }
+
+        def process_ie_result(self, *args, **kwargs):
+            pytest.fail("high resolution source must not be transferred")
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", Downloader)
+    source = sources.RemoteMedia("https://cdn.example/source.mp4", tmp_path / "cache")
+    try:
+        with pytest.raises(PipelineError, match="at or below 360p"):
+            source.retrieve(tmp_path / "out.mp4", 0, 5, quality="360p")
+    finally:
+        source.close()
+
+
 @pytest.fixture(scope="module")
 def https_media(tmp_path_factory):
     root = tmp_path_factory.mktemp("https-media")

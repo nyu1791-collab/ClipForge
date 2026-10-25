@@ -7,7 +7,7 @@
 | 用途 | ランタイム | 中身 |
 | --- | --- | --- |
 | 文字起こし（`asr`） | GPU。部分ごとに1台、L4 と T4 のどちらでも | Colab 標準の Python で NeMo と Parakeet。プロジェクトの環境は入れない（[ASR.md](ASR.md)） |
-| 描画（`audio-stage`） | CPU high-ram → CPU standard → T4 high-ram → L4 の順に、安いものから | `tools/colab_setup.sh` で uv・Python 3.11・固定した依存を入れて描画 |
+| 描画（`audio-stage`） | L4 → T4 high-ram → T4 standard。GPU/NVENC専用 | `tools/colab_setup.sh` で uv・Python 3.11・固定した依存を入れて描画 |
 
 1. Actions の CPU 制御ジョブが Google OAuth のメールアドレスを照合する。指定ユーザー以外・サービスアカウントは、GPU を起動する前に拒否する。
 2. 候補の順にランタイムを要求する。拒否（412）なら次の候補へ進み、全部拒否なら60秒おきに待つ（文字起こしは最大45分、描画は最大15分）。権限や通信の失敗では次の候補へ進まない。

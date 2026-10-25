@@ -4,8 +4,6 @@ import json
 import math
 from fractions import Fraction
 from pathlib import Path
-import re
-import subprocess
 
 from .hardware import encode_threads, video_options
 from .storage import PipelineError, process
@@ -383,61 +381,6 @@ def _audio_tail(settings, duration, measured):
     return tail + "[aout]"
 
 
-def measure_loudness(source, clip, settings, duration):
-    """First pass: measure the same audio chain the render uses.
-
-    Returns None when the audio is silent, so the render falls back to a single pass.
-    """
-    graph = (
-        _audio_graph()
-        + f";[mix]loudnorm={LOUDNESS}:print_format=json,aresample={AUDIO_RATE}[aout]"
-    )
-    command = [
-        "ffmpeg",
-        "-nostdin",
-        "-hide_banner",
-        "-v",
-        "info",
-        "-n",
-        "-filter_complex_threads",
-        str(encode_threads(settings)),
-        "-ss",
-        f"{clip.start:.6f}",
-        *PROTOCOLS,
-        *FORMATS,
-        "-i",
-        str(Path(source).resolve()),
-        "-t",
-        f"{duration:.6f}",
-        "-filter_complex",
-        graph,
-        "-map",
-        "[aout]",
-        "-f",
-        "null",
-        "-",
-    ]
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        timeout=max(300, duration * 4),
-        check=False,
-    )
-    blocks = re.findall(r"\{[^{}]*\}", result.stderr)
-    if result.returncode or not blocks:
-        raise PipelineError("loudness measurement failed")
-    data = json.loads(blocks[-1])
-    values = {}
-    for key in ["input_i", "input_tp", "input_lra", "input_thresh", "target_offset"]:
-        number = float(data[key])
-        if not math.isfinite(number):
-            # Silence measures -inf and has no linear correction; one pass normalizes it.
-            return None
-        values[key] = number
-    return values
-
-
 def render(
     source,
     destination,
@@ -483,13 +426,8 @@ def render(
         )
     ]
     if has_audio:
-        measured = (
-            measure_loudness(source, clip, settings, duration)
-            if settings.loudness_two_pass
-            else None
-        )
         graph.append(_audio_graph())
-        graph.append(_audio_tail(settings, duration, measured))
+        graph.append(_audio_tail(settings, duration, None))
     command = [
         "ffmpeg",
         "-nostdin",

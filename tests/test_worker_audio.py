@@ -825,6 +825,9 @@ def test_clip_index_is_limited_to_one_to_twenty(clip_index):
 def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
     previous_analysis, monkeypatch
 ):
+    from clipforge import hardware
+
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: True)
     previous, output, settings = previous_analysis
     monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
     monkeypatch.setattr(worker, "gh", _previous_gh(previous))
@@ -834,6 +837,7 @@ def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
 
     def render(vod, root, settings, review, analysis_result=None, only=None):
         assert only == 2
+        assert settings.height == 360 and settings.video_encoder == "h264_nvenc"
         for directory in ("ranges", "previews"):
             (root / directory).mkdir(exist_ok=True)
             (root / directory / "synthetic.mp4").write_bytes(b"intermediate")

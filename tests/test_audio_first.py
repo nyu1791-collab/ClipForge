@@ -67,7 +67,7 @@ def audio_job(tmp_path, monkeypatch):
                 "source_end": end or 300,
                 "source_duration": 300,
                 "audio_only": audio_only,
-                "rendition_height": 1080,
+                "rendition_height": 360,
                 "sha256": digest(path),
                 **(
                     {
@@ -281,10 +281,10 @@ def test_render_fetches_only_reviewed_intervals_without_second_asr(
     )
     assert run_render(vod, root, settings, review)["status"] == "complete"
     assert [e[0] for e in events].count("asr") == 1
-    assert [e for e in events if e[0] == "1080p"] == [
-        ("1080p", 0, 85),
-        ("1080p", 120, 175),
-        ("1080p", 210, 295),
+    assert [e for e in events if e[0] == "360p"] == [
+        ("360p", 0, 85),
+        ("360p", 120, 175),
+        ("360p", 210, 295),
     ]
     manifest = json.loads((root / "delivery/manifest.json").read_text())
     assert manifest["rendered"][1]["source_interval"] == {
@@ -320,7 +320,7 @@ def test_render_key_ignores_only_encode_thread_changes(
     )
     assert len(keys) == 2
     assert (keys[0] == keys[1]) is same_key
-    assert [e for e in events if e[0] == "1080p"] == [("1080p", 0, 85)]
+    assert [e for e in events if e[0] == "360p"] == [("360p", 0, 85)]
 
 
 def test_changed_preview_blocks_all_high_quality_fetch(audio_job):
@@ -332,7 +332,7 @@ def test_changed_preview_blocks_all_high_quality_fetch(audio_job):
     (root / "previews/topic-001.mp4").write_bytes(b"changed")
     with pytest.raises(PipelineError, match="preview changed"):
         run_render(vod, root, settings, review)
-    assert "1080p" not in [e[0] for e in events]
+    assert "360p" not in [e[0] for e in events]
 
 
 def test_render_aligns_segment_clip_and_word_clock(audio_job, monkeypatch):
@@ -391,25 +391,30 @@ def test_render_aligns_segment_clip_and_word_clock(audio_job, monkeypatch):
     )
     assert len(observed) == 1
     assert observed[0].stem == af.fingerprint(
-        {"start": clip.start, "end": clip.end, "media_format": af.RANGE_FORMAT}
+        {
+            "start": clip.start,
+            "end": clip.end,
+            "media_format": af.RANGE_FORMAT,
+            "quality": "360p",
+        }
     )
 
 
-def test_render_still_rejects_below_720p(audio_job, monkeypatch):
+def test_render_rejects_high_resolution_source(audio_job, monkeypatch):
     vod, root, settings, _, _ = audio_job
     review = reviewed_intervals(audio_job)
     retrieve = vod.retrieve
 
-    def low_resolution(*args, **kwargs):
+    def high_resolution(*args, **kwargs):
         receipt = retrieve(*args, **kwargs)
         receipt["rendition_height"] = 480
         return receipt
 
-    monkeypatch.setattr(vod, "retrieve", low_resolution)
+    monkeypatch.setattr(vod, "retrieve", high_resolution)
     monkeypatch.setattr(
-        pipeline, "render_clip", lambda *a: pytest.fail("low resolution was rendered")
+        pipeline, "render_clip", lambda *a: pytest.fail("high resolution was rendered")
     )
-    with pytest.raises(PipelineError, match="below 720p"):
+    with pytest.raises(PipelineError, match="at most 360p"):
         run_render(vod, root, settings, review, only=1)
 
 
@@ -451,7 +456,7 @@ def test_mid_word_review_is_rejected_before_any_high_quality_fetch(audio_job):
     # The synthetic word at 90..115 crosses the review boundary at 100 seconds.
     with pytest.raises(PipelineError, match="ASR word"):
         run_render(vod, root, settings, review)
-    assert not any(event[0] == "1080p" for event in events)
+    assert not any(event[0] == "360p" for event in events)
     assert not (root / "delivery").exists()
 
 
@@ -520,15 +525,15 @@ def test_next_interval_is_prefetched_once_while_the_current_clip_renders(
     stub_clip_render(monkeypatch, events)
     run_render(vod, root, settings, review)
     assert [e[1:] for e in events if e[0] == "prefetch"] == INTERVALS
-    assert [e[1:] for e in events if e[0] == "1080p"] == INTERVALS
+    assert [e[1:] for e in events if e[0] == "360p"] == INTERVALS
     for start, end in INTERVALS:
         # Each interval is warmed before its own fetch, and fetched exactly once.
         assert events.index(("prefetch", start, end)) < events.index(
-            ("1080p", start, end)
+            ("360p", start, end)
         )
     for previous, (start, end) in zip(INTERVALS, INTERVALS[1:]):
         # The next prefetch is submitted only after the previous clip's fetch.
-        assert events.index(("1080p", *previous)) < events.index(
+        assert events.index(("360p", *previous)) < events.index(
             ("prefetch", start, end)
         )
 
@@ -540,9 +545,9 @@ def test_prefetch_failure_fails_that_clip_before_its_own_fetch(audio_job, monkey
     stub_clip_render(monkeypatch, events)
     with pytest.raises(PipelineError, match="synthetic prefetch failure"):
         run_render(vod, root, settings, review)
-    assert ("1080p", 0, 85) in events
-    assert ("1080p", 120, 175) not in events
-    assert ("1080p", 210, 295) not in events
+    assert ("360p", 0, 85) in events
+    assert ("360p", 120, 175) not in events
+    assert ("360p", 210, 295) not in events
     assert [e for e in events if e[0] == "render"] == [("render", 1)]
 
 
@@ -554,12 +559,23 @@ def test_render_records_seconds_per_clip_in_manifest_and_output(
     stub_clip_render(monkeypatch, events)
     run_render(vod, root, settings, review)
     timings = json.loads((root / "delivery/manifest.json").read_text())["timings"]
-    assert set(timings) == {"clip-001", "clip-002", "clip-003", "total"}
+    assert set(timings) == {
+        "clip-001",
+        "clip-002",
+        "clip-003",
+        "total",
+        "wall_seconds",
+        "wall_clock_sec",
+        "substep_breakdown",
+    }
     for name in ("clip-001", "clip-002", "clip-003"):
         assert set(timings[name]) == {"prefetch_wait", "fetch", "render"}
         assert all(isinstance(v, float) and v >= 0 for v in timings[name].values())
     stage_seconds = [
-        v for name in timings if name != "total" for v in timings[name].values()
+        v
+        for name in timings
+        if name.startswith("clip-")
+        for v in timings[name].values()
     ]
     assert timings["total"] == pytest.approx(sum(stage_seconds), abs=0.05)
     out = capsys.readouterr().out
@@ -581,7 +597,7 @@ def test_only_must_name_one_reviewed_clip_before_any_fetch(
     stub_clip_render(monkeypatch, events)
     with pytest.raises(PipelineError, match="only must name"):
         run_render(vod, root, settings, review, only=only)
-    assert "1080p" not in [e[0] for e in events]
+    assert "360p" not in [e[0] for e in events]
 
 
 def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypatch):
@@ -594,7 +610,7 @@ def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypa
         lambda *a: pytest.fail("a single clip must not summarize the delivery"),
     )
     manifest = run_render(vod, root, settings, review, only=2)
-    assert [e for e in events if e[0] == "1080p"] == [("1080p", 120, 175)]
+    assert [e for e in events if e[0] == "360p"] == [("360p", 120, 175)]
     assert [e[1:] for e in events if e[0] == "prefetch"] == [(120, 175)]
     assert [e for e in events if e[0] == "render"] == [("render", 2)]
     analysis = json.loads((root / "topics.json").read_text())
@@ -610,7 +626,13 @@ def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypa
             "source_interval": {"start": 120, "end": 175, "topic_id": "topic-002"},
         }
     ]
-    assert set(manifest["timings"]) == {"clip-002", "total"}
+    assert set(manifest["timings"]) == {
+        "clip-002",
+        "total",
+        "wall_seconds",
+        "wall_clock_sec",
+        "substep_breakdown",
+    }
     assert set(manifest["timings"]["clip-002"]) == {"prefetch_wait", "fetch", "render"}
     assert not (root / "delivery/e2e-summary.json").exists()
 
@@ -683,9 +705,9 @@ def test_chat_panel_clip_is_drawn_from_its_original_interval(audio_job, monkeypa
     assert drawn[0]["messages"][0]["t"] == 121.5
     assert (drawn[0]["start"], drawn[0]["end"]) == (120, 175)
     assert (drawn[0]["width"], drawn[0]["height"], drawn[0]["panel_x"]) == (
-        1920,
-        1080,
-        1440,
+        640,
+        360,
+        480,
     )
     assert drawn[0]["anonymize"] is False
     assert rendered[0] == {

@@ -119,51 +119,6 @@ def test_audio_tail_fades_only_when_the_clip_is_long_enough():
     assert "afade" not in media._audio_tail(make(fade_seconds=0.3), 0.5, None)
 
 
-def test_measure_loudness_parses_the_first_pass_json(monkeypatch):
-    seen = {}
-    stderr = (
-        'noise {"input_i": "-20.5", "input_tp": "-2.1", "input_lra": "6.2", '
-        '"input_thresh": "-31.0", "target_offset": "0.25"}'
-    )
-
-    def fake(command, **kwargs):
-        seen["command"] = command
-        return subprocess.CompletedProcess(command, 0, "", stderr)
-
-    monkeypatch.setattr(media.subprocess, "run", fake)
-    values = media.measure_loudness("/in.mp4", CLIP, make(encode_threads=6), 8.0)
-    assert values["input_i"] == -20.5 and values["target_offset"] == 0.25
-    assert "-n" in seen["command"]
-    assert seen["command"][-3:] == ["-f", "null", "-"]
-    assert seen["command"][seen["command"].index("-filter_complex_threads") + 1] == "6"
-
-
-@pytest.mark.parametrize(
-    "result",
-    [
-        subprocess.CompletedProcess([], 1, "", "{}"),
-        subprocess.CompletedProcess([], 0, "", "no json here"),
-    ],
-)
-def test_measure_loudness_rejects_failed_or_unusable_output(monkeypatch, result):
-    monkeypatch.setattr(media.subprocess, "run", lambda command, **kwargs: result)
-    with pytest.raises(PipelineError, match="loudness measurement"):
-        media.measure_loudness("/in.mp4", CLIP, make(), 10.0)
-
-
-def test_silent_audio_falls_back_to_a_single_loudness_pass(monkeypatch):
-    silent = (
-        '{"input_i": "-inf", "input_tp": "-56.30", "input_lra": "0.00", '
-        '"input_thresh": "-70.00", "target_offset": "1.85"}'
-    )
-    monkeypatch.setattr(
-        media.subprocess,
-        "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, "", silent),
-    )
-    assert media.measure_loudness("/in.mp4", CLIP, make(), 10.0) is None
-
-
 def test_preview_removes_stale_output_and_reports_decoding_errors(
     monkeypatch, tmp_path
 ):
@@ -239,7 +194,7 @@ def test_render_passes_render_thread_budget_to_ffmpeg(
 
     monkeypatch.setattr(hardware.os, "sched_getaffinity", lambda pid: set(range(8)))
     monkeypatch.setattr(hardware, "nvenc_available", lambda: True)
-    monkeypatch.setattr(media.subprocess, "run", fake)
+    monkeypatch.setattr(media, "process", fake)
     media.render(
         "/in.mp4",
         tmp_path / "out.mp4",
@@ -546,7 +501,7 @@ def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
 
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is required for the final AAC peak check")
-    target = tmp_path / "peaks.m4a"
+    target = tmp_path / "peaks.mp4"
     signal = "aevalsrc='if(lt(mod(t,0.1),0.001),0.99,0)':s=48000:d=2"
     command = [
         "ffmpeg",
@@ -557,10 +512,20 @@ def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
         "lavfi",
         "-i",
         signal,
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=32x32:r=10:d=2",
         "-filter_complex",
         "[0:a]anull[mix];" + media._audio_tail(make(), 2, None),
         "-map",
         "[aout]",
+        "-map",
+        "1:v:0",
+        "-c:v",
+        "libx264",
+        "-threads",
+        "1",
         "-c:a",
         "aac",
         "-b:a",
@@ -568,4 +533,4 @@ def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
         str(target),
     ]
     subprocess.run(command, capture_output=True, check=True, timeout=30)
-    assert quality.measure_output(target)["true_peak_dbtp"] < -1.0
+    assert quality.inspect_output(target, True, 2)["true_peak_dbtp"] < -1.0

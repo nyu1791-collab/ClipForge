@@ -43,3 +43,27 @@ def test_video_options_use_render_thread_budget(monkeypatch, settings, encoder):
     settings.encode_threads = 6
     options = hardware.video_options(settings, 18)
     assert options[options.index("-threads") + 1] == "6"
+
+
+def test_nvenc_required_does_not_fall_back(monkeypatch, settings):
+    from clipforge.storage import PipelineError
+
+    settings.video_encoder = "h264_nvenc"
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: False)
+    with pytest.raises(PipelineError, match="NVENC execution required"):
+        hardware.video_options(settings, 18)
+
+
+def test_render_checks_nvenc_before_artifact_or_media_download(
+    monkeypatch, settings, tmp_path
+):
+    from clipforge import worker_audio
+    from clipforge.storage import PipelineError
+
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: False)
+    output = tmp_path / "output"
+    with pytest.raises(PipelineError, match="NVENC execution required"):
+        worker_audio.execute(
+            tmp_path / "missing-analysis", output, "request", settings, "render"
+        )
+    assert not output.exists()

@@ -5,11 +5,12 @@
   "max_seconds": 180,
   "language": "ja",
   "aspect": "16:9",
-  "height": 1080,
+  "height": 360,
   "framing": "fit",
   "layout": "fit",
   "encode_preset": "slow",
   "caption": "karaoke",
+  "caption_scale": 1.6,
   "horizontal_target_cps": 7,
   "horizontal_warn_cps": 7,
   "horizontal_line_chars": 13,
@@ -19,5 +20,8 @@
   "topics": true,
   "topic_min_seconds": 25,
   "topic_max_seconds": 180,
-  "quality_gate": "strict"
+  "quality_gate": "strict",
+  "chat_panel_width": 160,
+  "video_encoder": "h264_nvenc",
+  "loudness_two_pass": false
 }

@@ -34,7 +34,7 @@ def manual_plan():
 
 
 def test_landscape_defaults_and_invalid_reading_settings(landscape_settings):
-    assert landscape_settings.aspect == "16:9" and landscape_settings.height == 1080
+    assert landscape_settings.aspect == "16:9" and landscape_settings.height == 360
     assert (
         landscape_settings.horizontal_target_cps
         == landscape_settings.horizontal_warn_cps

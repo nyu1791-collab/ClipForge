@@ -1,487 +1,554 @@
-name: ClipForge
-run-name: ClipForge ${{ inputs.request_id }}
-
-on:
-  workflow_dispatch:
-    inputs:
-      request_id:
-        description: VM-generated request identifier (32 lowercase hex characters)
-        type: string
-        required: true
-      input_tag:
-        description: Temporary private input release tag
-        type: string
-        required: true
-      source_ref:
-        description: Exact reviewed ClipForge commit SHA
-        type: string
-        required: true
-      audio_url:
-        description: Kick, YouTube, Twitch or owned HTTPS mp4/m4a/mp3/webm/m3u8 URL
-        type: string
-        default: ''
-      settings_json:
-        description: URL-only audio analysis settings JSON (at most 16 KB)
-        type: string
-        default: '{}'
-      auto_previews:
-        description: Continue URL-only analysis with CPU previews and an unapproved review draft
-        type: boolean
-        default: false
-      verified_audio_run:
-        description: Optional producer run ID whose verified audio artifact is reused for a URL-only colab-auto request (the producer run must have concluded success)
-        type: string
-        default: ''
-      verified_audio_request:
-        description: Request ID of that verified audio artifact (32 lowercase hex characters); required with verified_audio_run
-        type: string
-        default: ''
-      probe_only:
-        description: Diagnose URL metadata and provider errors without downloading media or allocating Colab
-        type: boolean
-        default: false
-
-permissions:
-  contents: write
-  actions: read
-
-# Each request may own up to four ASR runtimes. Serialize requests.
-concurrency:
-  group: clipforge-video
-  cancel-in-progress: false
-
-jobs:
-  colab-auto:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && !inputs.probe_only
-    runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    env:
-      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
-      INPUT_TAG: ${{ inputs.input_tag }}
-      REQUEST_ID: ${{ inputs.request_id }}
-      PYTHONUNBUFFERED: '1'
-    steps:
-      - name: Validate request and one-time Colab OAuth setup
-        timeout-minutes: 10
-        env:
-          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
-          AUDIO_URL: ${{ inputs.audio_url }}
-          AUTO_PREVIEWS: ${{ inputs.auto_previews }}
-        run: |
-          python3 - <<'PY'
-          import os, re
-          assert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])
-          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])
-          assert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']
-          assert os.environ['AUTO_PREVIEWS'] != 'true' or os.environ['AUDIO_URL']
-          if os.environ['AUDIO_URL']:
-              from urllib.parse import urlsplit
-              assert urlsplit(os.environ['AUDIO_URL']).scheme == 'https'
-          if not os.environ.get('COLAB_ADC_JSON'):
-              raise SystemExit('COLAB_ADC_JSON is missing. Authorize n.yu17919191@gmail.com once; no GPU was allocated.')
-          PY
-      - uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          repository: nyu1791-collab/ClipForge
-          ref: ${{ inputs.source_ref }}
-          path: clipforge-source
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        timeout-minutes: 10
-        with:
-          python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
-        timeout-minutes: 10
-        with:
-          version: '0.12.23'
-          enable-cache: true
-          cache-dependency-glob: clipforge-source/tools/colab-control-requirements.txt
-      - name: Install the locked Google Colab control SDK without ASR or CUDA packages
-        timeout-minutes: 10
-        id: control
-        run: |
-          uv venv "$RUNNER_TEMP/colab-control" --python 3.12
-          uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
-            -r clipforge-source/tools/colab-control-requirements.txt
-      - name: Install locked audio acquisition dependencies without API credentials
-        timeout-minutes: 10
-        if: inputs.audio_url != ''
-        working-directory: clipforge-source
-        run: uv sync --locked --extra media-fetch --no-dev
-      - uses: actions/setup-node@v4
-        timeout-minutes: 10
-        if: inputs.audio_url != ''
-        with:
-          node-version: '22.23.3'
-      - name: Ensure media tools for URL probing and lossless ASR splitting
-        timeout-minutes: 10
-        if: inputs.audio_url != ''
-        run: |
-          if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends ffmpeg
-          fi
-      - name: Initialize the pinned YouTube audio transport
-        id: youtube_transport
-        timeout-minutes: 12
-        if: inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'
-        working-directory: clipforge-source
-        env:
-          AUDIO_URL: ${{ inputs.audio_url }}
-        run: uv run --no-sync python tools/youtube_transport.py setup --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
-      - name: Download the requested verified audio artifact from a successful producer run
-        timeout-minutes: 5
-        if: inputs.verified_audio_run != '' || inputs.verified_audio_request != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          AUDIO_URL: ${{ inputs.audio_url }}
-          VERIFIED_AUDIO_RUN: ${{ inputs.verified_audio_run }}
-          VERIFIED_AUDIO_REQUEST: ${{ inputs.verified_audio_request }}
-        run: |
-          python3 - <<'PY'
-          import json, os, re, subprocess
-          from pathlib import Path
-          assert os.environ['AUDIO_URL'], 'verified audio reuse requires a URL-only request'
-          run, request = os.environ['VERIFIED_AUDIO_RUN'], os.environ['VERIFIED_AUDIO_REQUEST']
-          assert re.fullmatch(r'[1-9][0-9]{0,18}', run), 'verified_audio_run must be a run ID'
-          assert re.fullmatch(r'[a-f0-9]{32}', request), 'verified_audio_request must be a request ID'
-          repository = os.environ['GITHUB_REPOSITORY']
-          producer = json.loads(subprocess.run(
-            ['gh', 'api', f'repos/{repository}/actions/runs/{run}'],
-            check=True, capture_output=True, text=True).stdout)
-          assert producer.get('conclusion') == 'success', 'producer run did not conclude success'
-          assert producer.get('display_title') == 'ClipForge ' + request, 'producer run is not this request'
-          destination = Path(os.environ['RUNNER_TEMP']) / 'clipforge-verified-audio'
-          destination.mkdir(parents=True, mode=0o700)
-          subprocess.run(
-            ['gh', 'run', 'download', run, '--repo', repository,
-             '--name', 'clipforge-verified-audio-' + request, '--dir', str(destination)],
-            check=True)
-          PY
-      - name: Acquire and verify the audio before GPU allocation
-        timeout-minutes: 30
-        if: inputs.audio_url != ''
-        env:
-          AUDIO_URL: ${{ inputs.audio_url }}
-          SETTINGS_JSON: ${{ inputs.settings_json }}
-          AUTO_PREVIEWS: ${{ inputs.auto_previews }}
-          VERIFIED_AUDIO_RUN: ${{ inputs.verified_audio_run }}
-          VERIFIED_AUDIO_REQUEST: ${{ inputs.verified_audio_request }}
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
-        run: |
-          video_options=()
-          if [ "$AUTO_PREVIEWS" = true ]; then video_options+=(--require-video); fi
-          # Reuse is opt-in: without a verified run the command line stays exactly as before.
-          if [ -n "$VERIFIED_AUDIO_RUN" ]; then
-            video_options+=(--verified-audio-dir "$RUNNER_TEMP/clipforge-verified-audio"
-              --verified-audio-run "$VERIFIED_AUDIO_RUN" --verified-audio-request "$VERIFIED_AUDIO_REQUEST"
-              --verified-audio-source-ref "$CLIPFORGE_SOURCE_REF")
-          fi
-          clipforge-source/.venv/bin/python clipforge-source/tools/acquire_audio_url.py \
-            --url "$AUDIO_URL" --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
-            --settings-json "$SETTINGS_JSON" \
-            --directory "$RUNNER_TEMP/clipforge-input" "${video_options[@]}"
-      - name: Close YouTube audio transport before allocating a GPU
-        timeout-minutes: 2
-        if: always() && inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'
-        working-directory: clipforge-source
-        run: uv run --no-sync python tools/youtube_transport.py cleanup --state-dir "$RUNNER_TEMP/clipforge-youtube"
-      - name: Keep private URL acquisition and transport receipts
-        timeout-minutes: 2
-        if: always() && inputs.audio_url != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: clipforge-acquisition-${{ inputs.request_id }}
-          path: |
-            ${{ runner.temp }}/clipforge-youtube/
-            ${{ runner.temp }}/clipforge-input/acquisition-report.json
-          retention-days: 7
-          if-no-files-found: warn
-      - name: Recognise the audio parts on owned Colab GPUs and allocate topics
-        timeout-minutes: 140
-        env:
-          GH_TOKEN: ${{ github.token }}
-          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
-        run: |
-          clipforge-source/.venv/bin/python clipforge-source/tools/split_asr_job.py \
-            --directory "$RUNNER_TEMP/clipforge-input" --output "$RUNNER_TEMP/clipforge-out" \
-            --control-python "$RUNNER_TEMP/colab-control/bin/python" \
-            --state-root "$RUNNER_TEMP/clipforge-split"
-      - name: Release and verify removal of every owned Colab runtime
-        timeout-minutes: 10
-        if: always() && steps.control.outcome == 'success'
-        run: |
-          failed=0
-          for state in $RUNNER_TEMP/clipforge-split/control-*; do
-            if [ -f "$state/state.json" ]; then
-              "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop --state-dir "$state" || failed=1
-            fi
-          done
-          exit "$failed"
-      - name: Keep available ASR part outputs privately after a failure
-        timeout-minutes: 10
-        if: failure() || cancelled()
-        uses: actions/upload-artifact@v4
-        with:
-          name: clipforge-partial-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-split/result-*/
-          retention-days: 7
-          if-no-files-found: ignore
-      - name: Delete temporary private ASR part releases
-        timeout-minutes: 10
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then exit 1; fi
-          tags=()
-          if [ -f "$RUNNER_TEMP/clipforge-split/staged-tags" ]; then
-            mapfile -t tags < "$RUNNER_TEMP/clipforge-split/staged-tags"
-          fi
-          failed=0
-          for tag in "${tags[@]}"; do
-            [[ $tag =~ ^clipforge-input-[a-f0-9]{32}$ ]] || { failed=1; continue; }
-            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || failed=1
-            fi
-          done
-          if [ "$failed" = 1 ]; then echo '::warning::Temporary private ASR part input cleanup failed.'; fi
-          exit "$failed"
-      - uses: actions/upload-artifact@v4
-        timeout-minutes: 10
-        if: always()
-        with:
-          name: clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-out/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: warn
-      - name: Delete temporary private input and result transfer chunks
-        id: input-cleanup
-        timeout-minutes: 10
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # Uses only the preinstalled gh, so cleanup still runs when checkout or setup failed.
-        run: |
-          if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then
-            echo 'Unexpected temporary input tag; nothing was deleted.' >&2
-            exit 1
-          fi
-          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
-            echo 'The worker repository must remain private; nothing was deleted.' >&2
-            exit 1
-          fi
-          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release delete "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
-            echo 'Temporary private input release deleted.'
-          else
-            echo 'No temporary private input release remains.'
-          fi
-      - name: Report a temporary input that could not be deleted
-        timeout-minutes: 5
-        if: always() && steps.input-cleanup.outcome != 'success'
-        run: |
-          echo "::warning title=Temporary private input remains::$INPUT_TAG may still hold private input. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG."
-          {
-            echo '### Temporary private input remains'
-            echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  url-probe:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    env:
-      SOURCE_REF: ${{ inputs.source_ref }}
-      REQUEST_ID: ${{ inputs.request_id }}
-      AUDIO_URL: ${{ inputs.audio_url }}
-    steps:
-      - name: Validate metadata probe input
-        timeout-minutes: 1
-        run: |
-          python3 - <<'PY'
-          import os, re
-          from urllib.parse import urlsplit
-          assert re.fullmatch(r'[a-f0-9]{40}', os.environ['SOURCE_REF'])
-          assert urlsplit(os.environ['AUDIO_URL']).scheme == 'https'
-          PY
-      - uses: actions/checkout@v4
-        timeout-minutes: 2
-        with:
-          repository: nyu1791-collab/ClipForge
-          ref: ${{ inputs.source_ref }}
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        timeout-minutes: 2
-        with:
-          python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
-        timeout-minutes: 2
-        with:
-          version: '0.12.23'
-          enable-cache: false
-      - uses: actions/setup-node@v4
-        timeout-minutes: 2
-        with:
-          node-version: '22.23.3'
-      - name: Install locked metadata dependencies without credentials
-        timeout-minutes: 3
-        run: uv sync --locked --extra media-fetch --no-dev
-      - name: Prepare hash-locked YouTube dependencies and immutable Docker provider
-        timeout-minutes: 8
-        run: uv run --no-sync python tools/youtube_transport.py prepare --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
-      - name: Probe Docker provider with web,mweb before WARP
-        timeout-minutes: 6
-        run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network direct --output probe-result/docker-direct.json
-      - name: Connect pinned WARP and reset the owned provider
-        id: warp
-        continue-on-error: true
-        timeout-minutes: 6
-        run: uv run --no-sync python tools/youtube_transport.py connect --state-dir "$RUNNER_TEMP/clipforge-youtube" --url "$AUDIO_URL"
-      - name: Probe Docker provider with web,mweb through verified WARP
-        if: steps.warp.outcome == 'success'
-        timeout-minutes: 6
-        run: uv run --no-sync python tools/probe_youtube_pot.py --url "$AUDIO_URL" --network warp --output probe-result/docker-warp.json
-      - name: Verify actual audio acquisition through WARP without allocating a GPU
-        id: audio_probe
-        if: steps.warp.outcome == 'success'
-        timeout-minutes: 15
-        run: |
-          if ! command -v ffprobe >/dev/null; then
-            sudo apt-get update -qq
-            sudo apt-get install -y --no-install-recommends ffmpeg
-          fi
-          uv run --no-sync python tools/probe_youtube_audio.py --url "$AUDIO_URL" --directory "$RUNNER_TEMP/clipforge-audio-probe"
-      - name: Verify WARP disconnect and remove only the owned provider
-        id: transport_close
-        timeout-minutes: 2
-        if: always()
-        run: uv run --no-sync python tools/youtube_transport.py cleanup --state-dir "$RUNNER_TEMP/clipforge-youtube"
-      - name: Verify audio reuse after the network transport is closed
-        if: steps.audio_probe.outputs.audio_acquired == 'true' && steps.transport_close.outcome == 'success'
-        timeout-minutes: 2
-        run: uv run --no-sync python tools/probe_youtube_reuse.py --url "$AUDIO_URL" --directory "$RUNNER_TEMP/clipforge-audio-probe" --output "$RUNNER_TEMP/clipforge-audio-reuse"
-      - name: Keep verified audio privately for subsequent ASR
-        if: always() && steps.audio_probe.outputs.audio_acquired == 'true'
-        timeout-minutes: 10
-        uses: actions/upload-artifact@v4
-        with:
-          name: clipforge-verified-audio-${{ inputs.request_id }}
-          path: |
-            ${{ runner.temp }}/clipforge-audio-probe/audio.m4a
-            ${{ runner.temp }}/clipforge-audio-probe/audio-source.json
-          retention-days: 7
-          compression-level: 0
-          if-no-files-found: warn
-      - uses: actions/upload-artifact@v4
-        timeout-minutes: 2
-        if: always()
-        with:
-          name: clipforge-url-probe-${{ github.run_id }}
-          path: |
-            probe-result/
-            ${{ runner.temp }}/clipforge-youtube/
-          retention-days: 7
-          if-no-files-found: warn
-
-  previews:
-    needs: colab-auto
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.auto_previews && needs.colab-auto.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
-      REQUEST_ID: ${{ inputs.request_id }}
-      CPU_PACKAGES: ffmpeg fontconfig fonts-noto-cjk libcairo2
-      PYTHONUNBUFFERED: '1'
-    steps:
-      - uses: actions/checkout@v4
-        timeout-minutes: 10
-        with:
-          repository: nyu1791-collab/ClipForge
-          ref: ${{ inputs.source_ref }}
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        timeout-minutes: 10
-        with:
-          python-version: '3.11'
-      - name: Install pinned uv
-        timeout-minutes: 10
-        run: python -m pip install uv==0.12.23
-      - name: Prepare CPU package cache
-        timeout-minutes: 10
-        id: debs
-        run: |
-          mkdir -p "$RUNNER_TEMP/clipforge-debs"
-          package_hash=$(printf '%s' "$CPU_PACKAGES" | sha256sum | cut -d' ' -f1)
-          printf 'key=debs-%s-%s-%s\n' "$ImageOS" "$ImageVersion" "$package_hash" >> "$GITHUB_OUTPUT"
-      - name: Restore CPU package archives
-        timeout-minutes: 10
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/clipforge-debs/*.deb
-          key: ${{ steps.debs.outputs.key }}
-      - name: Install missing CPU media tools and fonts
-        timeout-minutes: 10
-        run: |
-          missing=()
-          for package in $CPU_PACKAGES; do
-            if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
-              missing+=("$package")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            cache="$RUNNER_TEMP/clipforge-debs"
-            options=(-y --no-install-recommends -o "Dir::Cache::archives=$cache" -o APT::Keep-Downloaded-Packages=true)
-            if ! sudo apt-get install --no-download "${options[@]}" "${missing[@]}"; then
-              sudo apt-get update -qq
-              sudo apt-get install "${options[@]}" "${missing[@]}"
-            fi
-          fi
-      - name: Install Python stage dependencies
-        timeout-minutes: 10
-        run: uv sync --locked --extra media-fetch --no-dev
-      - uses: actions/download-artifact@v4
-        timeout-minutes: 10
-        with:
-          name: clipforge-analysis-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-analysis
-      - name: Prepare the submitted preview settings
-        timeout-minutes: 10
-        env:
-          SETTINGS_JSON: ${{ inputs.settings_json }}
-        run: |
-          uv run --no-sync python - <<'PY'
-          import json, os
-          from pathlib import Path
-          from tools.submit_job import parse_settings_json
-          settings = parse_settings_json(os.environ['SETTINGS_JSON'])
-          path = Path(os.environ['RUNNER_TEMP']) / 'preview-settings.json'
-          path.write_text(json.dumps(settings))
-          path.chmod(0o600)
-          PY
-      - name: Verify this run's analysis and create previews and an unapproved draft
-        timeout-minutes: 60
-        env:
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
-        run: |
-          uv run --no-sync python tools/run_audio_stage.py --stage previews \
-            --same-run-analysis "$RUNNER_TEMP/clipforge-analysis" \
-            --previous-run "$GITHUB_RUN_ID" --previous-request "$REQUEST_ID" \
-            --request-id "$REQUEST_ID" --source-ref "$CLIPFORGE_SOURCE_REF" \
-            --config "$RUNNER_TEMP/preview-settings.json" --output "$RUNNER_TEMP/clipforge-previews"
-      - uses: actions/upload-artifact@v4
-        timeout-minutes: 10
-        if: always()
-        with:
-          name: clipforge-result-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-previews/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: warn
+{
+  "name": "ClipForge",
+  "run-name": "ClipForge ${{ inputs.request_id }}",
+  "permissions": {
+    "contents": "write",
+    "actions": "read"
+  },
+  "concurrency": {
+    "group": "clipforge-video",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "colab-auto": {
+      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && !inputs.probe_only",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 180,
+      "env": {
+        "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+        "INPUT_TAG": "${{ inputs.input_tag }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_PUBLIC_CACHE": "off"
+      },
+      "steps": [
+        {
+          "name": "Reject obsolete production source",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
+          },
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/3b2fcab403d30288cf6a615d5b46da6c7d5ccaca...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n",
+          "timeout-minutes": 1
+        },
+        {
+          "name": "Validate request and one-time Colab OAuth setup",
+          "timeout-minutes": 10,
+          "env": {
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
+            "AUDIO_URL": "${{ inputs.audio_url }}",
+            "AUTO_PREVIEWS": "${{ inputs.auto_previews }}"
+          },
+          "run": "python3 - <<'PY'\nimport os, re\nassert re.fullmatch(r'[a-f0-9]{32}', os.environ['REQUEST_ID'])\nassert re.fullmatch(r'[a-f0-9]{40}', os.environ['CLIPFORGE_SOURCE_REF'])\nassert os.environ['INPUT_TAG'] == 'clipforge-input-' + os.environ['REQUEST_ID']\nassert os.environ['AUTO_PREVIEWS'] != 'true' or os.environ['AUDIO_URL']\nif os.environ['AUDIO_URL']:\n    from urllib.parse import urlsplit\n    assert urlsplit(os.environ['AUDIO_URL']).scheme == 'https'\nif not os.environ.get('COLAB_ADC_JSON'):\n    raise SystemExit('COLAB_ADC_JSON is missing. Authorize n.yu17919191@gmail.com once; no GPU was allocated.')\nPY\n"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "timeout-minutes": 10,
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "path": "clipforge-source",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "timeout-minutes": 10,
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "timeout-minutes": 10,
+          "with": {
+            "version": "0.12.23",
+            "enable-cache": true,
+            "cache-dependency-glob": "clipforge-source/tools/colab-control-requirements.txt"
+          }
+        },
+        {
+          "name": "Install the locked Google Colab control SDK without ASR or CUDA packages",
+          "timeout-minutes": 10,
+          "id": "control",
+          "run": "uv venv \"$RUNNER_TEMP/colab-control\" --python 3.12\nuv pip install --python \"$RUNNER_TEMP/colab-control/bin/python\" --require-hashes \\\n  -r clipforge-source/tools/colab-control-requirements.txt\n"
+        },
+        {
+          "name": "Install locked audio acquisition dependencies without API credentials",
+          "timeout-minutes": 10,
+          "if": "inputs.audio_url != ''",
+          "working-directory": "clipforge-source",
+          "run": "uv sync --locked --extra media-fetch --no-dev"
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "timeout-minutes": 10,
+          "if": "inputs.audio_url != ''",
+          "with": {
+            "node-version": "22.23.3"
+          }
+        },
+        {
+          "name": "Ensure media tools for URL probing and lossless ASR splitting",
+          "timeout-minutes": 10,
+          "if": "inputs.audio_url != ''",
+          "run": "if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then\n  sudo apt-get update -qq\n  sudo apt-get install -y --no-install-recommends ffmpeg\nfi\n"
+        },
+        {
+          "name": "Initialize the pinned YouTube audio transport",
+          "id": "youtube_transport",
+          "timeout-minutes": 12,
+          "if": "inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'",
+          "working-directory": "clipforge-source",
+          "env": {
+            "AUDIO_URL": "${{ inputs.audio_url }}"
+          },
+          "run": "uv run --no-sync python tools/youtube_transport.py setup --state-dir \"$RUNNER_TEMP/clipforge-youtube\" --url \"$AUDIO_URL\""
+        },
+        {
+          "name": "Download the requested verified audio artifact from a successful producer run",
+          "timeout-minutes": 5,
+          "if": "inputs.verified_audio_run != '' || inputs.verified_audio_request != ''",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "AUDIO_URL": "${{ inputs.audio_url }}",
+            "VERIFIED_AUDIO_RUN": "${{ inputs.verified_audio_run }}",
+            "VERIFIED_AUDIO_REQUEST": "${{ inputs.verified_audio_request }}"
+          },
+          "run": "python3 - <<'PY'\nimport json, os, re, subprocess\nfrom pathlib import Path\nassert os.environ['AUDIO_URL'], 'verified audio reuse requires a URL-only request'\nrun, request = os.environ['VERIFIED_AUDIO_RUN'], os.environ['VERIFIED_AUDIO_REQUEST']\nassert re.fullmatch(r'[1-9][0-9]{0,18}', run), 'verified_audio_run must be a run ID'\nassert re.fullmatch(r'[a-f0-9]{32}', request), 'verified_audio_request must be a request ID'\nrepository = os.environ['GITHUB_REPOSITORY']\nproducer = json.loads(subprocess.run(\n  ['gh', 'api', f'repos/{repository}/actions/runs/{run}'],\n  check=True, capture_output=True, text=True).stdout)\nassert producer.get('conclusion') == 'success', 'producer run did not conclude success'\nassert producer.get('display_title') == 'ClipForge ' + request, 'producer run is not this request'\ndestination = Path(os.environ['RUNNER_TEMP']) / 'clipforge-verified-audio'\ndestination.mkdir(parents=True, mode=0o700)\nsubprocess.run(\n  ['gh', 'run', 'download', run, '--repo', repository,\n   '--name', 'clipforge-verified-audio-' + request, '--dir', str(destination)],\n  check=True)\nPY\n"
+        },
+        {
+          "name": "Acquire and verify the audio before GPU allocation",
+          "timeout-minutes": 30,
+          "if": "inputs.audio_url != ''",
+          "env": {
+            "AUDIO_URL": "${{ inputs.audio_url }}",
+            "SETTINGS_JSON": "${{ inputs.settings_json }}",
+            "AUTO_PREVIEWS": "${{ inputs.auto_previews }}",
+            "VERIFIED_AUDIO_RUN": "${{ inputs.verified_audio_run }}",
+            "VERIFIED_AUDIO_REQUEST": "${{ inputs.verified_audio_request }}",
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}"
+          },
+          "run": "video_options=()\nif [ \"$AUTO_PREVIEWS\" = true ]; then video_options+=(--require-video); fi\n# Reuse is opt-in: without a verified run the command line stays exactly as before.\nif [ -n \"$VERIFIED_AUDIO_RUN\" ]; then\n  video_options+=(--verified-audio-dir \"$RUNNER_TEMP/clipforge-verified-audio\"\n    --verified-audio-run \"$VERIFIED_AUDIO_RUN\" --verified-audio-request \"$VERIFIED_AUDIO_REQUEST\"\n    --verified-audio-source-ref \"$CLIPFORGE_SOURCE_REF\")\nfi\nclipforge-source/.venv/bin/python clipforge-source/tools/acquire_audio_url.py \\\n  --url \"$AUDIO_URL\" --request-id \"$REQUEST_ID\" --source-ref \"$CLIPFORGE_SOURCE_REF\" \\\n  --settings-json \"$SETTINGS_JSON\" \\\n  --directory \"$RUNNER_TEMP/clipforge-input\" \"${video_options[@]}\"\n"
+        },
+        {
+          "name": "Close YouTube audio transport before allocating a GPU",
+          "timeout-minutes": 2,
+          "if": "always() && inputs.audio_url != '' && fromJSON(inputs.settings_json).youtube_audio_transport == 'warp'",
+          "working-directory": "clipforge-source",
+          "run": "uv run --no-sync python tools/youtube_transport.py cleanup --state-dir \"$RUNNER_TEMP/clipforge-youtube\""
+        },
+        {
+          "name": "Keep private URL acquisition and transport receipts",
+          "timeout-minutes": 2,
+          "if": "always() && inputs.audio_url != '' && inputs.result_store != 'release'",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "clipforge-acquisition-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-youtube/\n${{ runner.temp }}/clipforge-input/acquisition-report.json\n",
+            "retention-days": 7,
+            "if-no-files-found": "warn"
+          }
+        },
+        {
+          "name": "Recognise the audio parts on owned Colab GPUs and allocate topics",
+          "timeout-minutes": 140,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
+          },
+          "run": "clipforge-source/.venv/bin/python clipforge-source/tools/split_asr_job.py \\\n  --directory \"$RUNNER_TEMP/clipforge-input\" --output \"$RUNNER_TEMP/clipforge-out\" \\\n  --control-python \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  --state-root \"$RUNNER_TEMP/clipforge-split\"\n"
+        },
+        {
+          "name": "Release and verify removal of every owned Colab runtime",
+          "timeout-minutes": 10,
+          "if": "always() && steps.control.outcome == 'success'",
+          "run": "failed=0\nfor state in $RUNNER_TEMP/clipforge-split/control-*; do\n  if [ -f \"$state/state.json\" ]; then\n    \"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py stop --state-dir \"$state\" || failed=1\n  fi\ndone\nexit \"$failed\"\n"
+        },
+        {
+          "name": "Keep available ASR part outputs privately after a failure",
+          "timeout-minutes": 10,
+          "if": "(failure() || cancelled()) && inputs.result_store != 'release'",
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "clipforge-partial-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-split/result-*/",
+            "retention-days": 7,
+            "if-no-files-found": "ignore"
+          }
+        },
+        {
+          "name": "Delete temporary private ASR part releases",
+          "timeout-minutes": 10,
+          "if": "always()",
+          "continue-on-error": true,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "if [ \"$(gh api \"repos/$GITHUB_REPOSITORY\" --jq .private)\" != true ]; then exit 1; fi\ntags=()\nif [ -f \"$RUNNER_TEMP/clipforge-split/staged-tags\" ]; then\n  mapfile -t tags < \"$RUNNER_TEMP/clipforge-split/staged-tags\"\nfi\nfailed=0\nfor tag in \"${tags[@]}\"; do\n  [[ $tag =~ ^clipforge-input-[a-f0-9]{32}$ ]] || { failed=1; continue; }\n  if gh release view \"$tag\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then\n    gh release delete \"$tag\" --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag || failed=1\n  fi\ndone\nif [ \"$failed\" = 1 ]; then echo '::warning::Temporary private ASR part input cleanup failed.'; fi\nexit \"$failed\"\n"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "timeout-minutes": 10,
+          "if": "always() && inputs.result_store != 'release'",
+          "with": {
+            "name": "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-out/",
+            "compression-level": 0,
+            "retention-days": 7,
+            "if-no-files-found": "warn"
+          }
+        },
+        {
+          "name": "Save the verified private result transfer",
+          "if": "success() && inputs.result_store == 'release'",
+          "timeout-minutes": 10,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PYTHONPATH": "${{ github.workspace }}/clipforge-source/src",
+            "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-out",
+            "RESULT_NAME": "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}"
+          },
+          "run": "python3 -m clipforge.github_cli publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+        },
+        {
+          "name": "Delete temporary private input and result transfer chunks",
+          "id": "input-cleanup",
+          "timeout-minutes": 10,
+          "if": "always()",
+          "continue-on-error": true,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then\n  echo 'Unexpected temporary input tag; nothing was deleted.' >&2\n  exit 1\nfi\nif [ \"$(gh api \"repos/$GITHUB_REPOSITORY\" --jq .private)\" != true ]; then\n  echo 'The worker repository must remain private; nothing was deleted.' >&2\n  exit 1\nfi\nif gh release view \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then\n  gh release delete \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n  echo 'Temporary private input release deleted.'\nelse\n  echo 'No temporary private input release remains.'\nfi\n"
+        },
+        {
+          "name": "Report a temporary input that could not be deleted",
+          "timeout-minutes": 5,
+          "if": "always() && steps.input-cleanup.outcome != 'success'",
+          "run": "echo \"::warning title=Temporary private input remains::$INPUT_TAG may still hold private input. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG.\"\n{\n  echo '### Temporary private input remains'\n  echo \"The release \\`$INPUT_TAG\\` could not be confirmed deleted. Delete it with \\`tools/submit_job.py --cleanup-tag $INPUT_TAG\\`.\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+        }
+      ]
+    },
+    "url-probe": {
+      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 45,
+      "permissions": {
+        "contents": "read"
+      },
+      "env": {
+        "SOURCE_REF": "${{ inputs.source_ref }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "AUDIO_URL": "${{ inputs.audio_url }}"
+      },
+      "steps": [
+        {
+          "name": "Reject obsolete production source",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
+          },
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/3b2fcab403d30288cf6a615d5b46da6c7d5ccaca...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n",
+          "timeout-minutes": 1
+        },
+        {
+          "name": "Validate metadata probe input",
+          "timeout-minutes": 1,
+          "run": "python3 - <<'PY'\nimport os, re\nfrom urllib.parse import urlsplit\nassert re.fullmatch(r'[a-f0-9]{40}', os.environ['SOURCE_REF'])\nassert urlsplit(os.environ['AUDIO_URL']).scheme == 'https'\nPY\n"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "timeout-minutes": 2,
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "timeout-minutes": 2,
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "timeout-minutes": 2,
+          "with": {
+            "version": "0.12.23",
+            "enable-cache": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "timeout-minutes": 2,
+          "with": {
+            "node-version": "22.23.3"
+          }
+        },
+        {
+          "name": "Install locked metadata dependencies without credentials",
+          "timeout-minutes": 3,
+          "run": "uv sync --locked --extra media-fetch --no-dev"
+        },
+        {
+          "name": "Prepare hash-locked YouTube dependencies and immutable Docker provider",
+          "timeout-minutes": 8,
+          "run": "uv run --no-sync python tools/youtube_transport.py prepare --state-dir \"$RUNNER_TEMP/clipforge-youtube\" --url \"$AUDIO_URL\""
+        },
+        {
+          "name": "Probe Docker provider with web,mweb before WARP",
+          "timeout-minutes": 6,
+          "run": "uv run --no-sync python tools/probe_youtube_pot.py --url \"$AUDIO_URL\" --network direct --output probe-result/docker-direct.json"
+        },
+        {
+          "name": "Connect pinned WARP and reset the owned provider",
+          "id": "warp",
+          "continue-on-error": true,
+          "timeout-minutes": 6,
+          "run": "uv run --no-sync python tools/youtube_transport.py connect --state-dir \"$RUNNER_TEMP/clipforge-youtube\" --url \"$AUDIO_URL\""
+        },
+        {
+          "name": "Probe Docker provider with web,mweb through verified WARP",
+          "if": "steps.warp.outcome == 'success'",
+          "timeout-minutes": 6,
+          "run": "uv run --no-sync python tools/probe_youtube_pot.py --url \"$AUDIO_URL\" --network warp --output probe-result/docker-warp.json"
+        },
+        {
+          "name": "Verify actual audio acquisition through WARP without allocating a GPU",
+          "id": "audio_probe",
+          "if": "steps.warp.outcome == 'success'",
+          "timeout-minutes": 15,
+          "run": "if ! command -v ffprobe >/dev/null; then\n  sudo apt-get update -qq\n  sudo apt-get install -y --no-install-recommends ffmpeg\nfi\nuv run --no-sync python tools/probe_youtube_audio.py --url \"$AUDIO_URL\" --directory \"$RUNNER_TEMP/clipforge-audio-probe\"\n"
+        },
+        {
+          "name": "Verify WARP disconnect and remove only the owned provider",
+          "id": "transport_close",
+          "timeout-minutes": 2,
+          "if": "always()",
+          "run": "uv run --no-sync python tools/youtube_transport.py cleanup --state-dir \"$RUNNER_TEMP/clipforge-youtube\""
+        },
+        {
+          "name": "Verify audio reuse after the network transport is closed",
+          "if": "steps.audio_probe.outputs.audio_acquired == 'true' && steps.transport_close.outcome == 'success'",
+          "timeout-minutes": 2,
+          "run": "uv run --no-sync python tools/probe_youtube_reuse.py --url \"$AUDIO_URL\" --directory \"$RUNNER_TEMP/clipforge-audio-probe\" --output \"$RUNNER_TEMP/clipforge-audio-reuse\""
+        },
+        {
+          "name": "Keep verified audio privately for subsequent ASR",
+          "if": "always() && steps.audio_probe.outputs.audio_acquired == 'true'",
+          "timeout-minutes": 10,
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "name": "clipforge-verified-audio-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-audio-probe/audio.m4a\n${{ runner.temp }}/clipforge-audio-probe/audio-source.json\n",
+            "retention-days": 7,
+            "compression-level": 0,
+            "if-no-files-found": "warn"
+          }
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "timeout-minutes": 2,
+          "if": "always()",
+          "with": {
+            "name": "clipforge-url-probe-${{ github.run_id }}",
+            "path": "probe-result/\n${{ runner.temp }}/clipforge-youtube/\n",
+            "retention-days": 7,
+            "if-no-files-found": "warn"
+          }
+        }
+      ]
+    },
+    "previews": {
+      "needs": "colab-auto",
+      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.auto_previews && needs.colab-auto.result == 'success'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 90,
+      "env": {
+        "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "CPU_PACKAGES": "ffmpeg fontconfig fonts-noto-cjk libcairo2",
+        "PYTHONUNBUFFERED": "1"
+      },
+      "steps": [
+        {
+          "name": "Reject obsolete production source",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
+          },
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/3b2fcab403d30288cf6a615d5b46da6c7d5ccaca...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n",
+          "timeout-minutes": 1
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "timeout-minutes": 10,
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "timeout-minutes": 10,
+          "with": {
+            "python-version": "3.11"
+          }
+        },
+        {
+          "name": "Install pinned uv",
+          "timeout-minutes": 10,
+          "run": "python -m pip install uv==0.12.23"
+        },
+        {
+          "name": "Prepare CPU package cache",
+          "timeout-minutes": 10,
+          "id": "debs",
+          "run": "mkdir -p \"$RUNNER_TEMP/clipforge-debs\"\npackage_hash=$(printf '%s' \"$CPU_PACKAGES\" | sha256sum | cut -d' ' -f1)\nprintf 'key=debs-%s-%s-%s\\n' \"$ImageOS\" \"$ImageVersion\" \"$package_hash\" >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "Restore CPU package archives",
+          "timeout-minutes": 10,
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": "${{ runner.temp }}/clipforge-debs/*.deb",
+            "key": "${{ steps.debs.outputs.key }}"
+          }
+        },
+        {
+          "name": "Install missing CPU media tools and fonts",
+          "timeout-minutes": 10,
+          "run": "missing=()\nfor package in $CPU_PACKAGES; do\n  if [ \"$(dpkg-query -W -f='${Status}' \"$package\" 2>/dev/null || true)\" != 'install ok installed' ]; then\n    missing+=(\"$package\")\n  fi\ndone\nif [ \"${#missing[@]}\" -gt 0 ]; then\n  cache=\"$RUNNER_TEMP/clipforge-debs\"\n  options=(-y --no-install-recommends -o \"Dir::Cache::archives=$cache\" -o APT::Keep-Downloaded-Packages=true)\n  if ! sudo apt-get install --no-download \"${options[@]}\" \"${missing[@]}\"; then\n    sudo apt-get update -qq\n    sudo apt-get install \"${options[@]}\" \"${missing[@]}\"\n  fi\nfi\n"
+        },
+        {
+          "name": "Install Python stage dependencies",
+          "timeout-minutes": 10,
+          "run": "uv sync --locked --extra media-fetch --no-dev"
+        },
+        {
+          "uses": "actions/download-artifact@v4",
+          "if": "inputs.result_store != 'release'",
+          "timeout-minutes": 10,
+          "with": {
+            "name": "clipforge-analysis-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-analysis"
+          }
+        },
+        {
+          "name": "Retrieve the verified private analysis transfer",
+          "if": "inputs.result_store == 'release'",
+          "timeout-minutes": 10,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PYTHONPATH": "${{ github.workspace }}/src"
+          },
+          "run": "python3 -m clipforge.github_cli download \"$GITHUB_RUN_ID\" \"clipforge-analysis-$REQUEST_ID\" \"$RUNNER_TEMP/clipforge-analysis\""
+        },
+        {
+          "name": "Prepare the submitted preview settings",
+          "timeout-minutes": 10,
+          "env": {
+            "SETTINGS_JSON": "${{ inputs.settings_json }}"
+          },
+          "run": "uv run --no-sync python - <<'PY'\nimport json, os\nfrom pathlib import Path\nfrom tools.submit_job import parse_settings_json\nsettings = parse_settings_json(os.environ['SETTINGS_JSON'])\npath = Path(os.environ['RUNNER_TEMP']) / 'preview-settings.json'\npath.write_text(json.dumps(settings))\npath.chmod(0o600)\nPY\n"
+        },
+        {
+          "name": "Verify this run's analysis and create previews and an unapproved draft",
+          "timeout-minutes": 60,
+          "env": {
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}"
+          },
+          "run": "uv run --no-sync python tools/run_audio_stage.py --stage previews \\\n  --same-run-analysis \"$RUNNER_TEMP/clipforge-analysis\" \\\n  --previous-run \"$GITHUB_RUN_ID\" --previous-request \"$REQUEST_ID\" \\\n  --request-id \"$REQUEST_ID\" --source-ref \"$CLIPFORGE_SOURCE_REF\" \\\n  --config \"$RUNNER_TEMP/preview-settings.json\" --output \"$RUNNER_TEMP/clipforge-previews\"\n"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "timeout-minutes": 10,
+          "if": "always() && inputs.result_store != 'release'",
+          "with": {
+            "name": "clipforge-result-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-previews/",
+            "compression-level": 0,
+            "retention-days": 7,
+            "if-no-files-found": "warn"
+          }
+        },
+        {
+          "name": "Save the verified private result transfer",
+          "if": "success() && inputs.result_store == 'release'",
+          "timeout-minutes": 10,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PYTHONPATH": "${{ github.workspace }}/src",
+            "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-previews",
+            "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
+          },
+          "run": "python3 -m clipforge.github_cli publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+        }
+      ]
+    }
+  },
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "request_id": {
+          "description": "VM-generated request identifier (32 lowercase hex characters)",
+          "type": "string",
+          "required": true
+        },
+        "input_tag": {
+          "description": "Temporary private input release tag",
+          "type": "string",
+          "required": true
+        },
+        "source_ref": {
+          "description": "Exact reviewed ClipForge commit SHA",
+          "type": "string",
+          "required": true
+        },
+        "audio_url": {
+          "description": "Kick, YouTube, Twitch or owned HTTPS mp4/m4a/mp3/webm/m3u8 URL",
+          "type": "string",
+          "default": ""
+        },
+        "settings_json": {
+          "description": "URL-only audio analysis settings JSON (at most 16 KB)",
+          "type": "string",
+          "default": "{}"
+        },
+        "auto_previews": {
+          "description": "Continue URL-only analysis with CPU previews and an unapproved review draft",
+          "type": "boolean",
+          "default": false
+        },
+        "verified_audio_run": {
+          "description": "Optional producer run ID whose verified audio artifact is reused for a URL-only colab-auto request (the producer run must have concluded success)",
+          "type": "string",
+          "default": ""
+        },
+        "verified_audio_request": {
+          "description": "Request ID of that verified audio artifact (32 lowercase hex characters); required with verified_audio_run",
+          "type": "string",
+          "default": ""
+        },
+        "probe_only": {
+          "description": "Diagnose URL metadata and provider errors without downloading media or allocating Colab",
+          "type": "boolean",
+          "default": false
+        },
+        "result_store": {
+          "description": "Temporary private output transfer; the final delivery is Google Drive",
+          "type": "choice",
+          "options": [
+            "artifact",
+            "release"
+          ],
+          "default": "artifact"
+        }
+      }
+    }
+  }
+}

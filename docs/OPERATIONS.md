@@ -17,7 +17,7 @@ Secrets は必要なステップにだけ渡す。値を文書・チャット・
 
 - 解析の run は全体180分（音声取得30分、文字起こしと話題分け140分）。描画の job は1本あたり100分。
 - 解析は1件ずつ（workflow の concurrency と `submit_job.py` の確認）。1件の解析が最大4台の Colab を使う。
-- 描画は1本ずつ別の依頼になり、最大5件まで並列に走る（`submit_audio_stage.py` の `MAX_ACTIVE`）。
+- 通常描画は1件の依頼・1台のGPUで最大5本をまとめて処理する。完成バッチは--collectで回収する。--clip-indexは1本だけの修正用。
 - 待機の上限は実行上限とは別で、既定18,000秒（5時間）。`--wait-timeout SECONDS` で変えられる。
 - 配信長は横用設定で6時間、設定で最大12時間。
 
@@ -67,7 +67,7 @@ python tools/submit_job.py --audio-analysis-url 'URL' --ref "$SHA" \
 
 失敗した run は自動で再試行しない。部分の結果は `clipforge-partial-REQUEST_ID` artifact に7日残る（[ASR.md](ASR.md#失敗したとき)）。新しい依頼が必要なら、同じ配信・設定・コードで投入する。モデルの拒否や割り当て超過を、別アカウント・別サービスで回避しない。
 
-## クリップの結合（制御VM）
+## 個別修正したpartの結合（通常バッチは--collectで回収）
 
 ```bash
 python tools/submit_audio_stage.py --stage merge --local \

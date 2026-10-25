@@ -233,6 +233,22 @@ def _volume_series(source, info):
 def execute(
     previous, output, previous_id, settings, mode, review_file=None, clip_index=None
 ):
+    if mode == "render":
+        settings = settings.model_copy(
+            update={
+                "video_encoder": "h264_nvenc",
+                "loudness_two_pass": False,
+                "height": 360,
+                "chat_panel_width": round(
+                    settings.chat_panel_width * 360 / settings.height / 2
+                )
+                * 2,
+            }
+        )
+        # Fail before downloading analysis/media if this GPU cannot actually encode.
+        from .hardware import video_options
+
+        video_options(settings, 18)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     with audio_first.exclusive(output):
         url = restore_analysis(previous, output, previous_id)
@@ -338,8 +354,8 @@ def execute(
             human_review_performed=False,
         )
         write_json(output / "manifest.json", result)
-        if mode == "render" and clip_index is not None:
-            # Merge reads the ASR identity receipt, not the source or working media.
+        if mode == "render":
+            # Final deliveries retain clips and receipts, not input media or ASR bodies.
             for name in ("ranges", "previews", "transcripts", ".state"):
                 if (output / name).exists():
                     shutil.rmtree(output / name)
