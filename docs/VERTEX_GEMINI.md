@@ -31,9 +31,9 @@ https://github.com/nyu1791-collab/ClipForge/settings/variables/actions/new
 
 ## ClipForge Actionsでの自動呼び出し
 
-ASR保存済みの候補作成段階だけがVertexを呼ぶ。35前後の5〜15分の話題とASR本文を送り、指定本数のtopic ID・見出し・理由をJSONで得る。時刻は既存topic IDの値を使い、モデルが架空の時刻を作る方式にはしない。5本以上・各5分以上の設定を維持する。
+候補作成段階でVertexを呼ぶ。35前後の5〜15分の話題とASR本文を送り、指定本数のtopic ID・見出し・理由をJSONで得る。時刻は既存topic IDの値を使い、モデルが架空の時刻を作る方式にはしない。5本以上・各5分以上の設定を維持する。
 
-1制作依頼で生成HTTPリクエストは1回。出力トークン上限8192。失敗・応答不明時は記録して停止し、別モデル・別課金経路へのfallbackや再生成はしない。候補作成を同じディレクトリで繰り返しても、完了記録は再利用し、不明状態では再送しない。モデル提供・権限のエラーもそのまま停止する。
+ユーザーの追加指示により、候補計画ではURL解決ツールの呼び出しと編集計画の生成を2回のHTTPリクエストで行う。前者の出力上限は1024、後者は8192トークン。各リクエストは1回のみで再試行しない。失敗・応答不明時は記録して停止し、別モデル・別課金経路へのfallbackや再生成はしない。候補作成を同じディレクトリで繰り返しても、完了記録は再利用し、不明状態では再送しない。モデル提供・権限のエラーもそのまま停止する。
 
 資格情報はGitHub OIDCからの短期アクセストークンをそのステップだけに渡す。Vertexの資格情報をColab GPUやYouTube用コンテナへ送らない。ASR・描画・字幕に別途モデルを追加する処理ではない。品質監査や承認待ちは戻さない。
 
@@ -67,3 +67,24 @@ gh workflow run clipforge-opencode.yml --repo nyu1791-collab/ClipForge \
 ## Geminiへの編集指示
 
 1回の生成で、全体のテーマ分析、長い切り抜き区間の採用、見出し、内容要約、冒頭の見せ方、必要な前提、導入と結末の扱い、字幕の改行・用語・強調・誤認識候補をまとめて依頼する。提案は非公開のvertex-selection-receipt.jsonのeditorial_planに保存する。採用IDと見出しは制作JSONへ反映する。字幕補助は提案として保存し、元のASR字幕を自動で書き換えたとは扱わない。映像入力のない解析で映像確認済みと主張しない。
+
+## URLからの自動制作
+
+Geminiは`resolve_source_url`ツールへ対象URLを渡す。ツールは指定URLを正規化し、取得済みメタデータ・ASRとの対応を返す。別配信や署名付き素材URLをモデルに探させる方式ではない。取得済み素材の二重ダウンロードはしない。モデルの選定IDを元時刻へ対応付け、fetch_planとautomatic_selectionを小さな転送記録へ含める。実際の素材ダウンロード、字幕合成、FFmpeg/NVENCはworkerが行う。
+
+```bash
+uv run python tools/produce_with_gemini.py 'https://kick.com/CHANNEL/videos/VOD_ID' \
+  --source-ref FULL_SOURCE_SHA --output /private/new-production \
+  --analysis-run SAVED_ASR_RUN --analysis-request SAVED_ASR_REQUEST
+```
+
+保存済みASRがない新しい配信はanalysisの2引数を省略する。YouTube・Twitch・直接HTTPSも同じ入口を使う。既定は5本・各5〜15分。別の本数はその本数を指定したコミット済みconfigを`--config-file`で選ぶ。選定から描画へ自動で進み、最終成果物を回収する。失敗・不明時は状態とRun IDを保存して停止し、再投入しない。同じ出力先の再起動も二重投入を拒否する。
+
+通常の操作先は公開ClipForge。公開側への認証移行が済んでいない間は、既存の非公開実行経路を`--repository nyu1791-collab/ai-model-workers`で明示できる。実行場所の自動切替はしない。
+
+## 2026-10-25の実行記録
+
+- URLツール＋編集計画: private Run 40218907431。Gemini 3.8 Flashの2リクエスト成功、合計28.216秒。URL、保存済みASRの対応、5本のautomatic_selection、素材取得区間のfetch_planを返した。
+- 描画: private Run 40218308069。先行Run 40217494566でGeminiが選定した5本をL4/NVENCで描画成功。Run全体549秒、描画バッチ437.54秒。新しいURLツール確認のために同じ5本を再描画していない。
+- ASRは再利用。品質監査・承認待ち・自動再試行は実行していない。GPU解放ステップは成功。
+- 公開ClipForgeの認証移行は引き続き未完了。今回は既存の認証済み非公開実行経路を明示して実行した。

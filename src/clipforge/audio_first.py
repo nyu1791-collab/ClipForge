@@ -677,7 +677,14 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
     manifest = {
         "status": "complete",
         "rendered": rows,
-        "selection_receipt": {"provider": "manual", "generation_requests": 0},
+        "selection_receipt": {
+            "provider": "vertex"
+            if value.get("selection_method") == "vertex_gemini_saved_asr"
+            else "manual",
+            "generation_requests": 0,
+            "saved_model_selection": value.get("selection_method")
+            == "vertex_gemini_saved_asr",
+        },
         "analysis_key": analysis["analysis_key"],
         "selection_sha256": digest(review_file),
         "video_review_attested": all(
