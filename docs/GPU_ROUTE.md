@@ -13,9 +13,11 @@
 | 7 | FFmpeg終了状態・FFprobe・字幕に加え、完成映像の全デコードと完成AACの音量・真ピークを1回の走査で確認 | worker |
 | 8 | 通常バッチの完成成果物を--collectで回収・納品。個別修正のpartだけmerge --localで集約 | 制御側 |
 
-描画は `submit_audio_stage.py --stage render --clips N --config-file config.landscape-long-preview.example.json --source-ref FULL_SHA --previous-run RUN --previous-request ID --review-file /private/approved.json`。既定はColab GPU、360p、NVENC。1080p依頼時はconfig.landscape-long.example.json。CPU描画を明示しても拒否し、NVENCが使えないGPUからCPUエンコードへ黙って切り替えない。通常は1台だけを確保し、環境構築と解析素材の転送を1回にまとめる。GPUの空き待ちは残る。--clips Nは承認本数と一致させ、設定のclipsも同じ本数にする。--clip-index Nは字幕修正など1本だけの再描画用。
+描画は `submit_audio_stage.py --stage render --clips N --config-file config.landscape-long-preview.example.json --source-ref FULL_SHA --previous-run RUN --previous-request ID --review-file /private/approved.json`。素材取得・先行取得は最大360p、描画はColab GPU/NVENCで360p（16:9は640×360）へ統一する。配信側に360pがあればその画質を選び、無ければ360p以下の最良画質を使う。360p以下が無い素材を黙って高画質取得しない。古い高画質キャッシュとは取得キーを分け、workerも古い設定の描画高さを360へ揃える。CPU描画を明示しても拒否し、NVENCが使えないGPUからCPUエンコードへ黙って切り替えない。通常は1台だけを確保し、環境構築と解析素材の転送を1回にまとめる。GPUの空き待ちは残る。--clips Nは承認本数と一致させ、設定のclipsも同じ本数にする。--clip-index Nは字幕修正など1本だけの再描画用。
 
 音声補正は描画中の1パスloudnormとリミッター。事前の2パス測定は行わない。完成後は映像デコードとebur128を1つのFFmpegで同時に実行する（-vnは付けない）。破損・音声無測定・無音・-17〜-15 LUFS外・真ピーク-1 dBTP超はstrictで拒否する。成功時のverification_scopeはsingle_pass_full_decode_loudness_and_captions。実測値と検査実施フラグを保存する。内容品質の確認は別に行う。
+
+直接HTTPSの単一ファイルには、取得前の解像度情報や別画質が無い場合がある。その場合も取得後のprobeで360p以下を確認し、高画質素材を描画へ流さない。この形式では配信側に低画質版が無ければ転送量削減を保証できない。
 
 解析・preview・描画workflowはworkerに固定した現行制作コミットの子孫以外を起動前に拒否する。既存の成功runの読み取り・回収は継続可能。既存のASRキーと依頼IDの整合条件は維持する。古いASRを新モデルの測定記録として扱わない。
 

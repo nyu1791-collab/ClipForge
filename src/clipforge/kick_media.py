@@ -469,18 +469,18 @@ class KickVOD:
                         self._budget.notify_all()
 
     def playlist(self, quality):
-        if quality not in {"lowest", "preview", "720p", "1080p", "best"}:
+        if quality not in {"lowest", "preview", "360p", "720p", "1080p", "best"}:
             raise PipelineError("invalid rendition")
         ordered = sorted(self.variants, key=lambda v: (v["height"], v["bandwidth"]))
         if quality == "lowest":
             selected = ordered[0]
         elif quality == "preview":
-            videos = [v for v in ordered if v["height"] > 0]
+            videos = [v for v in ordered if 0 < v["height"] <= 360]
             if not videos:
                 raise PipelineError("no video rendition for topic review")
             selected = videos[0]
         else:
-            cap = {"720p": 720, "1080p": 1080, "best": 100000}[quality]
+            cap = {"360p": 360, "720p": 720, "1080p": 1080, "best": 100000}[quality]
             eligible = [v for v in ordered if 0 < v["height"] <= cap]
             if not eligible:
                 raise PipelineError("requested quality unavailable")
@@ -497,8 +497,8 @@ class KickVOD:
         return segments, selected["height"]
 
     def prefetch(self, start, end):
-        """Cache the 1080p segments of one interval over HTTP only; retrieve() then reuses them."""
-        segments, _ = self.playlist("1080p")
+        """Cache the production 360p interval over HTTP; retrieve() reuses these segments."""
+        segments, _ = self.playlist("360p")
         duration = segments[-1]["end"]
         if (
             not all(math.isfinite(v) for v in (start, end))

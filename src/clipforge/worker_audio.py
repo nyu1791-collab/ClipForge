@@ -235,7 +235,15 @@ def execute(
 ):
     if mode == "render":
         settings = settings.model_copy(
-            update={"video_encoder": "h264_nvenc", "loudness_two_pass": False}
+            update={
+                "video_encoder": "h264_nvenc",
+                "loudness_two_pass": False,
+                "height": 360,
+                "chat_panel_width": round(
+                    settings.chat_panel_width * 360 / settings.height / 2
+                )
+                * 2,
+            }
         )
         # Fail before downloading analysis/media if this GPU cannot actually encode.
         from .hardware import video_options

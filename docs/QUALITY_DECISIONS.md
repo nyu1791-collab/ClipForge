@@ -8,7 +8,7 @@ BudouXとfugashiで文節・語の境界を使い、実フォント幅で最大2
 
 ## 画面とエンコード
 
-通常設定はconfig.landscape-long-preview.example.json（16:9、360p、NVENC）。1080p依頼時はconfig.landscape-long.example.json。見出しは左上1.4倍、字幕は下中央。固定画面の上への持ち上げは高さの32%まで。ソースfpsは30を上限に保持する。字幕・overlay等のフィルターはCPUで実行されるため、NVENCだけで描画全体がGPU化されるわけではない。
+通常設定はconfig.landscape-long-preview.example.json（16:9、640×360、NVENC）。素材の取得と先行取得も最大360pで揃え、360p以下の最良renditionを選ぶ。高画質しかない素材へ自動で切り替えない。横用設定はすべて360pで、チャット列も160pxへ比例縮小する。見出しは左上1.4倍、通常字幕は下中央・1.6倍で読みやすさを保つ。固定画面の上への持ち上げは高さの32%まで。ソースfpsは30を上限に保持する。字幕・overlay等のフィルターはCPUで実行されるため、NVENCだけで描画全体がGPU化されるわけではない。
 
 ## 音声と統合検査
 

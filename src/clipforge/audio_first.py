@@ -67,12 +67,14 @@ def audio_info(path):
     }
 
 
-def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"):
+def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="360p"):
     """A media hash alone cannot establish which original interval it contains."""
     receipt_path = path.with_suffix(path.suffix + ".receipt.json")
     expected = {"source_url": vod.url, "source_start": start, "audio_only": audio_only}
     if not audio_only and quality != "preview":
         expected["media_format"] = RANGE_FORMAT
+    if not audio_only and quality == "360p":
+        expected["requested_quality"] = quality
     if end is not None:
         expected["source_end"] = end
     if path.exists() or receipt_path.exists():
@@ -113,6 +115,8 @@ def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"
     receipt = vod.retrieve(
         path, start=start, end=end, audio_only=audio_only, quality=quality
     )
+    if not audio_only and quality == "360p":
+        receipt["requested_quality"] = quality
     write_json(receipt_path, receipt)
     return receipt
 
@@ -510,7 +514,7 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
     floors = caption_floors(value)
     if only is not None and (type(only) is not int or not 1 <= only <= len(clips)):
         raise PipelineError("only must name one reviewed clip by its 1-based number")
-    # Verify all previews before fetching even the first high-quality interval.
+    # Verify all previews before fetching even the first production interval.
     for row in preview["previews"]:
         topic = next(t for t in analysis["topics"] if t["id"] == row["topic_id"])
         target = root / "previews" / (topic["id"] + ".mp4")
@@ -548,7 +552,7 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
     targets = [
         root
         / "ranges"
-        / f"{fingerprint({'start': clip.start, 'end': clip.end, 'media_format': RANGE_FORMAT})}.mp4"
+        / f"{fingerprint({'start': clip.start, 'end': clip.end, 'media_format': RANGE_FORMAT, 'quality': '360p'})}.mp4"
         for clip in clips
     ]
     wall_started = time.monotonic()
@@ -573,14 +577,14 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
             receipt = pipeline.timed(
                 clip_timings,
                 "fetch",
-                lambda: retrieved(vod, target, clip.start, clip.end, quality="1080p"),
+                lambda: retrieved(vod, target, clip.start, clip.end, quality="360p"),
             )
             if index < indexes[-1]:
                 pending = ahead.submit(
                     prefetch_interval, vod, clips[index], targets[index]
                 )
-            if receipt["rendition_height"] < 720:
-                raise PipelineError("selected source video is below 720p")
+            if not 0 < (receipt["rendition_height"] or 0) <= 360:
+                raise PipelineError("selected source video must be at most 360p")
             start_offset = receipt["start_offset"]
             local = clip.model_copy(
                 update={

@@ -42,7 +42,8 @@ def make_vod(tmp_path, monkeypatch):
             )
             + "</script>",
             ROOT + "master.m3u8": (
-                "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=1280x720\nmedia.m3u8\n"
+                "#EXTM3U\n#EXT-X-STREAM-INF:RESOLUTION=640x360\nmedia.m3u8\n"
+                "#EXT-X-STREAM-INF:RESOLUTION=1280x720\nmedia.m3u8\n"
                 "#EXT-X-STREAM-INF:RESOLUTION=1920x1080\nmedia.m3u8\n"
             ),
             ROOT + "media.m3u8": playlist,

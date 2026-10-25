@@ -837,6 +837,7 @@ def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
 
     def render(vod, root, settings, review, analysis_result=None, only=None):
         assert only == 2
+        assert settings.height == 360 and settings.video_encoder == "h264_nvenc"
         for directory in ("ranges", "previews"):
             (root / directory).mkdir(exist_ok=True)
             (root / directory / "synthetic.mp4").write_bytes(b"intermediate")

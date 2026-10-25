@@ -65,7 +65,7 @@ python tools/submit_job.py --collect REQUEST_ID --collect-stage analysis --outpu
 ```
 
 - 時刻は配信全体の秒数で、対応する話題の中に収める。単語の途中で切らない。異なる話題・重ならない区間を、設定の本数（3〜5本）だけ並べる。
-- `title` は左上の見出しになる。1.4倍では1080pで1行おおむね17字まで（入らなければ60%まで縮め、それでも入らなければ描画を止める）。
+- `title` は左上の見出しになる。1.4倍では360pで1行おおむね17字まで（入らなければ60%まで縮め、それでも入らなければ描画を止める）。
 - `crop_anchor`（任意、`auto`・`left`・`center`・`right`）は、チャット欄 fill で映像の左右位置を固定する。
 - `caption_floor`（任意、0〜0.32）は、その区間の字幕を画面の高さに対してこの割合以上の位置に置く。自動判定で拾えないワイプの対策に使う。
 - `caption_edits`（任意）は字幕の誤りを直す。`at` はクリップ内の秒、`from` は直したい文字列、`to` は直した文字列。`at` の前後10秒で `from` を含む最も近い行だけを置き換え、見つからなければ映像を取得する前に止まる。
@@ -73,11 +73,11 @@ python tools/submit_job.py --collect REQUEST_ID --collect-stage analysis --outpu
 
 ## 描画
 
-採用区間だけを最大1080pで remux（再符号化なし）して取得し、全編の文字起こしの時刻を区間内へ移して字幕にする。区間ごとの認識はしない。字幕の焼き込みを含む最終描画は再エンコードで、CPUフィルターとNVENCを使う。
+採用区間だけを最大360pで remux（再符号化なし）して取得し、全編の文字起こしの時刻を区間内へ移して字幕にする。先行取得も同じ画質で、高画質の旧キャッシュは再利用しない。区間ごとの認識はしない。字幕の焼き込みを含む最終描画は360pの再エンコードで、CPUフィルターとNVENCを使う。
 
 - 設定は `--config-file NAME`（既定 `config.landscape.example.json`）。`--source-ref` のコミットにある `config.英小文字・数字・ハイフン.example.json` だけを受け付ける。設定名は依頼 ID に入る。
   - `config.landscape-long-preview.example.json`：長めの話題、360p・NVENC（確認用と納品の基本）
-  - `config.landscape-long.example.json`：長めの話題、1080p
+  - `config.landscape-long.example.json`：長めの話題、360p（従来名も同じ画質へ統一）
   - `config.landscape-chat.example.json`：右にチャット欄
 - 単一クリップの成果物は、描画後に作業用のファイル（`ranges/`・`audio.m4a`・`previews/`・`transcripts/` など）を除く。結合はクリップと receipt の鍵で行い、文字起こしの本文は使わない。
 
@@ -85,7 +85,7 @@ python tools/submit_job.py --collect REQUEST_ID --collect-stage analysis --outpu
 
 `chat_panel: true` で、出力の右に `chat_panel_width`（既定480 px、出力幅の20〜40%、偶数）のチャット欄を置く。チャットは Kick の URL 経路だけで、各クリップの元の時刻のものを読む。
 
-- `chat_panel_fit` の既定 `fill` は、映像を高さいっぱいに拡大して左右を切り、字幕を映像の上（中央下）に重ねる（1080pで72 px 程度、1行約18字）。`top` は16:9の映像を左上に置き、下の帯に字幕を出す。`crop` は中央から左右を削り、`letterbox` は縮めて上下に帯を置く。
+- `chat_panel_fit` の既定 `fill` は、映像を高さいっぱいに拡大して左右を切り、字幕を映像の上（中央下）に重ねる（360pで24 px 程度、1行約18字）。チャット列は160 px。`top` は16:9の映像を左上に置き、下の帯に字幕を出す。`crop` は中央から左右を削り、`letterbox` は縮めて上下に帯を置く。
 - 下側に HUD など動かない細部が混んでいるときは、その上まで字幕を持ち上げる（上限は高さの32%）。判定の詳細と限界は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md) の「字幕の位置」。
 - チャット欄の縦型出力は設定検証で拒否する。映像・音声の無音カットは行わず、元配信の時刻を保持する。取得に失敗したクリップは欄を空で描き、`render.json` の `chat.reason` に `chat_unavailable` を記録する。`chat_anonymize: true` で発言者名を匿名化する。
 
