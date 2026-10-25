@@ -19,3 +19,22 @@
 `audio-editor-receipt.json`にAPIごとのモデル・思考レベル・時間・トークン使用量を記録し、音声準備の時間と区別する。並列時間の合計を実時間としない。全体文字起こし・区間選定・採用部分の文字起こし・早口査読・最終採用JSONを非公開Releaseへ保存する。
 
 描画の制御側へ`CLIPFORGE_AUDIO_REVIEW_RELEASE=clipforge-kick-editorial-RUN_ID`を指定すると、完成した査読記録をGPUへ渡し、字幕・制作記録と一緒に最終成果物へ保存する。大きな字幕修正JSONはGitHubのworkflow入力欄へ詰め込まず、同じ非公開Releaseから受け渡す。
+## HIGH通信切断からの再開
+
+`gemini_audio_recovery`は、保存済みのASR、全体文字起こし、区間選定、失敗したHIGH記録を検証し、採用5区間の音声だけを再準備してHIGHを1回だけ呼び出す。3.5全文文字起こし、3.8 MEDIUM区間選定、Kick取得、Parakeet ASRは再実行しない。出力先は前回と分け、前回の記録と原音を保持する。
+
+HIGHはVertex AIの`streamGenerateContent?alt=sse`で受信し、受信イベントをローカルの非公開作業領域へ逐次保存する。正常完了は`finishReason=STOP`、JSONの解析、対象segmentの全件一致、早口候補全件の査読ID一致を確認してから記録する。接続断・不完全応答時は部分ストリーム、例外型・メッセージ、HTTP状態、応答識別ヘッダー、取得済みusageを記録し、再送はしない。切断後の課金・サーバー側完了状態はusageが受信できない場合は不明とする。
+
+以下のコマンドは、既存HIGHの失敗が確認でき、ユーザーが追加のHIGH試行を明示的に許可した後に限り実行する。許可フラグは機械的なガードであり、API呼び出しを自動で許可する運用ではない。
+
+```bash
+python -m clipforge.gemini_audio_recovery \
+  --analysis ASR_DIRECTORY \
+  --prior-review FAILED_EDITORIAL_DIRECTORY \
+  --prior-run-id 40237163869 \
+  --output NEW_RECOVERY_DIRECTORY \
+  --config config.landscape-long.example.json \
+  --confirm-new-high-attempt
+```
+
+今回の切断は約289.8秒後の`RemoteDisconnected`として引き継がれている。既存の`generateContent`は900秒をクライアント上限に設定しており、この上限到達では説明できない。一方で既存例外処理は元の詳細を記録せず、GitHub Actionsログにも`PipelineError`しか残らないため、サーバー側の切断理由までは確定できない。ストリーミングは応答全体を待つ接続方式を改め、途中データと詳細診断を残す対策であり、外部サービスの切断を完全に保証排除するものではない。
