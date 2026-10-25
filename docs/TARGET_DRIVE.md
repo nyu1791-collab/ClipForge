@@ -1,6 +1,6 @@
-# n.yu1791@gmail.comへの納品
+# 指定された個人Driveへの納品
 
-宛先はn.yu1791@gmail.comの個人Drive。Colab用アカウントとVertexサービスアカウントは納品先にしない。同じGoogleでも、Vertexの推論権限で個人Driveのファイル作成権限は取得できない。
+ユーザーはn.yu1791@gmail.comに加え、n.yu17919191@gmail.comの個人Driveも許可した。既存のDrive認証がこの2アカウントのいずれかに対応する場合だけ使う。Vertexサービスアカウントを個人Driveの代わりにしない。同じGoogleでも、Vertexの推論権限で個人Driveのファイル作成権限は取得できない。
 
 通常の転送は専用のGOOGLE_DRIVE_ADC_JSONだけを使う。COLAB_ADC_JSONへのfallbackは廃止した。転送開始時にDriveのuser(emailAddress)で宛先本人を一度確認し、一致しなければフォルダも動画も作らず停止する。動画の再走査や読み戻し監査はしない。
 
@@ -33,3 +33,5 @@ uv run python tools/produce_with_gemini.py 'https://www.youtube.com/watch?v=VIDE
 対象huUd9Qw015wのRun 40220968442は音声取得のメタデータ取得段階で、YouTubeからログイン要求（botでないことの確認）を返され停止した。GPU・ASR・Geminiは未起動、MP4は0本。再投入していないためDriveアップロードも未実施。既存の別アカウントへ誤って保存する経路は使わない。
 
 Google公式: https://docs.cloud.google.com/docs/authentication/application-default-credentials
+
+upload-analysisモードは3.8の動画解析結果をDriveに保存する。MP4転送とは別に記録し、解析JSONだけを動画納品成功と報告しない。

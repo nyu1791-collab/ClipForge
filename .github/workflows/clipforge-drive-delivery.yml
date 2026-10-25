@@ -29,7 +29,8 @@
             "RENDER_REQUEST": "${{ inputs.render_request }}",
             "SOURCE_REF": "${{ inputs.source_ref }}",
             "PYTHONPATH": "src",
-            "DELIVERY_MODE": "${{ inputs.mode }}"
+            "DELIVERY_MODE": "${{ inputs.mode }}",
+            "ANALYSIS_RUN": "${{ inputs.analysis_run }}"
           },
           "run": "python3 tools/clipforge_release_delivery.py"
         }
@@ -43,7 +44,8 @@
           "type": "choice",
           "options": [
             "upload-release",
-            "identity"
+            "identity",
+            "upload-analysis"
           ],
           "default": "upload-release"
         },
@@ -68,6 +70,10 @@
           "default": ""
         },
         "source_ref": {
+          "type": "string",
+          "default": ""
+        },
+        "analysis_run": {
           "type": "string",
           "default": ""
         }
