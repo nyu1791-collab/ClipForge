@@ -68,6 +68,8 @@ python tools/submit_job.py --collect REQUEST_ID --output /private/result-NEW
 
 ### Actions保存枠が満杯の場合の一時転送
 
+後段CLIでは `--result-store release` で非公開Release転送を選べる（既定 `artifact`）。依頼記録をホーム以外に置く場合は、投入・結合・回収に同じ `--state-dir /private/state` を指定する。ローカル結合は依頼記録を使わないため対象外。
+
 workerの `result_store=release` は、結果を非公開 `clipforge-output-result-REQUEST_ID`（中間解析は `clipforge-output-analysis-REQUEST_ID`）へ保存する明示指定。最終納品先はGoogle Driveで、Releaseは段階間の受け渡しだけに使う。動画やASRをGitへ入れない。
 
 同じ依頼のActions artifactがない場合、共通GitHub runnerはこの固定名のReleaseを確認する。非公開repo、run ID、資料名、コードSHA、サイズとSHA-256を照合し、展開前にパス・symlink・件数・2GiBの予算を検査する。既存の出力先は上書きしない。段階ごとのreceipt・ASR再利用検査も続けて行う。

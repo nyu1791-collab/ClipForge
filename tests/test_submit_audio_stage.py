@@ -1478,3 +1478,73 @@ def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():
             module.require_video_review(
                 {"clips": [{"video_reviewed": True, "caption_floor": floor}]}
             )
+
+
+def test_result_store_is_saved_and_changes_identity_without_changing_legacy_default(
+    stage_submitter, tmp_path
+):
+    module, control, args = stage_submitter
+    assert module.main(args) == 0
+    artifact = control["posts"][-1]["inputs"]
+    legacy = {
+        key: value
+        for key, value in artifact.items()
+        if key not in {"request_id", "input_tag", "result_store"}
+    }
+    assert (
+        artifact["request_id"]
+        == hashlib.sha256(json.dumps(legacy, sort_keys=True).encode()).hexdigest()[:32]
+    )
+    with pytest.raises(RuntimeError, match="already has a request"):
+        module.main([*args, "--result-store", "artifact"])
+    assert module.main([*args, "--result-store", "release"]) == 0
+    release = control["posts"][-1]["inputs"]
+    assert release["request_id"] != artifact["request_id"]
+    for inputs in (artifact, release):
+        state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
+        assert (
+            json.loads((state / "request.json").read_text())["result_store"]
+            == inputs["result_store"]
+        )
+        assert (
+            json.loads((state / "receipt.json").read_text())["result_store"]
+            == inputs["result_store"]
+        )
+
+
+def test_state_dir_controls_submission_and_duplicate_prevention(
+    stage_submitter, tmp_path
+):
+    module, control, args = stage_submitter
+    root = tmp_path / "private-state"
+    assert module.main([*args, "--state-dir", str(root)]) == 0
+    identity = control["posts"][-1]["inputs"]["request_id"]
+    assert (root / identity / "receipt.json").is_file()
+    assert not (tmp_path / ".local/state/clipforge").exists()
+    with pytest.raises(RuntimeError, match="already has a request"):
+        module.main([*args, "--state-dir", str(root)])
+    assert len(control["posts"]) == 1
+
+
+def test_collect_uses_selected_state_dir_and_rejects_storage_mismatch(
+    collector, tmp_path
+):
+    module, control, state = collector
+    root = tmp_path / "private-state"
+    root.mkdir()
+    relocated = root / state.name
+    shutil.move(str(state), relocated)
+    request = json.loads((relocated / "request.json").read_text())
+    request["result_store"] = "release"
+    (relocated / "request.json").write_text(json.dumps(request))
+    with pytest.raises(RuntimeError, match="saved stage request identity mismatch"):
+        module.main([*collect_args(tmp_path / "bad"), "--state-dir", str(root)])
+    assert control["downloads"] == 0
+    receipt = json.loads((relocated / "receipt.json").read_text())
+    receipt["result_store"] = "release"
+    (relocated / "receipt.json").write_text(json.dumps(receipt))
+    assert (
+        module.main([*collect_args(tmp_path / "collected"), "--state-dir", str(root)])
+        == 0
+    )
+    assert control["downloads"] == 1

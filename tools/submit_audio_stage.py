@@ -46,6 +46,7 @@ SUBMIT_OPTIONS = (
     "clip_index",
     "part_runs",
     "config_file",
+    "result_store",
 )
 
 
@@ -400,11 +401,11 @@ def local_merge(part_runs, destination, source_ref=None):
     return 0
 
 
-def collect(identity, destination):
+def collect(identity, destination, state_root=None):
     """Recover one finished private stage into a new directory; nothing is dispatched."""
     if not re.fullmatch(r"[a-f0-9]{32}", identity):
         raise AudioStageError("invalid request identifier")
-    state = Path.home() / ".local/state/clipforge" / identity
+    state = (state_root or Path.home() / ".local/state/clipforge") / identity
     request = json.loads((state / "request.json").read_text())
     receipt = json.loads((state / "receipt.json").read_text())
     stage = request.get("audio_stage")
@@ -419,6 +420,9 @@ def collect(identity, destination):
         or receipt.get("source_ref") != request.get("source_ref")
         or receipt.get("previous_run_id") != request.get("previous_run_id")
         or receipt.get("config_file") != request.get("config_file")
+        or receipt.get("result_store", "artifact")
+        != request.get("result_store", "artifact")
+        or request.get("result_store", "artifact") not in {"artifact", "release"}
         or not re.fullmatch(r"[a-f0-9]{40}", str(request.get("source_ref")))
         or not re.fullmatch(r"[0-9]{1,20}", str(request.get("previous_run_id")))
         or not re.fullmatch(r"[a-f0-9]{32}", str(request.get("previous_request_id")))
@@ -504,6 +508,7 @@ def dispatch(root, inputs, args):
         "previous_run_id": args.previous_run,
         "worker": inputs["worker"],
         "config_file": inputs["config_file"],
+        "result_store": inputs.get("result_store", "artifact"),
         "clip_index": inputs["clip_index"] or None,
         "job_submitted": None,
     }
@@ -566,6 +571,16 @@ def main(argv=None):
         metavar="REQUEST_ID",
         help="verify and download one finished stage artifact into a new --output",
     )
+    parser.add_argument(
+        "--result-store",
+        choices=("artifact", "release"),
+        help="private transfer storage (default artifact)",
+    )
+    parser.add_argument(
+        "--state-dir",
+        type=Path,
+        help="request records directory (default ~/.local/state/clipforge)",
+    )
     parser.add_argument("--local", action="store_true", help="merge on this machine")
     parser.add_argument(
         "--output", type=Path, help="new directory for --collect or --local"
@@ -579,10 +594,11 @@ def main(argv=None):
             or any(getattr(args, name) is not None for name in SUBMIT_OPTIONS)
         ):
             parser.error("--collect requires --output and no submission options")
-        return collect(args.collect, args.output)
+        return collect(args.collect, args.output, args.state_dir)
     if args.local:
         if (
-            args.stage != "merge"
+            args.state_dir is not None
+            or args.stage != "merge"
             or not args.part_runs
             or args.output is None
             or any(
@@ -631,7 +647,7 @@ def main(argv=None):
         raise AudioStageError("--config-file applies to render only")
     if args.stage == "merge":
         config_file = part_config_file(
-            Path.home() / ".local/state/clipforge", part_runs
+            args.state_dir or Path.home() / ".local/state/clipforge", part_runs
         )
     else:
         config_file = args.config_file or DEFAULT_CONFIG_FILE
@@ -654,6 +670,8 @@ def main(argv=None):
         "part_runs": part_runs,
         "config_file": config_file,
     }
+    if args.result_store == "release":
+        base["result_store"] = "release"
     if len(base["review_json"].encode()) > 32768:
         raise AudioStageError("review metadata is oversized")
     requests = []
@@ -662,9 +680,10 @@ def main(argv=None):
         identity = hashlib.sha256(
             json.dumps(inputs, sort_keys=True).encode()
         ).hexdigest()[:32]
+        inputs.setdefault("result_store", "artifact")
         inputs.update(request_id=identity, input_tag="clipforge-input-" + identity)
         requests.append(inputs)
-    root = Path.home() / ".local/state/clipforge"
+    root = args.state_dir or Path.home() / ".local/state/clipforge"
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (root / ".submit.lock").open("a") as lock:
         try:
