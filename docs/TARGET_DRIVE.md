@@ -35,3 +35,9 @@ uv run python tools/produce_with_gemini.py 'https://www.youtube.com/watch?v=VIDE
 Google公式: https://docs.cloud.google.com/docs/authentication/application-default-credentials
 
 upload-analysisモードは3.8の動画解析結果をDriveに保存する。MP4転送とは別に記録し、解析JSONだけを動画納品成功と報告しない。
+
+## 追加指示後の結果
+
+ユーザーの追加指示に従い、Run 40222184955で3.8 FlashがYouTube URLを直接解析した。映像28,380トークン・音声53,711トークンを含む入力で、51.720秒・API1回で成功した。通常の素材取得は再投入していない。
+
+ユーザーがn.yu17919191@gmail.comも許可した後、Run 40222710144でn.yu17919191@gmail.comへ解析レポート・解析JSON・使用量記録の3件を非公開で保存した。MP4は作成・転送していない。GoogleのDriveアップロードAPIの応答を保存し、全量読み戻しや品質監査は行っていない。

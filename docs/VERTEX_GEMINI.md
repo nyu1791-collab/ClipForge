@@ -115,3 +115,5 @@ Run 40220449164で成功。3.8/MEDIUMの指示生成3.220秒、3.5/MINIMALのURL
 vertex_video.pyはYouTube URLをfileDataとしてGemini 3.8 Flashへ渡す。思考はMEDIUM、低解像度・0.2fpsの入力で、映像と音声から要約・元時刻付きの根拠・切り抜き候補・字幕補助を1回のリクエストで取得する。VM側のダウンロード・Parakeet・GPUは不要。解析結果はMP4ではなく編集計画として保存する。動画入力のトークン内訳とモデル自身のアクセス申告を記録し、未取得の動画をURLだけから推測した結果と区別する。
 
 公式仕様: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/video-understanding
+
+直接動画解析の実行例: Run 40222184955。3.8 Flash / MEDIUM、51.720秒、動画・音声入力あり、5区間の提案を取得。YouTube素材のVM取得がログイン要求で止まっていても、公開YouTube URLを正規の動画入力として解析できた。これはMP4の取得・書き出しの成功を意味しない。
