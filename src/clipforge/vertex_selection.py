@@ -52,19 +52,28 @@ def select(analysis, settings, output):
         f"必ず{settings.clips}本、各{settings.min_seconds:g}秒以上。"
         "candidate_idは提供したIDだけを使い、開始終了時刻は作らないでください。"
         "titleは内容に即した短い日本語20文字以内。未確認の疑惑を事実と断定せず、"
-        "資料にない内容を加えないでください。JSONのみ出力してください。\n"
+        "資料にない内容を加えないでください。映像は入力されていないため、映像を見たと偽らないでください。"
+        "配信全体の主要テーマと流れ、見どころ、視聴者が理解するための前提をeditorial_briefにまとめてください。"
+        "各クリップについてsummary（内容要約）、hook（冒頭の見せ方）、context（必要な前提）、"
+        "cut_rationale（この長い区間を選ぶ理由と導入・結末の扱い）を提案してください。"
+        "subtitle_assistanceには字幕の読みやすい改行、固有名詞・専門語の表記、誤認識が疑わしい語、"
+        "見出しと字幕の役割分担、強調すべき短い発言を最大5件提案してください。"
+        "ASRだけで確定できない訂正は推測と明記し、発言内容を捏造しないでください。"
+        "字幕時刻を創作せず、元のASR時刻を使う方針にしてください。"
+        "監査、承認待ち、追加モデル呼び出し、再生成は提案しないでください。JSONのみ出力してください。\n"
         + json.dumps(list(topics.values()), ensure_ascii=False)
     )
     body = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.2,
-            "maxOutputTokens": 4096,
+            "maxOutputTokens": 8192,
             "responseMimeType": "application/json",
             "responseSchema": {
                 "type": "OBJECT",
-                "required": ["clips"],
+                "required": ["clips", "editorial_brief"],
                 "properties": {
+                    "editorial_brief": {"type": "STRING"},
                     "clips": {
                         "type": "ARRAY",
                         "minItems": settings.clips,
@@ -76,6 +85,11 @@ def select(analysis, settings, output):
                                 "title",
                                 "reason",
                                 "confidence",
+                                "summary",
+                                "hook",
+                                "context",
+                                "cut_rationale",
+                                "subtitle_assistance",
                             ],
                             "properties": {
                                 "candidate_id": {
@@ -85,9 +99,18 @@ def select(analysis, settings, output):
                                 "title": {"type": "STRING"},
                                 "reason": {"type": "STRING"},
                                 "confidence": {"type": "NUMBER"},
+                                "summary": {"type": "STRING"},
+                                "hook": {"type": "STRING"},
+                                "context": {"type": "STRING"},
+                                "cut_rationale": {"type": "STRING"},
+                                "subtitle_assistance": {
+                                    "type": "ARRAY",
+                                    "maxItems": 5,
+                                    "items": {"type": "STRING"},
+                                },
                             },
                         },
-                    }
+                    },
                 },
             },
         },
@@ -97,6 +120,14 @@ def select(analysis, settings, output):
         "status": "submitting",
         "generation_attempts": 1,
         "input_chars": len(prompt),
+        "max_output_tokens": 8192,
+        "tasks": [
+            "topic_analysis",
+            "clip_selection",
+            "headlines",
+            "editing_plan",
+            "subtitle_assistance",
+        ],
         "human_review_performed": False,
     }
     write_json(state, record)
@@ -125,7 +156,8 @@ def select(analysis, settings, output):
         text = "".join(
             part.get("text", "") for part in parts if not part.get("thought")
         )
-        selected = json.loads(text)["clips"]
+        editorial_plan = json.loads(text)
+        selected = editorial_plan["clips"]
         if len(selected) != settings.clips:
             raise PipelineError("VERTEX_SELECTION_COUNT_INVALID; no retry")
         rows, seen = [], set()
@@ -163,6 +195,8 @@ def select(analysis, settings, output):
         record.update(
             status="complete",
             selection=selection,
+            editorial_plan=editorial_plan,
+            subtitle_assistance_applied=False,
             model_version=result.get("modelVersion"),
             usage=result.get("usageMetadata", {}),
         )
