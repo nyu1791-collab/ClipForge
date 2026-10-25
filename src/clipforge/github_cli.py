@@ -40,3 +40,13 @@ def run(
                 text += " (HTTP " + status[1] + ")"
         raise error_type(text)
     return result.stdout
+
+
+if __name__ == "__main__":
+    import sys
+
+    print(
+        "github_cli is a library; use python -m clipforge.release_transfer",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)

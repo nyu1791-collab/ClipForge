@@ -4,11 +4,35 @@ from types import SimpleNamespace
 
 import pytest
 
-from clipforge import audio_first as af, pipeline, signals
+from clipforge import audio_first as af, pipeline
 from clipforge.models import Settings, Transcript
 from clipforge.storage import PipelineError, digest, write_json
 
 URL = "https://kick.com/example/videos/01a0fac4-e9a0-72b3-82b7-2fd2e83b16a5"
+KEY = "e" * 64
+
+
+def analyze(vod, root, settings):
+    """The analysis as the ASR job leaves it: audio, the saved transcript, then topics."""
+    af.acquire(vod, root)
+    saved = root / "transcripts" / (KEY + ".json")
+    if not saved.exists():
+        vod.events.append(("asr",))
+        write_json(saved, vod.transcript.model_dump())
+    pinned = settings.model_copy(
+        update={"require_transcript_cache": True, "transcript_key": KEY}
+    )
+    return af.allocate_audio(root / "audio.m4a", root, pinned, URL)
+
+
+def run_previews(vod, root, settings, analysis_result=None, **options):
+    analysis_result = analysis_result or analyze(vod, root, settings)
+    return af.previews(vod, root, settings, analysis_result, **options)
+
+
+def run_render(vod, root, settings, review, analysis_result=None, **options):
+    analysis_result = analysis_result or analyze(vod, root, settings)
+    return af.render(vod, root, settings, review, analysis_result, **options)
 
 
 @pytest.fixture
@@ -43,7 +67,7 @@ def audio_job(tmp_path, monkeypatch):
                 "source_end": end or 300,
                 "source_duration": 300,
                 "audio_only": audio_only,
-                "rendition_height": 1080,
+                "rendition_height": 360,
                 "sha256": digest(path),
                 **(
                     {
@@ -71,17 +95,10 @@ def audio_job(tmp_path, monkeypatch):
         }
     )
 
-    def asr(*args, **kwargs):
-        events.append(("asr",))
-        return transcript.model_dump()
-
+    VOD.events, VOD.transcript = events, transcript
     monkeypatch.setattr(af, "audio_info", lambda p: {"audio": True, "duration": 300})
-    monkeypatch.setattr(signals, "transcribe", asr)
     monkeypatch.setattr(
         af.topics, "split", lambda *a: [(0, 100), (100, 200), (200, 300)]
-    )
-    monkeypatch.setattr(
-        signals, "scene_boundaries", lambda *a: pytest.fail("full video was scanned")
     )
     return VOD(), root, settings, events, transcript
 
@@ -91,14 +108,14 @@ def test_audio_then_topics_then_video_reuses_single_asr(audio_job):
     af.acquire(vod, root)
     assert events == [("audio", 0, None)]
     assert not (root / "transcripts").exists()
-    analysis, transcript = af.analyze(vod, root, settings)
+    analysis, transcript = analyze(vod, root, settings)
     assert [e[0] for e in events] == ["audio", "asr"]
     assert len(analysis["topics"]) == 3 and transcript.segments
     assert analysis["semantic_topic_review"] == "required"
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     assert [e[0] for e in events] == ["audio", "asr", "preview", "preview", "preview"]
     assert json.loads((root / "asr-receipt.json").read_text())["reused"] is True
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     assert len(events) == 5
 
 
@@ -114,7 +131,7 @@ def test_saved_audio_size_is_checked_before_asr(audio_job):
 
 def test_audio_review_can_choose_topics_before_video_fetch(audio_job):
     vod, root, settings, events, _ = audio_job
-    result = af.previews(
+    result = run_previews(
         vod, root, settings, topic_ids=["topic-003", "topic-001", "topic-002"]
     )
     assert result["preview_selection_basis"] == "reviewed_audio_topics"
@@ -132,7 +149,7 @@ def test_audio_review_can_choose_topics_before_video_fetch(audio_job):
 def test_invalid_audio_topic_shortlist_stops_before_video_fetch(audio_job, ids):
     vod, root, settings, events, _ = audio_job
     with pytest.raises(PipelineError, match="shortlist"):
-        af.previews(vod, root, settings, topic_ids=ids)
+        run_previews(vod, root, settings, topic_ids=ids)
     assert not any(row[0] == "preview" for row in events)
 
 
@@ -223,7 +240,7 @@ def make_review(analysis):
 )
 def test_review_is_tied_to_audio_topics_and_previews(audio_job, fault):
     vod, root, settings, _, _ = audio_job
-    preview = af.previews(vod, root, settings)
+    preview = run_previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     value = make_review(analysis)
     if fault == "analysis":
@@ -245,7 +262,7 @@ def test_render_fetches_only_reviewed_intervals_without_second_asr(
     audio_job, monkeypatch
 ):
     vod, root, settings, events, _ = audio_job
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     review = root / "review.json"
     value = make_review(analysis)
@@ -262,12 +279,12 @@ def test_render_fetches_only_reviewed_intervals_without_second_asr(
     monkeypatch.setattr(
         af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
     )
-    assert af.render(vod, root, settings, review)["status"] == "complete"
+    assert run_render(vod, root, settings, review)["status"] == "complete"
     assert [e[0] for e in events].count("asr") == 1
-    assert [e for e in events if e[0] == "1080p"] == [
-        ("1080p", 0, 85),
-        ("1080p", 120, 175),
-        ("1080p", 210, 295),
+    assert [e for e in events if e[0] == "360p"] == [
+        ("360p", 0, 85),
+        ("360p", 120, 175),
+        ("360p", 210, 295),
     ]
     manifest = json.loads((root / "delivery/manifest.json").read_text())
     assert manifest["rendered"][1]["source_interval"] == {
@@ -293,8 +310,8 @@ def test_render_key_ignores_only_encode_thread_changes(
         return {"directory": f"clips/clip-{index:03}"}
 
     monkeypatch.setattr(pipeline, "render_clip", render)
-    af.render(vod, root, settings, review, only=1)
-    af.render(
+    run_render(vod, root, settings, review, only=1)
+    run_render(
         vod,
         root,
         settings.model_copy(update={field: value}),
@@ -303,31 +320,27 @@ def test_render_key_ignores_only_encode_thread_changes(
     )
     assert len(keys) == 2
     assert (keys[0] == keys[1]) is same_key
-    assert [e for e in events if e[0] == "1080p"] == [("1080p", 0, 85)]
+    assert [e for e in events if e[0] == "360p"] == [("360p", 0, 85)]
 
 
 def test_changed_preview_blocks_all_high_quality_fetch(audio_job):
     vod, root, settings, events, _ = audio_job
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     review = root / "review.json"
     write_json(review, make_review(analysis))
     (root / "previews/topic-001.mp4").write_bytes(b"changed")
     with pytest.raises(PipelineError, match="preview changed"):
-        af.render(vod, root, settings, review)
-    assert "1080p" not in [e[0] for e in events]
+        run_render(vod, root, settings, review)
+    assert "360p" not in [e[0] for e in events]
 
 
-@pytest.mark.parametrize("silence_cut", [False, True])
-def test_render_aligns_segment_clip_word_clock_and_keep(
-    audio_job, monkeypatch, silence_cut
-):
+def test_render_aligns_segment_clip_and_word_clock(audio_job, monkeypatch):
     from clipforge import captions
     from clipforge.models import SelectedClip
 
     vod, root, settings, _, _ = audio_job
     review = reviewed_intervals(audio_job)
-    settings.silence_cut = silence_cut
     clip = SelectedClip(
         start=12.5,
         end=20,
@@ -365,9 +378,7 @@ def test_render_aligns_segment_clip_word_clock_and_keep(
         segment = shifted.segments[0]
         assert (segment.start, segment.end) == (2.5, 10.0)
         assert (segment.words[0].start, segment.words[0].end) == (2.5, 10.0)
-        keep = pipeline.cut_regions(source, shifted, local, settings)
-        assert keep == ([(2.5, 10.0)] if silence_cut else None)
-        tokens, _ = captions.collect_tokens(shifted, local, keep)
+        tokens, _ = captions.collect_tokens(shifted, local)
         assert tokens[0][0] == 0.0
         assert tokens[-1][1] == 7.5
         observed.append(source)
@@ -375,31 +386,36 @@ def test_render_aligns_segment_clip_word_clock_and_keep(
 
     monkeypatch.setattr(pipeline, "render_clip", render)
     analysis = json.loads((root / "topics.json").read_text())
-    af.render(
+    run_render(
         vod, root, settings, review, analysis_result=(analysis, transcript), only=1
     )
     assert len(observed) == 1
     assert observed[0].stem == af.fingerprint(
-        {"start": clip.start, "end": clip.end, "media_format": af.RANGE_FORMAT}
+        {
+            "start": clip.start,
+            "end": clip.end,
+            "media_format": af.RANGE_FORMAT,
+            "quality": "360p",
+        }
     )
 
 
-def test_render_still_rejects_below_720p(audio_job, monkeypatch):
+def test_render_rejects_high_resolution_source(audio_job, monkeypatch):
     vod, root, settings, _, _ = audio_job
     review = reviewed_intervals(audio_job)
     retrieve = vod.retrieve
 
-    def low_resolution(*args, **kwargs):
+    def high_resolution(*args, **kwargs):
         receipt = retrieve(*args, **kwargs)
         receipt["rendition_height"] = 480
         return receipt
 
-    monkeypatch.setattr(vod, "retrieve", low_resolution)
+    monkeypatch.setattr(vod, "retrieve", high_resolution)
     monkeypatch.setattr(
-        pipeline, "render_clip", lambda *a: pytest.fail("low resolution was rendered")
+        pipeline, "render_clip", lambda *a: pytest.fail("high resolution was rendered")
     )
-    with pytest.raises(PipelineError, match="below 720p"):
-        af.render(vod, root, settings, review, only=1)
+    with pytest.raises(PipelineError, match="at most 360p"):
+        run_render(vod, root, settings, review, only=1)
 
 
 def test_word_clock_and_text_shift_without_inventing_boundary_text():
@@ -433,14 +449,14 @@ def test_word_clock_and_text_shift_without_inventing_boundary_text():
 
 def test_mid_word_review_is_rejected_before_any_high_quality_fetch(audio_job):
     vod, root, settings, events, _ = audio_job
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     review = root / "review.json"
     write_json(review, make_review(analysis))
     # The synthetic word at 90..115 crosses the review boundary at 100 seconds.
     with pytest.raises(PipelineError, match="ASR word"):
-        af.render(vod, root, settings, review)
-    assert not any(event[0] == "1080p" for event in events)
+        run_render(vod, root, settings, review)
+    assert not any(event[0] == "360p" for event in events)
     assert not (root / "delivery").exists()
 
 
@@ -475,51 +491,12 @@ def test_audio_metadata_requires_finite_duration(tmp_path, monkeypatch):
         af.audio_info(tmp_path / "audio.m4a")
 
 
-@pytest.mark.parametrize("step", ["audio", "topics", "previews", "render"])
-def test_stage_entry_point_does_not_skip_ahead(tmp_path, monkeypatch, capsys, step):
-    closed = []
-
-    def vod(*args, **kwargs):
-        assert kwargs["max_bytes"] == (
-            6 * 1024**3 if step in {"audio", "topics"} else 1024**3
-        )
-        return SimpleNamespace(close=lambda: closed.append(True))
-
-    monkeypatch.setattr(af, "KickVOD", vod)
-    calls = []
-
-    def acquire(vod, root):
-        calls.append("audio")
-        (root / "audio.m4a").write_bytes(b"synthetic audio")
-
-    monkeypatch.setattr(af, "acquire", acquire)
-    monkeypatch.setattr(
-        af,
-        "analyze",
-        lambda *a: (calls.append("topics") or {"status": "topics_allocated"}, None),
-    )
-    monkeypatch.setattr(
-        af,
-        "previews",
-        lambda *a: calls.append("previews") or {"status": "awaiting_video_review"},
-    )
-    monkeypatch.setattr(
-        af, "render", lambda *a: calls.append("render") or {"status": "complete"}
-    )
-    args = ["--url", URL, "--workspace", str(tmp_path), "--stage", step]
-    if step == "render":
-        args += ["--review-file", "private-review.json"]
-    assert af.main(args) == 0
-    assert calls == [step] and closed == [True]
-    assert json.loads(capsys.readouterr().out)["model_generation_requests"] == 0
-
-
 INTERVALS = [(0, 85), (120, 175), (210, 295)]
 
 
 def reviewed_intervals(audio_job):
     vod, root, settings, _, _ = audio_job
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     value = make_review(analysis)
     for clip, (start, end) in zip(value["clips"], INTERVALS):
@@ -546,17 +523,17 @@ def test_next_interval_is_prefetched_once_while_the_current_clip_renders(
     vod, root, settings, events, _ = audio_job
     review = reviewed_intervals(audio_job)
     stub_clip_render(monkeypatch, events)
-    af.render(vod, root, settings, review)
+    run_render(vod, root, settings, review)
     assert [e[1:] for e in events if e[0] == "prefetch"] == INTERVALS
-    assert [e[1:] for e in events if e[0] == "1080p"] == INTERVALS
+    assert [e[1:] for e in events if e[0] == "360p"] == INTERVALS
     for start, end in INTERVALS:
         # Each interval is warmed before its own fetch, and fetched exactly once.
         assert events.index(("prefetch", start, end)) < events.index(
-            ("1080p", start, end)
+            ("360p", start, end)
         )
     for previous, (start, end) in zip(INTERVALS, INTERVALS[1:]):
         # The next prefetch is submitted only after the previous clip's fetch.
-        assert events.index(("1080p", *previous)) < events.index(
+        assert events.index(("360p", *previous)) < events.index(
             ("prefetch", start, end)
         )
 
@@ -567,10 +544,10 @@ def test_prefetch_failure_fails_that_clip_before_its_own_fetch(audio_job, monkey
     vod.prefetch_failure = 120
     stub_clip_render(monkeypatch, events)
     with pytest.raises(PipelineError, match="synthetic prefetch failure"):
-        af.render(vod, root, settings, review)
-    assert ("1080p", 0, 85) in events
-    assert ("1080p", 120, 175) not in events
-    assert ("1080p", 210, 295) not in events
+        run_render(vod, root, settings, review)
+    assert ("360p", 0, 85) in events
+    assert ("360p", 120, 175) not in events
+    assert ("360p", 210, 295) not in events
     assert [e for e in events if e[0] == "render"] == [("render", 1)]
 
 
@@ -580,14 +557,25 @@ def test_render_records_seconds_per_clip_in_manifest_and_output(
     vod, root, settings, events, _ = audio_job
     review = reviewed_intervals(audio_job)
     stub_clip_render(monkeypatch, events)
-    af.render(vod, root, settings, review)
+    run_render(vod, root, settings, review)
     timings = json.loads((root / "delivery/manifest.json").read_text())["timings"]
-    assert set(timings) == {"clip-001", "clip-002", "clip-003", "total"}
+    assert set(timings) == {
+        "clip-001",
+        "clip-002",
+        "clip-003",
+        "total",
+        "wall_seconds",
+        "wall_clock_sec",
+        "substep_breakdown",
+    }
     for name in ("clip-001", "clip-002", "clip-003"):
         assert set(timings[name]) == {"prefetch_wait", "fetch", "render"}
         assert all(isinstance(v, float) and v >= 0 for v in timings[name].values())
     stage_seconds = [
-        v for name in timings if name != "total" for v in timings[name].values()
+        v
+        for name in timings
+        if name.startswith("clip-")
+        for v in timings[name].values()
     ]
     assert timings["total"] == pytest.approx(sum(stage_seconds), abs=0.05)
     out = capsys.readouterr().out
@@ -608,8 +596,8 @@ def test_only_must_name_one_reviewed_clip_before_any_fetch(
     review = reviewed_intervals(audio_job)
     stub_clip_render(monkeypatch, events)
     with pytest.raises(PipelineError, match="only must name"):
-        af.render(vod, root, settings, review, only=only)
-    assert "1080p" not in [e[0] for e in events]
+        run_render(vod, root, settings, review, only=only)
+    assert "360p" not in [e[0] for e in events]
 
 
 def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypatch):
@@ -621,8 +609,8 @@ def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypa
         "summarize_delivery",
         lambda *a: pytest.fail("a single clip must not summarize the delivery"),
     )
-    manifest = af.render(vod, root, settings, review, only=2)
-    assert [e for e in events if e[0] == "1080p"] == [("1080p", 120, 175)]
+    manifest = run_render(vod, root, settings, review, only=2)
+    assert [e for e in events if e[0] == "360p"] == [("360p", 120, 175)]
     assert [e[1:] for e in events if e[0] == "prefetch"] == [(120, 175)]
     assert [e for e in events if e[0] == "render"] == [("render", 2)]
     analysis = json.loads((root / "topics.json").read_text())
@@ -638,7 +626,13 @@ def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypa
             "source_interval": {"start": 120, "end": 175, "topic_id": "topic-002"},
         }
     ]
-    assert set(manifest["timings"]) == {"clip-002", "total"}
+    assert set(manifest["timings"]) == {
+        "clip-002",
+        "total",
+        "wall_seconds",
+        "wall_clock_sec",
+        "substep_breakdown",
+    }
     assert set(manifest["timings"]["clip-002"]) == {"prefetch_wait", "fetch", "render"}
     assert not (root / "delivery/e2e-summary.json").exists()
 
@@ -668,7 +662,7 @@ def fake_kick_chat(monkeypatch, fetch):
 
 def chat_review(audio_job):
     vod, root, settings, _, _ = audio_job
-    af.previews(vod, root, settings)
+    run_previews(vod, root, settings)
     analysis = json.loads((root / "topics.json").read_text())
     value = make_review(analysis)
     for clip, (start, end) in zip(value["clips"], [(0, 85), (120, 175), (210, 295)]):
@@ -705,15 +699,15 @@ def test_chat_panel_clip_is_drawn_from_its_original_interval(audio_job, monkeypa
         return {"directory": f"clips/clip-{index:03}"}
 
     monkeypatch.setattr(pipeline, "render_clip", render)
-    af.render(vod, root, chat_settings(settings), review, only=2)
+    run_render(vod, root, chat_settings(settings), review, only=2)
     # The chat is read on the reviewed interval in original seconds, not the shifted clock.
     assert fetched == [("example", URL.rsplit("/", 1)[1], 120, 175)]
     assert drawn[0]["messages"][0]["t"] == 121.5
     assert (drawn[0]["start"], drawn[0]["end"]) == (120, 175)
     assert (drawn[0]["width"], drawn[0]["height"], drawn[0]["panel_x"]) == (
-        1920,
-        1080,
-        1440,
+        640,
+        360,
+        480,
     )
     assert drawn[0]["anonymize"] is False
     assert rendered[0] == {
@@ -749,7 +743,7 @@ def test_chat_fetch_failure_keeps_the_clip_with_an_empty_column(audio_job, monke
         return {"directory": f"clips/clip-{index:03}"}
 
     monkeypatch.setattr(pipeline, "render_clip", render)
-    af.render(vod, root, chat_settings(settings), review, only=2)
+    run_render(vod, root, chat_settings(settings), review, only=2)
     assert drawn[0]["messages"] == []
     assert rendered[0] == {
         "ass": "[Script Info]\n",
@@ -828,7 +822,7 @@ def test_chat_panel_clip_passes_its_reviewed_crop_side(audio_job, monkeypatch):
         return {"directory": f"clips/clip-{index:03}"}
 
     monkeypatch.setattr(pipeline, "render_clip", render)
-    af.render(vod, root, chat_settings(settings), review, only=2)
+    run_render(vod, root, chat_settings(settings), review, only=2)
     assert anchors == [(2, "right")]
 
 
@@ -864,7 +858,7 @@ def test_a_rendered_clip_is_not_read_for_chat_again(audio_job, monkeypatch):
         return {"directory": f"clips/clip-{index:03}"}
 
     monkeypatch.setattr(pipeline, "render_clip", render)
-    af.render(vod, root, chat_settings(settings), review, only=2)
+    run_render(vod, root, chat_settings(settings), review, only=2)
     assert fetched == []
     assert rendered == [(2, None, "auto")]
 
@@ -880,7 +874,7 @@ def test_render_refuses_an_unknown_crop_side_before_any_fetch(audio_job, monkeyp
         vod, "prefetch", lambda *args: fetched.append(args), raising=False
     )
     with pytest.raises(PipelineError, match="crop_anchor must be"):
-        af.render(vod, root, chat_settings(settings), review)
+        run_render(vod, root, chat_settings(settings), review)
     assert fetched == []
 
 
@@ -907,5 +901,122 @@ def test_render_passes_a_reviewed_caption_floor_to_its_clip(audio_job, monkeypat
     monkeypatch.setattr(
         af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
     )
-    af.render(vod, root, settings, review, only=2)
+    run_render(vod, root, settings, review, only=2)
     assert floors == [(2, 0.25)]
+
+
+def test_previews_follow_the_hint_ranking_before_speech_length(tmp_path, monkeypatch):
+    from clipforge import audio_first as first
+    from clipforge.models import Settings
+
+    settings = Settings(clips=3, candidates=3)
+    topics = [
+        {"id": "t-long", "start": 0, "end": 60, "speech_seconds": 50, "text": "あ"},
+        {"id": "t-short", "start": 100, "end": 160, "speech_seconds": 5, "text": "い"},
+        {"id": "t-mid", "start": 200, "end": 260, "speech_seconds": 20, "text": "う"},
+    ]
+    seen = []
+
+    def fake_retrieved(vod, target, start, end, quality):
+        seen.append(target.stem)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"preview")
+        return {"sha256": "0" * 64}
+
+    monkeypatch.setattr(first, "retrieved", fake_retrieved)
+    analysis = {"analysis_key": "k", "topics": topics}
+    first.previews(
+        None,
+        tmp_path,
+        settings,
+        analysis_result=(analysis, None),
+        ranking=["t-short", "t-mid", "t-long"],
+    )
+    assert seen == ["t-short", "t-mid", "t-long"]
+
+
+def caption_transcript(*lines):
+    rows = []
+    for start, text in lines:
+        words = [
+            {"text": c, "start": start + 0.1 * i, "end": start + 0.1 * (i + 1)}
+            for i, c in enumerate(text)
+        ]
+        rows.append(
+            {"start": start, "end": words[-1]["end"], "text": text, "words": words}
+        )
+    return Transcript.model_validate({"language": "ja", "segments": rows})
+
+
+def test_a_caption_edit_changes_only_the_nearest_matching_line():
+    transcript = caption_transcript((100.0, "雪ナイトだよ"), (130.0, "雪ナイトです"))
+    edited = af.edited_transcript(
+        transcript, 100.0, [{"at": 29.0, "from": "雪ナイト", "to": "ユキナイト"}]
+    )
+    assert [s.text for s in edited.segments] == ["雪ナイトだよ", "ユキナイトです"]
+    words = edited.segments[1].words
+    assert [w.text for w in words][:5] == list("ユキナイト")
+    assert words[0].start == pytest.approx(130.0)
+    assert words[4].end == pytest.approx(130.4)
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"at": 0.0, "from": "ない語", "to": "x"},
+        {"at": 60.0, "from": "雪ナイト", "to": "x"},
+    ],
+)
+def test_a_caption_edit_without_a_matching_line_or_word_is_refused(edit):
+    with pytest.raises(PipelineError):
+        af.edited_transcript(caption_transcript((100.0, "雪ナイトだよ")), 100.0, [edit])
+
+
+@pytest.mark.parametrize(
+    "edits",
+    [
+        "x",
+        [{"at": "1", "from": "a", "to": "b"}],
+        [{"at": 1, "from": "", "to": "b"}],
+        [{"at": 1, "from": "a"}],
+        [{"at": -1, "from": "a", "to": "b"}],
+    ],
+)
+def test_malformed_caption_edits_are_refused(edits):
+    with pytest.raises(PipelineError, match="caption_edits"):
+        af.caption_edits({"clips": [{"caption_edits": edits}]})
+
+
+def test_reviewed_caption_edits_reach_only_their_clip(audio_job, monkeypatch):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][1]["caption_edits"] = [
+        {"at": 0.0, "from": "合成の話題120", "to": "直した話題"}
+    ]
+    write_json(review, value)
+    texts = {}
+
+    def render(source, output, index, clip, transcript, settings, key):
+        texts[index] = "".join(s.text for s in transcript.segments)
+        return {"directory": f"clips/clip-{index:03}"}
+
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    monkeypatch.setattr(
+        af.landscape, "summarize_delivery", lambda *a: {"status": "complete"}
+    )
+    run_render(vod, root, settings, review)
+    assert texts[2].startswith("直した話題")
+    assert "直した話題" not in texts[1] + texts[3]
+
+
+def test_an_unmatched_caption_edit_stops_before_any_high_quality_fetch(audio_job):
+    vod, root, settings, events, _ = audio_job
+    review = reviewed_intervals(audio_job)
+    value = json.loads(review.read_text())
+    value["clips"][0]["caption_edits"] = [{"at": 0.0, "from": "無い語", "to": "x"}]
+    write_json(review, value)
+    before = len(events)
+    with pytest.raises(PipelineError, match="no caption"):
+        run_render(vod, root, settings, review)
+    assert all(event[0] in {"audio", "asr"} for event in events[before:])

@@ -1,5 +1,7 @@
 import json
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -240,6 +242,31 @@ def test_prefetch_refuses_an_interval_outside_the_archive(vod):
     assert not [c for c in calls if c.endswith(".ts")]
 
 
+def test_production_prefetch_and_retrieve_use_same_360p_segments(vod, tmp_path):
+    value, data, calls, commands = vod
+    playlist = "https://stream.kick.com/archive/360/media.m3u8"
+    value.variants.append({"height": 360, "bandwidth": 600, "url": playlist})
+    data[playlist] = PLAYLIST
+    data["https://stream.kick.com/archive/360/1.ts"] = b"G" + b"synthetic" * 10
+    value.prefetch(12, 17)
+    receipt = value.retrieve(tmp_path / "360.mp4", 12, 17, quality="360p")
+    assert receipt["rendition_height"] == 360
+    assert [url for url in calls if url.endswith(".ts")] == [
+        "https://stream.kick.com/archive/360/1.ts"
+    ]
+    assert not any("1080.m3u8" in url for url in calls)
+    command = next(row for row in commands if row[0] == "ffmpeg")
+    assert command[command.index("-c") + 1] == "copy"
+
+
+def test_production_refuses_only_high_resolution_renditions(vod):
+    value, _, calls, _ = vod
+    value.variants = [row for row in value.variants if row["height"] == 1080]
+    with pytest.raises(PipelineError, match="quality unavailable"):
+        value.prefetch(0, 5)
+    assert not any(url.endswith(".ts") for url in calls)
+
+
 def test_concurrent_prefetch_and_segment_never_download_a_url_twice(vod):
     value, _, calls, _ = vod
     url = "https://stream.kick.com/archive/0.ts"
@@ -286,8 +313,11 @@ def test_audio_retrieval_uses_pyav_without_cli(tmp_path, monkeypatch, start, end
     value = object.__new__(km.KickVOD)
     value.url = URL
     monkeypatch.setattr(value, "playlist", lambda quality: (segments, 0))
+    # The audio path streams segments in order as they become ready.
     monkeypatch.setattr(
-        value, "_download_segments", lambda selected: [s["url"] for s in selected]
+        value,
+        "_stream_segments",
+        lambda selected: (s["url"] for s in selected),
     )
 
     def no_cli(*args, **kwargs):
@@ -471,3 +501,72 @@ def test_failed_api_and_page_keep_both_safe_reason_codes(vod, tmp_path, monkeypa
     assert "page=http_502" in str(failure.value)
     assert "HIDDEN" not in str(failure.value)
     assert "https://" not in str(failure.value)
+
+
+def test_streamed_segments_yield_in_stream_order_even_when_finished_out_of_order(
+    tmp_path,
+):
+    from concurrent.futures import ThreadPoolExecutor
+
+    segments = [{"url": f"seg-{n}", "start": n, "end": n + 1} for n in range(6)]
+    paths = {s["url"]: tmp_path / (s["url"] + ".ts") for s in segments}
+    pool = ThreadPoolExecutor(max_workers=6)
+    value = object.__new__(km.KickVOD)
+    value.workers = 3
+    value._lock = threading.RLock()
+
+    def finish_later_for_earlier_segments(url):
+        index = int(url.split("-")[1])
+        time.sleep(0.02 * (len(segments) - index))
+        return paths[url]
+
+    value._segment_future = lambda url: pool.submit(
+        finish_later_for_earlier_segments, url
+    )
+    try:
+        assert list(value._stream_segments(segments)) == [
+            paths[s["url"]] for s in segments
+        ]
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_streamed_download_failure_stops_the_stream_and_is_reported(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    segments = [{"url": f"seg-{n}", "start": n, "end": n + 1} for n in range(4)]
+    pool = ThreadPoolExecutor(max_workers=4)
+    value = object.__new__(km.KickVOD)
+    value.workers = 2
+    value._lock = threading.RLock()
+
+    def fail_second(url):
+        if url == "seg-1":
+            raise km.PipelineError("segment failed")
+        return tmp_path / (url + ".ts")
+
+    value._segment_future = lambda url: pool.submit(fail_second, url)
+    try:
+        with pytest.raises(km.PipelineError, match="segment failed"):
+            list(value._stream_segments(segments))
+    finally:
+        pool.shutdown(wait=True)
+
+
+def test_extract_streamed_reports_a_download_failure_instead_of_short_audio(
+    tmp_path, monkeypatch
+):
+    value = object.__new__(km.KickVOD)
+
+    def stream(selected):
+        yield from []
+        raise km.PipelineError("segment failed mid-stream")
+
+    monkeypatch.setattr(value, "_stream_segments", stream)
+    with pytest.raises(km.PipelineError, match="segment failed mid-stream"):
+        value._extract_streamed(
+            [{"url": "x", "start": 0, "end": 1}],
+            tmp_path / "audio.m4a",
+            0.0,
+            1.0,
+        )

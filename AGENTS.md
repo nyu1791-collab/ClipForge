@@ -15,8 +15,8 @@
 
 ## 実装方針
 
-- 制御用の小容量VMで重い生成・レンダリングを走らせない。URL経路はrunnerで音声取得、Colab GPUで文字起こし・話題分割、同じrunでpreviewsと未承認の下書き、映像確認・承認後にColab CPUで描画し、制御VMで `merge --local` を行う。
-- ローカル動画は `submit_job --input` からGemini選定・描画を行う。workerは既定の `colab-auto` または明示した `cpu`。手順は `docs/COLAB.md` と `docs/OPERATIONS.md` を参照する。
+- 制御用の小容量VMで重い生成・レンダリングを走らせない。経路は1本だけ：runnerで音声取得、Colab GPU（最大4台）で Parakeet の文字起こし、runnerで話題分け、保存済みASRから5分以上の話題と採用JSONを作り、1台のColab GPU/NVENCで一括描画し、`--collect`で回収（個別修正のpartだけ `merge --local`）。手順は `docs/GPU_ROUTE.md`。
+- 取得経路（Kick・YouTube・Twitch・直接HTTPS）は利用者の指示で残す。削らない。
 - 元動画と出力先を分離する。入力動画を上書きしない。
 - 時刻は秒で扱い、開始<終了・動画長内・字幕との整合性を保つ。
 - AIが提案した場面と、実際に出力・確認できた場面を区別する。
@@ -41,3 +41,18 @@
 - 待ち時間の作業は、待機中の計算の CPU・メモリを奪わないものを選ぶ。並列で計算を増やして、待機中の計算を遅らせない。
 - 完了を待つ必要があるときは、バックグラウンド実行と完了通知を使う。完了を確認してから、その結果に基づいて次の判断をする。
 - 待ち時間に進めた作業と結果は、待機が終わったあとの報告に含める。
+
+## 速度優先の運用
+通常の調査・実装で同じ承認や全件監査を繰り返さない。変更に関係する確認を一度行い、失敗・具体的な懸念がある場合だけ追加する。通常経路はdocs/GPU_ROUTE.md。モデルはParakeet、素材取得・先行取得は最大360p、描画は360pのGPU/NVENC、制作時のstrict品質検査、完成映像の検査用再走査、LUFS/True Peak測定、不合格を理由にした音声補正・再試行は行わない。工程時間は記録する。旧系統のPR #17や1080p固定取得へ戻さない。
+
+## 長尺クリップの通常設定
+
+5本以上（既定5、最大10）、1本5分以上。YouTube・Twitch・Kick・直接HTTPSのURL取得を維持する。候補動画・画像の事前生成、承認待ち、全音声音量解析、候補チャット解析、字幕配置用映像サンプリング、ASR自動再試行、GPU長時間確保待ちは行わない。失敗時は結果と時間を記録して停止する。
+
+## ユーザー指定のVertex接続
+
+話題選定と明示的なOpenCode作業は`n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`で`gemini-3.8-flash`を使う。Cloudクレジット利用はユーザーが選択済み。Colab用の別アカウントや既存の不明なGeminiキーを流用しない。GitHub OIDCで短期認証し、候補選定は1リクエスト、失敗時の再送・モデル変更なし。OpenCodeの通常動画制作への追加、監査・確認工程の復活はしない。モデル提供と実推論成功は未確認のまま保証しない。
+
+## 公開ClipForgeへの実行入口統合
+
+ユーザーが公開リポジトリへの統合を指定したため、制作・段階再開・OpenCode・Drive upload-releaseのActions定義をClipForgeで管理する。動画・ASRの公開許可は含まないため、ai-model-workersの非公開Releaseを保存庫として維持する。公開Artifactへ制作データを出さない。Google OIDC許可先はClipForgeの検証ブランチへ変更する。Secretsは所有者がClipForgeへ登録する。ユーザーがmainへのマージを承認済み。workflow登録と、Google/Secrets連携後の実稼働は区別する。移行状態はdocs/PUBLIC_ACTIONS.md。

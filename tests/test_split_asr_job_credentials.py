@@ -30,8 +30,7 @@ def test_colab_credential_is_scoped_to_steps_that_start_or_split_runtimes():
     ]
     assert holders == [
         "Validate request and one-time Colab OAuth setup",
-        "Allocate a dedicated T4 for the verified Google account",
-        "Run two owned ASR runtimes and merge before topic allocation",
+        "Recognise the audio parts on owned Colab GPUs and allocate topics",
     ]
     for step in steps:
         if step.get("name") in holders:
@@ -39,30 +38,20 @@ def test_colab_credential_is_scoped_to_steps_that_start_or_split_runtimes():
             assert "GEMINI_API_KEY" not in step["env"]
 
 
-def test_two_part_run_gets_credential_without_model_key():
-    _, steps = colab_steps()
-    split = next(
-        step
-        for step in steps
-        if step.get("if") == "steps.request.outputs.asr_parts == '2'"
-    )
-    assert "split_asr_job.py" in split["run"]
-    assert split["env"]["COLAB_ADC_JSON"] == "${{ secrets.COLAB_ADC_JSON }}"
-    assert "GEMINI_API_KEY" not in split["env"]
-
-
-def test_two_part_release_step_follows_split_and_needs_no_credential_secret():
+def test_release_step_follows_recognition_and_needs_no_credential_secret():
     _, steps = colab_steps()
     names = [step.get("name") for step in steps]
-    split = names.index("Run two owned ASR runtimes and merge before topic allocation")
-    release = names.index("Release and verify removal of the dedicated Colab runtime")
-    assert split < release
+    recognise = names.index(
+        "Recognise the audio parts on owned Colab GPUs and allocate topics"
+    )
+    release = names.index("Release and verify removal of every owned Colab runtime")
+    assert recognise < release
     # colab_actions.py stop reads adc.json saved in each state directory and never
-    # reads COLAB_ADC_JSON, so the release step (shared with the single-part path)
-    # does not receive the Secret.
+    # reads COLAB_ADC_JSON, so the release step does not receive the Secret.
     env = steps[release].get("env", {})
     assert "COLAB_ADC_JSON" not in env and "GEMINI_API_KEY" not in env
     assert steps[release]["if"] == "always() && steps.control.outcome == 'success'"
+    assert "clipforge-split/control-*" in steps[release]["run"]
 
 
 @pytest.fixture
@@ -71,14 +60,7 @@ def two_part_plan(tmp_path):
     with wave.open(str(source), "wb") as handle:
         handle.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         handle.writeframes(b"\0\0" * 16000 * 40)
-    settings = Settings(
-        gemini_model="manual-no-api",
-        asr_parts=2,
-        whisper_device="cuda",
-        whisper_compute_type="float16",
-        min_seconds=3,
-        max_seconds=10,
-    )
+    settings = Settings(asr_parts=2, min_seconds=3, max_seconds=10)
     request = {
         "request_id": "a" * 32,
         "source_ref": "b" * 40,
@@ -86,7 +68,6 @@ def two_part_plan(tmp_path):
         "video_bytes": source.stat().st_size,
         "settings": settings.model_dump(),
         "audio_source_url": URL,
-        "chat_sha256": None,
     }
     plan = asr_split.prepare(
         source, tmp_path / "parts", request, settings, audio_first.audio_info(source)
@@ -98,12 +79,11 @@ def two_part_plan(tmp_path):
     return directory, plan, tmp_path
 
 
-def test_split_children_receive_colab_credential_and_never_the_model_key(
+def test_every_part_receives_the_colab_credential_and_is_stopped(
     two_part_plan, monkeypatch
 ):
     directory, plan, root = two_part_plan
     monkeypatch.setenv("COLAB_ADC_JSON", CREDENTIAL)
-    monkeypatch.setenv("GEMINI_API_KEY", "must-not-reach-colab")
     monkeypatch.setenv("GITHUB_REPOSITORY", split_asr_job.PRIVATE_REPO)
     monkeypatch.setenv("REQUEST_ID", plan["request"]["request_id"])
     monkeypatch.setenv("CLIPFORGE_SOURCE_REF", plan["request"]["source_ref"])
@@ -142,16 +122,18 @@ def test_split_children_receive_colab_credential_and_never_the_model_key(
         control_python="python",
         state_root=root / "coordinator",
     )
-    with pytest.raises(PipelineError, match="split ASR failed"):
+    with pytest.raises(PipelineError, match="ASR failed"):
         split_asr_job.run(args)
 
+    # Each failed run is retried once on a fresh runtime, and every runtime is stopped.
     assert sorted(call["state"] for call in calls if call["command"] == "start") == [
         "control-0",
+        "control-0-retry1",
         "control-1",
+        "control-1-retry1",
     ]
     for call in calls:
         assert call["environment"]["COLAB_ADC_JSON"] == CREDENTIAL
-        assert "GEMINI_API_KEY" not in call["environment"]
     assert sorted(
         call["command"] for call in calls if call["state"] == "control-0"
     ) == [
@@ -159,3 +141,25 @@ def test_split_children_receive_colab_credential_and_never_the_model_key(
         "start",
         "stop",
     ]
+
+
+def test_the_two_longest_parts_try_l4_first_and_every_part_accepts_any_gpu():
+    plan = {
+        "parts": [
+            {"asr_part": {"start": 0, "end": value}}
+            for value in (3000, 4000, 2500, 3500)
+        ]
+    }
+    assert split_asr_job.pools(plan) == [
+        split_asr_job.POOL,
+        split_asr_job.FAST_POOL,
+        split_asr_job.POOL,
+        split_asr_job.FAST_POOL,
+    ]
+    assert split_asr_job.FAST_POOL.startswith("L4,")
+    assert split_asr_job.POOL.startswith("T4:")
+    assert (
+        {"L4", "T4:high-ram", "T4:standard"}
+        == set(split_asr_job.FAST_POOL.split(","))
+        == set(split_asr_job.POOL.split(","))
+    )

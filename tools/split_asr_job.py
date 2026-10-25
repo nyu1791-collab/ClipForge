@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Coordinate two owned Colab recognisers and publish one ordinary analysis result."""
+"""Recognise one to four audio parts on owned Colab GPUs and publish one analysis result."""
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -9,7 +9,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import threading
 
 from clipforge import asr_split, audio_first, github_cli, pipeline
 from clipforge.models import Settings
@@ -17,6 +16,15 @@ from clipforge.storage import PipelineError, digest, fingerprint, write_json
 
 PRIVATE_REPO = "nyu1791-collab/ai-model-workers"
 ROOT = Path(__file__).resolve().parents[1]
+# The account runs at most two T4 and two L4 at once (measured 2026-10-22). Every part asks
+# for any GPU, the two longest trying L4 first, so a refused kind falls back to the next and
+# a part that finds none stops without waiting.
+FAST_POOL = "L4,T4:high-ram,T4:standard"
+POOL = "T4:high-ram,T4:standard,L4"
+ALLOCATION_WAIT_SECONDS = 0
+# One recognition attempt per part; failures are returned without a fresh-runtime retry.
+ATTEMPTS = 1
+TIMEOUTS = {"start": ALLOCATION_WAIT_SECONDS + 300, "run": 5400, "stop": 600}
 
 
 def control(python, state, command, output, environment):
@@ -32,7 +40,7 @@ def control(python, state, command, output, environment):
                 str(output),
             ],
             env=environment,
-            timeout={"start": 1200, "run": 5400, "stop": 600}[command],
+            timeout=TIMEOUTS[command],
         )
     except subprocess.TimeoutExpired:
         raise PipelineError("ASR part control timed out during " + command) from None
@@ -48,7 +56,6 @@ def verify_part(directory, child, workflow_run):
         for key, value in {
             "request_id": child["request_id"],
             "source_ref": child["source_ref"],
-            "audio_source_url": child["audio_source_url"],
             "workflow_run": workflow_run,
             "status": "asr_part_complete",
             "asr_part": child["asr_part"],
@@ -56,14 +63,15 @@ def verify_part(directory, child, workflow_run):
     ) or manifest != {
         "status": "asr_part_complete",
         "asr_part": child["asr_part"],
-        "source_sha256": child["video_sha256"],
-        "rendered": [],
+        "audio_sha256": child["audio_sha256"],
     }:
         raise PipelineError("returned ASR part belongs to another request")
     hashes = receipt.get("sha256")
+    required = {"manifest.json", "transcript.json"}
     if (
         not isinstance(hashes, dict)
-        or set(hashes) != {"manifest.json", "transcript.json"}
+        # The Colab worker also lists its runtime diagnostics; nothing else is accepted.
+        or not required <= set(hashes) <= required | {"gpu-receipt.json"}
         or any(
             (directory / name).is_symlink() or digest(directory / name) != checksum
             for name, checksum in hashes.items()
@@ -74,49 +82,45 @@ def verify_part(directory, child, workflow_run):
 
 
 def finish(source, output, plan, part_directories, workflow_run):
-    """Validate both independent results before installing a reusable full transcript."""
+    """Validate every part before installing the full transcript and allocating topics."""
     if plan.get("key") != fingerprint(
         {key: value for key, value in plan.items() if key != "key"}
     ):
-        raise PipelineError("ASR split plan changed")
+        raise PipelineError("ASR plan changed")
     request = plan["request"]
     settings = Settings.model_validate(plan["settings"])
-    split = plan["split"]
+    count = len(plan["parts"])
     if (
-        settings.asr_parts != 2
-        or len(plan["parts"]) != 2
-        or len(part_directories) != 2
+        settings.asr_parts != count
+        or len(part_directories) != count
         or digest(source) != request["video_sha256"]
-        or pipeline.transcript_identity(
-            source, plan["info"], settings, split=asr_split.split_identity(split)
+        or asr_split.transcript_key(
+            request["video_sha256"], plan["info"], settings, plan["split"]
         )
         != plan["transcript_key"]
+        or fingerprint(plan["split"]) != plan["split_key"]
     ):
-        raise PipelineError("ASR split source or recognition identity changed")
+        raise PipelineError("ASR source or recognition identity changed")
     parts = []
     for index, (child, directory) in enumerate(
         zip(plan["parts"], part_directories, strict=True)
     ):
+        part = child["asr_part"]
         if (
             child["request_id"]
-            != asr_split.part_id(
-                request["request_id"], index, asr_split.split_key(split)
-            )
+            != asr_split.part_id(request["request_id"], index, count, plan["split_key"])
             or child["source_ref"] != request["source_ref"]
-            or child["audio_source_url"] != request["audio_source_url"]
-            or child["settings"]
-            != settings.model_copy(update={"asr_parts": 1}).model_dump()
-            or child["asr_part"]["source_sha256"] != request["video_sha256"]
-            or child["asr_part"]["transcript_key"] != plan["transcript_key"]
-            or child["asr_part"]["split_key"] != asr_split.split_key(split)
+            or part["source_sha256"] != request["video_sha256"]
+            or part["transcript_key"] != plan["transcript_key"]
+            or part["split_key"] != plan["split_key"]
         ):
-            raise PipelineError("ASR split plan has inconsistent part identities")
-        parts.append((child["asr_part"], verify_part(directory, child, workflow_run)))
+            raise PipelineError("ASR plan has inconsistent part identities")
+        parts.append((part, verify_part(directory, child, workflow_run)))
     transcript = asr_split.merge(parts, plan["info"]["duration"])
     with audio_first.exclusive(output):
         audio = output / "audio.m4a"
         if audio.exists():
-            raise PipelineError("split analysis output already contains audio")
+            raise PipelineError("analysis output already contains audio")
         shutil.copyfile(source, audio)
         key = plan["transcript_key"]
         write_json(output / "transcripts" / (key + ".json"), transcript)
@@ -128,13 +132,12 @@ def finish(source, output, plan, part_directories, workflow_run):
         )
         cache = json.loads((output / "asr-receipt.json").read_text())
         cache.update(
-            source="split_asr",
+            source="parakeet",
             reused=False,
-            parts=2,
-            overlap_seconds=asr_split.OVERLAP_SECONDS,
+            parts=count,
             part_requests=[child["request_id"] for child in plan["parts"]],
-            split=split,
-            split_key=asr_split.split_key(split),
+            split=plan["split"],
+            split_key=plan["split_key"],
         )
         write_json(output / "asr-receipt.json", cache)
         write_json(
@@ -170,22 +173,45 @@ def read_record(path):
     return record if isinstance(record, dict) else {}
 
 
-def part_summary(plan, state_root, part_directories):
-    """Per-part shape, held time and stage timings, then the compute units of both at once.
+def state_name(index, attempt=0):
+    return f"control-{index}" + (f"-retry{attempt}" if attempt else "")
 
-    Both runtimes draw from one account balance, so the total is the balance before the
+
+def last_state(state_root, index):
+    """The control record of the part's last attempt."""
+    for attempt in reversed(range(ATTEMPTS)):
+        record = read_record(state_root / state_name(index, attempt) / "state.json")
+        if record:
+            return record
+    return {}
+
+
+def pools(plan):
+    """The Colab pool of each part: the two longest try L4 first."""
+    durations = [
+        child["asr_part"]["end"] - child["asr_part"]["start"] for child in plan["parts"]
+    ]
+    longest = sorted(range(len(durations)), key=lambda i: durations[i], reverse=True)
+    return [FAST_POOL if i in longest[:2] else POOL for i in range(len(durations))]
+
+
+def part_summary(plan, state_root, part_directories):
+    """Per-part shape, held time and stage timings, then the compute units of all at once.
+
+    All runtimes draw from one account balance, so the total is the balance before the
     first allocation minus the balance after the last release, and only when nothing else
     of the account was still running. Colab may lag a moment, so it is a lower bound.
     """
     lines, before, after = [], [], []
     for index, directory in enumerate(part_directories):
-        state = read_record(state_root / f"control-{index}" / "state.json")
+        state = last_state(state_root, index)
         receipt = read_record(directory / "gpu-receipt.json")
         timings = (
             receipt.get("timings") if isinstance(receipt.get("timings"), dict) else {}
         )
+        part = plan["parts"][index]["asr_part"]
         line = (
-            f"ASR part {index + 1}: {plan['parts'][index]['asr_part']['duration']:.0f} s "
+            f"ASR part {index + 1}: {part['end'] - part['start']:.0f} s "
             f"of audio on {state.get('accelerator', '?')} {state.get('shape', '?')}"
         )
         if all(
@@ -195,28 +221,26 @@ def part_summary(plan, state_root, part_directories):
             line += f", held {state['released_at'] - state['allocated_at']:.0f} s"
         stages = [
             f"{name} {timings[name]:.0f} s"
-            for name in ("setup", "prepare", "pipeline")
+            for name in ("input", "prefetch_wait", "recognise")
             if isinstance(timings.get(name), (int, float))
         ]
         if stages:
             line += " (" + ", ".join(stages) + ")"
-        host = receipt.get("host")
-        if isinstance(host, dict) and isinstance(host.get("cpu_count"), int):
-            line += f", {host['cpu_count']} cores"
         lines.append(line)
         if isinstance(state.get("units_before"), dict):
             before.append(state["units_before"])
         if isinstance(state.get("units_after"), dict):
             after.append((state.get("released_at") or 0, state["units_after"]))
-    if len(before) == 2 and len(after) == 2:
+    count = len(part_directories)
+    if len(before) == count and len(after) == count:
         last = max(after, key=lambda item: item[0])[1]
         if last.get("assignments") == 0:
             first = max(units["balance"] for units in before)
             lines.append(
-                f"Compute units used by both ASR parts: {first - last['balance']:.2f}"
+                f"Compute units used by all ASR parts: {first - last['balance']:.2f}"
             )
             return lines
-    lines.append("Compute units used by both ASR parts: not determinable")
+    lines.append("Compute units used by all ASR parts: not determinable")
     return lines
 
 
@@ -226,25 +250,31 @@ def run(args):
         or github_cli.run("api", "repos/" + PRIVATE_REPO, "--jq", ".private").strip()
         != "true"
     ):
-        raise PipelineError("split ASR requires the designated private worker")
+        raise PipelineError("ASR requires the designated private worker")
     request = json.loads((args.directory / "request.json").read_text())
     if (
         request.get("request_id") != os.environ.get("REQUEST_ID")
         or request.get("source_ref") != os.environ.get("CLIPFORGE_SOURCE_REF")
         or not request.get("audio_source_url")
     ):
-        raise PipelineError("split ASR parent request identity mismatch")
-    settings = Settings.model_validate(request["settings"]).model_copy(
-        update={"whisper_device": "cuda", "whisper_compute_type": "float16"}
-    )
+        raise PipelineError("ASR parent request identity mismatch")
+    settings = Settings.model_validate(request["settings"])
     source = args.directory / "input-video.bin"
     info = audio_first.audio_info(source)
+    args.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     plan = asr_split.prepare(source, args.state_root / "input", request, settings, info)
     staged = []
-    part_directories = [args.state_root / f"result-{index}" for index in range(2)]
+    count = len(plan["parts"])
+    part_directories = [args.state_root / f"result-{index}" for index in range(count)]
+    part_pools = pools(plan)
     try:
-        for index, child in enumerate(plan["parts"]):
-            tag = "clipforge-input-" + child["request_id"]
+
+        def stage(index):
+            # The private inputs are independent; create and upload them side by side.
+            tag = "clipforge-input-" + plan["parts"][index]["request_id"]
+            # The workflow deletes every listed tag even if this job is cancelled.
+            with (args.state_root / "staged-tags").open("a") as listing:
+                listing.write(tag + "\n")
             github_cli.run(
                 "release",
                 "create",
@@ -267,19 +297,13 @@ def run(args):
                 tag,
                 "--repo",
                 PRIVATE_REPO,
-                str(directory / "input-video.bin"),
+                str(directory / "audio.wav"),
                 str(directory / "request.json"),
                 timeout=600,
             )
 
-        # The longer part allocates first. Colab has granted only one T4 high-memory
-        # runtime at a time, so the faster setup goes to the part with more audio and
-        # the other part falls back to the next shape in the pool.
-        leader = max(
-            range(2), key=lambda index: plan["parts"][index]["asr_part"]["duration"]
-        )
-        leader_allocated = threading.Event()
-        leader_failed = threading.Event()
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            list(executor.map(stage, range(count)))
 
         def recognise(index):
             child = plan["parts"][index]
@@ -287,35 +311,21 @@ def run(args):
                 **os.environ,
                 "REQUEST_ID": child["request_id"],
                 "INPUT_TAG": "clipforge-input-" + child["request_id"],
-                "CLIPFORGE_NO_MODEL_API": "1",
                 "CLIPFORGE_SHARED_BALANCE": "1",
+                "CLIPFORGE_COLAB_POOL": part_pools[index],
+                "CLIPFORGE_ALLOCATION_WAIT_SECONDS": str(ALLOCATION_WAIT_SECONDS),
             }
-            environment.pop("GEMINI_API_KEY", None)
-            state, output = (
-                args.state_root / f"control-{index}",
-                part_directories[index],
-            )
-            if index != leader:
-                leader_allocated.wait()
-                if leader_failed.is_set():
-                    raise PipelineError("the other ASR part could not start")
+            output = part_directories[index]
+            state = args.state_root / state_name(index)
             try:
-                try:
-                    control(args.control_python, state, "start", output, environment)
-                except BaseException:
-                    if index == leader:
-                        leader_failed.set()
-                    raise
-                finally:
-                    if index == leader:
-                        leader_allocated.set()
+                control(args.control_python, state, "start", output, environment)
                 control(args.control_python, state, "run", output, environment)
             finally:
                 if (state / "state.json").exists():
                     control(args.control_python, state, "stop", output, environment)
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = [executor.submit(recognise, index) for index in range(2)]
+        with ThreadPoolExecutor(max_workers=count) as executor:
+            futures = [executor.submit(recognise, index) for index in range(count)]
             errors = []
             for future in futures:
                 try:
@@ -326,14 +336,14 @@ def run(args):
             for line in part_summary(plan, args.state_root, part_directories):
                 print(line, flush=True)
         except Exception as error:
-            # The summary only reports; it never decides whether the split succeeded.
+            # The summary only reports; it never decides whether recognition succeeded.
             print("ASR part summary unavailable: " + type(error).__name__, flush=True)
         if errors:
             raise PipelineError(
-                "split ASR failed; private part outputs were retained"
+                "ASR failed; private part outputs were retained"
             ) from None
         finish(source, args.output, plan, part_directories, os.environ["GITHUB_RUN_ID"])
-        print("Both ASR parts verified and merged; topics allocated once.", flush=True)
+        print("All ASR parts verified and merged; topics allocated once.", flush=True)
     finally:
         for tag in staged:
             try:
@@ -365,7 +375,7 @@ def main():
         run(args)
     except Exception as error:
         args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
-        pipeline.record_failure(args.output, error, "split_asr")
+        pipeline.record_failure(args.output, error, "asr")
         raise
 
 
@@ -373,5 +383,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print("Split ASR failed: " + type(error).__name__, file=sys.stderr)
+        print("ASR failed: " + type(error).__name__, file=sys.stderr)
         raise SystemExit(1) from None

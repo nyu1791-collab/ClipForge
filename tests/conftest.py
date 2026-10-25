@@ -6,7 +6,6 @@ from clipforge.models import Segment, Settings, Transcript, Word
 @pytest.fixture
 def settings():
     return Settings(
-        gemini_model="test-video-model",
         clips=2,
         candidates=4,
         min_seconds=3,
@@ -44,15 +43,14 @@ def transcript():
 
 @pytest.fixture
 def on_target_loudness(monkeypatch):
-    """Stands in for the ffmpeg measurements of a rendered file: on target and decoding cleanly."""
+    """A single successful completed-media scan, without invoking FFmpeg."""
     from clipforge import quality
 
     monkeypatch.setattr(
         quality,
-        "measure_output",
-        lambda video: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
+        "inspect_output",
+        lambda *a: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
     )
-    monkeypatch.setattr(quality, "decode_errors", lambda video: [])
 
 
 @pytest.fixture

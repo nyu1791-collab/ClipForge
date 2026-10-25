@@ -1,0 +1,182 @@
+"""Upload completed long-form ClipForge clips without a readback audit."""
+
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import time
+import urllib.error
+import urllib.parse
+import zipfile
+
+from clipforge.release_transfer import download, read_transfer, validate_identity
+from clipforge_drive_delivery import request
+
+
+def deliver():
+    delivery_started = time.monotonic()
+    transfer_started = time.monotonic()
+    run_id = os.environ["RENDER_RUN"]
+    request_id = os.environ["RENDER_REQUEST"]
+    source = os.environ["SOURCE_REF"]
+    if not re.fullmatch(r"[a-f0-9]{32}", request_id) or not re.fullmatch(
+        r"[a-f0-9]{40}", source
+    ):
+        raise RuntimeError("Invalid render identity")
+    root = Path(os.environ["RUNNER_TEMP"]) / "verified-render"
+    name = "clipforge-result-" + request_id
+    transfer = read_transfer(run_id, name)
+    if transfer.get("source_ref") != source:
+        raise RuntimeError("Render source identity differs")
+    print("DELIVERY_STAGE=authorize_upload", flush=True)
+    credential = json.loads(
+        os.environ.get("GOOGLE_DRIVE_ADC_JSON") or os.environ["COLAB_ADC_JSON"]
+    )
+    body = urllib.parse.urlencode(
+        {k: credential[k] for k in ("refresh_token", "client_id", "client_secret")}
+        | {"grant_type": "refresh_token"}
+    ).encode()
+    with request(
+        "https://oauth2.googleapis.com/token",
+        "POST",
+        raw=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    ) as response:
+        token = json.load(response)["access_token"]
+    auth = {"Authorization": "Bearer " + token}
+    if credential.get("quota_project_id"):
+        auth["x-goog-user-project"] = credential["quota_project_id"]
+    print("DELIVERY_STAGE=create_folder", flush=True)
+    with request(
+        "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
+        "POST",
+        payload={
+            "name": "ClipForge 切り抜き " + request_id[:8],
+            "mimeType": "application/vnd.google-apps.folder",
+        },
+        headers=auth,
+    ) as response:
+        folder = json.load(response)
+    transfer_started = time.monotonic()
+    print("DELIVERY_STAGE=fetch_outputs", flush=True)
+    download(run_id, name, root)
+    release_download_sec = time.monotonic() - transfer_started
+    receipt = validate_identity(root, run_id, name, source, audit_hashes=False)
+    manifest = json.loads((root / "manifest.json").read_text())
+    if receipt.get("status") != "complete" or manifest.get("status") != "complete":
+        raise RuntimeError("Render is incomplete")
+    clips = sorted(root.glob("delivery/clips/clip-*/video.mp4"))
+    if not 5 <= len(clips) <= 10:
+        raise RuntimeError("Five to ten rendered clips are required")
+    for clip in clips:
+        relative = clip.relative_to(root).as_posix()
+        if relative not in receipt["sha256"]:
+            raise RuntimeError("Clip is not receipted")
+    records = root.parent / "ClipForge-records.zip"
+    with zipfile.ZipFile(records, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(root.rglob("*")):
+            if path.is_file() and path.suffix.lower() in {
+                ".json",
+                ".srt",
+                ".ass",
+                ".txt",
+            }:
+                archive.write(path, path.relative_to(root).as_posix())
+    outputs = [(clip, f"clip-{i:02}.mp4") for i, clip in enumerate(clips, 1)] + [
+        (records, records.name)
+    ]
+    for path, filename in outputs:
+        file_started = time.monotonic()
+        expected = (
+            receipt.get("sha256", {}).get(path.relative_to(root).as_posix())
+            if path.is_relative_to(root)
+            else None
+        )
+        size = path.stat().st_size
+        print("DELIVERY_STAGE=upload:" + filename, flush=True)
+        mime = "video/mp4" if path.suffix == ".mp4" else "application/zip"
+        with request(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size,webViewLink",
+            "POST",
+            payload={
+                "name": filename,
+                "parents": [folder["id"]],
+                "appProperties": {"sha256": expected} if expected else {},
+            },
+            headers=auth
+            | {"X-Upload-Content-Type": mime, "X-Upload-Content-Length": str(size)},
+        ) as response:
+            location = response.headers["Location"]
+        parsed = urllib.parse.urlsplit(location)
+        if parsed.scheme != "https" or parsed.hostname not in {
+            "www.googleapis.com",
+            "content.googleapis.com",
+        }:
+            raise RuntimeError("Unexpected Drive upload endpoint")
+        with path.open("rb") as stream:
+            start = 0
+            while start < size:
+                chunk = stream.read(8 * 1024**2)
+                end = start + len(chunk) - 1
+                try:
+                    with request(
+                        location,
+                        "PUT",
+                        raw=chunk,
+                        headers=auth
+                        | {
+                            "Content-Type": mime,
+                            "Content-Range": f"bytes {start}-{end}/{size}",
+                        },
+                    ) as response:
+                        result = json.load(response)
+                except urllib.error.HTTPError as error:
+                    if error.code != 308:
+                        raise
+                start = end + 1
+        if int(result["size"]) != size:
+            raise RuntimeError("Drive size mismatch")
+        upload_or_reuse_sec = time.monotonic() - file_started
+        print(
+            "DRIVE_FILE_UPLOADED="
+            + json.dumps(
+                {
+                    "name": filename,
+                    "link": result["webViewLink"],
+                    "bytes": size,
+                    "sha256": expected,
+                    "upload_or_reuse_sec": round(upload_or_reuse_sec, 3),
+                    "remote_readback_performed": False,
+                }
+            ),
+            flush=True,
+        )
+    print(
+        "DELIVERY_TIMINGS="
+        + json.dumps(
+            {
+                "release_download_sec": round(release_download_sec, 3),
+                "delivery_wall_clock_sec": round(
+                    time.monotonic() - delivery_started, 3
+                ),
+            }
+        ),
+        flush=True,
+    )
+    print("DRIVE_FOLDER=" + folder["webViewLink"], flush=True)
+    print(
+        "DRIVE_DELIVERY_STATUS=uploaded; no public sharing requested; no readback audit",
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    try:
+        deliver()
+    except urllib.error.HTTPError as error:
+        print("DRIVE_DELIVERY_FAILED_HTTP=" + str(error.code), flush=True)
+        sys.exit(1)
+    except Exception as error:
+        print("DRIVE_DELIVERY_FAILED_TYPE=" + type(error).__name__, flush=True)
+        sys.exit(1)

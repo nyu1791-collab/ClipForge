@@ -84,6 +84,7 @@ def make_result(root):
             {
                 "request_id": REQUEST,
                 "source_ref": REF,
+                "workflow_run": RUN,
                 "status": "topics_allocated",
                 "audio_source_url": URL,
                 "sha256": {name: digest(root / name) for name in names},
@@ -302,32 +303,6 @@ def test_stateless_collect_rejects_end_beyond_time_tolerance(collector):
         module.verify_audio_analysis(artifact, REQUEST, REF, AUDIO_SHA, URL)
 
 
-def test_dispatch_sends_public_cache_input(tmp_path, monkeypatch):
-    module = load_tool("submit_job")
-    sent = []
-
-    def gh(*args, body=None, timeout=None):
-        sent.append(json.loads(body))
-        return ""
-
-    monkeypatch.setattr(module, "gh", gh)
-    for value in ("on", "off"):
-        receipt = {
-            "request_id": REQUEST,
-            "input_tag": "clipforge-input-" + REQUEST,
-            "source_ref": REF,
-            "worker": "colab-auto",
-            "public_cache": value,
-        }
-        module.send_dispatch(tmp_path, receipt)
-        assert sent[-1]["inputs"]["public_cache"] == value
-        assert receipt["status"] == "DISPATCHED"
-    # Receipts written before the option existed keep the default.
-    legacy = {"request_id": REQUEST, "input_tag": "t", "source_ref": REF}
-    module.send_dispatch(tmp_path, legacy)
-    assert sent[-1]["inputs"]["public_cache"] == "off"
-
-
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
@@ -394,16 +369,10 @@ def test_dispatch_forwards_verified_audio_reuse_only_when_requested(
 
     def submit_with(**reuse):
         args = SimpleNamespace(
-            input=None,
             config=None,
-            gemini_model="manual-no-api",
             audio_analysis_url=URL,
-            chat_url=None,
-            chat_file=None,
             clips=None,
             ref="main",
-            worker="colab-auto",
-            public_cache="off",
             auto_previews=False,
             asr_parts=None,
             youtube_audio_transport=None,
@@ -441,16 +410,8 @@ def test_dispatch_forwards_verified_audio_reuse_only_when_requested(
             "123",
             "--reuse-audio-request",
             "c" * 32,
-            "--worker",
-            "cpu",
-        ],
-        [
-            "--reuse-audio-run",
-            "123",
-            "--reuse-audio-request",
+            "--status",
             "c" * 32,
-            "--input",
-            "clip.mp4",
         ],
     ],
 )
@@ -464,8 +425,6 @@ def test_reuse_arguments_are_refused_before_any_github_call(monkeypatch, extra):
             "submit_job",
             "--audio-analysis-url",
             URL,
-            "--gemini-model",
-            "manual-no-api",
             *extra,
         ],
     )
@@ -489,8 +448,6 @@ def test_reuse_arguments_reach_submission(monkeypatch):
             "submit_job",
             "--audio-analysis-url",
             URL,
-            "--gemini-model",
-            "manual-no-api",
             "--reuse-audio-run",
             "123",
             "--reuse-audio-request",
@@ -500,3 +457,27 @@ def test_reuse_arguments_reach_submission(monkeypatch):
     module.main()
     assert seen["reuse_audio_run"] == 123
     assert seen["reuse_audio_request"] == REQUEST
+
+
+@pytest.mark.parametrize("returned_run", [RUN + 1, None])
+def test_stateless_collect_rejects_another_or_missing_run_in_artifact(
+    collector, returned_run
+):
+    module, artifact, _, tmp_path, monkeypatch = collector
+    receipt = artifact / "request-receipt.json"
+    value = json.loads(receipt.read_text())
+    value["workflow_run"] = returned_run
+    receipt.write_text(json.dumps(value))
+    output = tmp_path / "recovered"
+    with pytest.raises(RuntimeError, match="identity"):
+        invoke(monkeypatch, module, *standard_args(output))
+    assert not output.exists()
+
+
+@pytest.fixture(autouse=True)
+def legacy_artifact_repository(monkeypatch):
+    """These fixtures describe older runs without Release stage transfers."""
+    from clipforge import release_transfer
+
+    monkeypatch.setattr(release_transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(release_transfer, "release", lambda tag: None)

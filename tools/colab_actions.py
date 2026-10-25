@@ -129,15 +129,15 @@ def colab_shape():
     return shapes[name]
 
 
-# Clip rendering is CPU work (x264), so it tries the cheapest runtime first and moves on only
-# on TooManyAssignmentsError (412), never on permission or rate-limit errors.
+# Production rendering requires NVENC; allocate a GPU and never silently fall back to CPU.
+# Try the next GPU only on TooManyAssignmentsError (412).
 # Measured 2026-10-22: at most two T4 and two
 # L4 at once, counted per kind; three CPU high-ram and two CPU standard were granted together.
 # Rates then: CPU high-ram 0.26, T4 1.07, T4 high-ram 1.27, L4 1.54 compute units an hour.
 # Measured 2026-10-22: a second pipeline's T4 high-ram was refused; capacity varies.
 DEFAULT_POOLS = {
-    "pipeline": "T4:high-ram,T4:standard,L4",
-    "audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4",
+    "asr": "T4:high-ram,T4:standard,L4",
+    "audio-stage": "L4,T4:high-ram,T4:standard",
 }
 
 
@@ -145,16 +145,7 @@ def colab_pool(mode):
     """Ordered (accelerator, shape) candidates; CLIPFORGE_COLAB_POOL overrides the default."""
     from colab_cli.client import Accelerator, Shape
 
-    raw = os.environ.get("CLIPFORGE_COLAB_POOL")
-    if not raw:
-        raw = DEFAULT_POOLS.get(mode)
-        if mode == "pipeline":
-            colab_shape()
-            if os.environ.get("CLIPFORGE_COLAB_SHAPE") == "standard":
-                raw = "T4:standard,T4:high-ram,L4"
-    if not raw:
-        accelerator = Accelerator.NONE if mode == "prepare-cache" else Accelerator.T4
-        return [(accelerator, colab_shape())]
+    raw = os.environ.get("CLIPFORGE_COLAB_POOL") or DEFAULT_POOLS[mode]
     kinds = {"CPU": Accelerator.NONE, "T4": Accelerator.T4, "L4": Accelerator.L4}
     shapes = {"standard": Shape.STANDARD, "high-ram": Shape.HIGH_RAM}
     pool = []
@@ -195,7 +186,8 @@ def stage_request():
     ):
         raise ControlError("Invalid audio stage request")
     review = Path(os.environ.get("REVIEW_FILE", "")).read_text(encoding="utf-8")
-    if len(review.encode()) > 32768:
+    # The workflow input is bounded at 60,000 bytes; this is the same bound for the file.
+    if len(review.encode()) > 60_000:
         raise ControlError("Review is too large")
     json.loads(review)
     stage["review"] = review
@@ -260,33 +252,14 @@ class Controller:
             self.credentials_path.unlink(missing_ok=True)
         return assignment
 
-    def start(self, mode="pipeline"):
-        request = (
-            identifiers()
-            if mode in {"pipeline", "audio-stage"}
-            else {
-                "request_id": uuid.uuid4().hex,
-                "source_ref": os.environ.get("CLIPFORGE_SOURCE_REF", ""),
-                "input_tag": "",
-            }
-        )
-        if not re.fullmatch(r"[a-f0-9]{40}", request["source_ref"]):
-            raise ControlError("Use an exact ClipForge source SHA")
-        if mode == "prepare-cache":
-            cache_profile = os.environ.get("CLIPFORGE_CACHE_PROFILE", "gpu")
-            if cache_profile not in {"cpu", "gpu"}:
-                raise ControlError("Invalid cache profile: use cpu or gpu")
-            request["cache_profile"] = cache_profile
-        public_cache = os.environ.get("CLIPFORGE_PUBLIC_CACHE", "on")
-        if public_cache not in {"on", "off"}:
-            raise ControlError("Invalid public cache setting: use on or off")
-        request["public_cache"] = public_cache
-        # The high-memory shape gives 8 CPU cores instead of 2 for the CPU-bound setup,
-        # decompression and encoding around the GPU work, at a higher hourly rate.
+    def start(self, mode="asr"):
+        if mode not in DEFAULT_POOLS:
+            raise ControlError("Unknown Colab job mode")
+        request = identifiers()
         pool = colab_pool(mode)
         try:
             allocation_wait = int(
-                os.environ.get("CLIPFORGE_ALLOCATION_WAIT_SECONDS", "900")
+                os.environ.get("CLIPFORGE_ALLOCATION_WAIT_SECONDS", "0")
             )
         except ValueError:
             raise ControlError(
@@ -318,6 +291,10 @@ class Controller:
             "status": "creating",
             "account": EXPECTED_ACCOUNT,
             "units_before": units,
+            "workflow_run": os.environ.get("GITHUB_RUN_ID"),
+            "result_transport": "final-release"
+            if mode == "audio-stage" and os.environ.get("RESULT_STORE") == "release"
+            else "input-bundle",
         }
         write_private(self.state_path, record)
         from colab_cli.client import Accelerator, TooManyAssignmentsError, Variant
@@ -400,22 +377,14 @@ class Controller:
         token = os.environ.get("GH_TOKEN", "")
         if not token:
             raise ControlError("Private GitHub input authentication is missing")
-        no_model_api = os.environ.get("CLIPFORGE_NO_MODEL_API") == "1"
-        if (
-            record["mode"] == "pipeline"
-            and not no_model_api
-            and not os.environ.get("GEMINI_API_KEY")
-        ):
-            raise ControlError("GEMINI_API_KEY is missing")
         payload = {
             **record,
             "github_token": token,
-            "gemini_api_key": ""
-            if no_model_api
-            else os.environ.get("GEMINI_API_KEY", ""),
-            "workflow_run": os.environ.get("GITHUB_RUN_ID", "manual"),
-            "offline": os.environ.get("CLIPFORGE_OFFLINE") == "1",
-            "public_cache": record.get("public_cache", "on"),
+            "github_repository": os.environ.get(
+                "GITHUB_REPOSITORY", "nyu1791-collab/ClipForge"
+            ),
+            "workflow_run": record.get("workflow_run")
+            or os.environ.get("GITHUB_RUN_ID", "manual"),
         }
         if record["mode"] == "audio-stage":
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
@@ -480,18 +449,15 @@ del _clipforge_bootstrap
                 if execution_error is None:
                     raise
         release_error = None
-        if record["mode"] in {"pipeline", "audio-stage"}:
-            # The results are already published in the Release, so the T4 is freed before
-            # downloading them. stop() is idempotent; the workflow's final stop step retries
-            # if this release is not confirmed.
-            try:
-                self.stop()
-            except Exception as error:
-                release_error = error
+        # The results are already published in the Release, so the runtime is freed before
+        # downloading them. stop() is idempotent; the workflow's final stop step retries if
+        # this release is not confirmed.
         try:
-            self.collect(
-                record, output, execution_error is not None, token, remote_state
-            )
+            self.stop()
+        except Exception as error:
+            release_error = error
+        try:
+            self.collect(record, output, execution_error is not None, token)
         except Exception:
             if execution_error is not None:
                 raise execution_error from None
@@ -527,6 +493,10 @@ del _clipforge_bootstrap
                 + host_text(receipt.get("host")),
                 flush=True,
             )
+            # ASCII-only package and CUDA lines from a failed ASR stage; never speech text.
+            for line in receipt.get("log_tail") or []:
+                if isinstance(line, str) and line.isascii():
+                    print("Colab log: " + line[:300], flush=True)
             worker_error = receipt.get("worker_error")
             if isinstance(worker_error, dict):
                 line = "Worker error: " + str(worker_error.get("error_type"))
@@ -535,124 +505,107 @@ del _clipforge_bootstrap
                 print(line, flush=True)
             return
 
-    def collect(self, record, output, execution_failed, token, remote_state):
-        bundles = ReleaseBundles(token)
-        if record["mode"] in {"pipeline", "audio-stage"}:
-            bundles.restore(
-                record["input_tag"],
-                output,
-                "result",
-                record["request_id"],
-                required=True,
+    def collect(self, record, output, execution_failed, token):
+        if record.get("result_transport") == "final-release":
+            # Only execution records return to Actions. The large MP4s stay in the
+            # final Release for the collector/Drive to download once when needed.
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+            from clipforge.release_transfer import read_transfer
+
+            data = read_transfer(
+                record["workflow_run"], "clipforge-result-" + record["request_id"]
             )
-            receipt = json.loads((Path(output) / "request-receipt.json").read_text())
+            receipt = data["request_receipt"]
+            manifest = data.get("stage_manifest", {})
+            output = Path(output)
+            output.mkdir(parents=True, exist_ok=True, mode=0o700)
+            write_private(output / "request-receipt.json", receipt)
+            write_private(output / "manifest.json", manifest)
+            if data.get("gpu_receipt") is not None:
+                write_private(output / "gpu-receipt.json", data["gpu_receipt"])
+            expected = "clip_rendered" if record["stage"]["clip_index"] else "complete"
             if (
                 receipt.get("request_id") != record["request_id"]
                 or receipt.get("source_ref") != record["source_ref"]
             ):
                 raise ControlError(
-                    "Returned GPU result identity differs from the request"
+                    "Returned Colab result identity differs from the request"
                 )
-            manifest = Path(output) / "manifest.json"
-            # Audio analysis ends once topics are allocated, one reviewed clip at
-            # clip_rendered, and full video jobs with every clip rendered.
-            if record["mode"] == "audio-stage":
-                expected = (
-                    "clip_rendered" if record["stage"]["clip_index"] else "complete"
-                )
-            elif receipt.get("asr_part") is not None:
-                expected = "asr_part_complete"
-            elif receipt.get("audio_source_url"):
-                expected = "topics_allocated"
-            else:
-                expected = "complete"
-            complete = (
-                manifest.is_file()
-                and json.loads(manifest.read_text()).get("status") == expected
-            )
-            if execution_failed or receipt.get("status") != expected or not complete:
-                raise ControlError(
-                    "Colab pipeline failed; available private partial outputs were retrieved"
-                )
-            for name, checksum in receipt.get("sha256", {}).items():
-                if (
-                    not re.fullmatch(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){0,3}", name)
-                    or ".." in name
-                ):
-                    raise ControlError("Unexpected result file name")
-                if digest(Path(output) / name) != checksum:
-                    raise ControlError("GPU result checksum mismatch")
-            rendered = json.loads(manifest.read_text()).get("rendered", [])
-            if record["mode"] == "audio-stage" and record["stage"]["clip_index"]:
-                directory = "clips/clip-%03d" % int(record["stage"]["clip_index"])
-                if (
-                    not isinstance(rendered, list)
-                    or len(rendered) != 1
-                    or not isinstance(rendered[0], dict)
-                    or rendered[0].get("directory")
-                    not in {directory, "delivery/" + directory}
-                ):
-                    raise ControlError(
-                        "Returned clip differs from the requested clip_index"
-                    )
-            for clip in rendered:
-                # Video jobs write clips/ at the top; audio-first stages write delivery/clips/.
-                if not re.fullmatch(
-                    r"(delivery/)?clips/clip-[0-9]{3}", clip.get("directory", "")
-                ):
-                    raise ControlError("Unexpected result directory")
-                checksums = clip.get("sha256", {})
-                if not isinstance(checksums, dict) or not REQUIRED_CLIP_FILES <= set(
-                    checksums
-                ):
-                    raise ControlError("Missing result checksums")
-                for name, checksum in checksums.items():
-                    if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
-                        raise ControlError("Unexpected result file name")
-                    path = Path(output) / clip["directory"] / name
-                    if not path.is_file():
-                        raise ControlError("Missing result file")
-                    if digest(path) != checksum:
-                        raise ControlError("GPU result checksum mismatch")
-            print(
-                "GPU pipeline outputs retrieved and checksums matched; human review is not performed."
-            )
-        else:
-            # Verification/preparation reports contain only public hardware/cache status.
-            fresh = next(
-                (
-                    item
-                    for item in self.client().list_assignments()
-                    if item.endpoint == record["endpoint"]
-                ),
-                None,
-            )
-            if fresh is None:
-                raise ControlError(
-                    "Colab ended before its verification report could be retrieved"
-                )
-            remote_state.token = fresh.runtime_proxy_info.token
-            remote_state.url = fresh.runtime_proxy_info.url
-            from colab_cli.contents import ContentsClient
-
-            contents = ContentsClient(remote_state)
-            report_path = self.root / "remote-report.json"
-            contents.download("/content/clipforge-report.json", str(report_path))
-            report = json.loads(report_path.read_text())
-            if (report.get("mode"), report.get("source_ref")) != (
-                record["mode"],
-                record["source_ref"],
+            if (
+                execution_failed
+                or receipt.get("status") != expected
+                or manifest.get("status") != expected
             ):
                 raise ControlError(
-                    "Returned Colab report identity differs from the request"
+                    "Colab job failed; private partial outputs remain in the final Release"
                 )
-            Path(output).mkdir(parents=True, exist_ok=True)
-            write_private(Path(output) / "colab-report.json", report)
-            if execution_failed or report.get("status") != "complete":
+            return
+        ReleaseBundles(token).restore(
+            record["input_tag"], output, record["request_id"], required=True
+        )
+        receipt = json.loads((Path(output) / "request-receipt.json").read_text())
+        if (
+            receipt.get("request_id") != record["request_id"]
+            or receipt.get("source_ref") != record["source_ref"]
+        ):
+            raise ControlError(
+                "Returned Colab result identity differs from the request"
+            )
+        manifest = Path(output) / "manifest.json"
+        # An ASR part ends at asr_part_complete, one reviewed clip at clip_rendered and a
+        # render of every clip at complete.
+        if record["mode"] == "asr":
+            expected = "asr_part_complete"
+        else:
+            expected = "clip_rendered" if record["stage"]["clip_index"] else "complete"
+        complete = (
+            manifest.is_file()
+            and json.loads(manifest.read_text()).get("status") == expected
+        )
+        if execution_failed or receipt.get("status") != expected or not complete:
+            raise ControlError(
+                "Colab job failed; available private partial outputs were retrieved"
+            )
+        for name, checksum in receipt.get("sha256", {}).items():
+            if (
+                not re.fullmatch(r"[A-Za-z0-9_.-]+(/[A-Za-z0-9_.-]+){0,3}", name)
+                or ".." in name
+            ):
+                raise ControlError("Unexpected result file name")
+            if digest(Path(output) / name) != checksum:
+                raise ControlError("Colab result checksum mismatch")
+        rendered = json.loads(manifest.read_text()).get("rendered", [])
+        if record["mode"] == "audio-stage" and record["stage"]["clip_index"]:
+            directory = "clips/clip-%03d" % int(record["stage"]["clip_index"])
+            if (
+                not isinstance(rendered, list)
+                or len(rendered) != 1
+                or not isinstance(rendered[0], dict)
+                or rendered[0].get("directory")
+                not in {directory, "delivery/" + directory}
+            ):
                 raise ControlError(
-                    "Colab verification/preparation failed; its private report was saved"
+                    "Returned clip differs from the requested clip_index"
                 )
-            print("Colab verification/preparation completed; report saved.")
+        for clip in rendered:
+            if not re.fullmatch(
+                r"(delivery/)?clips/clip-[0-9]{3}", clip.get("directory", "")
+            ):
+                raise ControlError("Unexpected result directory")
+            checksums = clip.get("sha256", {})
+            if not isinstance(checksums, dict) or not REQUIRED_CLIP_FILES <= set(
+                checksums
+            ):
+                raise ControlError("Missing result checksums")
+            for name, checksum in checksums.items():
+                if not re.fullmatch(r"[A-Za-z0-9._-]+", name) or ".." in name:
+                    raise ControlError("Unexpected result file name")
+                path = Path(output) / clip["directory"] / name
+                if not path.is_file():
+                    raise ControlError("Missing result file")
+                if digest(path) != checksum:
+                    raise ControlError("Colab result checksum mismatch")
+        print("Colab outputs retrieved and checksums matched.")
 
     def stop(self):
         if not self.state_path.is_file():
@@ -810,8 +763,8 @@ def main():
     parser.add_argument("command", choices=["start", "run", "stop", "doctor", "probe"])
     parser.add_argument(
         "--mode",
-        choices=["pipeline", "audio-stage", "verify-gpu", "prepare-cache"],
-        default="pipeline",
+        choices=sorted(DEFAULT_POOLS),
+        default="asr",
     )
     parser.add_argument(
         "--state-dir",

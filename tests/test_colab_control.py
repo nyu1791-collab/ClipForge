@@ -52,78 +52,6 @@ def unassigned_response():
 
 
 class ControlTests(unittest.TestCase):
-    def test_prepare_cache_records_profile_and_passes_it_to_cpu_worker(self):
-        from colab_cli.client import Accelerator, Variant
-
-        for profile in (None, "gpu", "cpu"):
-            with (
-                self.subTest(profile=profile),
-                tempfile.TemporaryDirectory() as temporary,
-                patch.dict(
-                    os.environ,
-                    {
-                        **REQUEST,
-                        "COLAB_ADC_JSON": "{}",
-                        "GH_TOKEN": "test-only",
-                        "CLIPFORGE_COLAB_POOL": "",
-                    },
-                ),
-                patch.object(control, "authenticated_client") as authenticate,
-                patch("colab_cli.contents.ContentsClient") as contents,
-                patch.object(control, "runtime_from_state"),
-                patch.object(control, "checked_execute"),
-            ):
-                os.environ.pop("CLIPFORGE_CACHE_PROFILE", None)
-                if profile is not None:
-                    os.environ["CLIPFORGE_CACHE_PROFILE"] = profile
-                client = authenticate.return_value
-                client.list_assignments.return_value = []
-                client.get_consumption_user_info.side_effect = RuntimeError()
-                client.assign.return_value = granted_assignment()
-                controller = control.Controller(temporary)
-                controller.start(mode="prepare-cache")
-                expected = profile or "gpu"
-                self.assertEqual(controller.state()["cache_profile"], expected)
-                self.assertEqual(
-                    client.assign.call_args.kwargs["accelerator"], Accelerator.NONE
-                )
-                self.assertEqual(
-                    client.assign.call_args.kwargs["variant"], Variant.DEFAULT
-                )
-                # The start-time choice must survive later changes to the environment.
-                os.environ["CLIPFORGE_CACHE_PROFILE"] = (
-                    "cpu" if expected == "gpu" else "gpu"
-                )
-                uploaded = []
-                contents.return_value.upload.side_effect = lambda local, remote: (
-                    uploaded.append(json.loads(Path(local).read_text()))
-                )
-                with patch.object(controller, "collect"):
-                    controller.run(Path(temporary) / "output")
-                self.assertEqual(uploaded[0]["cache_profile"], expected)
-
-    def test_invalid_cache_profile_stops_before_google_access_or_allocation(self):
-        for profile in ("", "GPU", "other", "gpu\n"):
-            with (
-                self.subTest(profile=profile),
-                tempfile.TemporaryDirectory() as temporary,
-                patch.dict(
-                    os.environ,
-                    {**REQUEST, "CLIPFORGE_CACHE_PROFILE": profile},
-                ),
-                patch.object(control, "authenticated_client") as authenticate,
-                patch.object(control, "colab_pool") as pool,
-            ):
-                controller = control.Controller(temporary)
-                with self.assertRaisesRegex(
-                    control.ControlError, "Invalid cache profile"
-                ):
-                    controller.start(mode="prepare-cache")
-                authenticate.assert_not_called()
-                pool.assert_not_called()
-                self.assertFalse(controller.state_path.exists())
-                self.assertFalse(controller.credentials_path.exists())
-
     def test_missing_oauth_stops_before_any_allocation(self):
         with (
             tempfile.TemporaryDirectory() as temporary,
@@ -300,56 +228,6 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(control.host_text(None), "")
         self.assertEqual(control.host_text({"cpu_count": "8"}), "")
 
-    def test_high_ram_shape_is_requested_and_unknown_shapes_stop_before_access(self):
-        from colab_cli.client import Shape
-
-        for name, expected in (
-            ("high-ram", Shape.HIGH_RAM),
-            ("standard", Shape.STANDARD),
-            ("", Shape.HIGH_RAM),
-        ):
-            with (
-                tempfile.TemporaryDirectory() as temporary,
-                patch.dict(
-                    os.environ,
-                    {
-                        **REQUEST,
-                        "COLAB_ADC_JSON": '{"type":"authorized_user"}',
-                        "CLIPFORGE_COLAB_SHAPE": name,
-                    },
-                ),
-            ):
-                client = Mock()
-                client.list_assignments.return_value = []
-                client.assign.return_value = SimpleNamespace(
-                    endpoint="owned-session",
-                    runtime_proxy_info=SimpleNamespace(
-                        url="https://t.invalid", token="t"
-                    ),
-                )
-                with patch.object(control, "authenticated_client", return_value=client):
-                    controller = control.Controller(temporary)
-                    controller.start()
-                self.assertEqual(client.assign.call_args.kwargs["shape"], expected)
-                self.assertEqual(controller.state()["shape"], expected.name)
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            patch.dict(
-                os.environ,
-                {
-                    **REQUEST,
-                    "COLAB_ADC_JSON": '{"type":"authorized_user"}',
-                    "CLIPFORGE_COLAB_SHAPE": "huge",
-                },
-            ),
-            patch.object(control, "authenticated_client") as authenticated,
-        ):
-            controller = control.Controller(temporary)
-            with self.assertRaisesRegex(control.ControlError, "Unknown Colab shape"):
-                controller.start()
-            authenticated.assert_not_called()
-            self.assertFalse(controller.credentials_path.exists())
-
     def test_zero_allocation_wait_does_not_retry_or_leave_credentials(self):
         from colab_cli.client import TooManyAssignmentsError
 
@@ -399,64 +277,13 @@ class ControlTests(unittest.TestCase):
             self.assertEqual(controller.state()["endpoint"], "owned-session")
             self.assertEqual(controller.state()["status"], "allocated")
 
-    def test_failed_gpu_check_keeps_private_report_and_closes_connection(self):
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            patch.dict(os.environ, {"GH_TOKEN": "test-only"}),
-            patch("colab_cli.contents.ContentsClient") as contents_type,
-            patch.object(control, "runtime_from_state") as runtime_type,
-            patch.object(control, "ReleaseBundles"),
-            patch.object(
-                control, "checked_execute", side_effect=RuntimeError("failed")
-            ),
-        ):
-            controller = control.Controller(Path(temporary) / "state")
-            record = {
-                "status": "allocated",
-                "mode": "verify-gpu",
-                "source_ref": "b" * 40,
-                "endpoint": "owned-session",
-                "url": "https://test.invalid",
-                "token": "test-only",
-            }
-            control.write_private(controller.state_path, record)
-            report = {
-                "mode": "verify-gpu",
-                "source_ref": "b" * 40,
-                "status": "failed",
-                "stage": "cuda-asr-verification",
-            }
-
-            def download(remote, local):
-                Path(local).write_text(json.dumps(report))
-
-            contents_type.return_value.download.side_effect = download
-            client = Mock()
-            client.list_assignments.return_value = [
-                SimpleNamespace(
-                    endpoint="owned-session",
-                    runtime_proxy_info=SimpleNamespace(
-                        url=record["url"], token="refreshed-test-token"
-                    ),
-                )
-            ]
-            output = Path(temporary) / "output"
-            with patch.object(controller, "client", return_value=client):
-                with self.assertRaisesRegex(RuntimeError, "failed"):
-                    controller.run(output)
-            saved = output / "colab-report.json"
-            self.assertEqual(json.loads(saved.read_text()), report)
-            self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
-            runtime_type.return_value.stop.assert_called_once_with()
-            self.assertFalse((controller.root / "job-payload.json").exists())
-
     def _pipeline_controller(self, temporary, restore, execute=None):
         controller = control.Controller(Path(temporary) / "state")
         control.write_private(
             controller.state_path,
             {
                 "status": "allocated",
-                "mode": "pipeline",
+                "mode": "asr",
                 "request_id": "a" * 32,
                 "source_ref": "b" * 40,
                 "input_tag": "clipforge-input-" + "a" * 32,
@@ -493,7 +320,7 @@ class ControlTests(unittest.TestCase):
 
     @staticmethod
     def _result_restore(status, stage, error_type=None, timings=None):
-        def restore(tag, destination, kind, identity, required=False):
+        def restore(tag, destination, identity, required=False):
             destination = Path(destination)
             destination.mkdir(parents=True, exist_ok=True)
             (destination / "request-receipt.json").write_text(
@@ -523,7 +350,9 @@ class ControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             controller, events, patches = self._pipeline_controller(
                 temporary,
-                self._result_restore("complete", "complete", timings={"pipeline": 1.5}),
+                self._result_restore(
+                    "asr_part_complete", "complete", timings={"pipeline": 1.5}
+                ),
             )
             with contextlib.ExitStack() as stack:
                 for item in patches:
@@ -589,7 +418,7 @@ class ControlTests(unittest.TestCase):
                 self.subTest(key_present=bool(key)),
                 tempfile.TemporaryDirectory() as temporary,
             ):
-                restore_complete = self._result_restore("topics_allocated", "complete")
+                restore_complete = self._result_restore("asr_part_complete", "complete")
 
                 def restore(*args, **kwargs):
                     restore_complete(*args, **kwargs)
@@ -614,7 +443,6 @@ class ControlTests(unittest.TestCase):
                             os.environ,
                             {
                                 "GEMINI_API_KEY": key,
-                                "CLIPFORGE_NO_MODEL_API": "1",
                                 "YOUTUBE_COOKIES_B64": "private-cookie-test",
                             },
                         )
@@ -627,30 +455,15 @@ class ControlTests(unittest.TestCase):
                 self.assertNotIn("audio_url", uploaded[0])
                 self.assertNotIn("youtube_cookies_b64", uploaded[0])
                 self.assertNotIn("private-cookie-test", json.dumps(uploaded))
-                self.assertEqual(uploaded[0]["gemini_api_key"], "")
+                self.assertNotIn("gemini_api_key", uploaded[0])
                 self.assertEqual(events, ["stop", "restore"])
-
-    def test_video_pipeline_still_requires_gemini_key(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            controller, _, patches = self._pipeline_controller(temporary, Mock())
-            with contextlib.ExitStack() as stack:
-                for item in patches:
-                    stack.enter_context(item)
-                stack.enter_context(
-                    patch.dict(
-                        os.environ,
-                        {"GEMINI_API_KEY": "", "CLIPFORGE_NO_MODEL_API": "0"},
-                    )
-                )
-                with self.assertRaisesRegex(control.ControlError, "GEMINI_API_KEY"):
-                    controller.run(Path(temporary) / "output")
 
     def test_stage_timings_are_printed_from_the_returned_receipt(self):
         timings = {"cache_restore": 0.25, "setup": 12.5, "pipeline": 300.75}
         with tempfile.TemporaryDirectory() as temporary:
             controller, events, patches = self._pipeline_controller(
                 temporary,
-                self._result_restore("complete", "complete", timings=timings),
+                self._result_restore("asr_part_complete", "complete", timings=timings),
             )
             with contextlib.ExitStack() as stack:
                 for item in patches:
@@ -751,7 +564,7 @@ class ControlTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             controller, events, patches = self._pipeline_controller(
                 temporary,
-                self._result_restore("complete", "complete"),
+                self._result_restore("asr_part_complete", "complete"),
             )
             patches[-1] = patch.object(
                 controller,
@@ -1086,25 +899,18 @@ class LostAllocationReplyTests(unittest.TestCase):
 
 
 class PoolTests(unittest.TestCase):
-    def test_pipeline_default_pool_order(self):
+    def test_asr_default_pool_tries_t4_then_l4(self):
         from colab_cli.client import Accelerator, Shape
 
-        for shape in (None, "", "high-ram", "standard"):
-            with (
-                self.subTest(shape=shape),
-                patch.dict(os.environ, {"CLIPFORGE_COLAB_POOL": ""}),
-            ):
-                os.environ.pop("CLIPFORGE_COLAB_SHAPE", None)
-                if shape is not None:
-                    os.environ["CLIPFORGE_COLAB_SHAPE"] = shape
-                t4_shapes = [Shape.HIGH_RAM, Shape.STANDARD]
-                if shape == "standard":
-                    t4_shapes.reverse()
-                self.assertEqual(
-                    control.colab_pool("pipeline"),
-                    [(Accelerator.T4, item) for item in t4_shapes]
-                    + [(Accelerator.L4, Shape.STANDARD)],
-                )
+        with patch.dict(os.environ, {"CLIPFORGE_COLAB_POOL": ""}):
+            self.assertEqual(
+                control.colab_pool("asr"),
+                [
+                    (Accelerator.T4, Shape.HIGH_RAM),
+                    (Accelerator.T4, Shape.STANDARD),
+                    (Accelerator.L4, Shape.STANDARD),
+                ],
+            )
 
     def start_stage(self, refusals, pool=None):
         from colab_cli.client import Accelerator, TooManyAssignmentsError
@@ -1152,11 +958,11 @@ class PoolTests(unittest.TestCase):
                 pass
         return controller, calls, Accelerator
 
-    def test_clip_rendering_tries_the_cheapest_runtime_first(self):
+    def test_clip_rendering_requires_gpu_first(self):
         controller, calls, Accelerator = self.start_stage(refusals=0)
-        self.assertEqual(calls, [(Accelerator.NONE, "HIGH_RAM")])
+        self.assertEqual(calls, [(Accelerator.L4, "STANDARD")])
         state = controller.state()
-        self.assertEqual((state["accelerator"], state["shape"]), ("NONE", "HIGH_RAM"))
+        self.assertEqual((state["accelerator"], state["shape"]), ("L4", "STANDARD"))
         self.assertEqual(state["stage"]["clip_index"], "2")
 
     def test_a_412_refusal_moves_to_the_next_runtime_in_the_pool(self):
@@ -1164,9 +970,9 @@ class PoolTests(unittest.TestCase):
         self.assertEqual(
             calls,
             [
-                (Accelerator.NONE, "HIGH_RAM"),
-                (Accelerator.NONE, "STANDARD"),
+                (Accelerator.L4, "STANDARD"),
                 (Accelerator.T4, "HIGH_RAM"),
+                (Accelerator.T4, "STANDARD"),
             ],
         )
         self.assertEqual(controller.state()["status"], "allocated")
@@ -1241,7 +1047,7 @@ class AllocationWaitTests(unittest.TestCase):
     ):
         from colab_cli.client import TooManyAssignmentsError
 
-        for mode in ("pipeline", "audio-stage", "prepare-cache"):
+        for mode in ("asr", "audio-stage"):
             with self.subTest(mode=mode):
                 pool = control.colab_pool(mode)
                 self.client.assign.side_effect = [
@@ -1379,7 +1185,7 @@ class RenderedChecksumTests(unittest.TestCase):
         with patch.object(control, "ReleaseBundles") as bundles:
             bundles.return_value.restore.return_value = True
             with contextlib.redirect_stdout(io.StringIO()):
-                controller.collect(record, output, False, "test-only", None)
+                controller.collect(record, output, False, "test-only")
 
     def test_extra_ledger_and_quality_checksums_are_accepted(self):
         with tempfile.TemporaryDirectory() as temporary:

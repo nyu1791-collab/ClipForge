@@ -1,5 +1,5 @@
 # Versions used in the verified full-audio run; updates require a new live probe.
 yt-dlp[default,curl-cffi]==2026.10.21.233146.dev0
 bgutil-ytdlp-pot-provider==2.0.2
-curl-cffi==0.13.0
+curl-cffi==0.15.0
 yt-dlp-ejs==0.8.0

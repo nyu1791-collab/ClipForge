@@ -1,10 +1,12 @@
 """Bounded Kick VOD HLS retrieval with original-stream time coordinates."""
 
+import contextlib
 import hashlib
 import json
 import math
 import os
 import re
+import shutil
 import ssl
 import tempfile
 import threading
@@ -404,7 +406,7 @@ class KickVOD:
 
     def _fetch(self, session, url, limit, *, segment=False, lock=None):
         last_status, forbidden_retried = "unavailable", False
-        for attempt in range(1, 5):
+        for attempt in range(1, 2):
             try:
                 return self._fetch_once(session, url, limit, segment=segment, lock=lock)
             except HTTPFailure as error:
@@ -417,7 +419,7 @@ class KickVOD:
                     break
             except self._transport_errors:
                 delay = (5, 15, 45)[min(attempt - 1, 2)]
-            if attempt == 4:
+            if attempt == 1:
                 break
             time.sleep(delay)
         raise PipelineError(
@@ -467,18 +469,18 @@ class KickVOD:
                         self._budget.notify_all()
 
     def playlist(self, quality):
-        if quality not in {"lowest", "preview", "720p", "1080p", "best"}:
+        if quality not in {"lowest", "preview", "360p", "720p", "1080p", "best"}:
             raise PipelineError("invalid rendition")
         ordered = sorted(self.variants, key=lambda v: (v["height"], v["bandwidth"]))
         if quality == "lowest":
             selected = ordered[0]
         elif quality == "preview":
-            videos = [v for v in ordered if v["height"] > 0]
+            videos = [v for v in ordered if 0 < v["height"] <= 360]
             if not videos:
                 raise PipelineError("no video rendition for topic review")
             selected = videos[0]
         else:
-            cap = {"720p": 720, "1080p": 1080, "best": 100000}[quality]
+            cap = {"360p": 360, "720p": 720, "1080p": 1080, "best": 100000}[quality]
             eligible = [v for v in ordered if 0 < v["height"] <= cap]
             if not eligible:
                 raise PipelineError("requested quality unavailable")
@@ -495,8 +497,8 @@ class KickVOD:
         return segments, selected["height"]
 
     def prefetch(self, start, end):
-        """Cache the 1080p segments of one interval over HTTP only; retrieve() then reuses them."""
-        segments, _ = self.playlist("1080p")
+        """Cache the production 360p interval over HTTP; retrieve() reuses these segments."""
+        segments, _ = self.playlist("360p")
         duration = segments[-1]["end"]
         if (
             not all(math.isfinite(v) for v in (start, end))
@@ -528,6 +530,10 @@ class KickVOD:
             return future
 
     def _download_segments(self, segments):
+        return list(self._stream_segments(segments))
+
+    def _stream_segments(self, segments):
+        """Yield each segment's cached path in stream order, as soon as it is ready."""
         # Keep only one worker-width window queued, and stop it on any failure,
         # including failures later than the next segment in stream order.
         pending, paths, failures = {}, {}, []
@@ -541,9 +547,9 @@ class KickVOD:
                         for other in pending:
                             other.cancel()
 
-        index = 0
+        index = emitted = 0
         try:
-            while pending or index < len(segments):
+            while emitted < len(segments):
                 with self._lock:
                     if failures:
                         raise failures[0]
@@ -555,7 +561,16 @@ class KickVOD:
                         index += 1
                         if failures:
                             raise failures[0]
-                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    ready = []
+                    while emitted < len(segments) and segments[emitted]["url"] in paths:
+                        ready.append(paths.pop(segments[emitted]["url"]))
+                        emitted += 1
+                    waiting = list(pending)
+                for path in ready:
+                    yield path
+                if emitted == len(segments):
+                    break
+                done, _ = wait(waiting, return_when=FIRST_COMPLETED)
                 with self._lock:
                     for future in done:
                         completed(future)
@@ -568,7 +583,6 @@ class KickVOD:
                 for future in pending:
                     future.cancel()
             raise
-        return [paths[s["url"]] for s in segments]
 
     def _segment(self, url):
         key = hashlib.sha256(url.encode()).hexdigest()
@@ -598,6 +612,76 @@ class KickVOD:
         write_json(receipt, {"sha256": digest(path), "bytes": len(body)})
         return path
 
+    def _retrieve_audio(self, output, selected, start, end, duration, height):
+        with tempfile.TemporaryDirectory(dir=output.parent, prefix=".fetch-") as temp:
+            product = Path(temp) / "audio.m4a"
+            fetched_duration = self._extract_streamed(
+                selected, product, start - selected[0]["start"], end - start
+            )
+            if (
+                not math.isfinite(fetched_duration)
+                or abs(fetched_duration - (end - start)) > 0.3
+            ):
+                raise PipelineError("fetched duration mismatch")
+            # Hard-link creates the final name exclusively; partial files remain private.
+            os.link(product, output)
+        return {
+            "source_url": self.url,
+            "source_start": start,
+            "source_end": end,
+            "source_duration": duration,
+            "rendition_height": height,
+            "audio_only": True,
+            "segment_count": len(selected),
+            "sha256": digest(output),
+        }
+
+    def _extract_streamed(self, segments, product, start, duration):
+        """Decode segments in order while they download, through a named pipe: no full TS copy."""
+        fifo = product.parent / "audio.ts"
+        os.mkfifo(fifo, 0o600)
+        failures = []
+
+        def write():
+            stream = self._stream_segments(segments)
+            try:
+                with open(fifo, "wb") as pipe:
+                    for path in stream:
+                        with path.open("rb") as source:
+                            shutil.copyfileobj(source, pipe, 1024 * 1024)
+            except BrokenPipeError:
+                # The reader stops once it has the requested interval; that is not a failure.
+                pass
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                stream.close()
+
+        thread = threading.Thread(target=write, name="kick-audio-writer", daemon=True)
+        thread.start()
+
+        def release():
+            # A writer waiting for a reader that never opened the FIFO is released here.
+            if thread.is_alive():
+                with contextlib.suppress(OSError):
+                    open(fifo, "rb").close()
+            thread.join(timeout=60)
+            if thread.is_alive():
+                raise PipelineError("audio download did not stop")
+
+        try:
+            fetched = extract_audio(fifo, product, start, duration)
+        except BaseException:
+            release()
+            if failures:
+                # A failed download is the cause of any decode error after it.
+                raise failures[0] from None
+            raise
+        release()
+        if failures:
+            raise failures[0]
+        return fetched
+
     def retrieve(self, output, start=0.0, end=None, quality="720p", audio_only=False):
         output = Path(output).resolve()
         if output.exists():
@@ -617,6 +701,8 @@ class KickVOD:
             selected[-1]["end"] - selected[0]["start"] if remux else end - start
         )
         output.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if audio_only:
+            return self._retrieve_audio(output, selected, start, end, duration, height)
         with tempfile.TemporaryDirectory(dir=output.parent, prefix=".fetch-") as temp:
             ts = Path(temp) / "input.ts"
             with ts.open("wb") as dest:
@@ -704,32 +790,27 @@ class KickVOD:
                     "-c:a",
                     "aac",
                 ]
-            if audio_only:
-                fetched_duration = extract_audio(
-                    ts, product, start - selected[0]["start"], end - start
-                )
-            else:
+            process(
+                [*command, "-movflags", "+faststart", str(product)],
+                timeout=max(300, (end - start) * 10),
+                stage="remux" if remux else "render",
+            )
+            info = json.loads(
                 process(
-                    [*command, "-movflags", "+faststart", str(product)],
-                    timeout=max(300, (end - start) * 10),
-                    stage="remux" if remux else "render",
-                )
-                info = json.loads(
-                    process(
-                        [
-                            "ffprobe",
-                            "-v",
-                            "error",
-                            "-show_entries",
-                            "format=duration",
-                            "-of",
-                            "json",
-                            product,
-                        ],
-                        stage="probe",
-                    ).stdout
-                )
-                fetched_duration = float(info["format"]["duration"])
+                    [
+                        "ffprobe",
+                        "-v",
+                        "error",
+                        "-show_entries",
+                        "format=duration",
+                        "-of",
+                        "json",
+                        product,
+                    ],
+                    stage="probe",
+                ).stdout
+            )
+            fetched_duration = float(info["format"]["duration"])
             if (
                 not math.isfinite(fetched_duration)
                 or abs(fetched_duration - covered_duration) > 0.3

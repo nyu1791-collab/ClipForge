@@ -107,7 +107,6 @@ def test_reuse_stages_new_identity_without_network_or_transport(
             "--settings-json",
             json.dumps(
                 {
-                    "gemini_model": "manual-no-api",
                     "asr_parts": 2,
                     "youtube_audio_transport": "warp",
                 }

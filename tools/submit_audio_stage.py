@@ -13,15 +13,18 @@ import sys
 import tempfile
 
 from clipforge import github_cli
+from clipforge.release_transfer import download_stage
 from clipforge.storage import PipelineError, digest, write_json
 
-REPO = "nyu1791-collab/ai-model-workers"
-BRANCH = "main"
+REPO = os.environ.get("CLIPFORGE_ACTIONS_REPO", "nyu1791-collab/ClipForge")
+STORAGE_REPO = "nyu1791-collab/ai-model-workers"
+BRANCH = "fix/pr18-verified-transfer"
 WORKFLOW = "clipforge-stages.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
-MAX_ACTIVE = {"colab-auto": 4}
+MAX_ACTIVE = {"colab-auto": 1}
+MAX_BATCH_CLIPS = 10
 RESULT_STATUS = {
-    "previews": "awaiting_video_review",
+    "previews": "selection_ready",
     "render": "complete",
     "merge": "complete",
 }
@@ -33,7 +36,7 @@ REQUIRED_FILES = {
     "topics.json",
 }
 MAX_LISTED_FILES = 500
-DEFAULT_CONFIG_FILE = "config.landscape.example.json"
+DEFAULT_CONFIG_FILE = "config.landscape-long-preview.example.json"
 CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
 SUBMIT_OPTIONS = (
     "stage",
@@ -170,7 +173,7 @@ def verify_stage_artifact(root, identity, stage, request, run_id):
     returned = json.loads((root / "request-receipt.json").read_text())
     hashes = returned.get("sha256")
     status = expected_status(stage, request)
-    delivery_only = stage == "merge" or status == "clip_rendered"
+    delivery_only = stage in {"render", "merge"}
     if (
         returned.get("request_id") != identity
         or returned.get("source_ref") != request["source_ref"]
@@ -446,18 +449,7 @@ def collect(identity, destination):
         prefix=".clipforge-collect-", dir=destination.parent
     ) as temporary:
         staging = Path(temporary) / "result"
-        gh(
-            "run",
-            "download",
-            str(run_id),
-            "--repo",
-            REPO,
-            "--name",
-            "clipforge-result-" + identity,
-            "--dir",
-            str(staging),
-            timeout=300,
-        )
+        download_stage(run_id, "clipforge-result-" + identity, staging, gh)
         count = verify_stage_artifact(staging, identity, stage, request, run_id)
         if destination.exists() or destination.is_symlink():
             raise AudioStageError(
@@ -484,17 +476,14 @@ CROP_ANCHORS = ("auto", "left", "center", "right")
 
 
 def require_video_review(value):
-    """Reject unapproved drafts before any render request is prepared or dispatched."""
+    """Require a usable selection JSON without a separate video-approval gate."""
     clips = value.get("clips") if isinstance(value, dict) else None
     if (
         not isinstance(clips, list)
         or not clips
-        or any(
-            not isinstance(row, dict) or row.get("video_reviewed") is not True
-            for row in clips
-        )
+        or any(not isinstance(row, dict) for row in clips)
     ):
-        raise AudioStageError("each selected topic requires video review")
+        raise AudioStageError("selected topics must be JSON objects")
     # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
     if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
         raise AudioStageError("crop_anchor must be auto, left, center or right")
@@ -505,10 +494,24 @@ def require_video_review(value):
             type(floor) not in (int, float) or not 0 <= floor <= 0.32
         ):
             raise AudioStageError("caption_floor must be from 0 to 0.32")
+    for row in clips:
+        edits = row.get("caption_edits", [])
+        if not isinstance(edits, list) or any(
+            not isinstance(e, dict)
+            or set(e) != {"at", "from", "to"}
+            or type(e["at"]) not in (int, float)
+            or not 0 <= e["at"] <= 1800
+            or not isinstance(e["from"], str)
+            or not 0 < len(e["from"]) <= 100
+            or not isinstance(e["to"], str)
+            or len(e["to"]) > 100
+            for e in edits
+        ):
+            raise AudioStageError("caption_edits must list at, from and to")
 
 
 def clip_indices(args, worker):
-    """The clip numbers to request: one request per clip when rendering in parallel."""
+    """One GPU owns the reviewed batch; clip-index remains for a targeted repair."""
     if args.clips is not None and args.clip_index is not None:
         raise AudioStageError("use either --clips or --clip-index")
     if args.stage != "render" and (args.clips or args.clip_index):
@@ -518,11 +521,11 @@ def clip_indices(args, worker):
             raise AudioStageError("clip index must be 1 to 20")
         return [args.clip_index]
     if args.clips is not None:
-        if not 1 <= args.clips <= MAX_ACTIVE["colab-auto"] or worker != "colab-auto":
+        if not 5 <= args.clips <= MAX_BATCH_CLIPS or worker != "colab-auto":
             raise AudioStageError(
-                "parallel clips need --worker colab-auto and 1 to 4 clips"
+                "batch rendering needs --worker colab-auto and 5 to 10 clips"
             )
-        return list(range(1, args.clips + 1))
+        return [None]
     return [None]
 
 
@@ -585,7 +588,7 @@ def main(argv=None):
         help="render on the hosted runner (default) or on Colab runtimes",
     )
     parser.add_argument(
-        "--clips", type=int, help="render clips 1..N as separate parallel requests"
+        "--clips", type=int, help="render N selected clips in one GPU batch"
     )
     parser.add_argument("--clip-index", type=int, help="render only this clip")
     parser.add_argument(
@@ -652,7 +655,11 @@ def main(argv=None):
         if review is None:
             raise AudioStageError("render requires reviewed topic intervals")
         require_video_review(review)
-    worker = args.worker or "cpu"
+        if args.clips is not None and args.clips != len(review["clips"]):
+            raise AudioStageError("--clips must match the number of selected clips")
+    worker = args.worker or ("colab-auto" if args.stage == "render" else "cpu")
+    if args.stage == "render" and worker != "colab-auto":
+        raise AudioStageError("render requires the Parakeet GPU/NVENC production route")
     indices = clip_indices(args, worker)
     part_runs = args.part_runs or ""
     if (args.stage == "merge") != bool(part_runs) or (
@@ -693,7 +700,7 @@ def main(argv=None):
         "part_runs": part_runs,
         "config_file": config_file,
     }
-    if len(base["review_json"].encode()) > 32768:
+    if len(base["review_json"].encode()) > 60000:
         raise AudioStageError("review metadata is oversized")
     requests = []
     for index in indices:
@@ -717,7 +724,7 @@ def main(argv=None):
                 )
         if gh("api", "user", "--jq", ".login").strip() != "nyu1791-collab":
             raise AudioStageError("the approved owner connection is required")
-        if not gh("api", "repos/" + REPO, "--jq", ".private").strip() == "true":
+        if not gh("api", "repos/" + STORAGE_REPO, "--jq", ".private").strip() == "true":
             raise AudioStageError("audio stages require the private worker repository")
         runs = json.loads(
             gh(

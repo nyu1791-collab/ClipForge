@@ -5,17 +5,12 @@ Results carry topic IDs, flags and numbers. Transcript text is read in memory
 and is never returned, printed or logged.
 """
 
-import argparse
 import bisect
-import json
 import math
-from pathlib import Path
 import re
 import statistics
-import sys
 import unicodedata
 
-from .storage import PipelineError
 
 EDGE_START_SECONDS = 120
 EDGE_END_SECONDS = 180
@@ -41,7 +36,6 @@ PENALTY = {
     "edge": 0.1,
     "greeting": 0.2,
     "repetition": 0.5,
-    "profanity": 0.5,
     "duplicate": 0.2,
 }
 # Loudness is a light tiebreak: a bump adds at most VOLUME_WEIGHT to the base score,
@@ -96,16 +90,6 @@ def _stream_duration(analysis, topics):
     if duration is not None and duration > 0:
         return duration
     return max((topic["end"] for topic in topics), default=0.0)
-
-
-def _terms(profanity_terms):
-    terms = set()
-    for term in profanity_terms:
-        if not isinstance(term, str):
-            raise ValueError("profanity terms must be strings")
-        if term.strip():
-            terms.add(term.strip())
-    return frozenset(terms)
 
 
 def _repeat_max(text):
@@ -261,7 +245,7 @@ def _chat_bump(index, topic):
     }
 
 
-def _hint(topic, duration, terms, volume_score=None):
+def _hint(topic, duration, volume_score=None):
     text = topic["text"]
     start, end = topic["start"], topic["end"]
     length = end - start
@@ -270,9 +254,6 @@ def _hint(topic, duration, terms, volume_score=None):
     greeting = greeting_hits >= GREETING_MIN_HITS
     repeat_max = _repeat_max(text)
     repetition = repeat_max >= REPEAT_MIN_COUNT
-    profanity = None
-    if terms is not None:
-        profanity = any(term in text for term in terms)
     speech_ratio = _speech_ratio(topic)
     if length > 0:
         chars = len(re.sub(r"\s", "", text))
@@ -288,7 +269,6 @@ def _hint(topic, duration, terms, volume_score=None):
         "edge": edge,
         "greeting": greeting,
         "repetition": repetition,
-        "profanity": profanity is True,
     }
     penalty = sum(PENALTY[name] for name, flagged in flags.items() if flagged)
     return {
@@ -300,25 +280,21 @@ def _hint(topic, duration, terms, volume_score=None):
         "greeting_hits": greeting_hits,
         "repetition": repetition,
         "repeat_max": repeat_max,
-        "profanity": profanity,
         "speech_ratio": round(speech_ratio, 3),
         "chars_per_second": round(chars_per_second, 2),
         "score": round(base - penalty, 4),
     }
 
 
-def hint_topics(analysis, *, profanity_terms=None, volume=None, chat=None):
+def hint_topics(analysis, *, volume=None, chat=None):
     """Return flags and numbers per topic, highest score first.
 
-    ``profanity_terms`` is an optional iterable of terms supplied by the caller.
-    When omitted, the profanity flag is ``None`` (not judged).
     ``volume`` is an optional list of ``(seconds, dB)`` one-second windows on the
     topic clock. When omitted, the ranking is exactly the text and speech ranking.
     """
     rows = analysis.get("topics") if isinstance(analysis, dict) else None
     if not isinstance(rows, list):
         raise ValueError("topics list is required")
-    terms = None if profanity_terms is None else _terms(profanity_terms)
     index = _volume_index(volume)
     chat_index = _chat_index(chat)
     topics = [_topic(row) for row in rows]
@@ -326,7 +302,7 @@ def hint_topics(analysis, *, profanity_terms=None, volume=None, chat=None):
     hints = []
     for topic in topics:
         bump, volume_score = _volume_bump(index, topic)
-        hint = _hint(topic, duration, terms, volume_score)
+        hint = _hint(topic, duration, volume_score)
         if index is not None:
             hint["volume_bump_db"] = None if bump is None else round(bump, 2)
             hint["volume_score"] = round(volume_score, 4)
@@ -358,47 +334,3 @@ def hint_topics(analysis, *, profanity_terms=None, volume=None, chat=None):
     if chat_index is not None:
         result["chat_weight"] = CHAT_WEIGHT
     return result
-
-
-def _read_terms(path):
-    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("topics_json", type=Path)
-    parser.add_argument(
-        "--profanity-dict",
-        type=Path,
-        help="UTF-8 file with one term per line; omitted means not judged",
-    )
-    parser.add_argument(
-        "--audio",
-        type=Path,
-        help="audio file whose loudness adds a small bump score; its time 0 is the topic clock's 0",
-    )
-    parser.add_argument(
-        "--chat-windows",
-        type=Path,
-        help="private JSON list of observed [source second, message count] windows",
-    )
-    args = parser.parse_args(argv)
-    try:
-        analysis = json.loads(args.topics_json.read_text(encoding="utf-8"))
-        terms = _read_terms(args.profanity_dict) if args.profanity_dict else None
-        volume = None
-        if args.audio:
-            from .audio_volume import loudness_series
-
-            volume = loudness_series(args.audio)
-        chat = json.loads(args.chat_windows.read_text()) if args.chat_windows else None
-        result = hint_topics(analysis, profanity_terms=terms, volume=volume, chat=chat)
-    except (OSError, ValueError, KeyError, TypeError, PipelineError):
-        print("topic hints failed: invalid input", file=sys.stderr)
-        return 1
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

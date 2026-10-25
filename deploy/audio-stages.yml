@@ -1,286 +1,355 @@
-name: ClipForge audio-first stages
-run-name: ClipForge ${{ inputs.request_id }}
-on:
-  workflow_dispatch:
-    inputs:
-      request_id:
-        type: string
-        required: true
-      input_tag:
-        type: string
-        required: true
-      source_ref:
-        type: string
-        required: true
-      audio_stage:
-        type: choice
-        options: [previews, render, merge]
-        required: true
-      previous_run_id:
-        type: string
-        required: true
-      previous_request_id:
-        type: string
-        required: true
-      review_json:
-        type: string
-        default: ''
-      worker:
-        description: Hosted CPU runner, or a Colab runtime from the cheapest-first pool (render only)
-        type: choice
-        options: [cpu, colab-auto]
-        default: cpu
-      clip_index:
-        description: Render only this reviewed clip (1-20); empty renders every clip
-        type: string
-        default: ''
-      part_runs:
-        description: For merge, comma-separated RUN_ID:REQUEST_ID of the clip renders
-        type: string
-        default: ''
-      config_file:
-        description: Committed config.NAME.example.json at source_ref (render; merge uses the parts' file)
-        type: string
-        default: 'config.landscape.example.json'
-permissions:
-  contents: write
-  actions: read
-# Colab clip renders each own a runtime, so they run side by side; hosted stages run in turn.
-concurrency:
-  group: ${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}
-  cancel-in-progress: false
-jobs:
-  audio-stage:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'cpu' 
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    env:
-      SOURCE_REF: ${{ inputs.source_ref }}
-      REQUEST_ID: ${{ inputs.request_id }}
-      INPUT_TAG: ${{ inputs.input_tag }}
-      AUDIO_STAGE: ${{ inputs.audio_stage }}
-      PREVIOUS_RUN: ${{ inputs.previous_run_id }}
-      PREVIOUS_REQUEST: ${{ inputs.previous_request_id }}
-      REVIEW_JSON: ${{ inputs.review_json }}
-      CLIP_INDEX: ${{ inputs.clip_index }}
-      PART_RUNS: ${{ inputs.part_runs }}
-      CONFIG_FILE: ${{ inputs.config_file }}
-      CPU_PACKAGES: ffmpeg fontconfig fonts-noto-cjk libcairo2
-      PYTHONUNBUFFERED: '1'
-    steps:
-      - name: Validate private stage identities
-        run: |
-          python3 - <<'PY'
-          import os,re,json,pathlib
-          for key,length in [('SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:
-              assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])
-          assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']
-          assert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])
-          assert os.environ['AUDIO_STAGE'] in {'previews','render','merge'}
-          assert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])
-          parts=os.environ['PART_RUNS']
-          assert (os.environ['AUDIO_STAGE']=='merge')==bool(parts)
-          assert parts=='' or re.fullmatch(r'[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}',parts)
-          assert re.fullmatch(r'config\.[a-z0-9-]+\.example\.json',os.environ['CONFIG_FILE'])
-          text=os.environ['REVIEW_JSON']
-          assert len(text.encode())<=32768
-          if os.environ['AUDIO_STAGE']=='render':
-              assert text
-          text=text or '{}'
-          json.loads(text)
-          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'
-          path.write_text(text)
-          path.chmod(0o600)
-          PY
-      - uses: actions/checkout@v4
-        with:
-          repository: nyu1791-collab/ClipForge
-          ref: ${{ inputs.source_ref }}
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install pinned uv
-        run: python -m pip install uv==0.12.23
-      - name: Prepare CPU package cache
-        if: inputs.audio_stage != 'merge'
-        id: debs
-        run: |
-          mkdir -p "$RUNNER_TEMP/clipforge-debs"
-          package_hash=$(printf '%s' "$CPU_PACKAGES" | sha256sum | cut -d' ' -f1)
-          printf 'key=debs-%s-%s-%s\n' "$ImageOS" "$ImageVersion" "$package_hash" >> "$GITHUB_OUTPUT"
-      - name: Restore CPU package archives
-        if: inputs.audio_stage != 'merge'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/clipforge-debs/*.deb
-          key: ${{ steps.debs.outputs.key }}
-      - name: Install missing CPU media tools and fonts
-        timeout-minutes: 10
-        if: inputs.audio_stage != 'merge'
-        run: |
-          missing=()
-          for package in $CPU_PACKAGES; do
-            if [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" != 'install ok installed' ]; then
-              missing+=("$package")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            cache="$RUNNER_TEMP/clipforge-debs"
-            options=(-y --no-install-recommends -o "Dir::Cache::archives=$cache" -o APT::Keep-Downloaded-Packages=true)
-            if ! sudo apt-get install --no-download "${options[@]}" "${missing[@]}"; then
-              sudo apt-get update -qq
-              sudo apt-get install "${options[@]}" "${missing[@]}"
-            fi
-          fi
-      - name: Install Python stage dependencies
-        run: |
-          uv sync --locked --extra media-fetch --no-dev
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Reuse verified ASR and execute only the requested stage
-        env:
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "$AUDIO_STAGE" = merge ]; then
-            # The clip renders are verified private artifacts; merge checks every hash again.
-            uv run --no-sync python tools/run_audio_stage.py --stage merge \
-              --part-runs "$PART_RUNS" --previous-request "$PREVIOUS_REQUEST" \
-              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" --output artifacts/audio-stage \
-              --config "$CONFIG_FILE"
-          else
-            set -- --previous-run "$PREVIOUS_RUN" --previous-request "$PREVIOUS_REQUEST" \
-              --request-id "$REQUEST_ID" --source-ref "$SOURCE_REF" \
-              --review-file "$RUNNER_TEMP/review.json" --output artifacts/audio-stage \
-              --config "$CONFIG_FILE"
-            if [ -n "$CLIP_INDEX" ]; then set -- "$@" --clip-index "$CLIP_INDEX"; fi
-            uv run --no-sync python tools/run_audio_stage.py --stage "$AUDIO_STAGE" "$@"
-          fi
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: clipforge-result-${{ inputs.request_id }}
-          path: artifacts/audio-stage/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: warn
-  colab-render:
-    if: github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 100
-    env:
-      CLIPFORGE_SOURCE_REF: ${{ inputs.source_ref }}
-      REQUEST_ID: ${{ inputs.request_id }}
-      INPUT_TAG: ${{ inputs.input_tag }}
-      AUDIO_STAGE: ${{ inputs.audio_stage }}
-      PREVIOUS_RUN: ${{ inputs.previous_run_id }}
-      PREVIOUS_REQUEST: ${{ inputs.previous_request_id }}
-      CLIP_INDEX: ${{ inputs.clip_index }}
-      REVIEW_JSON: ${{ inputs.review_json }}
-      CONFIG_FILE: ${{ inputs.config_file }}
-      PYTHONUNBUFFERED: '1'
-    steps:
-      - name: Validate the clip render request
-        run: |
-          python3 - <<'PY'
-          import os,re,json,pathlib
-          if os.environ['AUDIO_STAGE'] != 'render':
-              raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')
-          for key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:
-              assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])
-          assert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']
-          assert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])
-          assert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])
-          assert re.fullmatch(r'config\.[a-z0-9-]+\.example\.json',os.environ['CONFIG_FILE'])
-          text=os.environ['REVIEW_JSON']
-          assert text and len(text.encode())<=32768
-          json.loads(text)
-          path=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'
-          path.write_text(text)
-          path.chmod(0o600)
-          PY
-      - uses: actions/checkout@v4
-        with:
-          repository: nyu1791-collab/ClipForge
-          ref: ${{ inputs.source_ref }}
-          path: clipforge-source
-          persist-credentials: false
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: '0.12.23'
-          enable-cache: true
-          cache-dependency-glob: clipforge-source/tools/colab-control-requirements.txt
-      - name: Install the locked Google Colab control SDK
-        id: control
-        run: |
-          uv venv "$RUNNER_TEMP/colab-control" --python 3.12
-          uv pip install --python "$RUNNER_TEMP/colab-control/bin/python" --require-hashes \
-            -r clipforge-source/tools/colab-control-requirements.txt
-      - name: Create the private transfer release for this clip
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --target main \
-            --title "$INPUT_TAG" --latest=false \
-            --notes 'Temporary private ClipForge clip transfer. Deleted after collection.'
-      - name: Allocate the cheapest runtime the account grants
-        env:
-          COLAB_ADC_JSON: ${{ secrets.COLAB_ADC_JSON }}
-        run: |
-          REVIEW_FILE="$RUNNER_TEMP/review.json" "$RUNNER_TEMP/colab-control/bin/python" \
-            clipforge-source/tools/colab_actions.py start --mode audio-stage
-      - name: Render on Colab and retrieve verified private outputs
-        env:
-          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py run
-      - name: Release and verify removal of the runtime
-        if: always() && steps.control.outcome == 'success'
-        run: |
-          "$RUNNER_TEMP/colab-control/bin/python" clipforge-source/tools/colab_actions.py stop
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: clipforge-result-${{ inputs.request_id }}
-          path: ${{ runner.temp }}/clipforge-out/
-          compression-level: 0
-          retention-days: 7
-          if-no-files-found: warn
-      - name: Delete the private transfer release
-        id: input-cleanup
-        timeout-minutes: 10
-        if: always()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        # Uses only the preinstalled gh, so cleanup still runs when checkout or setup failed.
-        run: |
-          if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then
-            echo 'Unexpected temporary input tag; nothing was deleted.' >&2
-            exit 1
-          fi
-          if [ "$(gh api "repos/$GITHUB_REPOSITORY" --jq .private)" != true ]; then
-            echo 'The worker repository must remain private; nothing was deleted.' >&2
-            exit 1
-          fi
-          if gh release view "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release delete "$INPUT_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
-            echo 'Temporary private transfer release deleted.'
-          else
-            echo 'No temporary private transfer release remains.'
-          fi
-      - name: Report a transfer release that could not be deleted
-        timeout-minutes: 5
-        if: always() && steps.input-cleanup.outcome != 'success'
-        run: |
-          echo "::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG."
-          {
-            echo '### Temporary private transfer remains'
-            echo "The release \`$INPUT_TAG\` could not be confirmed deleted. Delete it with \`tools/submit_job.py --cleanup-tag $INPUT_TAG\`."
-          } >> "$GITHUB_STEP_SUMMARY"
+{
+  "name": "ClipForge audio-first stages",
+  "run-name": "ClipForge ${{ inputs.request_id }}",
+  "permissions": {
+    "contents": "write",
+    "actions": "read"
+  },
+  "concurrency": {
+    "group": "${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "audio-stage": {
+      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'cpu'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 90,
+      "env": {
+        "SOURCE_REF": "${{ inputs.source_ref }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "INPUT_TAG": "${{ inputs.input_tag }}",
+        "AUDIO_STAGE": "${{ inputs.audio_stage }}",
+        "PREVIOUS_RUN": "${{ inputs.previous_run_id }}",
+        "PREVIOUS_REQUEST": "${{ inputs.previous_request_id }}",
+        "REVIEW_JSON": "${{ inputs.review_json }}",
+        "CLIP_INDEX": "${{ inputs.clip_index }}",
+        "PART_RUNS": "${{ inputs.part_runs }}",
+        "CONFIG_FILE": "${{ inputs.config_file }}",
+        "CPU_PACKAGES": "ffmpeg fontconfig fonts-noto-cjk libcairo2",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_TOPIC_MODEL": "gemini-3.8-flash",
+        "CLIPFORGE_VERTEX_PROJECT": "project-fdadb4dd-cb77-4270-9cd"
+      },
+      "steps": [
+        {
+          "name": "Select a compatible production source",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
+          },
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "timeout-minutes": 1
+        },
+        {
+          "name": "Validate private stage identities",
+          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nfor key,length in [('SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['AUDIO_STAGE'] in {'previews','render','merge'}\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nparts=os.environ['PART_RUNS']\nassert (os.environ['AUDIO_STAGE']=='merge')==bool(parts)\nassert parts=='' or re.fullmatch(r'[0-9]{1,20}:[a-f0-9]{32}(,[0-9]{1,20}:[a-f0-9]{32}){0,19}',parts)\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=os.environ['REVIEW_JSON']\nassert len(text.encode())<=60000\nif os.environ['AUDIO_STAGE']=='render':\n    assert text\ntext=text or '{}'\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.11"
+          }
+        },
+        {
+          "name": "Install pinned uv",
+          "run": "python -m pip install uv==0.12.23"
+        },
+        {
+          "name": "Prepare CPU package cache",
+          "if": "inputs.audio_stage == 'render'",
+          "id": "debs",
+          "run": "mkdir -p \"$RUNNER_TEMP/clipforge-debs\"\npackage_hash=$(printf '%s' \"$CPU_PACKAGES\" | sha256sum | cut -d' ' -f1)\nprintf 'key=debs-%s-%s-%s\\n' \"$ImageOS\" \"$ImageVersion\" \"$package_hash\" >> \"$GITHUB_OUTPUT\"\n"
+        },
+        {
+          "name": "Restore CPU package archives",
+          "if": "inputs.audio_stage == 'render'",
+          "uses": "actions/cache@v4",
+          "with": {
+            "path": "${{ runner.temp }}/clipforge-debs/*.deb",
+            "key": "${{ steps.debs.outputs.key }}"
+          }
+        },
+        {
+          "name": "Install missing CPU media tools and fonts",
+          "timeout-minutes": 10,
+          "if": "inputs.audio_stage == 'render'",
+          "run": "missing=()\nfor package in $CPU_PACKAGES; do\n  if [ \"$(dpkg-query -W -f='${Status}' \"$package\" 2>/dev/null || true)\" != 'install ok installed' ]; then\n    missing+=(\"$package\")\n  fi\ndone\nif [ \"${#missing[@]}\" -gt 0 ]; then\n  cache=\"$RUNNER_TEMP/clipforge-debs\"\n  options=(-y --no-install-recommends -o \"Dir::Cache::archives=$cache\" -o APT::Keep-Downloaded-Packages=true)\n  if ! sudo apt-get install --no-download \"${options[@]}\" \"${missing[@]}\"; then\n    sudo apt-get update -qq\n    sudo apt-get install \"${options[@]}\" \"${missing[@]}\"\n  fi\nfi\n"
+        },
+        {
+          "name": "Install audio metadata tool only if absent",
+          "run": "if ! command -v ffprobe >/dev/null 2>&1; then sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends ffmpeg; fi",
+          "if": "inputs.audio_stage == 'previews'"
+        },
+        {
+          "name": "Install Python stage dependencies",
+          "run": "if [ \"$AUDIO_STAGE\" = render ]; then uv sync --locked --extra media-fetch --no-dev; else uv sync --locked --no-dev; fi"
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version": "22"
+          },
+          "if": "inputs.audio_stage == 'render'"
+        },
+        {
+          "name": "Connect the dedicated Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "token_format": "access_token",
+            "access_token_lifetime": "900s",
+            "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
+            "create_credentials_file": false,
+            "export_environment_variables": false
+          },
+          "if": "inputs.audio_stage == 'previews'"
+        },
+        {
+          "name": "Execute the requested stage with saved ASR",
+          "env": {
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
+            "GH_TOKEN": "${{ github.token }}",
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}"
+          },
+          "run": "if [ \"$AUDIO_STAGE\" = merge ]; then\n  # The clip renders are verified private artifacts; merge checks every hash again.\n  uv run --no-sync python tools/run_audio_stage.py --stage merge \\\n    --part-runs \"$PART_RUNS\" --previous-request \"$PREVIOUS_REQUEST\" \\\n    --request-id \"$REQUEST_ID\" --source-ref \"$SOURCE_REF\" --output artifacts/audio-stage \\\n    --config \"$CONFIG_FILE\"\nelse\n  set -- --previous-run \"$PREVIOUS_RUN\" --previous-request \"$PREVIOUS_REQUEST\" \\\n    --request-id \"$REQUEST_ID\" --source-ref \"$SOURCE_REF\" \\\n    --review-file \"$RUNNER_TEMP/review.json\" --output artifacts/audio-stage \\\n    --config \"$CONFIG_FILE\"\n  if [ -n \"$CLIP_INDEX\" ]; then set -- \"$@\" --clip-index \"$CLIP_INDEX\"; fi\n  uv run --no-sync python tools/run_audio_stage.py --stage \"$AUDIO_STAGE\" \"$@\"\nfi\n"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "if": "always() && inputs.result_store != 'release'",
+          "with": {
+            "name": "clipforge-result-${{ inputs.request_id }}",
+            "path": "artifacts/audio-stage/",
+            "compression-level": 0,
+            "retention-days": 7,
+            "if-no-files-found": "warn"
+          }
+        },
+        {
+          "name": "Save private stage output",
+          "if": "always() && inputs.result_store == 'release'",
+          "timeout-minutes": 10,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "PYTHONPATH": "${{ github.workspace }}/src",
+            "RESULT_DIRECTORY": "${{ github.workspace }}/artifacts/audio-stage",
+            "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
+          },
+          "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+        },
+        {
+          "name": "Keep Gemini failure timing without another generation",
+          "if": "failure()",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "receipt=\"artifacts/audio-stage/vertex-selection-receipt.json\"\nif [ -f \"$receipt\" ]; then\n  gh release create \"clipforge-vertex-failure-$GITHUB_RUN_ID\" \"$receipt\" --repo \"$GITHUB_REPOSITORY\" --latest=false --title \"Gemini failure $GITHUB_RUN_ID\" --notes 'One attempt; no retry. Private timing and usage record.'\nfi\n"
+        }
+      ],
+      "permissions": {
+        "contents": "write",
+        "actions": "read",
+        "id-token": "write"
+      }
+    },
+    "colab-render": {
+      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 100,
+      "env": {
+        "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "INPUT_TAG": "${{ inputs.input_tag }}",
+        "AUDIO_STAGE": "${{ inputs.audio_stage }}",
+        "PREVIOUS_RUN": "${{ inputs.previous_run_id }}",
+        "PREVIOUS_REQUEST": "${{ inputs.previous_request_id }}",
+        "CLIP_INDEX": "${{ inputs.clip_index }}",
+        "REVIEW_JSON": "${{ inputs.review_json }}",
+        "CONFIG_FILE": "${{ inputs.config_file }}",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_PUBLIC_CACHE": "off",
+        "RESULT_STORE": "${{ inputs.result_store }}"
+      },
+      "steps": [
+        {
+          "name": "Select a compatible production source",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
+          },
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "timeout-minutes": 1
+        },
+        {
+          "name": "Validate the clip render request",
+          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=60000\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "path": "clipforge-source",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "with": {
+            "version": "0.12.23",
+            "enable-cache": true,
+            "cache-dependency-glob": "clipforge-source/tools/colab-control-requirements.txt"
+          }
+        },
+        {
+          "name": "Install the locked Google Colab control SDK",
+          "id": "control",
+          "run": "uv venv \"$RUNNER_TEMP/colab-control\" --python 3.12\nuv pip install --python \"$RUNNER_TEMP/colab-control/bin/python\" --require-hashes \\\n  -r clipforge-source/tools/colab-control-requirements.txt\n"
+        },
+        {
+          "name": "Create the private transfer release for this clip",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "gh release create \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" --target main \\\n  --title \"$INPUT_TAG\" --latest=false \\\n  --notes 'Temporary private ClipForge clip transfer. Deleted after collection.'\n",
+          "if": "inputs.result_store != 'release'"
+        },
+        {
+          "name": "Allocate the cheapest runtime the account grants",
+          "env": {
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
+          },
+          "run": "REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  clipforge-source/tools/colab_actions.py start --mode audio-stage\n"
+        },
+        {
+          "name": "Render on Colab and publish final private outputs",
+          "env": {
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py run\n"
+        },
+        {
+          "name": "Release and verify removal of the runtime",
+          "if": "always() && steps.control.outcome == 'success'",
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py stop\n"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "if": "always() && inputs.result_store != 'release'",
+          "with": {
+            "name": "clipforge-result-${{ inputs.request_id }}",
+            "path": "${{ runner.temp }}/clipforge-out/",
+            "compression-level": 0,
+            "retention-days": 7,
+            "if-no-files-found": "warn"
+          }
+        },
+        {
+          "name": "Delete the private transfer release",
+          "id": "input-cleanup",
+          "timeout-minutes": 10,
+          "if": "inputs.result_store != 'release' && always()",
+          "continue-on-error": true,
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then\n  echo 'Unexpected temporary input tag; nothing was deleted.' >&2\n  exit 1\nfi\nif [ \"$(gh api \"repos/$GITHUB_REPOSITORY\" --jq .private)\" != true ]; then\n  echo 'The worker repository must remain private; nothing was deleted.' >&2\n  exit 1\nfi\nif gh release view \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then\n  gh release delete \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n  echo 'Temporary private transfer release deleted.'\nelse\n  echo 'No temporary private transfer release remains.'\nfi\n"
+        },
+        {
+          "name": "Report a transfer release that could not be deleted",
+          "timeout-minutes": 5,
+          "if": "always() && inputs.result_store != 'release' && steps.input-cleanup.outcome != 'success'",
+          "run": "echo \"::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG.\"\n{\n  echo '### Temporary private transfer remains'\n  echo \"The release \\`$INPUT_TAG\\` could not be confirmed deleted. Delete it with \\`tools/submit_job.py --cleanup-tag $INPUT_TAG\\`.\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+        }
+      ]
+    }
+  },
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "request_id": {
+          "type": "string",
+          "required": true
+        },
+        "input_tag": {
+          "type": "string",
+          "required": true
+        },
+        "source_ref": {
+          "type": "string",
+          "required": true
+        },
+        "audio_stage": {
+          "type": "choice",
+          "options": [
+            "previews",
+            "render",
+            "merge"
+          ],
+          "required": true
+        },
+        "previous_run_id": {
+          "type": "string",
+          "required": true
+        },
+        "previous_request_id": {
+          "type": "string",
+          "required": true
+        },
+        "review_json": {
+          "type": "string",
+          "default": ""
+        },
+        "worker": {
+          "description": "Hosted CPU runner, or a Colab runtime from the cheapest-first pool (render only)",
+          "type": "choice",
+          "options": [
+            "cpu",
+            "colab-auto"
+          ],
+          "default": "colab-auto"
+        },
+        "clip_index": {
+          "description": "Render only this reviewed clip (1-20); empty renders every clip",
+          "type": "string",
+          "default": ""
+        },
+        "part_runs": {
+          "description": "For merge, comma-separated RUN_ID:REQUEST_ID of the clip renders",
+          "type": "string",
+          "default": ""
+        },
+        "config_file": {
+          "description": "Committed config.NAME.example.json at source_ref (render; merge uses the parts' file)",
+          "type": "string",
+          "default": "config.landscape.example.json"
+        },
+        "result_store": {
+          "description": "Temporary private output transfer; the final delivery is Google Drive",
+          "type": "choice",
+          "options": [
+            "artifact",
+            "release"
+          ],
+          "default": "release"
+        }
+      }
+    }
+  }
+}

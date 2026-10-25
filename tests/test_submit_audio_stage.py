@@ -6,10 +6,19 @@ import runpy
 import shutil
 import subprocess
 import sys
+from unittest.mock import Mock
 
 import pytest
 
 from clipforge.storage import PipelineError
+
+
+def _validation_run(job):
+    return next(
+        step["run"]
+        for step in job["steps"]
+        if "os.environ['CONFIG_FILE']" in step.get("run", "")
+    )
 
 
 @pytest.fixture
@@ -30,6 +39,7 @@ def stage_submitter(tmp_path, monkeypatch):
         "configs": {
             "config.landscape.example.json",
             "config.landscape-chat.example.json",
+            "config.landscape-long-preview.example.json",
         },
     }
 
@@ -483,6 +493,37 @@ def test_collect_delivery_without_analysis_files(delivery_collector, tmp_path):
     assert control["downloads"] == 1
 
 
+def test_colab_published_clip_can_be_collected_and_detects_changed_report(
+    collector, tmp_path, monkeypatch
+):
+    module, control, state = build_delivery_collector(collector, "render")
+    monkeypatch.syspath_prepend(str(Path("tools").resolve()))
+    import colab_remote_job
+
+    root = control["artifact"]
+    request = json.loads((state / "request.json").read_text())
+    bundles = Mock()
+    bundles.publish.side_effect = lambda *args: module.verify_stage_artifact(
+        root, COLLECT_REQUEST, "render", request, RUN_ID
+    )
+    assert colab_remote_job.publish_result(
+        bundles,
+        {
+            "input_tag": "clipforge-input-" + COLLECT_REQUEST,
+            "request_id": COLLECT_REQUEST,
+            "source_ref": SOURCE_REF,
+        },
+        root,
+        {"mode": "audio-stage", "source_ref": SOURCE_REF, "status": "clip_rendered"},
+        {},
+    )
+    bundles.publish.assert_called_once()
+    assert module.main(collect_args(tmp_path / "collected")) == 0
+    (root / "gpu-receipt.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        module.verify_stage_artifact(root, COLLECT_REQUEST, "render", request, RUN_ID)
+
+
 @pytest.mark.parametrize("clip_index", ["1", "3"])
 def test_collect_single_clip_rejects_requested_index_mismatch(
     collector, tmp_path, clip_index
@@ -653,9 +694,7 @@ def test_collect_verifies_listed_files_and_writes_new_directory(
 
 
 @pytest.mark.parametrize("clip_index", [None, ""])
-def test_collect_full_render_keeps_analysis_requirements(
-    collector, tmp_path, clip_index
-):
+def test_collect_full_render_requires_completed_clips(collector, tmp_path, clip_index):
     module, control, state = collector
     for name in ("request.json", "receipt.json"):
         path = state / name
@@ -672,14 +711,8 @@ def test_collect_full_render_keeps_analysis_requirements(
     receipt.update(audio_stage="render", status="complete")
     receipt["sha256"]["manifest.json"] = sha(manifest_path)
     receipt_path.write_text(json.dumps(receipt))
-    assert module.main(collect_args(tmp_path / "collected")) == 0
-    (root / "audio.m4a").unlink()
-    del receipt["sha256"]["audio.m4a"]
-    receipt_path.write_text(json.dumps(receipt))
-    destination = tmp_path / "incomplete"
-    with pytest.raises(RuntimeError, match="omits required files"):
-        module.main(collect_args(destination))
-    assert not destination.exists()
+    with pytest.raises(RuntimeError, match="omits required rendered clips"):
+        module.main(collect_args(tmp_path / "collected"))
 
 
 def test_collect_rejects_sha_mismatch(collector, tmp_path):
@@ -848,22 +881,24 @@ def test_render_rejects_empty_or_malformed_reviews(stage_submitter, tmp_path, re
     assert not control["posts"]
 
 
-def test_parallel_clips_dispatch_one_colab_request_per_clip(stage_submitter, tmp_path):
+def test_batch_clips_dispatch_one_colab_request_for_all_clips(
+    stage_submitter, tmp_path
+):
     module, control, args = stage_submitter
     control["runs"] = [{"workflow": module.WORKFLOW, "status": "completed"}]
     argv = render_args(args, tmp_path, "--worker", "colab-auto", "--clips", "3")
     assert module.main(argv) == 0
     inputs = [post["inputs"] for post in control["posts"]]
-    assert [i["clip_index"] for i in inputs] == ["1", "2", "3"]
+    assert [i["clip_index"] for i in inputs] == [""]
     assert {i["worker"] for i in inputs} == {"colab-auto"}
-    assert len({i["request_id"] for i in inputs}) == 3
+    assert len({i["request_id"] for i in inputs}) == 1
 
 
 @pytest.mark.parametrize(
     "extra, active",
     [
-        (("--worker", "colab-auto", "--clips", "3"), 2),
-        (("--worker", "colab-auto", "--clips", "5"), 0),
+        (("--worker", "colab-auto", "--clips", "4"), 2),
+        (("--worker", "colab-auto", "--clips", "6"), 0),
         (("--clips", "2"), 0),
         (("--clips", "2", "--clip-index", "1"), 0),
     ],
@@ -904,13 +939,11 @@ def local_merge_env(collector, tmp_path, monkeypatch):
             (clip / name).write_bytes(b"synthetic clip")
         quality = {"passed": True, "failures": [], "warnings": [], "metrics": {}}
         (clip / "quality.json").write_text(json.dumps(quality))
-        (clip / "ledger.json").write_text("[]")
         row = {
             "directory": f"delivery/clips/clip-{index:03}",
             "key": "synthetic-render-key",
-            "ledger": [],
             "quality": quality,
-            "media": {"width": 1920, "height": 1080, "audio_sample_rate": 48000},
+            "media": {"width": 640, "height": 360, "audio_sample_rate": 48000},
             "sha256": {path.name: sha(path) for path in clip.iterdir()},
         }
         manifest = {
@@ -1141,7 +1174,7 @@ def test_deployment_yaml_loads(path):
     import yaml
 
     workflow = yaml.safe_load(path.read_text())
-    assert workflow[True]["workflow_dispatch"] is not None
+    assert workflow.get(True, workflow.get("on"))["workflow_dispatch"] is not None
     assert workflow["jobs"]
 
 
@@ -1171,7 +1204,7 @@ def test_audio_stage_workflow_validates_worker_stage_combination(
         "RUNNER_TEMP": str(tmp_path),
     }.items():
         monkeypatch.setenv(name, value)
-    code = job["steps"][0]["run"].split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+    code = _validation_run(job).split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
     if worker == "colab-auto" and stage != "render":
         with pytest.raises(
             SystemExit, match="worker=colab-auto requires audio_stage=render"
@@ -1181,20 +1214,6 @@ def test_audio_stage_workflow_validates_worker_stage_combination(
     else:
         exec(compile(code, "stage-validation", "exec"), {})
         assert json.loads((tmp_path / "review.json").read_text())["clips"]
-
-
-def test_video_workflow_uses_only_hosted_cpu_or_automatic_colab():
-    import yaml
-
-    workflow = yaml.safe_load(Path("deploy/clipforge.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert inputs["worker"]["options"] == ["colab-auto", "cpu"]
-    assert inputs["worker"]["default"] == "colab-auto"
-    for name, worker in (("clip", "cpu"), ("colab-auto", "colab-auto")):
-        job = workflow["jobs"][name]
-        assert job["runs-on"] == "ubuntu-24.04"
-        assert f"inputs.worker == '{worker}'" in job["if"]
-    assert workflow["jobs"]["clip"]["env"]["CLIPFORGE_REQUIRE_CUDA"] == "0"
 
 
 CHAT_CONFIG = "config.landscape-chat.example.json"
@@ -1245,7 +1264,7 @@ def test_config_file_is_part_of_the_request_identity_and_receipt(
     assert module.main(render) == 0
     assert module.main([*render, "--config-file", CHAT_CONFIG]) == 0
     default_inputs, chat_inputs = (post["inputs"] for post in control["posts"])
-    assert default_inputs["config_file"] == "config.landscape.example.json"
+    assert default_inputs["config_file"] == "config.landscape-long-preview.example.json"
     assert chat_inputs["config_file"] == CHAT_CONFIG
     assert default_inputs["request_id"] != chat_inputs["request_id"]
     receipt_path = tmp_path / ".local/state/clipforge" / chat_inputs["request_id"]
@@ -1343,12 +1362,12 @@ def test_audio_stage_workflow_passes_a_validated_config_file_to_both_paths():
     import yaml
 
     workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
     assert inputs["config_file"]["default"] == "config.landscape.example.json"
     for name in ("audio-stage", "colab-render"):
         job = workflow["jobs"][name]
         assert job["env"]["CONFIG_FILE"] == "${{ inputs.config_file }}"
-        assert "os.environ['CONFIG_FILE']" in job["steps"][0]["run"]
+        assert "os.environ['CONFIG_FILE']" in _validation_run(job)
     steps = workflow["jobs"]["audio-stage"]["steps"]
     run = next(
         step["run"]
@@ -1373,7 +1392,7 @@ def test_audio_stage_workflow_rejects_unlisted_config_files(
 
     workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
     code = (
-        workflow["jobs"]["audio-stage"]["steps"][0]["run"]
+        _validation_run(workflow["jobs"]["audio-stage"])
         .split("python3 - <<'PY'\n", 1)[1]
         .rsplit("\nPY", 1)[0]
     )
@@ -1446,3 +1465,49 @@ def test_review_refuses_a_caption_floor_out_of_range_before_dispatch():
             module.require_video_review(
                 {"clips": [{"video_reviewed": True, "caption_floor": floor}]}
             )
+
+
+def test_caption_edits_are_sent_with_the_review_and_malformed_ones_refused(
+    stage_submitter, tmp_path
+):
+    module, control, args = stage_submitter
+    argv = render_args(args, tmp_path)
+    clip = {
+        "video_reviewed": True,
+        "caption_edits": [{"at": "1", "from": "a", "to": "b"}],
+    }
+    (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
+    with pytest.raises(RuntimeError, match="caption_edits"):
+        module.main(argv)
+    assert not control["posts"]
+    clip["caption_edits"] = [{"at": 1.0, "from": "a", "to": "b"}]
+    (tmp_path / "review.json").write_text(json.dumps({"clips": [clip] * 3}))
+    module.main(argv)
+    review = json.loads(control["posts"][0]["inputs"]["review_json"])
+    assert review["clips"][0]["caption_edits"] == clip["caption_edits"]
+
+
+def test_collect_batch_without_retransmitting_input_media(collector, tmp_path):
+    module, control, state = build_delivery_collector(collector, "merge")
+    for name in ("request.json", "receipt.json"):
+        path = state / name
+        value = json.loads(path.read_text())
+        value.update(audio_stage="render", clip_index="", part_runs="")
+        path.write_text(json.dumps(value))
+    path = control["artifact"] / "request-receipt.json"
+    value = json.loads(path.read_text())
+    value.update(audio_stage="render", previous_run_id=PREVIOUS_RUN, clip_index="")
+    path.write_text(json.dumps(value))
+    destination = tmp_path / "batch-output"
+    assert module.main(collect_args(destination)) == 0
+    assert len(list(destination.glob("delivery/clips/clip-*/video.mp4"))) == 2
+    assert not (destination / "audio.m4a").exists()
+
+
+@pytest.fixture(autouse=True)
+def legacy_artifact_repository(monkeypatch):
+    """These fixtures describe older runs without Release stage transfers."""
+    from clipforge import release_transfer
+
+    monkeypatch.setattr(release_transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(release_transfer, "release", lambda tag: None)

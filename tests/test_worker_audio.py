@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from clipforge import audio_first, pipeline, signals, worker_audio as worker
+from clipforge import audio_first, worker_audio as worker
 from clipforge.models import Settings
 from clipforge.storage import PipelineError, digest, write_json
 
@@ -22,7 +22,7 @@ def previous_analysis(tmp_path, monkeypatch):
     settings = Settings.model_validate_json(
         Path("config.landscape.example.json").read_text()
     )
-    key = pipeline.transcript_identity(audio, info, settings)
+    key = "e" * 64
     write_json(
         previous / "transcripts" / (key + ".json"),
         {
@@ -56,17 +56,13 @@ def previous_analysis(tmp_path, monkeypatch):
     ]
     receipt = {
         "request_id": IDENTITY,
+        "source_ref": "a" * 40,
         "status": "topics_allocated",
         "audio_source_url": URL,
         "sha256": {name: digest(previous / name) for name in files},
     }
     write_json(previous / "request-receipt.json", receipt)
     monkeypatch.setattr(audio_first, "audio_info", lambda path: info)
-    monkeypatch.setattr(
-        signals,
-        "transcribe",
-        lambda *a, **k: pytest.fail("a downstream stage started ASR"),
-    )
     return previous, tmp_path / "output", settings
 
 
@@ -111,7 +107,7 @@ def test_preview_stage_cannot_retranscribe_or_fetch_full_audio(
         worker, "KickVOD", lambda *a, **k: SimpleNamespace(close=lambda: None)
     )
 
-    def previews(vod, root, settings, analysis_result=None):
+    def previews(vod, root, settings, analysis_result=None, ranking=None):
         calls.append(analysis_result)
         return {
             "status": "awaiting_video_review",
@@ -143,7 +139,7 @@ def test_later_stages_keep_how_the_analysis_recognised(previous_analysis, monkey
     monkeypatch.setattr(
         audio_first,
         "previews",
-        lambda vod, root, settings, analysis_result=None: {
+        lambda vod, root, settings, analysis_result=None, ranking=None: {
             "status": "awaiting_video_review",
             "previews": [],
             "analysis_key": analysis_result[0]["analysis_key"],
@@ -173,7 +169,7 @@ def test_previews_write_unapproved_drafts_before_receipting(
     )
     monkeypatch.setattr(worker, "preview_contact_sheet", lambda *a: None)
 
-    def previews(vod, root, settings, analysis_result=None):
+    def previews(vod, root, settings, analysis_result=None, ranking=None):
         analysis, _ = analysis_result
         rows = []
         for topic in analysis["topics"]:
@@ -241,13 +237,7 @@ def test_previews_write_unapproved_drafts_before_receipting(
 def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(
     previous_analysis, monkeypatch
 ):
-    from clipforge import signals
-
     previous, output, settings = previous_analysis
-    settings.threads = 4
-    monkeypatch.setattr(
-        signals, "transcribe", lambda *a, **k: pytest.fail("recognition started")
-    )
 
     class Reached(Exception):
         pass
@@ -265,14 +255,9 @@ def test_recorded_transcript_is_reused_after_asr_changes_without_recognition(
 def test_missing_recorded_transcript_stops_before_network_or_recognition(
     previous_analysis, monkeypatch
 ):
-    from clipforge import signals
-
     previous, output, settings = previous_analysis
     for path in (previous / "transcripts").glob("*.json"):
         path.unlink()
-    monkeypatch.setattr(
-        signals, "transcribe", lambda *a, **k: pytest.fail("recognition started")
-    )
     monkeypatch.setattr(
         worker,
         "KickVOD",
@@ -530,7 +515,7 @@ def merge_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         worker.landscape,
         "summarize_delivery",
-        lambda manifest, output, expected: {
+        lambda manifest, output, expected, height=1080: {
             "status": "complete",
             "rendered_clips": len(manifest["rendered"]),
         },
@@ -694,7 +679,7 @@ def test_merge_main_fetches_only_successful_clip_runs_for_their_request(
     monkeypatch.setattr(
         worker.landscape,
         "summarize_delivery",
-        lambda manifest, output, expected: {"status": "complete"},
+        lambda manifest, output, expected, height=1080: {"status": "complete"},
     )
     monkeypatch.setattr(
         worker.landscape,
@@ -841,6 +826,9 @@ def test_clip_index_is_limited_to_one_to_twenty(clip_index):
 def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
     previous_analysis, monkeypatch
 ):
+    from clipforge import hardware
+
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: True)
     previous, output, settings = previous_analysis
     monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
     monkeypatch.setattr(worker, "gh", _previous_gh(previous))
@@ -850,6 +838,7 @@ def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
 
     def render(vod, root, settings, review, analysis_result=None, only=None):
         assert only == 2
+        assert settings.height == 360 and settings.video_encoder == "h264_nvenc"
         for directory in ("ranges", "previews"):
             (root / directory).mkdir(exist_ok=True)
             (root / directory / "synthetic.mp4").write_bytes(b"intermediate")
@@ -1274,3 +1263,12 @@ def test_main_rejects_a_configuration_outside_the_repository_root(
     )
     assert code == 1
     assert "invalid private worker identity" in capsys.readouterr().err
+
+
+@pytest.fixture(autouse=True)
+def legacy_artifact_repository(monkeypatch):
+    """These fixtures describe older runs without Release stage transfers."""
+    from clipforge import release_transfer
+
+    monkeypatch.setattr(release_transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(release_transfer, "release", lambda tag: None)

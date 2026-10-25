@@ -6,7 +6,7 @@ import unicodedata
 
 import pysubs2
 
-from . import fonts, silence
+from . import fonts
 from .asr_cleanup import clean_segments
 from .caption_breaks import (
     NO_LINE_START,
@@ -193,8 +193,8 @@ def space_after_marks(tokens):
     return spaced
 
 
-def collect_tokens(transcript, clip, keep):
-    """Word tokens (start, end, text) in output time, split where cuts removed audio."""
+def collect_tokens(transcript, clip):
+    """Word tokens (start, end, text), clipped and offset to the selected interval."""
     tokens, approximate = [], 0
     japanese = transcript.language == "ja"
     for segment in transcript.segments:
@@ -212,30 +212,7 @@ def collect_tokens(transcript, clip, keep):
             a, b = max(clip.start, word.start), min(clip.end, word.end)
             if b <= a:
                 continue
-            spans = (
-                silence.pieces(a, b, keep)
-                if keep
-                else [(a - clip.start, b - clip.start, 0)]
-            )
-            if not spans:
-                continue
-            if len(spans) > 1:
-                # A token crossing a cut: divide its text in proportion to kept time.
-                approximate += 1
-                total = sum(e - s for s, e, _ in spans) or 1.0
-                cursor = 0
-                for index, (s, e, _) in enumerate(spans):
-                    if index == len(spans) - 1:
-                        stop = len(text)
-                    else:
-                        stop = cursor + round(len(text) * (e - s) / total)
-                    part = text[cursor:stop]
-                    cursor = stop
-                    if part:
-                        tokens.append((s, e, part))
-            else:
-                s, e, _ = spans[0]
-                tokens.append((s, e, text))
+            tokens.append((a - clip.start, b - clip.start, text))
     tokens.sort(key=lambda token: (token[0], token[1]))
     tokens = join_phrases(tokens)
     if japanese:
@@ -401,7 +378,7 @@ def with_breaks(text, breaks):
 
 def group_text(tokens, measure, line_px, mode):
     """ASS text for one group; mode is plain, karaoke (fill) or sequential (reveal)."""
-    # Whisper keeps a leading space on English words. Strip caption edges before tags
+    # Recognised English words can keep a leading space. Strip caption edges before tags
     # are added, matching SRT's serialization without changing spacing between words.
     tokens = list(tokens)
     if tokens:
@@ -472,9 +449,9 @@ def margin_px(height):
     return round(MARGIN * scale(height))
 
 
-def heading_size(title, frame_width, height, font_path):
+def heading_size(title, frame_width, height, font_path, scale_factor=1.0):
     """Largest size that fits one line, shrinking to 60%; longer titles must be shortened."""
-    base = round(height * 0.07)
+    base = round(height * 0.07 * scale_factor)
     limit = frame_width - 2 * margin_px(height)
     for size in range(base, max(12, round(base * 0.6)) - 1, -1):
         if fonts.Measure(font_path, size).width(title) <= limit:
@@ -502,12 +479,12 @@ def _caption_layout(settings):
     return font_size, font_path, measure, line_px, landscape
 
 
-def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscape):
+def _caption_groups(transcript, clip, settings, measure, line_px, landscape):
     """Caption groups, their (start, end) in ms on the output timeline, and cleanup info."""
-    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
+    duration = clip.end - clip.start
     segments, cleanup = clean_segments(transcript.segments)
     caption_transcript = transcript.model_copy(update={"segments": segments})
-    tokens, approximate = collect_tokens(caption_transcript, clip, keep)
+    tokens, approximate = collect_tokens(caption_transcript, clip)
     tokens, split = split_long(tokens, measure, line_px)
     approximate += split
     groups = group(tokens, measure, line_px)
@@ -541,11 +518,11 @@ def _caption_groups(transcript, clip, settings, keep, measure, line_px, landscap
     return groups, spans, plain_lines, cleanup, approximate
 
 
-def event_spans(transcript, clip, settings, keep=None):
+def event_spans(transcript, clip, settings):
     """Start and end in seconds, on the output timeline, of each caption create() writes."""
     _, _, measure, line_px, landscape = _caption_layout(settings)
     groups, spans, _, _, _ = _caption_groups(
-        transcript, clip, settings, keep, measure, line_px, landscape
+        transcript, clip, settings, measure, line_px, landscape
     )
     return [(start / 1000, end / 1000) for start, end in spans]
 
@@ -557,7 +534,7 @@ def _lift_margins(lifts, count, height):
     return [round(lift * height) for lift in lifts]
 
 
-def create(transcript, clip, directory, settings, keep=None, credits=None, lifts=None):
+def create(transcript, clip, directory, settings, lifts=None):
     """Write captions.ass and captions.srt.
 
     lifts gives the bottom margin of each caption as a share of the height, in order. Given lifts
@@ -570,7 +547,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
     numerator, denominator = map(int, settings.aspect.split(":"))
     frame_width = round(height * numerator / denominator / 2) * 2
     font_size, font_path, measure, line_px, landscape = _caption_layout(settings)
-    duration = sum(b - a for a, b in keep) if keep else clip.end - clip.start
+    duration = clip.end - clip.start
     # With the chat panel, text stays in the video area left of the column: the right margin
     # grows by the column width, so ASS centres the text on that area.
     panel = settings.chat_panel_pixels()
@@ -617,7 +594,9 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
     title = getattr(clip, "title", None)
     if settings.heading and title:
         heading_text = safe(title)
-        size = heading_size(heading_text, area, height, font_path)
+        size = heading_size(
+            heading_text, area, height, font_path, settings.heading_scale
+        )
         subtitles.styles["Heading"] = pysubs2.SSAStyle(
             fontname=settings.font,
             fontsize=size,
@@ -626,7 +605,11 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             outline=3,
             shadow=0.5,
             bold=True,
-            alignment=pysubs2.Alignment.TOP_CENTER,
+            alignment=(
+                pysubs2.Alignment.TOP_LEFT
+                if settings.heading_align == "left"
+                else pysubs2.Alignment.TOP_CENTER
+            ),
             marginl=margin,
             marginr=margin_right,
             marginv=round(height * 0.06),
@@ -640,36 +623,8 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             )
         )
 
-    if credits:
-        # Source credits for every image used in the clip; small, bottom-right, never in SRT.
-        credit_size = max(14, round(height * 0.026))
-        subtitles.styles["Credit"] = pysubs2.SSAStyle(
-            fontname=settings.font,
-            fontsize=credit_size,
-            primarycolor=pysubs2.Color(235, 235, 235),
-            outlinecolor=pysubs2.Color(0, 0, 0),
-            outline=1.5,
-            alignment=pysubs2.Alignment.BOTTOM_RIGHT,
-            marginl=margin,
-            marginr=margin_right,
-            # Credits stay on the picture, above the bottom edge of the picture.
-            marginv=band + round(height * 0.015),
-        )
-        credit_text = safe(" / ".join(credits))
-        breaks = wrap_breaks(
-            credit_text, fonts.Measure(font_path, credit_size), area - 2 * margin
-        )
-        subtitles.append(
-            pysubs2.SSAEvent(
-                start=0,
-                end=round(duration * 1000),
-                style="Credit",
-                text=with_breaks(credit_text, breaks),
-            )
-        )
-
     groups, spans, plain_lines, cleanup, approximate = _caption_groups(
-        transcript, clip, settings, keep, measure, line_px, landscape
+        transcript, clip, settings, measure, line_px, landscape
     )
     style = "Sequential" if settings.caption == "sequential" else "Default"
     # Fill always places captions by their own MarginV. Elsewhere, lifts place them only without the
@@ -692,7 +647,7 @@ def create(transcript, clip, directory, settings, keep=None, credits=None, lifts
             event = pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
         subtitles.append(event)
 
-    corpus = "".join(plain_lines) + (heading_text or "") + "".join(credits or [])
+    corpus = "".join(plain_lines) + (heading_text or "")
     missing = fonts.missing_glyphs(font_path, corpus)
 
     ass, srt = directory / "captions.ass", directory / "captions.srt"

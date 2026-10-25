@@ -3,20 +3,18 @@
 Each stage is explicit: acquiring audio never starts ASR or downloads high-quality video.
 """
 
-import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
 import json
+import time
 import math
-import os
 from pathlib import Path
 import re
-import sys
 
 from . import landscape, media, pipeline, topics
-from .kick_media import RANGE_FORMAT, KickVOD
-from .media_sources import canonical, open_source
+from .kick_media import RANGE_FORMAT
+from .media_sources import canonical
 from .models import Transcript
 from .storage import (
     TIME_TOLERANCE,
@@ -69,12 +67,14 @@ def audio_info(path):
     }
 
 
-def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"):
+def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="360p"):
     """A media hash alone cannot establish which original interval it contains."""
     receipt_path = path.with_suffix(path.suffix + ".receipt.json")
     expected = {"source_url": vod.url, "source_start": start, "audio_only": audio_only}
     if not audio_only and quality != "preview":
         expected["media_format"] = RANGE_FORMAT
+    if not audio_only and quality == "360p":
+        expected["requested_quality"] = quality
     if end is not None:
         expected["source_end"] = end
     if path.exists() or receipt_path.exists():
@@ -115,6 +115,8 @@ def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="1080p"
     receipt = vod.retrieve(
         path, start=start, end=end, audio_only=audio_only, quality=quality
     )
+    if not audio_only and quality == "360p":
+        receipt["requested_quality"] = quality
     write_json(receipt_path, receipt)
     return receipt
 
@@ -151,12 +153,6 @@ def discard_transport_cache(vod):
                 path.with_suffix(".json").unlink(missing_ok=True)
 
 
-def analyze(vod, root, settings):
-    acquire(vod, root)
-    source = root / "audio.m4a"
-    return allocate_audio(source, root, settings, vod.url)
-
-
 def allocate_audio(source, root, settings, source_url):
     """Worker entry point for an already acquired audio file; no Kick or video fetch."""
     canonical(source_url)
@@ -169,9 +165,7 @@ def allocate_audio(source, root, settings, source_url):
         update={"transcript_cache": str(root / "transcripts")}
     )
     receipt = {}
-    transcript = Transcript.model_validate(
-        pipeline.transcribe_once(source, info, settings, receipt)
-    )
+    transcript = Transcript.model_validate(pipeline.load_transcript(settings, receipt))
     key = fingerprint(
         {
             "transcript": transcript.model_dump(),
@@ -217,7 +211,7 @@ def allocate_audio(source, root, settings, source_url):
             "duration": info["duration"],
             "topics": rows,
             "selection_method": "local_lexical_cohesion_and_pauses",
-            "semantic_topic_review": "required",
+            "semantic_topic_review": "not_required",
             "video_review_performed": False,
             "model_generation_requests": 0,
         }
@@ -227,12 +221,21 @@ def allocate_audio(source, root, settings, source_url):
     return result, transcript
 
 
-def previews(vod, root, settings, analysis_result=None, topic_ids=None):
-    analysis, _ = (
-        analysis_result if analysis_result is not None else analyze(vod, root, settings)
-    )
+def previews(vod, root, settings, analysis_result, topic_ids=None, ranking=None):
+    """Preview the best candidates first.
+
+    ``ranking`` lists topic IDs from the text, speech and loudness hints, best first. Without
+    it, speech length alone decides, which can drop a strong short candidate.
+    """
+    analysis, _ = analysis_result
+    position = {topic_id: index for index, topic_id in enumerate(ranking or [])}
     ordered = sorted(
-        analysis["topics"], key=lambda row: (-row["speech_seconds"], row["start"])
+        analysis["topics"],
+        key=lambda row: (
+            position.get(row["id"], len(position)),
+            -row["speech_seconds"],
+            row["start"],
+        ),
     )
     if topic_ids is not None:
         available = {row["id"]: row for row in analysis["topics"]}
@@ -305,22 +308,102 @@ def caption_floors(value):
     return floors
 
 
+def caption_edits(value):
+    """The caption edits each reviewed clip requests: [{"at", "from", "to"}, ...]."""
+    rows = []
+    for row in value["clips"]:
+        edits = row.get("caption_edits", [])
+        if not isinstance(edits, list) or any(
+            not isinstance(edit, dict)
+            or set(edit) != {"at", "from", "to"}
+            or type(edit["at"]) not in (int, float)
+            or not math.isfinite(edit["at"])
+            or edit["at"] < 0
+            or not isinstance(edit["from"], str)
+            or not edit["from"]
+            or not isinstance(edit["to"], str)
+            for edit in edits
+        ):
+            raise PipelineError(
+                'caption_edits must be [{"at": seconds, "from": text, "to": text}]'
+            )
+        rows.append(edits)
+    return rows
+
+
+def edited_transcript(transcript, clip_start, edits):
+    """Replace the caption text each edit names near its clip time (seconds).
+
+    The nearest segment within ten seconds that holds the text is changed, and the new
+    text shares the time of the words it replaces. An edit naming no such text is refused,
+    before any video is fetched.
+    """
+    rows = [segment.model_dump() for segment in transcript.segments]
+    for edit in edits:
+        before, after, at = edit["from"], edit["to"], float(edit["at"])
+        lines = [
+            row
+            for row in rows
+            if before in row["text"] and abs(row["start"] - clip_start - at) <= 10
+        ]
+        if not lines:
+            raise PipelineError(f"no caption near {at:.1f} s holds {before!r}")
+        row = min(lines, key=lambda r: abs(r["start"] - clip_start - at))
+        words, offsets, position = row["words"], [], 0
+        for word in words:
+            offsets.append(position)
+            position += len(word["text"])
+        first = row["text"].index(before)
+        last = first + len(before)
+        covered = [
+            i
+            for i, start in enumerate(offsets)
+            if start < last and start + len(words[i]["text"]) > first
+        ]
+        if (
+            not covered
+            or offsets[covered[0]] != first
+            or offsets[covered[-1]] + len(words[covered[-1]]["text"]) != last
+        ):
+            raise PipelineError(f"{before!r} does not start and end on caption words")
+        span_start, span_end = words[covered[0]]["start"], words[covered[-1]]["end"]
+        step = (span_end - span_start) / max(1, len(after))
+        new = [
+            {
+                "text": char,
+                "start": span_start + i * step,
+                "end": span_start + (i + 1) * step,
+            }
+            for i, char in enumerate(after)
+        ]
+        row["words"] = words[: covered[0]] + new + words[covered[-1] + 1 :]
+        row["text"] = row["text"][:first] + after + row["text"][last:]
+        if not row["words"]:
+            rows.remove(row)
+    return Transcript(language=transcript.language, segments=rows)
+
+
 def reviewed_clips(value, analysis, preview, settings):
     if (
         value.get("analysis_key") != analysis["analysis_key"]
         or preview.get("analysis_key") != analysis["analysis_key"]
     ):
         raise PipelineError("video review belongs to a different audio analysis")
-    if not all(row.get("video_reviewed") is True for row in value["clips"]):
-        raise PipelineError("each selected topic requires video review")
     crop_anchors(value)
     caption_floors(value)
+    caption_edits(value)
     cleaned = {
         "clips": [
             {
                 k: v
                 for k, v in row.items()
-                if k not in ("video_reviewed", "crop_anchor", "caption_floor")
+                if k
+                not in (
+                    "video_reviewed",
+                    "crop_anchor",
+                    "caption_floor",
+                    "caption_edits",
+                )
             }
             for row in value["clips"]
         ]
@@ -332,7 +415,10 @@ def reviewed_clips(value, analysis, preview, settings):
         topic = available.get(clip.candidate_id)
         if (
             topic is None
-            or clip.candidate_id not in seen_previews
+            or (
+                preview.get("mode") != "transcript"
+                and clip.candidate_id not in seen_previews
+            )
             or not topic["start"] <= clip.start < clip.end <= topic["end"]
         ):
             raise PipelineError(
@@ -420,10 +506,8 @@ def chat_panel_for_clip(vod, clip, settings):
     }
 
 
-def render(vod, root, settings, review_file, analysis_result=None, only=None):
-    analysis, transcript = (
-        analysis_result if analysis_result is not None else analyze(vod, root, settings)
-    )
+def render(vod, root, settings, review_file, analysis_result, only=None):
+    analysis, transcript = analysis_result
     preview = json.loads((root / "previews.json").read_text())
     value = json.loads(review_file.read_text())
     clips = reviewed_clips(value, analysis, preview, settings)
@@ -431,14 +515,19 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
     floors = caption_floors(value)
     if only is not None and (type(only) is not int or not 1 <= only <= len(clips)):
         raise PipelineError("only must name one reviewed clip by its 1-based number")
-    # Verify all previews before fetching even the first high-quality interval.
+    # Verify all previews before fetching even the first production interval.
     for row in preview["previews"]:
         topic = next(t for t in analysis["topics"] if t["id"] == row["topic_id"])
         target = root / "previews" / (topic["id"] + ".mp4")
         if not target.is_file() or row["receipt"].get("sha256") != digest(target):
             raise PipelineError("reviewed preview changed")
     local_transcripts = [
-        shifted_transcript(transcript, clip.start, clip.end) for clip in clips
+        shifted_transcript(
+            edited_transcript(transcript, clip.start, edits) if edits else transcript,
+            clip.start,
+            clip.end,
+        )
+        for clip, edits in zip(clips, caption_edits(value))
     ]
     output = root / "delivery"
     output.mkdir(exist_ok=True)
@@ -464,9 +553,10 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
     targets = [
         root
         / "ranges"
-        / f"{fingerprint({'start': clip.start, 'end': clip.end, 'media_format': RANGE_FORMAT})}.mp4"
+        / f"{fingerprint({'start': clip.start, 'end': clip.end, 'media_format': RANGE_FORMAT, 'quality': '360p'})}.mp4"
         for clip in clips
     ]
+    wall_started = time.monotonic()
     rows, timings = [], {}
     indexes = range(1, len(clips) + 1) if only is None else [only]
     # The next clip's segments are fetched over HTTP while the current clip is rendered.
@@ -488,14 +578,14 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
             receipt = pipeline.timed(
                 clip_timings,
                 "fetch",
-                lambda: retrieved(vod, target, clip.start, clip.end, quality="1080p"),
+                lambda: retrieved(vod, target, clip.start, clip.end, quality="360p"),
             )
             if index < indexes[-1]:
                 pending = ahead.submit(
                     prefetch_interval, vod, clips[index], targets[index]
                 )
-            if receipt["rendition_height"] < 720:
-                raise PipelineError("selected source video is below 720p")
+            if not 0 < (receipt["rendition_height"] or 0) <= 360:
+                raise PipelineError("selected source video must be at most 360p")
             start_offset = receipt["start_offset"]
             local = clip.model_copy(
                 update={
@@ -545,9 +635,32 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
                 flush=True,
             )
     # Total wall-clock seconds spent waiting, fetching and rendering, summed over clips.
+    timings["wall_seconds"] = round(time.monotonic() - wall_started, 2)
+    timings["wall_clock_sec"] = timings["wall_seconds"]
     timings["total"] = round(
         sum(v for t in timings.values() if isinstance(t, dict) for v in t.values()), 2
     )
+    timings["substep_breakdown"] = {
+        "queue_wait_sec": None,
+        "setup_sec": None,
+        "encode_pipeline_sec": round(
+            sum(row.get("timings", {}).get("encode", 0) for row in rows), 3
+        ),
+        "prefetch_wait_sec": round(
+            sum(
+                t.get("prefetch_wait", 0)
+                for t in timings.values()
+                if isinstance(t, dict)
+            ),
+            3,
+        ),
+        "fetch_sec": round(
+            sum(t.get("fetch", 0) for t in timings.values() if isinstance(t, dict)), 3
+        ),
+        "render_pipeline_sec": round(
+            sum(t.get("render", 0) for t in timings.values() if isinstance(t, dict)), 3
+        ),
+    }
     if only is not None:
         # One clip's part; the whole-delivery summary waits for the merge stage.
         manifest = {
@@ -567,101 +680,22 @@ def render(vod, root, settings, review_file, analysis_result=None, only=None):
         "selection_receipt": {"provider": "manual", "generation_requests": 0},
         "analysis_key": analysis["analysis_key"],
         "selection_sha256": digest(review_file),
-        "video_review_attested": True,
+        "video_review_attested": all(
+            row.get("video_reviewed") is True for row in value["clips"]
+        ),
         "human_review_performed": False,
         "transcript_cache": json.loads((root / "asr-receipt.json").read_text()),
         "timings": timings,
     }
-    summary = landscape.summarize_delivery(manifest, output, settings.clips)
-    summary["topic_content_review"] = "attested_in_selection_file"
+    summary = landscape.summarize_delivery(
+        manifest, output, settings.clips, settings.height
+    )
+    summary["topic_content_review"] = (
+        "attested_in_selection_file"
+        if all(row.get("video_reviewed") is True for row in value["clips"])
+        else "not_performed"
+    )
     summary["reproducibility"] = landscape.code_identity(settings)
     write_json(output / "manifest.json", manifest)
     write_json(output / "e2e-summary.json", summary)
     return summary
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", required=True)
-    parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument(
-        "--stage", choices=("audio", "topics", "previews", "render"), default="audio"
-    )
-    parser.add_argument(
-        "--config", type=Path, default=Path("config.landscape.example.json")
-    )
-    parser.add_argument("--review-file", type=Path)
-    parser.add_argument("--cookies-file", type=Path)
-    args = parser.parse_args(argv)
-    vod = None
-    try:
-        os.umask(0o077)
-        from .models import Settings
-
-        settings = Settings.model_validate_json(args.config.read_text())
-        if (settings.aspect, settings.height, settings.quality_gate) != (
-            "16:9",
-            1080,
-            "strict",
-        ):
-            raise PipelineError("audio-first delivery is landscape with a strict gate")
-        if settings.image_search or settings.table_query or settings.chat_url:
-            raise PipelineError("external lookups must be disabled")
-        canonical(args.url)
-        root = args.workspace.resolve()
-        with exclusive(root):
-            identity = root / "source.json"
-            if identity.exists() and json.loads(identity.read_text()) != {
-                "url": args.url
-            }:
-                raise PipelineError("workspace belongs to another source")
-            write_json(identity, {"url": args.url})
-            vod = open_source(
-                args.url,
-                root / "segments",
-                kick_factory=KickVOD,
-                **({"cookies_file": args.cookies_file} if args.cookies_file else {}),
-                max_bytes=(
-                    settings.max_transport_bytes
-                    if args.stage in {"audio", "topics"}
-                    else settings.max_input_bytes
-                ),
-                max_seconds=settings.max_source_seconds,
-            )
-            if args.stage == "audio":
-                acquire(vod, root)
-                if (
-                    not 0
-                    < (root / "audio.m4a").stat().st_size
-                    <= settings.max_input_bytes
-                ):
-                    raise PipelineError("audio exceeds the input size limit")
-                status = "audio_acquired"
-            elif args.stage == "topics":
-                result, _ = analyze(vod, root, settings)
-                status = result["status"]
-            elif args.stage == "previews":
-                status = previews(vod, root, settings)["status"]
-            else:
-                if args.review_file is None:
-                    raise PipelineError("render requires reviewed intervals")
-                status = render(vod, root, settings, args.review_file)["status"]
-        print(
-            json.dumps(
-                {"status": status, "stage": args.stage, "model_generation_requests": 0}
-            )
-        )
-        return 0
-    except (OSError, ValueError, KeyError, TypeError, PipelineError):
-        print(
-            "Audio-first stage failed; inspect private local records. No model fallback was started.",
-            file=sys.stderr,
-        )
-        return 1
-    finally:
-        if vod is not None:
-            vod.close()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

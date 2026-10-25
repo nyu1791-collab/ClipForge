@@ -1,4 +1,4 @@
-"""Unapproved review drafts from previewed topics; hints do not judge meaning."""
+"""Long-form selections from saved transcript topics without an approval gate."""
 
 from .audio_first import shifted_transcript
 from .storage import PipelineError
@@ -26,8 +26,8 @@ def build_review_draft(
     ``volume_reason`` records why it is missing.
     """
     count = settings.clips if count is None else count
-    if type(count) is not int or not 3 <= count <= 5:
-        raise ValueError("review drafts require 3 to 5 requested clips")
+    if type(count) is not int or not 5 <= count <= 10:
+        raise ValueError("review drafts require 5 to 10 requested clips")
     if previews.get("analysis_key") != analysis["analysis_key"]:
         raise PipelineError("previews belong to a different audio analysis")
     available = {
@@ -38,6 +38,8 @@ def build_review_draft(
         and row.get("status") in (None, "success")
         and not row.get("error")
     }
+    if previews.get("mode") == "transcript":
+        available = {row["id"] for row in analysis["topics"]}
     clips, skipped = [], []
     selected_ids = set()
     ranked = hint_topics(analysis, volume=volume, chat=chat)["topics"]
@@ -67,8 +69,8 @@ def build_review_draft(
                 "candidate_id": topic_id,
                 "start": start,
                 "end": end,
-                "title": "要確認：" + topic_id,
-                "reason": "ヒント順位に基づく下書き。意味・映像は未確認。",
+                "title": "配信の話題：" + topic_id,
+                "reason": "保存済みASRの話題順位から選択。",
                 "confidence": 0.0,
                 "video_reviewed": False,
             }
@@ -79,9 +81,9 @@ def build_review_draft(
     draft = {"analysis_key": analysis["analysis_key"], "clips": clips}
     diagnostics = {
         "analysis_key": analysis["analysis_key"],
-        "status": "awaiting_video_review",
+        "status": "selection_ready",
         "ranking_method": "topic_hints",
-        "semantic_topic_review": "required",
+        "semantic_topic_review": "not_required",
         "human_review_performed": False,
         "transcript_boundary_check": "performed"
         if transcript is not None

@@ -102,15 +102,6 @@ def main(argv=None):
                 "audio_source_url": args.url,
             }
             settings = Settings.model_validate(request["settings"])
-            if (
-                settings.gemini_model != "manual-no-api"
-                or settings.image_search
-                or settings.table_query
-                or settings.chat_url
-            ):
-                raise RuntimeError(
-                    "audio analysis cannot include model calls or external lookups"
-                )
         report["transport"] = settings.youtube_audio_transport
         if (
             settings.youtube_audio_transport == "warp"

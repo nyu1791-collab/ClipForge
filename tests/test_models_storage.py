@@ -28,9 +28,6 @@ def test_invalid_spans(start, end):
 @pytest.mark.parametrize(
     "updates",
     [
-        {"gemini_model": ""},
-        {"gemini_model": "bad\nmodel"},
-        {"gemini_model": "https://example.org/model"},
         {"clips": 0},
         {"clips": 11},
         {"clips": 4, "candidates": 3},
@@ -42,8 +39,6 @@ def test_invalid_spans(start, end):
         {"height": 1000},
         {"framing": "face-track"},
         {"caption": "html"},
-        {"analysis_fps": 0},
-        {"analysis_fps": 6},
         {"max_input_bytes": 0},
         {"max_source_seconds": 43201},
         {"max_transport_bytes": 1023},
@@ -52,7 +47,6 @@ def test_invalid_spans(start, end):
         {"font": "Noto\nInjected"},
         {"font": r"Noto\x"},
         {"font": "Noto,Arial"},
-        {"max_seconds": 180, "analysis_fps": 5, "candidates": 10},
         {"unknown_option": True},
         {"chat_offset_seconds": 301},
     ],
@@ -63,12 +57,11 @@ def test_settings_reject_invalid_configuration(settings, updates):
 
 
 def test_long_source_and_transport_budgets_keep_local_defaults():
-    settings = Settings(gemini_model="manual-no-api")
+    settings = Settings()
     assert settings.max_source_seconds == 3600
     assert settings.max_input_bytes == 1024**3
     assert settings.max_transport_bytes == 6 * 1024**3
     maximum = Settings(
-        gemini_model="manual-no-api",
         max_source_seconds=43200,
         max_transport_bytes=16 * 1024**3,
     )
@@ -287,7 +280,7 @@ def test_caption_scale_and_the_landscape_chat_config_are_valid(settings):
     path = Path(__file__).resolve().parents[1] / "config.landscape-chat.example.json"
     example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
     assert example.chat_panel is True and example.chat_panel_fit == "fill"
-    assert example.silence_cut is False and example.aspect == "16:9"
+    assert example.aspect == "16:9"
 
 
 def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
@@ -330,3 +323,23 @@ def test_chat_panel_fill_is_the_default_and_keeps_the_top_caption_size(settings)
     # Without the chat panel the fit does not change the caption size.
     off = Settings.model_validate({**landscape, "chat_panel": False})
     assert off.caption_font_size() == 52
+
+
+def test_long_topic_example_keeps_topics_long_without_the_chat_panel():
+    path = Path(__file__).resolve().parents[1] / "config.landscape-long.example.json"
+    example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert example.chat_panel is False and example.heading is True
+    assert example.heading_align == "left" and example.heading_scale > 1
+    assert example.topic_min_seconds == 120 and example.max_seconds == 1800
+    assert example.height == 360
+    assert example.caption_scale == 1.6 and example.caption_font_size() == 28
+
+
+def test_review_preview_config_renders_small_and_fast():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "config.landscape-long-preview.example.json"
+    )
+    preview = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    assert preview.height == 360 and preview.encode_preset == "veryfast"
+    assert preview.chat_panel is False and preview.caption_scale == 1.6

@@ -1,106 +1,8 @@
 import pysubs2
 import pytest
 
-from clipforge import caption_breaks, captions, fonts, quality, signals
+from clipforge import caption_breaks, captions, fonts, quality
 from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
-from clipforge.storage import PipelineError
-
-
-def test_chat_filtering_offset_reactions_and_privacy(settings):
-    settings.chat_offset_seconds = -2
-    messages = [
-        {"time_in_seconds": 5, "message": "草", "author": "private-user"},
-        {"time": 8, "message": "ordinary"},
-        {"time": "nan", "message": "lol"},
-        {"time": -9},
-        {"time": 100},
-        None,
-        {"time": "bad"},
-    ]
-    result = signals.chat_signals(30, settings, messages)
-    assert result["status"] == "provided"
-    assert result["events"] == [
-        {"time": 3.0, "weight": 2.0},
-        {"time": 6.0, "weight": 1.0},
-    ]
-    assert "private-user" not in str(result)
-    assert "ordinary" not in str(result)
-
-
-@pytest.mark.parametrize("supplied", [{}, "text", [None] * 100001])
-def test_chat_rejects_invalid_supplied_data(settings, supplied):
-    with pytest.raises(PipelineError):
-        signals.chat_signals(30, settings, supplied)
-
-
-def test_optional_chat_failure_is_explicit(settings, monkeypatch):
-    import chat_downloader
-
-    class Broken:
-        def get_chat(self, *args, **kwargs):
-            assert kwargs["max_attempts"] == 1
-            raise RuntimeError("private provider body")
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(chat_downloader, "ChatDownloader", Broken)
-    settings.chat_url = "https://www.youtube.com/watch?v=fixture"
-    assert signals.chat_signals(30, settings)["status"] == "unavailable_RuntimeError"
-
-
-@pytest.mark.parametrize("duration", [3, 5, 10, 30, 3600])
-def test_candidates_stay_in_bounds_and_avoid_duplicates(settings, transcript, duration):
-    result = signals.candidates(
-        {"duration": duration},
-        transcript,
-        {"boundaries": [5, 10, 15]},
-        {"events": []},
-        settings,
-    )
-    assert 1 <= len(result) <= settings.candidates
-    assert len({r["id"] for r in result}) == len(result)
-    for index, item in enumerate(result):
-        assert 0 <= item["start"] < item["end"] <= duration
-        assert (
-            settings.min_seconds <= item["end"] - item["start"] <= settings.max_seconds
-        )
-        for previous in result[:index]:
-            overlap = max(
-                0,
-                min(item["end"], previous["end"])
-                - max(item["start"], previous["start"]),
-            )
-            assert (
-                overlap
-                / min(item["end"] - item["start"], previous["end"] - previous["start"])
-                <= 0.45
-            )
-
-
-def test_temporal_diversity_and_chat_peaks(settings):
-    empty = Transcript(language="und", segments=[])
-    info = {"duration": 600}
-    scenes = {"boundaries": []}
-    result = signals.candidates(info, empty, scenes, {"events": []}, settings)
-    assert any(r["start"] > 300 for r in result)
-    chat = {"events": [{"time": 480 + i / 10, "weight": 2} for i in range(30)]}
-    result = signals.candidates(info, empty, scenes, chat, settings)
-    assert result[0]["start"] <= 480 < result[0]["end"]
-
-
-def test_short_video_rejected(settings, transcript):
-    with pytest.raises(PipelineError):
-        signals.candidates(
-            {"duration": 1}, transcript, {"boundaries": []}, {"events": []}, settings
-        )
-
-
-def test_no_audio_skips_model_loading(settings):
-    assert signals.transcribe(None, {"audio": False}, settings) == {
-        "language": "und",
-        "segments": [],
-    }
 
 
 @pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
@@ -164,8 +66,7 @@ def test_empty_captions_valid(tmp_path, settings):
     }
 
 
-@pytest.mark.parametrize("keep", [None, [(10, 12), (15, 20)]])
-def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings, keep):
+def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings):
     words = [
         Word(start=15 + i * 0.5, end=15.5 + i * 0.5, text="うん") for i in range(4)
     ]
@@ -187,12 +88,10 @@ def test_caption_cleanup_preserves_input_and_source_time(tmp_path, settings, kee
     clip = SelectedClip(
         start=10, end=20, candidate_id="manual", title="t", reason="r", confidence=1
     )
-    result = captions.create(transcript, clip, tmp_path, settings, keep=keep)
+    result = captions.create(transcript, clip, tmp_path, settings)
     srt = pysubs2.load(str(tmp_path / "captions.srt"))
     assert [event.plaintext for event in srt] == ["うんうん", "続き"]
-    assert [event.start for event in srt] == (
-        [5000, 8000] if keep is None else [2000, 5000]
-    )
+    assert [event.start for event in srt] == [5000, 8000]
     assert result["asr_cleanup"] == {
         "repetitions": 2,
         "boilerplate_segments": 1,
@@ -567,12 +466,11 @@ def test_chat_panel_moves_caption_margins_into_the_video_area(tmp_path, settings
                 "chat_panel_fit": "crop",
             }
         )
-        captions.create(transcript, clip, directory, chat, credits=["作者 / CC0"])
+        captions.create(transcript, clip, directory, chat)
         subtitles = pysubs2.load(str(directory / "captions.ass"))
         column = 480 if chat_panel else 0
         assert subtitles.styles["Default"].marginl == margin
         assert subtitles.styles["Default"].marginr == margin + column
-        assert subtitles.styles["Credit"].marginr == margin + column
         limit = 9 if chat_panel else 13
         for event in subtitles:
             for line in event.plaintext.splitlines():
@@ -636,7 +534,7 @@ def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
         }
     )
     assert chat.chat_panel_fit == "top" and chat.caption_line_chars() == 18
-    captions.create(transcript, clip, tmp_path, chat, credits=["作者 / CC0"])
+    captions.create(transcript, clip, tmp_path, chat)
     subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
     style = subtitles.styles["Default"]
     assert style.fontsize == 72
@@ -645,7 +543,6 @@ def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
     assert style.marginl == captions.margin_px(1080)
     assert style.marginr == captions.margin_px(1080) + 480
     # The credit stays on the picture: its bottom edge is 16 px above the picture's bottom.
-    assert subtitles.styles["Credit"].marginv == 270 + 16
     for event in subtitles:
         for line in event.plaintext.splitlines():
             assert len(line) <= 18

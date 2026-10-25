@@ -31,7 +31,7 @@ PO Token は IP ベースのログイン要求を解消する保証がない旨�
 worker の Secret は名前だけを確認し、`YOUTUBE_COOKIES_B64` は未設定だった。
 Cookie 入力の実装・テストと、実際の認証 Cookie による取得成功は別。
 現在の結果から「クラウド IP でも100%取得できる」とは判断できない。
-設定方法は [AUDIO_FIRST.md](AUDIO_FIRST.md#youtube-の-cookie-入力と匿名診断) を参照。
+設定方法は [AUDIO_FIRST.md](AUDIO_FIRST.md#youtube-の-cookie) を参照。
 
 ## Docker・nightly・WARP の追加検証
 

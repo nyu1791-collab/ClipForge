@@ -1,16 +1,8 @@
-"""Run bounded subagent tasks on OpenCode: free DeepSeek V4.1 Flash, or GPT-6.1 Sol.
+"""Run one explicit OpenCode task with the authorized Vertex Gemini provider.
 
-Each run enables only its model's provider and uses that model for titles too. The free model
-stops at once if any step reports a cost above zero; --model sol uses one logged-in ChatGPT
-profile (CLIPFORGE_OPENAI_PROFILE) in place and records the reported cost. Read tasks may only read and search
-the repository. Write tasks edit a private git worktree and may run tests and ruff there; they
-can never commit, push or fetch. Each task gets its own log, report and timeout, and several
-tasks run side by side.
-
-    python tools/opencode_harness.py --mode read --task review.md --task captions.md
-    python tools/opencode_harness.py --mode write --task fix.md --base HEAD
-    CLIPFORGE_OPENAI_PROFILE=~/.clipforge-openai/account-1/data \
-        python tools/opencode_harness.py --mode read --model sol --task design.md
+Vertex is the default for read and write tasks. Read tasks cannot edit; write tasks
+use a private worktree and cannot commit or push. Each task starts the harness once.
+Other providers require an explicit --model choice and are never used as fallbacks.
 """
 
 import argparse
@@ -20,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -27,10 +20,15 @@ import threading
 import time
 
 MODEL = "opencode/deepseek-v4.1-flash-free"
-# GPT-6.1 Sol is the default and runs on the owner's ChatGPT subscription through
-# one logged-in OpenCode profile named by CLIPFORGE_OPENAI_PROFILE (its data directory).
-# A profile is never switched automatically; another one is used only when the owner says so.
+# Existing providers remain available only by explicit selection.
 MODELS = {
+    "vertex": {
+        "id": "google-vertex/gemini-3.8-flash",
+        "provider": "google-vertex",
+        "free": False,
+        "slots": 1,
+        "attempts": 1,
+    },
     "deepseek": {"id": MODEL, "provider": "opencode", "free": True},
     "sol": {
         "id": "openai/gpt-6.1-sol",
@@ -40,12 +38,11 @@ MODELS = {
         "slots": 4,
     },
 }
-# Both read and write tasks default to GPT-6.1 Sol at high reasoning.
-DEFAULT_MODEL = {"write": "sol", "read": "sol"}
+# Vertex Gemini is the explicitly authorized default for this project.
+DEFAULT_MODEL = {"write": "vertex", "read": "vertex"}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
 STALL_SECONDS = 120
-START_ATTEMPTS = 3
 MIN_FREE_BYTES = 3 * 1024**3
 ROOT = Path(__file__).resolve().parents[1]
 STATE = (
@@ -106,8 +103,9 @@ Task:
 """
 MODE_RULES = {
     "read": "Read-only: do not edit files. Propose minimal diffs in the report instead.",
-    "write": "Edit only what the task needs, match the surrounding style, run the relevant "
-    "tests and ruff, and report the last line of each. Do not commit.",
+    "write": "Edit only what the task needs and match the surrounding style. "
+    "Do not run audits, tests, retries or additional generation unless the user requested them. "
+    "Do not commit.",
 }
 
 
@@ -117,7 +115,7 @@ def config(mode, model="deepseek"):
         {pattern: "allow" for pattern in (WRITE_BASH if mode == "write" else READ_BASH)}
     )
     bash.update({pattern: "deny" for pattern in DENIED_BASH})
-    return {
+    result = {
         "$schema": "https://opencode.ai/config.json",
         "model": MODELS[model]["id"],
         "small_model": MODELS[model]["id"],
@@ -125,6 +123,8 @@ def config(mode, model="deepseek"):
         "share": "disabled",
         "autoupdate": False,
         "plugin": [],
+        "agent": {"title": {"disable": True}},
+        "compaction": {"auto": False},
         "permission": {
             "edit": "allow" if mode == "write" else "deny",
             "bash": bash,
@@ -135,6 +135,19 @@ def config(mode, model="deepseek"):
             "doom_loop": "deny",
         },
     }
+
+    if model == "vertex":
+        result["provider"] = {
+            "google-vertex": {
+                "npm": "@ai-sdk/google-vertex",
+                "options": {
+                    "project": "project-fdadb4dd-cb77-4270-9cd",
+                    "location": "global",
+                },
+                "models": {"gemini-3.8-flash": {"name": "Gemini 3.8 Flash (Vertex)"}},
+            }
+        }
+    return result
 
 
 def worktree(base, name):
@@ -170,6 +183,14 @@ def slot(model="deepseek"):
         time.sleep(5)
 
 
+def kill_task(process):
+    if process.poll() is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 def attempt(command, environment, workdir, out, timeout, result, texts, free=True):
     """Run OpenCode once. False only when it never produced an event within STALL_SECONDS."""
     process = subprocess.Popen(
@@ -180,6 +201,7 @@ def attempt(command, environment, workdir, out, timeout, result, texts, free=Tru
         text=True,
         env=environment,
         cwd=workdir,
+        start_new_session=True,
     )
     answered = threading.Event()
     stalled = threading.Event()
@@ -187,10 +209,10 @@ def attempt(command, environment, workdir, out, timeout, result, texts, free=Tru
     def watch():
         if not answered.wait(min(STALL_SECONDS, timeout)):
             stalled.set()
-            process.kill()
+            kill_task(process)
 
     # A silent hang produces no lines, so the limits are enforced by timers, not the loop.
-    timer = threading.Timer(timeout, process.kill)
+    timer = threading.Timer(timeout, lambda: kill_task(process))
     timer.start()
     threading.Thread(target=watch, daemon=True).start()
     started = time.monotonic()
@@ -205,6 +227,9 @@ def attempt(command, environment, workdir, out, timeout, result, texts, free=Tru
             part = event.get("part") or {}
             if event.get("type") == "text" and part.get("text"):
                 texts.append(part["text"])
+            elif event.get("type") == "retry_stopped":
+                result["error"] = event["reason"]
+                return True
             elif event.get("type") == "tool_use":
                 result["tool_calls"] += 1
             elif event.get("type") == "step_finish":
@@ -232,7 +257,7 @@ def attempt(command, environment, workdir, out, timeout, result, texts, free=Tru
         answered.set()
         timer.cancel()
         if process.poll() is None:
-            process.kill()
+            kill_task(process)
             process.wait()
 
 
@@ -319,7 +344,16 @@ def _run_task(task, mode, base, timeout, model, name, directory):
     if mode == "write":
         # The shared virtualenv installs the main checkout; tests must import this worktree.
         environment["PYTHONPATH"] = str(workdir / "src")
-    if not MODELS[model]["free"]:
+    if model == "vertex":
+        credential_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        if not credential_path or not Path(credential_path).is_file():
+            raise RuntimeError("Vertex ADC is not connected; no model request was sent")
+        environment.update(
+            GOOGLE_APPLICATION_CREDENTIALS=str(Path(credential_path).resolve()),
+            GOOGLE_CLOUD_PROJECT="project-fdadb4dd-cb77-4270-9cd",
+            GOOGLE_CLOUD_LOCATION="global",
+        )
+    elif model == "sol":
         # The subscription login stays where it was made; it is used in place, never copied.
         environment["XDG_DATA_HOME"] = str(openai_profile())
     log = directory / "events.jsonl"
@@ -337,16 +371,32 @@ def _run_task(task, mode, base, timeout, model, name, directory):
         "attempts": 0,
     }
     texts = []
-    command = ["opencode", "run", "--format", "json", "--dir", str(workdir)]
+    binary = os.environ.get("CLIPFORGE_OPENCODE_BIN") or shutil.which("opencode")
+    if not binary:
+        local = ROOT.parent / ".tools/opencode/node_modules/.bin/opencode"
+        if local.is_file():
+            binary = str(local)
+        else:
+            raise RuntimeError("Install opencode-ai@1.19.4 before invoking the harness")
+    command = [binary, "run", "--format", "json", "--dir", str(workdir)]
     command += ["-m", MODELS[model]["id"]]
     if MODELS[model].get("variant"):
         command += ["--variant", MODELS[model]["variant"]]
     command.append(prompt)
+    if model == "vertex":
+        command = [
+            sys.executable,
+            str(ROOT / "tools/opencode_vertex_guard.py"),
+            binary,
+            "--dir",
+            str(workdir),
+            prompt,
+        ]
     with slot(model), log.open("w") as out:
         # Space may have been consumed by another run while this one waited for a slot.
         check_disk_space(directory)
-        # A start that never answers is retried; one that has answered is never repeated.
-        while result["attempts"] < START_ATTEMPTS:
+        # One harness start per task; an unanswered start is not retried.
+        while result["attempts"] < MODELS[model].get("attempts", 1):
             result["attempts"] += 1
             remaining = timeout - (time.monotonic() - started)
             if remaining <= 0:
@@ -386,11 +436,14 @@ def main(argv=None):
     parser.add_argument(
         "--model",
         choices=sorted(MODELS),
-        help="deepseek (free) or sol (GPT-6.1 Sol high via one ChatGPT profile); "
-        "both read and write tasks default to sol",
+        help="vertex (Gemini 3.8 Flash, default), deepseek, or sol; no automatic model fallback",
     )
     args = parser.parse_args(argv)
     args.model = args.model or DEFAULT_MODEL[args.mode]
+    if args.model == "vertex" and len(args.task) != 1:
+        parser.error(
+            "Vertex harness accepts one task per invocation; no implicit extra generation"
+        )
     with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
         results = list(
             pool.map(

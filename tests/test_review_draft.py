@@ -33,9 +33,7 @@ def inputs(rows):
             for row in rows
         ],
     }
-    settings = Settings(
-        gemini_model="manual-no-api", clips=3, min_seconds=20, max_seconds=60
-    )
+    settings = Settings(clips=3, min_seconds=20, max_seconds=60)
     return analysis, previews, settings
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stream private release bundles in bounded chunks, verifying every chunk."""
+"""Stream private result bundles in bounded chunks, verifying every chunk."""
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -53,26 +53,17 @@ def digest(path):
     return result.hexdigest()
 
 
-def check_member_name(name, parts=None, directory=False):
+def check_member_name(name):
     path = PurePosixPath(name)
     if not path.parts or path.is_absolute() or ".." in path.parts or "\\" in name:
         raise BundleError("Unexpected bundle member name")
-    if parts is not None and not any(
-        path == PurePosixPath(part)
-        or path.is_relative_to(part)
-        or (directory and PurePosixPath(part).is_relative_to(path))
-        for part in parts
-    ):
-        raise BundleError("Unexpected cache member")
 
 
-def safe_tar_filter(root, parts=None):
+def safe_tar_filter(root):
     root = root.resolve()
 
     def choose(info):
-        check_member_name(info.name, parts, info.isdir())
-        if parts is not None and info.name.endswith(".lock"):
-            return None
+        check_member_name(info.name)
         if not (info.isfile() or info.isdir() or info.issym() or info.islnk()):
             raise BundleError("Unsupported bundle entry")
         if info.issym():
@@ -80,93 +71,89 @@ def safe_tar_filter(root, parts=None):
             target = source.resolve()
             if not target.is_relative_to(root):
                 raise BundleError("Bundle link leaves its root")
-            check_member_name(str(target.relative_to(root)), parts)
+            check_member_name(str(target.relative_to(root)))
             info.linkname = os.path.relpath(target, source.parent)
         return info
 
     return choose
 
 
-def tree_id(root, parts=None):
-    entries = []
-    for path in sorted(Path(root).rglob("*")):
-        if parts is not None and not any(
-            path == Path(root) / part or path.is_relative_to(Path(root) / part)
-            for part in parts
-        ):
-            continue
-        if path.name.endswith(".lock") or (path.is_dir() and not path.is_symlink()):
-            continue
-        stat = path.lstat()
-        detail = (
-            os.path.relpath(path.resolve(), path.parent)
-            if path.is_symlink()
-            else (digest(path) if stat.st_size <= 4096 else "")
-        )
-        size = len(os.fsencode(detail)) if path.is_symlink() else stat.st_size
-        entries.append((str(path.relative_to(root)), size, detail))
-    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
+class _ChunkWriter:
+    """Write tar bytes directly into upload parts, without a second disk copy."""
+
+    def __init__(self, work, chunk_bytes):
+        self.work, self.chunk_bytes = work, chunk_bytes
+        self.total = self.size = 0
+        self.handle = None
+        self.chunks = []
+
+    def write(self, data):
+        count = len(data)
+        if self.total + count > MAX_BYTES:
+            raise BundleError("Bundle exceeds the transfer limit")
+        self.total += count
+        remaining = memoryview(data)
+        while remaining:
+            if self.handle is None:
+                self.handle = (self.work / "next.part").open("wb")
+                self.sha = hashlib.sha256()
+                self.size = 0
+            length = min(len(remaining), self.chunk_bytes - self.size)
+            self.handle.write(remaining[:length])
+            self.sha.update(remaining[:length])
+            self.size += length
+            remaining = remaining[length:]
+            if self.size == self.chunk_bytes:
+                self.finish()
+        return count
+
+    def finish(self):
+        if self.handle is None:
+            return
+        self.handle.close()
+        self.handle = None
+        checksum = self.sha.hexdigest()
+        name = f"cf-result-{checksum}.part"
+        (self.work / "next.part").replace(self.work / name)
+        self.chunks.append({"name": name, "sha256": checksum, "bytes": self.size})
 
 
-def pack(root, work, kind, identity, chunk_bytes=CHUNK_BYTES, *, parts=None):
-    if kind not in {"assets", "result"}:
-        raise BundleError("Unexpected bundle kind")
+def pack(root, work, identity, chunk_bytes=CHUNK_BYTES):
     root, work = Path(root).resolve(), Path(work).resolve()
-    if work.is_relative_to(root):
-        raise BundleError("Bundle staging must be outside its source")
+    if work.is_relative_to(root) or chunk_bytes <= 0:
+        raise BundleError(
+            "Bundle staging must be outside its source with positive chunks"
+        )
     work.mkdir(parents=True, exist_ok=True)
-    archive = work / "bundle.tar"
-    # Runtime libraries compress well; MP4 results are already compressed.
-    mode = "w:gz" if kind == "assets" else "w"
-    options = {"compresslevel": 1} if kind == "assets" else {}
-    with tarfile.open(archive, mode, **options) as bundle:
-        paths = (root / part for part in parts) if parts is not None else root.iterdir()
-        for path in sorted(paths):
-            if path.exists():
+    stream = _ChunkWriter(work, chunk_bytes)
+    try:
+        with tarfile.open(fileobj=stream, mode="w|") as bundle:
+            for path in sorted(root.iterdir()):
                 bundle.add(
                     path,
                     arcname=str(path.relative_to(root)),
-                    filter=safe_tar_filter(root, parts),
+                    filter=safe_tar_filter(root),
                 )
-    if archive.stat().st_size > MAX_BYTES:
-        raise BundleError("Bundle exceeds the transfer limit")
-    chunks = []
-    with archive.open("rb") as source:
-        while True:
-            temporary = work / "next.part"
-            size = 0
-            sha = hashlib.sha256()
-            with temporary.open("wb") as out:
-                while size < chunk_bytes:
-                    data = source.read(min(1024 * 1024, chunk_bytes - size))
-                    if not data:
-                        break
-                    out.write(data)
-                    sha.update(data)
-                    size += len(data)
-            if not size:
-                temporary.unlink()
-                break
-            name = f"cf-{kind}-{sha.hexdigest()}.part"
-            temporary.replace(work / name)
-            chunks.append({"name": name, "sha256": sha.hexdigest(), "bytes": size})
-    archive.unlink()
+        stream.finish()
+    finally:
+        if stream.handle is not None:
+            stream.handle.close()
     manifest = {
         "schema": 1,
-        "kind": kind,
+        "kind": "result",
         "identity": identity,
-        "bytes": sum(c["bytes"] for c in chunks),
-        "chunks": chunks,
+        "bytes": stream.total,
+        "chunks": stream.chunks,
     }
-    path = work / f"cf-{kind}-manifest.json"
+    path = work / "cf-result-manifest.json"
     path.write_text(json.dumps(manifest))
     return path
 
 
-def check_manifest(data, kind, identity):
+def check_manifest(data, identity):
     if (data.get("schema"), data.get("kind"), data.get("identity")) != (
         1,
-        kind,
+        "result",
         identity,
     ):
         raise BundleError("Bundle identity mismatch")
@@ -178,7 +165,7 @@ def check_manifest(data, kind, identity):
         sha = chunk.get("sha256", "")
         if not re.fullmatch(r"[a-f0-9]{64}", sha):
             raise BundleError("Invalid chunk checksum")
-        if chunk.get("name") != f"cf-{kind}-{sha}.part":
+        if chunk.get("name") != f"cf-result-{sha}.part":
             raise BundleError("Invalid chunk name")
         size = chunk.get("bytes")
         if type(size) is not int or not 0 < size <= CHUNK_BYTES:
@@ -279,28 +266,11 @@ class ReleaseBundles:
                 f"Private GitHub operation failed (HTTP {error.code})"
             ) from None
 
-    def release(self, tag, create=False):
-        if not re.fullmatch(
-            r"clipforge-(?:input-[a-f0-9]{32}|cache-(?:(?:cpu|gpu)-)?[a-f0-9]{24})", tag
-        ):
+    def release(self, tag):
+        if not re.fullmatch(r"clipforge-input-[a-f0-9]{32}", tag):
             raise BundleError("Unexpected private release tag")
         url = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/{tag}"
-        release = self.json_request("GET", url, allow_missing=True)
-        if release is None and create:
-            if not tag.startswith("clipforge-cache-"):
-                raise BundleError("Only public-asset cache releases may be created")
-            release = self.json_request(
-                "POST",
-                f"https://api.github.com/repos/{REPOSITORY}/releases",
-                {
-                    "tag_name": tag,
-                    "target_commitish": "main",
-                    "name": tag,
-                    "prerelease": True,
-                    "body": "Public ClipForge runtime assets only. No credentials or job data.",
-                },
-            )
-        return release
+        return self.json_request("GET", url, allow_missing=True)
 
     def upload(self, release, path):
         name = path.name
@@ -325,39 +295,15 @@ class ReleaseBundles:
         ):
             json.load(response)
 
-    def publish(self, tag, directory, work, kind, identity, *, parts=None):
-        release = self.release(tag, create=kind == "assets")
+    def publish(self, tag, directory, work, identity):
+        release = self.release(tag)
         if not release:
             raise BundleError("Private input release is missing")
-        inventory = ("gzip1:" + tree_id(directory, parts)) if kind == "assets" else None
-        existing = next(
-            (a for a in release["assets"] if a["name"] == f"cf-{kind}-manifest.json"),
-            None,
-        )
-        if existing and kind == "assets":
-            previous = Path(work) / "previous.json"
-            self.download_asset(existing, previous, 1024 * 1024)
-            old = json.loads(previous.read_text())
-            check_manifest(old, kind, identity)
-            if old.get("tree_id") == inventory:
-                print("Public asset cache unchanged; upload skipped.")
-                return
-        manifest = pack(directory, work, kind, identity, parts=parts)
+        manifest = pack(directory, work, identity)
         data = json.loads(manifest.read_text())
-        if inventory is not None:
-            data["tree_id"] = inventory
-            manifest.write_text(json.dumps(data))
         for name in sorted({c["name"] for c in data["chunks"]}):
             self.upload(release, manifest.parent / name)
         self.upload(release, manifest)
-        if kind == "assets":
-            keep = {c["name"] for c in data["chunks"]}
-            for asset in release["assets"]:
-                if (
-                    re.fullmatch(r"cf-assets-[a-f0-9]{64}\.part", asset["name"])
-                    and asset["name"] not in keep
-                ):
-                    self.json_request("DELETE", asset["url"])
 
     def download_asset(self, asset, path, maximum, hasher=None):
         """Save one asset; hasher, when given, sees every byte as it is written."""
@@ -386,12 +332,10 @@ class ReleaseBundles:
             raise BundleError("Private bundle checksum mismatch")
         return path
 
-    def restore(self, tag, destination, kind, identity, required=False, *, parts=None):
-        if parts is not None and kind != "assets":
-            raise BundleError("Direct extraction is only supported for public assets")
+    def restore(self, tag, destination, identity, required=False):
         release = self.release(tag)
         assets = {a["name"]: a for a in release["assets"]} if release else {}
-        manifest = assets.get(f"cf-{kind}-manifest.json")
+        manifest = assets.get("cf-result-manifest.json")
         if not manifest:
             if required:
                 raise BundleError("Private result bundle is missing")
@@ -405,12 +349,12 @@ class ReleaseBundles:
             record = temporary / "manifest.json"
             self.download_asset(manifest, record, 1024 * 1024)
             data = json.loads(record.read_text())
-            check_manifest(data, kind, identity)
+            check_manifest(data, identity)
             for chunk in data["chunks"]:
                 if chunk["name"] not in assets:
                     raise BundleError("A private bundle chunk is missing")
-            unpacked = destination if parts is not None else temporary / "unpacked"
-            unpacked.mkdir(exist_ok=True)
+            unpacked = temporary / "unpacked"
+            unpacked.mkdir()
             # Chunks download side by side and are extracted in order as each one is
             # verified, streamed straight into tar: no joined copy of the bundle is written.
             # Refill only after consumption deletes a chunk, bounding disk use even on slow tar.
@@ -436,13 +380,12 @@ class ReleaseBundles:
                     for _ in range(DOWNLOAD_WORKERS + 1):
                         submit_next()
                     stream = ChunkStream(pending, submit_next)
-                    mode = "r|gz" if kind == "assets" else "r|"
-                    with tarfile.open(fileobj=stream, mode=mode) as bundle:
+                    with tarfile.open(fileobj=stream, mode="r|") as bundle:
                         count = total = 0
                         for member in bundle:
-                            check_member_name(member.name, parts, member.isdir())
+                            check_member_name(member.name)
                             if member.islnk():
-                                check_member_name(member.linkname, parts)
+                                check_member_name(member.linkname)
                             elif member.issym():
                                 # data_filter checks the resolved target, including symlinks
                                 # already extracted; the whitelist also forbids metadata links.
@@ -452,7 +395,7 @@ class ReleaseBundles:
                                 if not target.is_relative_to(unpacked.resolve()):
                                     raise BundleError("Bundle link leaves its root")
                                 check_member_name(
-                                    str(target.relative_to(unpacked.resolve())), parts
+                                    str(target.relative_to(unpacked.resolve()))
                                 )
                             count += 1
                             total += member.size
@@ -465,8 +408,7 @@ class ReleaseBundles:
                 finally:
                     for future in pending:
                         future.cancel()
-            if parts is None:
-                if destination.exists():
-                    destination.rmdir()
-                unpacked.rename(destination)
+            if destination.exists():
+                destination.rmdir()
+            unpacked.rename(destination)
         return True

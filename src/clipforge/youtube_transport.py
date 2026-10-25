@@ -131,6 +131,7 @@ class Transport:
             "GH_TOKEN",
             "GITHUB_TOKEN",
             "GEMINI_API_KEY",
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN",
             "COLAB_ADC_JSON",
         ):
             environment.pop(name, None)

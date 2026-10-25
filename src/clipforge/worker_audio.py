@@ -10,8 +10,13 @@ import shutil
 import sys
 import tempfile
 
-from . import audio_first, audio_volume, landscape, media, pipeline, review_draft
+from . import (
+    audio_first,
+    landscape,
+    media,
+)
 from .github_cli import run as run_gh
+from .release_transfer import download_stage
 from .kick_media import KickVOD
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript
@@ -24,11 +29,14 @@ from .storage import (
     write_json,
 )
 
-REPO = "nyu1791-collab/ai-model-workers"
+REPO = os.environ.get(
+    "CLIPFORGE_ACTIONS_REPO",
+    os.environ.get("GITHUB_REPOSITORY", "nyu1791-collab/ClipForge"),
+)
 PART_RUN = re.compile(r"([0-9]{1,20}):([a-f0-9]{32})")
 RUN_FIELDS = "status,conclusion,displayTitle,event,workflowName,headBranch"
 STAGE_WORKFLOWS = {"ClipForge audio-first stages", "ClipForge"}
-STAGE_BRANCHES = {"main"}
+STAGE_BRANCHES = {"main", "fix/pr18-verified-transfer"}
 # Configuration files at the repository root; receipts without the field predate the choice.
 DEFAULT_CONFIG_FILE = "config.landscape.example.json"
 CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
@@ -59,9 +67,10 @@ def restore_analysis(previous, output, previous_id):
     manifest = json.loads((previous / "manifest.json").read_text())
     if (
         receipt.get("request_id") != previous_id
-        or receipt.get("status") not in {"topics_allocated", "awaiting_video_review"}
+        or receipt.get("status")
+        not in {"topics_allocated", "awaiting_video_review", "selection_ready"}
         or manifest.get("status") != receipt["status"]
-        or manifest.get("model_generation_requests") != 0
+        or manifest.get("model_generation_requests") not in {0, 1}
     ):
         raise PipelineError("previous analysis identity or completion state mismatch")
     url = canonical(manifest["source_url"])
@@ -91,11 +100,10 @@ def restore_analysis(previous, output, previous_id):
         (previous / "transcripts" / (key + ".json")).read_text()
     )
     for name in hashes:
-        allowed = (
-            name in required - {"manifest.json"}
-            or name == "previews.json"
-            or re.fullmatch(r"previews/topic-[0-9]{3}\.mp4(?:\.receipt\.json)?", name)
-        )
+        allowed = name in required - {"manifest.json"} or name in {
+            "previews.json",
+            "vertex-selection-receipt.json",
+        }
         if allowed:
             target = within(output, output / name)
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -205,17 +213,25 @@ ORIGIN_FIELDS = (
 )
 
 
-def _volume_series(source, info):
-    """(series, reason): per-second loudness on the topic clock, or None and a reason code."""
-    try:
-        return audio_volume.loudness_series(source, offset=info["audio_start"]), None
-    except audio_volume.VolumeUnavailable as error:
-        return None, error.reason
-
-
 def execute(
     previous, output, previous_id, settings, mode, review_file=None, clip_index=None
 ):
+    if mode == "render":
+        settings = settings.model_copy(
+            update={
+                "video_encoder": "h264_nvenc",
+                "loudness_two_pass": False,
+                "height": 360,
+                "chat_panel_width": round(
+                    settings.chat_panel_width * 360 / settings.height / 2
+                )
+                * 2,
+            }
+        )
+        # Fail before downloading analysis/media if this GPU cannot actually encode.
+        from .hardware import video_options
+
+        video_options(settings, 18)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     with audio_first.exclusive(output):
         url = restore_analysis(previous, output, previous_id)
@@ -231,11 +247,6 @@ def execute(
             }
         )
         source = output / "audio.m4a"
-        info = audio_first.audio_info(source)
-        if pipeline.saved_transcript(source, info, settings) is None:
-            raise PipelineError(
-                "the saved ASR does not match; no new recognition was started"
-            )
         analysis = audio_first.allocate_audio(source, output, settings, url)
         cache = json.loads((output / "asr-receipt.json").read_text())
         if not cache["reused"]:
@@ -245,46 +256,45 @@ def execute(
             name: origin[name] for name in ORIGIN_FIELDS if name in origin
         }
         write_json(output / "asr-receipt.json", cache)
-        vod = open_source(
-            url,
-            output / "segments",
-            kick_factory=KickVOD,
-            max_bytes=2 * 1024**3,
-            max_seconds=settings.max_source_seconds,
-        )
+        vod = None
+        if mode == "render":
+            vod = open_source(
+                url,
+                output / "segments",
+                kick_factory=KickVOD,
+                # The same transport bound as acquisition, so a later stage never refuses
+                # input that an earlier stage accepted.
+                max_bytes=settings.max_transport_bytes,
+                max_seconds=settings.max_source_seconds,
+            )
         try:
             if mode == "previews":
-                selection = (
-                    json.loads(review_file.read_text())
-                    if review_file is not None
-                    else {}
-                )
-                options = (
-                    {"topic_ids": selection["topic_ids"]}
-                    if "topic_ids" in selection
-                    else {}
-                )
-                result = audio_first.previews(
-                    vod, output, settings, analysis_result=analysis, **options
-                )
-                volume, volume_reason = _volume_series(source, info)
-                from .chat_activity import candidate_series
+                # Candidate planning uses saved ASR only: no full-audio RMS pass,
+                # chat requests, preview downloads, frame sheets or approval wait.
+                result = {
+                    "status": "selection_ready",
+                    "mode": "transcript",
+                    "analysis_key": analysis[0]["analysis_key"],
+                    "previews": [],
+                    "video_review_performed": False,
+                }
+                write_json(output / "previews.json", result)
+                from .vertex_selection import select
 
-                chat, chat_diagnostics = candidate_series(vod, analysis[0], result)
-                draft, diagnostics = review_draft.build_review_draft(
-                    analysis[0],
-                    result,
-                    settings,
-                    transcript=analysis[1],
-                    volume=volume,
-                    volume_reason=volume_reason,
-                    chat=chat,
-                    chat_diagnostics=chat_diagnostics,
-                )
+                draft, diagnostics = select(analysis[0], settings, output)
                 write_json(output / "review-draft.json", draft)
                 write_json(output / "review-draft-diagnostics.json", diagnostics)
-                preview_contact_sheet(output, result)
-                result.update(rendered=[], model_generation_requests=0)
+                result.update(
+                    rendered=[],
+                    model_generation_requests=1,
+                    topic_selection={
+                        "provider": "vertex",
+                        "model": diagnostics["identity"]["model"],
+                        "project": diagnostics["identity"]["project"],
+                        "elapsed_sec": diagnostics["elapsed_sec"],
+                        "usage": diagnostics.get("usage", {}),
+                    },
+                )
             elif mode == "render" and review_file is not None:
                 audio_first.render(
                     vod,
@@ -302,7 +312,14 @@ def execute(
                 raise PipelineError("invalid audio worker stage or missing review")
         finally:
             audio_first.discard_transport_cache(vod)
-            vod.close()
+            if vod is not None:
+                vod.close()
+        if mode == "render":
+            prior_selection = json.loads((previous / "manifest.json").read_text()).get(
+                "topic_selection"
+            )
+            if prior_selection is not None:
+                result["topic_selection"] = prior_selection
         result.update(
             source_url=url,
             source_sha256=digest(source),
@@ -311,8 +328,8 @@ def execute(
             human_review_performed=False,
         )
         write_json(output / "manifest.json", result)
-        if mode == "render" and clip_index is not None:
-            # Merge reads the ASR identity receipt, not the source or working media.
+        if mode == "render":
+            # Final deliveries retain clips and receipts, not input media or ASR bodies.
             for name in ("ranges", "previews", "transcripts", ".state"):
                 if (output / name).exists():
                     shutil.rmtree(output / name)
@@ -475,13 +492,15 @@ def merge_parts(parts, output, settings, source_ref, config_file=None):
         "selection_receipt": {"provider": "manual", "generation_requests": 0},
         "analysis_key": identity["analysis_key"],
         "selection_sha256": identity["selection_sha256"],
-        "video_review_attested": True,
+        "video_review_attested": False,
         "human_review_performed": False,
         "transcript_cache": loaded[0]["cache"],
         "timings": timings,
     }
-    summary = landscape.summarize_delivery(manifest, delivery, settings.clips)
-    summary["topic_content_review"] = "attested_in_selection_file"
+    summary = landscape.summarize_delivery(
+        manifest, delivery, settings.clips, settings.height
+    )
+    summary["topic_content_review"] = "not_required"
     # Merge uses stored quality/media receipts; do not resolve fonts or invoke ffmpeg.
     summary["reproducibility"] = landscape.code_identity()
     write_json(delivery / "manifest.json", manifest)
@@ -531,17 +550,7 @@ def download_parts(text, directory):
         if not successful_stage_run(run, request):
             raise PipelineError("clip render did not complete successfully")
         destination = directory / request
-        gh(
-            "run",
-            "download",
-            run_id,
-            "--repo",
-            REPO,
-            "--name",
-            "clipforge-result-" + request,
-            "--dir",
-            str(destination),
-        )
+        download_stage(run_id, "clipforge-result-" + request, destination, gh)
         parts.append((destination, request))
     return parts
 
@@ -589,7 +598,8 @@ def verify_same_run_analysis(previous, request_id, source_ref, run_id, previous_
         os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
         or os.environ.get("GITHUB_WORKFLOW") != "ClipForge"
         or os.environ.get("GITHUB_JOB") != "previews"
-        or os.environ.get("GITHUB_REF") != "refs/heads/main"
+        or os.environ.get("GITHUB_REF")
+        not in {"refs/heads/" + branch for branch in STAGE_BRANCHES}
         or os.environ.get("GITHUB_RUN_ID") != run_id
         or os.environ.get("REQUEST_ID") != request_id
         or os.environ.get("CLIPFORGE_SOURCE_REF") != source_ref
@@ -664,11 +674,8 @@ def main(argv=None):
         ):
             raise PipelineError("invalid private worker identity")
         settings = Settings.model_validate_json(args.config.read_text())
-        if (settings.aspect, settings.height, settings.quality_gate) != (
-            "16:9",
-            1080,
-            "strict",
-        ):
+        # 360p is the fast review and delivery size; 1080p is rendered on request.
+        if settings.aspect != "16:9" or settings.height not in (360, 1080):
             raise PipelineError("horizontal worker settings are required")
         if args.stage == "merge":
             with tempfile.TemporaryDirectory(prefix="clipforge-parts-") as temporary:
@@ -718,17 +725,21 @@ def main(argv=None):
                 raise PipelineError("previous analysis did not complete successfully")
             with tempfile.TemporaryDirectory(prefix="clipforge-previous-") as temporary:
                 previous = Path(temporary) / "analysis"
-                gh(
-                    "run",
-                    "download",
+                download_stage(
                     args.previous_run,
-                    "--repo",
-                    REPO,
-                    "--name",
                     "clipforge-result-" + args.previous_request,
-                    "--dir",
-                    str(previous),
+                    previous,
+                    gh,
                 )
+                previous_source_ref = json.loads(
+                    (previous / "request-receipt.json").read_text()
+                ).get("source_ref")
+                if not isinstance(previous_source_ref, str) or not re.fullmatch(
+                    r"[a-f0-9]{40}", previous_source_ref
+                ):
+                    raise PipelineError(
+                        "previous analysis source SHA is missing or invalid"
+                    )
                 result = execute(
                     previous,
                     args.output,
@@ -741,6 +752,7 @@ def main(argv=None):
             lineage = {
                 "previous_run_id": args.previous_run,
                 "previous_request_id": args.previous_request,
+                "previous_source_ref": previous_source_ref,
             }
         write_receipt(
             args.output,
@@ -758,7 +770,7 @@ def main(argv=None):
         summary = {
             "status": result["status"],
             "asr_reused": True,
-            "model_generation_requests": 0,
+            "model_generation_requests": result.get("model_generation_requests", 0),
         }
         if "timings" in result:
             summary["timings"] = result["timings"]
@@ -775,6 +787,27 @@ def main(argv=None):
         }
         with contextlib.suppress(OSError):
             write_json(args.output / "stage-error.json", record)
+            hashes = {
+                p.relative_to(args.output).as_posix(): digest(p)
+                for p in args.output.rglob("*")
+                if p.is_file()
+                and not p.is_symlink()
+                and p.name != "request-receipt.json"
+                and not any(
+                    part.startswith(".") for part in p.relative_to(args.output).parts
+                )
+            }
+            write_json(
+                args.output / "request-receipt.json",
+                {
+                    "request_id": args.request_id,
+                    "source_ref": args.source_ref,
+                    "workflow_run": os.environ.get("GITHUB_RUN_ID"),
+                    "status": "failed",
+                    "audio_stage": args.stage,
+                    "sha256": hashes,
+                },
+            )
         line = "Private audio stage failed: " + type(error).__name__
         if message:
             line += ": " + message
