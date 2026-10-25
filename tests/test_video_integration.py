@@ -51,7 +51,7 @@ def test_real_render_subtitles_frames_audio_and_resume(
     root = Path(os.environ.get("CLIPFORGE_QA_OUTPUT", str(tmp_path)))
     output = root / (aspect.replace(":", "x") + "-" + framing)
     before = digest(source_video)
-    output.mkdir()
+    output.mkdir(parents=True)
     clip = SelectedClip(
         start=13, end=19, candidate_id="manual", title="t", reason="r", confidence=1
     )
