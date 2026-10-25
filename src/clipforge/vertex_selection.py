@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 
 from .storage import PipelineError, write_json
+from .media_sources import canonical
 
 MODEL = "gemini-3.8-flash"
 PROJECT = "project-fdadb4dd-cb77-4270-9cd"
@@ -25,6 +26,7 @@ def select(analysis, settings, output):
         "project": PROJECT,
         "location": LOCATION,
         "requested_count": settings.clips,
+        "instruction_version": 2,
     }
     if state.exists():
         saved = json.loads(state.read_text())
@@ -118,7 +120,8 @@ def select(analysis, settings, output):
     record = {
         "identity": identity,
         "status": "submitting",
-        "generation_attempts": 1,
+        "generation_requests": 0,
+        "requests": [],
         "input_chars": len(prompt),
         "max_output_tokens": 8192,
         "tasks": [
@@ -133,22 +136,110 @@ def select(analysis, settings, output):
     write_json(state, record)
     started = time.monotonic()
     endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/{LOCATION}/publishers/google/models/{MODEL}:generateContent"
-    request = urllib.request.Request(
-        endpoint,
-        method="POST",
-        data=json.dumps(body).encode(),
-        headers={
-            "Authorization": "Bearer " + token,
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        # urllib makes one generation request; there is no SDK retry layer here.
-        with urllib.request.urlopen(request, timeout=180) as response:
+
+    def generate(payload, purpose):
+        record["generation_requests"] += 1
+        write_json(state, record)
+        tick = time.monotonic()
+        req = urllib.request.Request(
+            endpoint,
+            method="POST",
+            data=json.dumps(payload).encode(),
+            headers={
+                "Authorization": "Bearer " + token,
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=180) as response:
             raw = response.read(2 * 1024**2 + 1)
         if len(raw) > 2 * 1024**2:
             raise PipelineError("VERTEX_RESPONSE_TOO_LARGE")
-        result = json.loads(raw)
+        response = json.loads(raw)
+        record["requests"].append(
+            {
+                "purpose": purpose,
+                "elapsed_sec": round(time.monotonic() - tick, 3),
+                "usage": response.get("usageMetadata", {}),
+                "model_version": response.get("modelVersion"),
+            }
+        )
+        write_json(state, record)
+        return response
+
+    try:
+        source_url = canonical(analysis["source_url"])
+        tools = [
+            {
+                "functionDeclarations": [
+                    {
+                        "name": "resolve_source_url",
+                        "description": "Resolve a supplied source URL and retrieve its saved metadata. The render worker later downloads only the selected media intervals.",
+                        "parameters": {
+                            "type": "OBJECT",
+                            "required": ["url"],
+                            "properties": {"url": {"type": "STRING"}},
+                        },
+                    }
+                ]
+            }
+        ]
+        intro = {
+            "role": "user",
+            "parts": [
+                {
+                    "text": "配信URLの解決ツールを使い、保存済み音声・ASRを再利用して編集を計画してください。"
+                    "対象はこのURLだけです。署名付きURLや認証情報を要求せず、元配信を変更しないでください: "
+                    + source_url
+                }
+            ],
+        }
+        resolved = generate(
+            {
+                "contents": [intro],
+                "tools": tools,
+                "toolConfig": {
+                    "functionCallingConfig": {
+                        "mode": "ANY",
+                        "allowedFunctionNames": ["resolve_source_url"],
+                    }
+                },
+                "generationConfig": {"maxOutputTokens": 1024},
+            },
+            "source_url_tool",
+        )
+        content = resolved["candidates"][0]["content"]
+        calls = [p["functionCall"] for p in content["parts"] if "functionCall" in p]
+        if len(calls) != 1 or calls[0]["name"] != "resolve_source_url":
+            raise PipelineError("VERTEX_SOURCE_TOOL_INVALID")
+        if canonical(calls[0]["args"]["url"]) != source_url:
+            raise PipelineError("VERTEX_SOURCE_URL_MISMATCH")
+        source = {
+            "source_url": source_url,
+            "duration": analysis["duration"],
+            "analysis_key": analysis["analysis_key"],
+            "saved_asr_available": True,
+            "supported_routes": ["Kick", "YouTube", "Twitch", "HTTPS"],
+        }
+        record["source_tool"] = {"name": "resolve_source_url", "result": source}
+        body["contents"] = [
+            intro,
+            content,
+            {
+                "role": "user",
+                "parts": [
+                    {
+                        "functionResponse": {
+                            "name": "resolve_source_url",
+                            "response": source,
+                        }
+                    }
+                ],
+            },
+            *body["contents"],
+        ]
+        body["tools"] = tools
+        body["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
+        result = generate(body, "editing_and_subtitles")
         candidates = result.get("candidates", [])
         if len(candidates) != 1 or candidates[0].get("finishReason") != "STOP":
             raise PipelineError("VERTEX_SELECTION_INCOMPLETE; no retry")
@@ -198,7 +289,24 @@ def select(analysis, settings, output):
             editorial_plan=editorial_plan,
             subtitle_assistance_applied=False,
             model_version=result.get("modelVersion"),
-            usage=result.get("usageMetadata", {}),
+            usage={
+                key: sum(x["usage"].get(key, 0) for x in record["requests"])
+                for key in (
+                    "promptTokenCount",
+                    "candidatesTokenCount",
+                    "thoughtsTokenCount",
+                    "totalTokenCount",
+                )
+            },
+            fetch_plan=[
+                {
+                    "source_url": source_url,
+                    "start": x["start"],
+                    "end": x["end"],
+                    "candidate_id": x["candidate_id"],
+                }
+                for x in rows
+            ],
         )
     except Exception as error:
         record.update(status="failed_or_unknown", error_type=type(error).__name__)
@@ -221,7 +329,7 @@ def select(analysis, settings, output):
                 "model": MODEL,
                 "project": PROJECT,
                 "elapsed_sec": record["elapsed_sec"],
-                "generation_requests": 1,
+                "generation_requests": record["generation_requests"],
             },
             ensure_ascii=False,
         ),

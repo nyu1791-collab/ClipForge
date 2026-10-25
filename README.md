@@ -17,7 +17,7 @@
 | 5 | 採用した区間だけ取得し、字幕を焼き込んで描画する | ffmpeg・BudouX・fugashi | Colab GPU/NVENC |
 | 6 | 完成クリップと記録を回収・非公開納品する | — | 制御VM |
 
-既定は5本、1本5〜15分です。品質監査・承認待ち・失敗時の自動再実行は行いません。文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。話題選定では保存済みASRをVertex AIの`gemini-3.8-flash`へ1回送り、時間と使用量を記録します。初回接続は[Vertex設定](docs/VERTEX_GEMINI.md)を参照してください。
+既定は5本、1本5〜15分です。品質監査・承認待ち・失敗時の自動再実行は行いません。文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。話題選定では保存済みASRをVertex AIの`gemini-3.8-flash`へ送り、時間と使用量を記録します。初回接続は[Vertex設定](docs/VERTEX_GEMINI.md)を参照してください。
 
 ## 使い方
 
@@ -43,3 +43,5 @@ uv run --no-sync python tools/submit_job.py \
 - [docs/OPERATIONS.md](docs/OPERATIONS.md)：回収・再開・後始末・権限
 - [docs/QUALITY_DECISIONS.md](docs/QUALITY_DECISIONS.md)：字幕と品質の決定事項
 - [docs/YOUTUBE_TRANSPORT.md](docs/YOUTUBE_TRANSPORT.md)：YouTube の取得経路（WARP）
+
+URL解決ツール・Gemini選定・GPU描画・回収まで自動でつなぐ入口は`tools/produce_with_gemini.py`です。初回認証と使い方は[Vertex設定](docs/VERTEX_GEMINI.md#urlからの自動制作)を参照してください。

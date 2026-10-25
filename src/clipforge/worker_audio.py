@@ -1,4 +1,4 @@
-"""Private CPU worker stages reuse one verified ASR artifact; no model API calls."""
+"""CPU planning uses saved ASR and Vertex; GPU rendering consumes the selected intervals."""
 
 import argparse
 import contextlib
@@ -92,7 +92,7 @@ def restore_analysis(previous, output, previous_id):
         or receipt.get("status")
         not in {"topics_allocated", "awaiting_video_review", "selection_ready"}
         or manifest.get("status") != receipt["status"]
-        or manifest.get("model_generation_requests") not in {0, 1}
+        or manifest.get("model_generation_requests") not in {0, 1, 2}
     ):
         raise PipelineError("previous analysis identity or completion state mismatch")
     url = canonical(manifest["source_url"])
@@ -308,12 +308,16 @@ def execute(
                 write_json(output / "review-draft-diagnostics.json", diagnostics)
                 result.update(
                     rendered=[],
-                    model_generation_requests=1,
+                    model_generation_requests=diagnostics["generation_requests"],
+                    automatic_selection=draft,
+                    fetch_plan=diagnostics["fetch_plan"],
                     topic_selection={
                         "provider": "vertex",
                         "model": diagnostics["identity"]["model"],
                         "project": diagnostics["identity"]["project"],
                         "elapsed_sec": diagnostics["elapsed_sec"],
+                        "generation_requests": diagnostics["generation_requests"],
+                        "source_tool": diagnostics["source_tool"],
                         "usage": diagnostics.get("usage", {}),
                     },
                 )
