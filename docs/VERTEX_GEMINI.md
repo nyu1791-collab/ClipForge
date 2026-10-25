@@ -81,3 +81,10 @@ uv run python tools/produce_with_gemini.py 'https://kick.com/CHANNEL/videos/VOD_
 保存済みASRがない新しい配信はanalysisの2引数を省略する。YouTube・Twitch・直接HTTPSも同じ入口を使う。既定は5本・各5〜15分。別の本数はその本数を指定したコミット済みconfigを`--config-file`で選ぶ。選定から描画へ自動で進み、最終成果物を回収する。失敗・不明時は状態とRun IDを保存して停止し、再投入しない。同じ出力先の再起動も二重投入を拒否する。
 
 通常の操作先は公開ClipForge。公開側への認証移行が済んでいない間は、既存の非公開実行経路を`--repository nyu1791-collab/ai-model-workers`で明示できる。実行場所の自動切替はしない。
+
+## 2026-10-25の実行記録
+
+- URLツール＋編集計画: private Run 40218907431。Gemini 3.8 Flashの2リクエスト成功、合計28.216秒。URL、保存済みASRの対応、5本のautomatic_selection、素材取得区間のfetch_planを返した。
+- 描画: private Run 40218308069。先行Run 40217494566でGeminiが選定した5本をL4/NVENCで描画成功。Run全体549秒、描画バッチ437.54秒。新しいURLツール確認のために同じ5本を再描画していない。
+- ASRは再利用。品質監査・承認待ち・自動再試行は実行していない。GPU解放ステップは成功。
+- 公開ClipForgeの認証移行は引き続き未完了。今回は既存の認証済み非公開実行経路を明示して実行した。
