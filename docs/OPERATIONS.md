@@ -35,6 +35,12 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 
 同時に依頼できる初回動画ジョブは、worker種別によらず1件（`tools/submit_job.py` の `MAX_ACTIVE`）。1件の2分割ASRが最大2ランタイムを使うことと、2件の動画ジョブを並行投入することは別。クリップの並列描画は別枠で4件まで（`tools/submit_audio_stage.py`）。入口とActionsで重複実行を防ぎ、待機ジョブを蓄積する用途には使わない。制御VMは依頼・回収・検証・結合だけを担当する。
 
+## 実行前の照合
+
+dispatch前に、固定したコードSHAと実際の非公開workflowの入力名・既定値・出力名を照合する。`python tools/check_worker_workflows.py --help` から対象workflowの検査方法を確認し、配備原本との差分がある場合は意味を確認する。保存先（artifactまたは `result_store=release`）、ファイル上限、受け側の展開予算・空き容量、GPU追加receiptの検証対応を確認する。artifact削除後もquota反映には時間がかかるため、削除成功だけで転送可能と判断しない。
+
+Drive納品を含む依頼では、重い処理の前に納品workflowのbranch、必要入力、Drive認証と対象フォルダへの書込可否を確認する。音声SHA-256・ASR設定・段階receipt・完了成果物は工程ごとに保存し、納品検証が済むまで保持する。ASR完了後の転送や後段の失敗では、保存済み結果を検証して再利用し、同じ認識を再依頼しない。
+
 ## 非公開データの経路と保管
 
 1. ローカル入力は送信元でSHA-256と設定を記録し、非公開workerの一時Releaseへ入力・依頼JSON・任意のチャットJSONを送信する。URLだけの投入はrunnerが音声取得後に一時Releaseを作る。
@@ -49,7 +55,7 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 ## 結果の回収と再開
 
 依頼記録は `~/.local/state/clipforge/<request_id>/receipt.json`。
-`STAGING` / `STAGED` / `DISPATCHED` / `RUNNING` / `COMPLETE` / `FAILED` / `UNCONFIRMED` 等の状態を区別する。APIの応答が不明な場合は自動再送せず、同じ依頼IDのworkflowを確認する。
+`STAGING` / `STAGED` / `DISPATCHED` / `RUNNING` / `COMPLETE` / `FAILED` / `UNCONFIRMED` 等の状態を区別する。POST前に `DISPATCHING`、正常応答後に `DISPATCHED`、応答不明時に `DISPATCH_UNCONFIRMED` を保存する。APIの応答が不明な場合は自動再送せず、同じ依頼IDと完全一致するworkflow runを検索し、見つかったrun IDを記録して追跡する。見つからないだけでは未送信と断定せず、不明状態が解消するまで再dispatchしない。
 
 `--wait` を使わなかった場合、SSH切断、待機上限到達時も、runを再投入せず状態確認・回収を続ける。
 

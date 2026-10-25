@@ -278,7 +278,7 @@ class Controller:
             if cache_profile not in {"cpu", "gpu"}:
                 raise ControlError("Invalid cache profile: use cpu or gpu")
             request["cache_profile"] = cache_profile
-        public_cache = os.environ.get("CLIPFORGE_PUBLIC_CACHE", "on")
+        public_cache = os.environ.get("CLIPFORGE_PUBLIC_CACHE", "off")
         if public_cache not in {"on", "off"}:
             raise ControlError("Invalid public cache setting: use on or off")
         request["public_cache"] = public_cache
@@ -416,7 +416,7 @@ class Controller:
             else os.environ.get("GEMINI_API_KEY", ""),
             "workflow_run": os.environ.get("GITHUB_RUN_ID", "manual"),
             "offline": os.environ.get("CLIPFORGE_OFFLINE") == "1",
-            "public_cache": record.get("public_cache", "on"),
+            "public_cache": record.get("public_cache", "off"),
         }
         if record["mode"] == "audio-stage":
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")

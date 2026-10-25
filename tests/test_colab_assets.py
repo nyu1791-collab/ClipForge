@@ -638,6 +638,7 @@ class RemotePipelineTests(unittest.TestCase):
                 )
                 payload = {
                     "mode": "prepare-cache",
+                    "public_cache": "on",
                     "source_ref": "b" * 40,
                     "workflow_run": "123",
                     "github_token": "test-only-github",
@@ -700,6 +701,7 @@ class RemotePipelineTests(unittest.TestCase):
                         work = root / "job"
                         payload = {
                             "mode": "audio-stage",
+                            "public_cache": "on",
                             "request_id": "a" * 32,
                             "source_ref": "b" * 40,
                             "workflow_run": "123",
@@ -822,6 +824,7 @@ class RemotePipelineTests(unittest.TestCase):
                 output = work / "out"
                 payload = {
                     "mode": "pipeline",
+                    "public_cache": "on",
                     "request_id": "a" * 32,
                     "source_ref": "b" * 40,
                     "input_tag": "clipforge-input-" + "a" * 32,
@@ -913,6 +916,7 @@ class RemoteCacheRecoveryTests(unittest.TestCase):
         report_path = root / "report.json"
         payload = {
             "mode": "audio-stage",
+            "public_cache": "on",
             "request_id": "a" * 32,
             "source_ref": "b" * 40,
             "workflow_run": "123",
@@ -1140,6 +1144,7 @@ class RemoteRenderConfigTests(unittest.TestCase):
             stage["config_file"] = config_file
         payload = {
             "mode": "audio-stage",
+            "public_cache": "on",
             "request_id": "a" * 32,
             "source_ref": "b" * 40,
             "workflow_run": "123",

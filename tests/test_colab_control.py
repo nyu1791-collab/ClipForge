@@ -102,6 +102,47 @@ class ControlTests(unittest.TestCase):
                     controller.run(Path(temporary) / "output")
                 self.assertEqual(uploaded[0]["cache_profile"], expected)
 
+    def test_public_cache_requires_explicit_opt_in_and_survives_state_roundtrip(self):
+        for setting in (None, "off", "on"):
+            with (
+                self.subTest(setting=setting),
+                tempfile.TemporaryDirectory() as temporary,
+                patch.dict(
+                    os.environ,
+                    {**REQUEST, "COLAB_ADC_JSON": "{}", "GH_TOKEN": "test-only"},
+                ),
+                patch.object(control, "authenticated_client") as authenticate,
+                patch("colab_cli.contents.ContentsClient") as contents,
+                patch.object(control, "runtime_from_state"),
+                patch.object(control, "checked_execute"),
+            ):
+                os.environ.pop("CLIPFORGE_PUBLIC_CACHE", None)
+                if setting is not None:
+                    os.environ["CLIPFORGE_PUBLIC_CACHE"] = setting
+                client = authenticate.return_value
+                client.get_consumption_user_info.side_effect = RuntimeError()
+                client.assign.return_value = granted_assignment()
+                controller = control.Controller(temporary)
+                controller.start(mode="prepare-cache")
+                self.assertEqual(controller.state()["public_cache"], setting or "off")
+                if setting is None:
+                    # Older state files must also fail closed when run later.
+                    record = controller.state()
+                    record.pop("public_cache")
+                    control.write_private(controller.state_path, record)
+                os.environ["CLIPFORGE_PUBLIC_CACHE"] = (
+                    "on" if setting != "on" else "off"
+                )
+                uploaded = []
+                contents.return_value.upload.side_effect = (
+                    lambda local, remote: uploaded.append(
+                        json.loads(Path(local).read_text())
+                    )
+                )
+                with patch.object(controller, "collect"):
+                    controller.run(Path(temporary) / "output")
+                self.assertEqual(uploaded[0]["public_cache"], setting or "off")
+
     def test_invalid_cache_profile_stops_before_google_access_or_allocation(self):
         for profile in ("", "GPU", "other", "gpu\n"):
             with (
