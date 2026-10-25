@@ -646,7 +646,17 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
             sum(row.get("timings", {}).get("encode", 0) for row in rows), 3
         ),
         "verify_sec": round(
-            sum(row.get("quality", {}).get("verify_seconds", 0) for row in rows), 3
+            sum(
+                row.get("quality", {}).get(
+                    "total_verify_seconds",
+                    row.get("quality", {}).get("verify_seconds", 0),
+                )
+                for row in rows
+            ),
+            3,
+        ),
+        "audio_correction_sec": round(
+            sum(row.get("timings", {}).get("audio_correction", 0) for row in rows), 3
         ),
         "prefetch_wait_sec": round(
             sum(

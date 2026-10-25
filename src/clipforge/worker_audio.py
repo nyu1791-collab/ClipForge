@@ -762,6 +762,15 @@ def main(argv=None):
                     previous,
                     gh,
                 )
+                previous_source_ref = json.loads(
+                    (previous / "request-receipt.json").read_text()
+                ).get("source_ref")
+                if not isinstance(previous_source_ref, str) or not re.fullmatch(
+                    r"[a-f0-9]{40}", previous_source_ref
+                ):
+                    raise PipelineError(
+                        "previous analysis source SHA is missing or invalid"
+                    )
                 result = execute(
                     previous,
                     args.output,
@@ -774,6 +783,7 @@ def main(argv=None):
             lineage = {
                 "previous_run_id": args.previous_run,
                 "previous_request_id": args.previous_request,
+                "previous_source_ref": previous_source_ref,
             }
         write_receipt(
             args.output,
@@ -808,6 +818,27 @@ def main(argv=None):
         }
         with contextlib.suppress(OSError):
             write_json(args.output / "stage-error.json", record)
+            hashes = {
+                p.relative_to(args.output).as_posix(): digest(p)
+                for p in args.output.rglob("*")
+                if p.is_file()
+                and not p.is_symlink()
+                and p.name != "request-receipt.json"
+                and not any(
+                    part.startswith(".") for part in p.relative_to(args.output).parts
+                )
+            }
+            write_json(
+                args.output / "request-receipt.json",
+                {
+                    "request_id": args.request_id,
+                    "source_ref": args.source_ref,
+                    "workflow_run": os.environ.get("GITHUB_RUN_ID"),
+                    "status": "failed",
+                    "audio_stage": args.stage,
+                    "sha256": hashes,
+                },
+            )
         line = "Private audio stage failed: " + type(error).__name__
         if message:
             line += ": " + message

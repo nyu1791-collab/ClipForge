@@ -381,6 +381,75 @@ def _audio_tail(settings, duration, measured):
     return tail + "[aout]"
 
 
+def correct_completed_audio(directory, report, duration):
+    """One bounded recovery using final AAC measurements; encoded video is copied."""
+    if (
+        report.get("failures")
+        != ["completed audio loudness is outside -17 to -15 LUFS"]
+        or not report.get("full_decode_performed")
+        or not report.get("loudness_measured")
+    ):
+        return None
+    metrics = report.get("metrics", {})
+    lufs, peak = metrics.get("integrated_lufs"), metrics.get("true_peak_dbtp")
+    if any(
+        type(value) not in (float, int) or not math.isfinite(value)
+        for value in (lufs, peak)
+    ):
+        return None
+    gain = -16.0 - lufs
+    # Leave AAC overshoot headroom; a second strict scan remains mandatory.
+    if abs(gain) > 6 or peak + gain > -1.5:
+        return None
+    original = Path(directory) / "video.mp4"
+    corrected = Path(directory) / "audio-corrected.mp4"
+    try:
+        process(
+            [
+                "ffmpeg",
+                "-nostdin",
+                "-hide_banner",
+                "-v",
+                "error",
+                "-n",
+                *PROTOCOLS,
+                *FORMATS,
+                "-i",
+                str(original.resolve()),
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
+                "-c:v",
+                "copy",
+                "-af",
+                f"volume={gain:.3f}dB",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "160k",
+                "-ar",
+                str(AUDIO_RATE),
+                "-movflags",
+                "+faststart",
+                str(corrected.resolve()),
+            ],
+            timeout=max(300, duration * 5),
+            stage="audio-correction",
+        )
+        corrected.replace(original)
+    finally:
+        corrected.unlink(missing_ok=True)
+    return {
+        "method": "completed_aac_measured_gain",
+        "gain_db": round(gain, 3),
+        "original_integrated_lufs": lufs,
+        "original_true_peak_dbtp": peak,
+        "video_stream_copied": True,
+        "additional_full_verification_required": True,
+    }
+
+
 def render(
     source,
     destination,

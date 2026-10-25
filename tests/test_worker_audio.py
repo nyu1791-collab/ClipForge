@@ -56,6 +56,7 @@ def previous_analysis(tmp_path, monkeypatch):
     ]
     receipt = {
         "request_id": IDENTITY,
+        "source_ref": "a" * 40,
         "status": "topics_allocated",
         "audio_source_url": URL,
         "sha256": {name: digest(previous / name) for name in files},

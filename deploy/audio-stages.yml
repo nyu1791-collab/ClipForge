@@ -112,7 +112,7 @@
         },
         {
           "name": "Save the verified private result transfer",
-          "if": "success() && inputs.result_store == 'release'",
+          "if": "always() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
             "GH_TOKEN": "${{ github.token }}",
@@ -223,7 +223,7 @@
         },
         {
           "name": "Save the verified private result transfer",
-          "if": "success() && inputs.result_store == 'release'",
+          "if": "always() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
             "GH_TOKEN": "${{ github.token }}",

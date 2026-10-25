@@ -430,6 +430,45 @@ def render_clip(
                 ),
             ),
         )
+        original_verify_seconds = report.get("verify_seconds", 0)
+        correction = None
+        if settings.quality_gate == "strict" and not report["passed"]:
+            correction = timed(
+                timings,
+                "audio_correction",
+                lambda: media.correct_completed_audio(
+                    directory, report, info["duration"]
+                ),
+            )
+        if correction is not None:
+            report = timed(
+                timings,
+                "quality_recheck",
+                lambda: quality.check_clip(
+                    directory,
+                    info,
+                    caption["missing_glyphs"],
+                    settings,
+                    static=layout.get("static") if layout else None,
+                ),
+            )
+            correction["original_verify_seconds"] = original_verify_seconds
+            report["audio_correction"] = correction
+            report["verification_passes"] = 2
+            report["total_verify_seconds"] = round(
+                original_verify_seconds + report.get("verify_seconds", 0), 3
+            )
+            quality.record(directory, report)
+        if not report["passed"]:
+            # Retain measured failure diagnostics even when the temporary MP4 is removed.
+            write_json(
+                root / (name + "-failed-quality.json"),
+                {
+                    "clip": index,
+                    "quality": report,
+                    "timings": timings,
+                },
+            )
         quality.enforce(report, settings.quality_gate)
         names = sorted(
             REQUIRED_FILES | {n for n in OPTIONAL_FILES if (directory / n).is_file()}
