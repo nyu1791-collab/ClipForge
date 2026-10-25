@@ -19,9 +19,9 @@
    ```
 
    Vertex APIの有効化、専用サービスアカウントと鍵なしGitHub OIDC接続を作る。サービスアカウントキー・APIキーは作らない。
-3. 最後に表示されるプロジェクト番号を、private workerのActions変数`CLIPFORGE_VERTEX_PROJECT_NUMBER`へ登録する。番号は秘密情報ではない。
+3. 最後に表示されるプロジェクト番号を、ClipForgeのActions変数`CLIPFORGE_VERTEX_PROJECT_NUMBER`へ登録する。番号は秘密情報ではない。
 
-Google側で権限を与えるのは`nyu1791-collab/ClipForge`の`fix/pr18-verified-transfer`ブランチだけ。専用の権限はVertexの推論とそのプロジェクト利用に限定する。他のGoogleアカウントの資格情報は流用しない。mainの変更は行わない。
+Google側で権限を与えるのは`nyu1791-collab/ClipForge`の`main`と`fix/pr18-verified-transfer`ブランチだけ。専用の権限はVertexの推論とそのプロジェクト利用に限定する。他のGoogleアカウントの資格情報は流用しない。mainへの反映はユーザー承認済み。
 
 Cloud Shell:
 https://console.cloud.google.com/home/dashboard?project=project-fdadb4dd-cb77-4270-9cd&cloudshell=true

@@ -1,8 +1,5 @@
 name: Quality
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       full_repetitions:

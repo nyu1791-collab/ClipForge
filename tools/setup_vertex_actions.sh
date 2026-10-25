@@ -24,7 +24,7 @@ gcloud projects add-iam-policy-binding "$vertex_project" --member="serviceAccoun
 if ! gcloud iam workload-identity-pools describe clipforge-actions --location=global --project="$vertex_project" >/dev/null 2>&1; then
   gcloud iam workload-identity-pools create clipforge-actions --location=global --display-name='ClipForge Actions' --project="$vertex_project" --quiet
 fi
-vertex_condition="assertion.repository == 'nyu1791-collab/ClipForge' && assertion.ref == 'refs/heads/fix/pr18-verified-transfer'"
+vertex_condition="assertion.repository == 'nyu1791-collab/ClipForge' && assertion.ref in ['refs/heads/main', 'refs/heads/fix/pr18-verified-transfer']"
 vertex_mapping='google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref'
 if gcloud iam workload-identity-pools providers describe github --workload-identity-pool=clipforge-actions --location=global --project="$vertex_project" >/dev/null 2>&1; then
   gcloud iam workload-identity-pools providers update-oidc github --workload-identity-pool=clipforge-actions --location=global --project="$vertex_project" --issuer-uri='https://token.actions.githubusercontent.com' --attribute-mapping="$vertex_mapping" --attribute-condition="$vertex_condition" --quiet
