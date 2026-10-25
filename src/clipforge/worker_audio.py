@@ -233,6 +233,14 @@ def _volume_series(source, info):
 def execute(
     previous, output, previous_id, settings, mode, review_file=None, clip_index=None
 ):
+    if mode == "render":
+        settings = settings.model_copy(
+            update={"video_encoder": "h264_nvenc", "loudness_two_pass": False}
+        )
+        # Fail before downloading analysis/media if this GPU cannot actually encode.
+        from .hardware import video_options
+
+        video_options(settings, 18)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     with audio_first.exclusive(output):
         url = restore_analysis(previous, output, previous_id)

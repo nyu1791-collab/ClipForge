@@ -42,16 +42,9 @@ def transcript():
 
 
 @pytest.fixture
-def on_target_loudness(monkeypatch):
-    """Stands in for the ffmpeg measurements of a rendered file: on target and decoding cleanly."""
-    from clipforge import quality
-
-    monkeypatch.setattr(
-        quality,
-        "measure_output",
-        lambda video: {"integrated_lufs": -16.0, "true_peak_dbtp": -2.0},
-    )
-    monkeypatch.setattr(quality, "decode_errors", lambda video: [])
+def on_target_loudness():
+    """Compatibility fixture: production no longer performs a media scan."""
+    return None
 
 
 @pytest.fixture

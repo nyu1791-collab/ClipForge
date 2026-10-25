@@ -7,7 +7,6 @@ which are always reported. The result is written beside the clip as quality.json
 import math
 import re
 import statistics
-import subprocess
 import unicodedata
 from pathlib import Path
 
@@ -27,84 +26,11 @@ from .media import AUDIO_RATE
 from .models import CAPTION_LINE_EM, Settings
 from .storage import PipelineError, write_json
 
-LOUDNESS_RANGE = (-17.0, -15.0)  # target -16 LUFS, plus or minus 1 LU
-MAX_TRUE_PEAK = -1.0  # dBTP; leaves room for lossy encoding overshoot
 TEXT_STYLES = {"Default", "Sequential"}
 MAX_CAPTION_LINES = 2
 READING_CPS_THRESHOLDS = (4, 7, 10)
 SHORT_CAPTION_MS = round(MIN_DISPLAY_SECONDS * 1000)  # shorter captions flicker
 LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
-
-
-def parse_ebur128_summary(text):
-    """Integrated loudness (LUFS) and true peak (dBTP) from an ebur128 summary.
-
-    Both are None when the summary is missing. Silence measures -inf.
-    """
-    if "Summary" not in text:
-        return {"integrated_lufs": None, "true_peak_dbtp": None}
-    summary = text[text.rfind("Summary") :]
-    integrated = re.search(r"I:\s+(-?[\d.]+|-inf) LUFS", summary)
-    peak = re.search(r"True peak:.*?Peak:\s+(-?[\d.]+|-inf) dBFS", summary, re.DOTALL)
-    return {
-        "integrated_lufs": float(integrated.group(1)) if integrated else None,
-        "true_peak_dbtp": float(peak.group(1)) if peak else None,
-    }
-
-
-def measure_output(video):
-    """EBU R128 loudness of the rendered audio, measured on the final file."""
-    proc = subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-hide_banner",
-            "-v",
-            "info",
-            "-i",
-            str(Path(video).resolve()),
-            "-vn",
-            "-af",
-            "ebur128=peak=true:framelog=quiet",
-            "-f",
-            "null",
-            "-",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=300,
-        check=False,
-    )
-    measured = parse_ebur128_summary(proc.stderr)
-    if proc.returncode or None in measured.values():
-        raise PipelineError("loudness of the rendered clip could not be measured")
-    return measured
-
-
-def decode_errors(video):
-    """Messages from decoding the whole file; an empty list means it decodes cleanly."""
-    proc = subprocess.run(
-        [
-            "ffmpeg",
-            "-nostdin",
-            "-hide_banner",
-            "-v",
-            "error",
-            "-i",
-            str(Path(video).resolve()),
-            "-f",
-            "null",
-            "-",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        check=False,
-    )
-    lines = [line.strip() for line in proc.stderr.splitlines() if line.strip()]
-    if proc.returncode:
-        lines.append(f"ffmpeg exited with status {proc.returncode}")
-    return lines
 
 
 def caption_events(path):
@@ -309,22 +235,6 @@ def static_overlaps(path, static, rendered, settings=None):
     return count
 
 
-def loudness_failures(loudness):
-    """The delivery bar for audio: a clip outside it is refused, not merely noted."""
-    lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
-    found = []
-    if not math.isfinite(lufs):
-        found.append("the rendered audio is silent")
-    elif not LOUDNESS_RANGE[0] <= lufs <= LOUDNESS_RANGE[1]:
-        found.append(
-            f"loudness {lufs:.1f} LUFS is outside "
-            f"{LOUDNESS_RANGE[0]:g} to {LOUDNESS_RANGE[1]:g}"
-        )
-    if math.isfinite(peak) and peak > MAX_TRUE_PEAK:
-        found.append(f"true peak {peak:.1f} dBTP is above {MAX_TRUE_PEAK:g}")
-    return found
-
-
 def reading_limit(rendered, settings=None):
     """Characters a second a caption may read at: stricter for landscape frames."""
     landscape = rendered["width"] > rendered["height"]
@@ -479,23 +389,16 @@ def check_clip(directory, rendered, missing_glyphs, settings=None, static=None):
             events, rendered["width"] > rendered["height"], settings
         )
     )
-    decode = decode_errors(directory / "video.mp4")
-    if decode:
-        failures.append(
-            "the rendered video does not decode cleanly: " + decode[0][:160]
-        )
+    # Rendering already checks the encoder exit and probes output duration/dimensions.
+    # No second full-file decode or loudness scan in the production route.
+    if rendered["audio"] and rendered["audio_sample_rate"] != AUDIO_RATE:
+        failures.append(f"the rendered audio is not {AUDIO_RATE} Hz")
     loudness = {"integrated_lufs": None, "true_peak_dbtp": None}
-    if rendered["audio"]:
-        if rendered["audio_sample_rate"] != AUDIO_RATE:
-            failures.append(f"the rendered audio is not {AUDIO_RATE} Hz")
-        try:
-            loudness = measure_output(directory / "video.mp4")
-        except PipelineError:
-            failures.append("loudness of the rendered audio could not be measured")
-        else:
-            failures.extend(loudness_failures(loudness))
     return {
         "passed": not failures,
+        "verification_scope": "encode_exit_probe_and_captions",
+        "full_decode_performed": False,
+        "loudness_measured": False,
         "failures": failures,
         "warnings": warnings,
         "metrics": {

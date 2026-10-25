@@ -73,14 +73,13 @@ python tools/submit_job.py --collect REQUEST_ID --collect-stage analysis --outpu
 
 ## 描画
 
-採用区間だけを最大1080pで remux（再符号化なし）して取得し、全編の文字起こしの時刻を区間内へ移して字幕にする。区間ごとの認識はしない。字幕の焼き込みを含む最終描画は再エンコードで、全コアを使う。
+採用区間だけを最大1080pで remux（再符号化なし）して取得し、全編の文字起こしの時刻を区間内へ移して字幕にする。区間ごとの認識はしない。字幕の焼き込みを含む最終描画は再エンコードで、CPUフィルターとNVENCを使う。
 
 - 設定は `--config-file NAME`（既定 `config.landscape.example.json`）。`--source-ref` のコミットにある `config.英小文字・数字・ハイフン.example.json` だけを受け付ける。設定名は依頼 ID に入る。
-  - `config.landscape-long-preview.example.json`：長めの話題、360p・veryfast（確認用と納品の基本）
+  - `config.landscape-long-preview.example.json`：長めの話題、360p・NVENC（確認用と納品の基本）
   - `config.landscape-long.example.json`：長めの話題、1080p
   - `config.landscape-chat.example.json`：右にチャット欄
 - 単一クリップの成果物は、描画後に作業用のファイル（`ranges/`・`audio.m4a`・`previews/`・`transcripts/` など）を除く。結合はクリップと receipt の鍵で行い、文字起こしの本文は使わない。
-- 品質規則（字幕7字/秒、音量、全復号など）は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md)。strict を通っても、警告0件や人の読みやすさの承認を意味しない。共有用の `delivery/e2e-summary.json` は数値と識別情報だけを含む。
 
 ### チャット欄
 

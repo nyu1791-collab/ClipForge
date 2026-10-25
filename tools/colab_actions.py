@@ -129,15 +129,15 @@ def colab_shape():
     return shapes[name]
 
 
-# Clip rendering is CPU work (x264), so it tries the cheapest runtime first and moves on only
-# on TooManyAssignmentsError (412), never on permission or rate-limit errors.
+# Production rendering requires NVENC; allocate a GPU and never silently fall back to CPU.
+# Try the next GPU only on TooManyAssignmentsError (412).
 # Measured 2026-10-22: at most two T4 and two
 # L4 at once, counted per kind; three CPU high-ram and two CPU standard were granted together.
 # Rates then: CPU high-ram 0.26, T4 1.07, T4 high-ram 1.27, L4 1.54 compute units an hour.
 # Measured 2026-10-22: a second pipeline's T4 high-ram was refused; capacity varies.
 DEFAULT_POOLS = {
     "asr": "T4:high-ram,T4:standard,L4",
-    "audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4",
+    "audio-stage": "L4,T4:high-ram,T4:standard",
 }
 
 

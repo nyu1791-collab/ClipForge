@@ -4,7 +4,7 @@
 asr: one audio part is recognised with Parakeet in the runtime's own Python. NeMo and the
 model are fetched in the background from the start, alongside the input download, and the
 project environment is never installed. audio-stage: one reviewed clip (or every clip) is
-rendered on a CPU runtime from the verified analysis.
+rendered with NVENC on a GPU runtime from the verified analysis.
 """
 
 import ctypes
@@ -381,7 +381,7 @@ def main():
             "YOUTUBE_COOKIES_B64",
         }
     }
-    # Clip rendering may run on a CPU runtime; it needs no CUDA.
+    # GPU rendering uses the driver/NVENC without installing the ASR environment.
     environment.update(
         {
             "CLIPFORGE_CPU_ONLY": "1" if accelerator == "NONE" else "0",

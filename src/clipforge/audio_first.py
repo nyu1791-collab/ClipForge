@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import fcntl
 import json
+import time
 import math
 from pathlib import Path
 import re
@@ -550,6 +551,7 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
         / f"{fingerprint({'start': clip.start, 'end': clip.end, 'media_format': RANGE_FORMAT})}.mp4"
         for clip in clips
     ]
+    wall_started = time.monotonic()
     rows, timings = [], {}
     indexes = range(1, len(clips) + 1) if only is None else [only]
     # The next clip's segments are fetched over HTTP while the current clip is rendered.
@@ -628,6 +630,7 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
                 flush=True,
             )
     # Total wall-clock seconds spent waiting, fetching and rendering, summed over clips.
+    timings["wall_seconds"] = round(time.monotonic() - wall_started, 2)
     timings["total"] = round(
         sum(v for t in timings.values() if isinstance(t, dict) for v in t.values()), 2
     )

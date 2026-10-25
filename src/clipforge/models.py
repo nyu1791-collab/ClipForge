@@ -95,7 +95,7 @@ class Settings(Record):
     # Heading font scale; 1.0 is 7% of the frame height.
     heading_scale: float = Field(default=1.0, ge=0.8, le=1.6)
     workers: int = Field(default=2, ge=1, le=4)
-    loudness_two_pass: bool = True
+    loudness_two_pass: Literal[False] = False
     topics: bool = True
     topic_min_seconds: float = Field(default=25, ge=5, le=120)
     topic_max_seconds: float = Field(default=180, ge=30, le=1800)

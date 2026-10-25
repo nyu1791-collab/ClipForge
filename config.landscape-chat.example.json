@@ -21,5 +21,7 @@
   "topic_max_seconds": 180,
   "quality_gate": "strict",
   "chat_panel": true,
-  "chat_panel_fit": "fill"
+  "chat_panel_fit": "fill",
+  "video_encoder": "h264_nvenc",
+  "loudness_two_pass": false
 }

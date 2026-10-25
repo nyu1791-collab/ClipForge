@@ -33,7 +33,7 @@ REQUIRED_FILES = {
     "topics.json",
 }
 MAX_LISTED_FILES = 500
-DEFAULT_CONFIG_FILE = "config.landscape.example.json"
+DEFAULT_CONFIG_FILE = "config.landscape-long-preview.example.json"
 CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
 SUBMIT_OPTIONS = (
     "stage",
@@ -534,7 +534,7 @@ def clip_indices(args, worker):
     if args.clips is not None:
         if not 1 <= args.clips <= MAX_ACTIVE["colab-auto"] or worker != "colab-auto":
             raise AudioStageError(
-                "parallel clips need --worker colab-auto and 1 to 4 clips"
+                "parallel clips need --worker colab-auto and 1 to 5 clips"
             )
         return list(range(1, args.clips + 1))
     return [None]
@@ -666,7 +666,9 @@ def main(argv=None):
         if review is None:
             raise AudioStageError("render requires reviewed topic intervals")
         require_video_review(review)
-    worker = args.worker or "cpu"
+    worker = args.worker or ("colab-auto" if args.stage == "render" else "cpu")
+    if args.stage == "render" and worker != "colab-auto":
+        raise AudioStageError("render requires the Parakeet GPU/NVENC production route")
     indices = clip_indices(args, worker)
     part_runs = args.part_runs or ""
     if (args.stage == "merge") != bool(part_runs) or (
