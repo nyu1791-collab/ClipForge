@@ -413,6 +413,7 @@ def main():
             "GH_TOKEN",
             "GITHUB_TOKEN",
             "GEMINI_API_KEY",
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN",
             "COLAB_ADC_JSON",
             "YOUTUBE_COOKIES_B64",
         }

@@ -30,3 +30,6 @@ transcript-cache/
 .codex/auth.json
 .DS_Store
 .claude/worktrees/
+
+# Temporary OIDC credentials from google-github-actions/auth.
+gha-creds-*.json

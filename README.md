@@ -10,12 +10,12 @@
 | --- | --- | --- | --- |
 | 1 | 配信の音声を取得する（Kick・YouTube・Twitch・直接 HTTPS） | yt-dlp・ffmpeg（YouTube は任意で WARP） | Actions runner |
 | 2 | 全編を最大4台で文字起こしする | NVIDIA Parakeet（`nvidia/parakeet-tdt_ctc-0.6b-ja`） | Colab GPU（L4・T4） |
-| 3 | 5分以上の話題にまとめ、保存済みASRから採用候補を作る | 規則（間と語彙の変化） | Actions runner |
-| 4 | 5本以上の採用区間と見出しをJSONへ保存する | 制御側 | 手元 |
+| 3 | 5分以上の話題にまとめ、保存済みASRから採用候補を作る | 規則で区間をまとめ、Vertex Geminiで選ぶ | Actions runner |
+| 4 | 5本以上の採用区間と見出しをJSONへ保存する | Geminiの選定結果 | Actions runner |
 | 5 | 採用した区間だけ取得し、字幕を焼き込んで描画する | ffmpeg・BudouX・fugashi | Colab GPU/NVENC |
 | 6 | 完成クリップと記録を回収・非公開納品する | — | 制御VM |
 
-既定は5本、1本5〜15分です。品質監査・承認待ち・失敗時の自動再実行は行いません。文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。外部の生成AIは呼びません。
+既定は5本、1本5〜15分です。品質監査・承認待ち・失敗時の自動再実行は行いません。文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。話題選定では保存済みASRをVertex AIの`gemini-3.8-flash`へ1回送り、時間と使用量を記録します。初回接続は[Vertex設定](docs/VERTEX_GEMINI.md)を参照してください。
 
 ## 使い方
 

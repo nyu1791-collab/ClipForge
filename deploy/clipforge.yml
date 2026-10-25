@@ -371,7 +371,9 @@
         "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
         "REQUEST_ID": "${{ inputs.request_id }}",
         "CPU_PACKAGES": "ffmpeg fontconfig fonts-noto-cjk libcairo2",
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_TOPIC_MODEL": "gemini-3.8-flash",
+        "CLIPFORGE_VERTEX_PROJECT": "project-fdadb4dd-cb77-4270-9cd"
       },
       "steps": [
         {
@@ -441,10 +443,25 @@
           "run": "uv run --no-sync python - <<'PY'\nimport json, os\nfrom pathlib import Path\nfrom tools.submit_job import parse_settings_json\nsettings = parse_settings_json(os.environ['SETTINGS_JSON'])\npath = Path(os.environ['RUNNER_TEMP']) / 'preview-settings.json'\npath.write_text(json.dumps(settings))\npath.chmod(0o600)\nPY\n"
         },
         {
-          "name": "Verify this run's analysis and create previews and an unapproved draft",
+          "name": "Connect the dedicated Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "token_format": "access_token",
+            "access_token_lifetime": "900s",
+            "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
+            "create_credentials_file": false,
+            "export_environment_variables": false
+          }
+        },
+        {
+          "name": "Select long topics with Gemini from saved ASR",
           "timeout-minutes": 60,
           "env": {
-            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}"
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}"
           },
           "run": "uv run --no-sync python tools/run_audio_stage.py --stage previews \\\n  --same-run-analysis \"$RUNNER_TEMP/clipforge-analysis\" \\\n  --previous-run \"$GITHUB_RUN_ID\" --previous-request \"$REQUEST_ID\" \\\n  --request-id \"$REQUEST_ID\" --source-ref \"$CLIPFORGE_SOURCE_REF\" \\\n  --config \"$RUNNER_TEMP/preview-settings.json\" --output \"$RUNNER_TEMP/clipforge-previews\"\n"
         },
@@ -471,8 +488,21 @@
             "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
           },
           "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+        },
+        {
+          "name": "Keep Gemini failure timing without another generation",
+          "if": "failure()",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "receipt=\"$RUNNER_TEMP/clipforge-previews/vertex-selection-receipt.json\"\nif [ -f \"$receipt\" ]; then\n  gh release create \"clipforge-vertex-failure-$GITHUB_RUN_ID\" \"$receipt\" --repo \"$GITHUB_REPOSITORY\" --latest=false --title \"Gemini failure $GITHUB_RUN_ID\" --notes 'One attempt; no retry. Private timing and usage record.'\nfi\n"
         }
-      ]
+      ],
+      "permissions": {
+        "contents": "write",
+        "actions": "read",
+        "id-token": "write"
+      }
     }
   },
   "on": {

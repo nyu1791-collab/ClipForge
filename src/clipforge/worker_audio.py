@@ -14,7 +14,6 @@ from . import (
     audio_first,
     landscape,
     media,
-    review_draft,
 )
 from .github_cli import run as run_gh
 from .release_transfer import download_stage
@@ -68,7 +67,7 @@ def restore_analysis(previous, output, previous_id):
         or receipt.get("status")
         not in {"topics_allocated", "awaiting_video_review", "selection_ready"}
         or manifest.get("status") != receipt["status"]
-        or manifest.get("model_generation_requests") != 0
+        or manifest.get("model_generation_requests") not in {0, 1}
     ):
         raise PipelineError("previous analysis identity or completion state mismatch")
     url = canonical(manifest["source_url"])
@@ -98,7 +97,10 @@ def restore_analysis(previous, output, previous_id):
         (previous / "transcripts" / (key + ".json")).read_text()
     )
     for name in hashes:
-        allowed = name in required - {"manifest.json"} or name == "previews.json"
+        allowed = name in required - {"manifest.json"} or name in {
+            "previews.json",
+            "vertex-selection-receipt.json",
+        }
         if allowed:
             target = within(output, output / name)
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -274,16 +276,22 @@ def execute(
                     "video_review_performed": False,
                 }
                 write_json(output / "previews.json", result)
-                draft, diagnostics = review_draft.build_review_draft(
-                    analysis[0],
-                    result,
-                    settings,
-                    transcript=analysis[1],
-                    volume_reason="disabled_for_fast_production",
-                )
+                from .vertex_selection import select
+
+                draft, diagnostics = select(analysis[0], settings, output)
                 write_json(output / "review-draft.json", draft)
                 write_json(output / "review-draft-diagnostics.json", diagnostics)
-                result.update(rendered=[], model_generation_requests=0)
+                result.update(
+                    rendered=[],
+                    model_generation_requests=1,
+                    topic_selection={
+                        "provider": "vertex",
+                        "model": diagnostics["identity"]["model"],
+                        "project": diagnostics["identity"]["project"],
+                        "elapsed_sec": diagnostics["elapsed_sec"],
+                        "usage": diagnostics.get("usage", {}),
+                    },
+                )
             elif mode == "render" and review_file is not None:
                 audio_first.render(
                     vod,
@@ -303,6 +311,12 @@ def execute(
             audio_first.discard_transport_cache(vod)
             if vod is not None:
                 vod.close()
+        if mode == "render":
+            prior_selection = json.loads((previous / "manifest.json").read_text()).get(
+                "topic_selection"
+            )
+            if prior_selection is not None:
+                result["topic_selection"] = prior_selection
         result.update(
             source_url=url,
             source_sha256=digest(source),
@@ -753,7 +767,7 @@ def main(argv=None):
         summary = {
             "status": result["status"],
             "asr_reused": True,
-            "model_generation_requests": 0,
+            "model_generation_requests": result.get("model_generation_requests", 0),
         }
         if "timings" in result:
             summary["timings"] = result["timings"]

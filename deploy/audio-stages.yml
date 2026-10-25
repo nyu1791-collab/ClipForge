@@ -26,7 +26,9 @@
         "PART_RUNS": "${{ inputs.part_runs }}",
         "CONFIG_FILE": "${{ inputs.config_file }}",
         "CPU_PACKAGES": "ffmpeg fontconfig fonts-noto-cjk libcairo2",
-        "PYTHONUNBUFFERED": "1"
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_TOPIC_MODEL": "gemini-3.8-flash",
+        "CLIPFORGE_VERTEX_PROJECT": "project-fdadb4dd-cb77-4270-9cd"
       },
       "steps": [
         {
@@ -98,10 +100,26 @@
           "if": "inputs.audio_stage == 'render'"
         },
         {
-          "name": "Reuse verified ASR and execute only the requested stage",
+          "name": "Connect the dedicated Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "token_format": "access_token",
+            "access_token_lifetime": "900s",
+            "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
+            "create_credentials_file": false,
+            "export_environment_variables": false
+          },
+          "if": "inputs.audio_stage == 'previews'"
+        },
+        {
+          "name": "Execute the requested stage with saved ASR",
           "env": {
             "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
-            "GH_TOKEN": "${{ github.token }}"
+            "GH_TOKEN": "${{ github.token }}",
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}"
           },
           "run": "if [ \"$AUDIO_STAGE\" = merge ]; then\n  # The clip renders are verified private artifacts; merge checks every hash again.\n  uv run --no-sync python tools/run_audio_stage.py --stage merge \\\n    --part-runs \"$PART_RUNS\" --previous-request \"$PREVIOUS_REQUEST\" \\\n    --request-id \"$REQUEST_ID\" --source-ref \"$SOURCE_REF\" --output artifacts/audio-stage \\\n    --config \"$CONFIG_FILE\"\nelse\n  set -- --previous-run \"$PREVIOUS_RUN\" --previous-request \"$PREVIOUS_REQUEST\" \\\n    --request-id \"$REQUEST_ID\" --source-ref \"$SOURCE_REF\" \\\n    --review-file \"$RUNNER_TEMP/review.json\" --output artifacts/audio-stage \\\n    --config \"$CONFIG_FILE\"\n  if [ -n \"$CLIP_INDEX\" ]; then set -- \"$@\" --clip-index \"$CLIP_INDEX\"; fi\n  uv run --no-sync python tools/run_audio_stage.py --stage \"$AUDIO_STAGE\" \"$@\"\nfi\n"
         },
@@ -127,8 +145,21 @@
             "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
           },
           "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+        },
+        {
+          "name": "Keep Gemini failure timing without another generation",
+          "if": "failure()",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "receipt=\"artifacts/audio-stage/vertex-selection-receipt.json\"\nif [ -f \"$receipt\" ]; then\n  gh release create \"clipforge-vertex-failure-$GITHUB_RUN_ID\" \"$receipt\" --repo \"$GITHUB_REPOSITORY\" --latest=false --title \"Gemini failure $GITHUB_RUN_ID\" --notes 'One attempt; no retry. Private timing and usage record.'\nfi\n"
         }
-      ]
+      ],
+      "permissions": {
+        "contents": "write",
+        "actions": "read",
+        "id-token": "write"
+      }
     },
     "colab-render": {
       "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.worker == 'colab-auto'",

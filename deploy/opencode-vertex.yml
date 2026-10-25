@@ -1,0 +1,102 @@
+{
+  "name": "OpenCode Vertex Gemini task",
+  "run-name": "OpenCode Vertex ${{ github.run_id }}",
+  "on": {
+    "workflow_dispatch": {
+      "inputs": {
+        "source_ref": {
+          "type": "string",
+          "required": true,
+          "description": "Exact ClipForge source SHA with the Vertex harness"
+        },
+        "task": {
+          "type": "string",
+          "required": true,
+          "description": "One explicit coding task; no automatic audit task"
+        },
+        "mode": {
+          "type": "choice",
+          "options": [
+            "read",
+            "write"
+          ],
+          "default": "read"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "write",
+    "id-token": "write"
+  },
+  "concurrency": {
+    "group": "clipforge-opencode-vertex",
+    "cancel-in-progress": false
+  },
+  "jobs": {
+    "task": {
+      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 25,
+      "steps": [
+        {
+          "name": "Prepare explicit task",
+          "env": {
+            "SOURCE_REF": "${{ inputs.source_ref }}",
+            "TASK_TEXT": "${{ inputs.task }}"
+          },
+          "run": "python3 - <<'PYCODE'\nimport os,pathlib,re\nassert re.fullmatch('[a-f0-9]{40}',os.environ['SOURCE_REF'])\ntext=os.environ['TASK_TEXT']\nassert text.strip() and len(text.encode()) <= 16000\np=pathlib.Path(os.environ['RUNNER_TEMP'])/'opencode-task.md'\np.write_text(text);p.chmod(0o600)\nPYCODE"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "path": "clipforge-source",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-node@v4",
+          "with": {
+            "node-version": "22"
+          }
+        },
+        {
+          "name": "Install pinned OpenCode without package audit",
+          "run": "npm install --prefix \"$RUNNER_TEMP/opencode\" --no-audit --no-fund opencode-ai@1.19.4"
+        },
+        {
+          "name": "Connect Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "create_credentials_file": true,
+            "export_environment_variables": false
+          }
+        },
+        {
+          "name": "Run the requested OpenCode task once",
+          "working-directory": "clipforge-source",
+          "env": {
+            "GOOGLE_APPLICATION_CREDENTIALS": "${{ steps.vertex.outputs.credentials_file_path }}",
+            "CLIPFORGE_OPENCODE_BIN": "${{ runner.temp }}/opencode/node_modules/.bin/opencode",
+            "CLIPFORGE_AGENT_STATE": "${{ runner.temp }}/opencode-state",
+            "TASK_MODE": "${{ inputs.mode }}"
+          },
+          "run": "python3 tools/opencode_harness.py --mode \"$TASK_MODE\" --model vertex --task \"$RUNNER_TEMP/opencode-task.md\" --parallel 1 --timeout 900"
+        },
+        {
+          "name": "Save the task report privately",
+          "if": "always()",
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "run": "python3 - <<'PYCODE'\nimport os,pathlib,shutil,json,subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])\nreports=root/'opencode-report';reports.mkdir(exist_ok=True)\nfor result in (root/'opencode-state/opencode-agents/runs').glob('*/result.json'):\n data=json.loads(result.read_text())\n shutil.copyfile(result,reports/'result.json')\n src=result.parent/'report.md'\n if src.exists():shutil.copyfile(src,reports/'report.md')\n if data.get('mode')=='write':\n  diff=subprocess.run(['git','-C',data['workdir'],'diff','--binary'],capture_output=True,check=True)\n  (reports/'changes.patch').write_bytes(diff.stdout)\nPYCODE\nif [ -f \"$RUNNER_TEMP/opencode-report/result.json\" ]; then\n gh release create \"clipforge-opencode-$GITHUB_RUN_ID\" \"$RUNNER_TEMP/opencode-report/\"* --repo \"$GITHUB_REPOSITORY\" --latest=false --title \"OpenCode task $GITHUB_RUN_ID\" --notes 'Private task result; no automatic retry.'\nfi"
+        }
+      ]
+    }
+  }
+}
