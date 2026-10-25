@@ -10,27 +10,26 @@
   },
   "jobs": {
     "upload-release": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.mode == 'upload-release'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 30,
       "steps": [
         {
           "uses": "actions/checkout@v4",
           "with": {
-            "persist-credentials": false,
-            "ref": "d85a64c56bc6a2b358f93903cb4010edbc960d51"
+            "persist-credentials": false
           }
         },
         {
           "name": "Transfer completed render outputs to private Drive",
           "env": {
-            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
             "GOOGLE_DRIVE_ADC_JSON": "${{ secrets.GOOGLE_DRIVE_ADC_JSON }}",
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "RENDER_RUN": "${{ inputs.render_run }}",
             "RENDER_REQUEST": "${{ inputs.render_request }}",
             "SOURCE_REF": "${{ inputs.source_ref }}",
-            "PYTHONPATH": "src"
+            "PYTHONPATH": "src",
+            "DELIVERY_MODE": "${{ inputs.mode }}"
           },
           "run": "python3 tools/clipforge_release_delivery.py"
         }
@@ -43,7 +42,8 @@
         "mode": {
           "type": "choice",
           "options": [
-            "upload-release"
+            "upload-release",
+            "identity"
           ],
           "default": "upload-release"
         },

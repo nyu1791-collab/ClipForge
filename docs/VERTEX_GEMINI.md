@@ -105,3 +105,7 @@ uv run python tools/produce_with_gemini.py 'https://kick.com/CHANNEL/videos/VOD_
 ### 3体構成の実呼び出し
 
 Run 40220449164で成功。3.8/MEDIUMの指示生成3.220秒、3.5/MINIMALのURL作業1.260秒、3.5/MINIMALの整形作業1.626秒（2体並列）、3.8/MEDIUMの編集判断24.843秒。計画全体29.695秒。要求・応答モデルはそれぞれgemini-3.8-flash / gemini-3.5-flashと一致し、5本を選定した。保存済みASRのみ使用し、GPU・再描画・自動再試行は実行していない。
+
+## 個人Driveへの自動納品
+
+ユーザー指定の宛先はn.yu1791@gmail.com。--deliver-driveで描画・回収後に自動転送する。Gemini/Vertexの認証と個人Driveの認証は別で、モデルへOAuth情報を渡さない。初回の本人接続は[TARGET_DRIVE.md](TARGET_DRIVE.md)を参照。

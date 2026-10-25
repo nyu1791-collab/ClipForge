@@ -14,6 +14,40 @@ from clipforge.release_transfer import download, read_transfer, validate_identit
 from clipforge_drive_delivery import request
 
 
+TARGET_ACCOUNT = "n.yu1791@gmail.com"
+
+
+def authorize_target():
+    print("DELIVERY_STAGE=authorize_upload", flush=True)
+    raw = os.environ.get("GOOGLE_DRIVE_ADC_JSON")
+    if not raw:
+        raise RuntimeError("DRIVE_AUTH_NOT_CONFIGURED_FOR_TARGET_ACCOUNT")
+    credential = json.loads(raw)
+    body = urllib.parse.urlencode(
+        {k: credential[k] for k in ("refresh_token", "client_id", "client_secret")}
+        | {"grant_type": "refresh_token"}
+    ).encode()
+    with request(
+        "https://oauth2.googleapis.com/token",
+        "POST",
+        raw=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    ) as response:
+        token = json.load(response)["access_token"]
+    auth = {"Authorization": "Bearer " + token}
+    if credential.get("quota_project_id"):
+        auth["x-goog-user-project"] = credential["quota_project_id"]
+    with request(
+        "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)",
+        headers=auth,
+    ) as response:
+        account = json.load(response).get("user", {}).get("emailAddress", "").lower()
+    if account != TARGET_ACCOUNT:
+        raise RuntimeError("DRIVE_TARGET_ACCOUNT_MISMATCH")
+    print("DRIVE_TARGET_ACCOUNT=" + TARGET_ACCOUNT, flush=True)
+    return auth
+
+
 def deliver():
     delivery_started = time.monotonic()
     transfer_started = time.monotonic()
@@ -29,24 +63,7 @@ def deliver():
     transfer = read_transfer(run_id, name)
     if transfer.get("source_ref") != source:
         raise RuntimeError("Render source identity differs")
-    print("DELIVERY_STAGE=authorize_upload", flush=True)
-    credential = json.loads(
-        os.environ.get("GOOGLE_DRIVE_ADC_JSON") or os.environ["COLAB_ADC_JSON"]
-    )
-    body = urllib.parse.urlencode(
-        {k: credential[k] for k in ("refresh_token", "client_id", "client_secret")}
-        | {"grant_type": "refresh_token"}
-    ).encode()
-    with request(
-        "https://oauth2.googleapis.com/token",
-        "POST",
-        raw=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    ) as response:
-        token = json.load(response)["access_token"]
-    auth = {"Authorization": "Bearer " + token}
-    if credential.get("quota_project_id"):
-        auth["x-goog-user-project"] = credential["quota_project_id"]
+    auth = authorize_target()
     print("DELIVERY_STAGE=create_folder", flush=True)
     with request(
         "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
@@ -173,10 +190,16 @@ def deliver():
 
 if __name__ == "__main__":
     try:
-        deliver()
+        if os.environ.get("DELIVERY_MODE") == "identity":
+            authorize_target()
+            print("DRIVE_AUTH_STATUS=target_account_ready", flush=True)
+        else:
+            deliver()
     except urllib.error.HTTPError as error:
         print("DRIVE_DELIVERY_FAILED_HTTP=" + str(error.code), flush=True)
         sys.exit(1)
     except Exception as error:
         print("DRIVE_DELIVERY_FAILED_TYPE=" + type(error).__name__, flush=True)
+        if isinstance(error, RuntimeError) and str(error).startswith("DRIVE_"):
+            print(str(error), flush=True)
         sys.exit(1)

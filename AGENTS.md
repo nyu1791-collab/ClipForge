@@ -56,3 +56,7 @@
 ## 公開ClipForgeへの実行入口統合
 
 ユーザーが公開リポジトリへの統合を指定したため、制作・段階再開・OpenCode・Drive upload-releaseのActions定義をClipForgeで管理する。動画・ASRの公開許可は含まないため、ai-model-workersの非公開Releaseを保存庫として維持する。公開Artifactへ制作データを出さない。Google OIDC許可先はClipForgeの検証ブランチへ変更する。Secretsは所有者がClipForgeへ登録する。ユーザーがmainへのマージを承認済み。workflow登録と、Google/Secrets連携後の実稼働は区別する。移行状態はdocs/PUBLIC_ACTIONS.md。
+
+## Drive納品先
+
+宛先はユーザー指定のn.yu1791@gmail.com。Colabのn.yu17919191@gmail.comへ自動で納品しない。Drive専用資格情報だけを使い、宛先本人と対応しなければ書き込まず停止する。個人DriveのOAuth権限をVertexのサービスアカウント権限で代用しない。動画の品質監査・読み戻し監査は行わない。
