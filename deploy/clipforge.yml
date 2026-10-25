@@ -209,7 +209,7 @@
             "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-out",
             "RESULT_NAME": "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}"
           },
-          "run": "python3 -m clipforge.github_cli publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+          "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
         },
         {
           "name": "Delete temporary private input and result transfer chunks",
@@ -446,7 +446,7 @@
             "GH_TOKEN": "${{ github.token }}",
             "PYTHONPATH": "${{ github.workspace }}/src"
           },
-          "run": "python3 -m clipforge.github_cli download \"$GITHUB_RUN_ID\" \"clipforge-analysis-$REQUEST_ID\" \"$RUNNER_TEMP/clipforge-analysis\""
+          "run": "python3 -m clipforge.release_transfer download \"$GITHUB_RUN_ID\" \"clipforge-analysis-$REQUEST_ID\" \"$RUNNER_TEMP/clipforge-analysis\""
         },
         {
           "name": "Prepare the submitted preview settings",
@@ -486,7 +486,7 @@
             "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-previews",
             "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
           },
-          "run": "python3 -m clipforge.github_cli publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+          "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
         }
       ]
     }

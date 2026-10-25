@@ -13,6 +13,7 @@ import time
 import uuid
 
 from clipforge import github_cli
+from clipforge.release_transfer import download_stage
 from clipforge.storage import digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
@@ -386,17 +387,11 @@ def download_verified(run_id, identity, destination, verify, artifact_stage="res
         prefix=".clipforge-download-", dir=destination.parent
     ) as temporary:
         staging = Path(temporary) / "result"
-        gh(
-            "run",
-            "download",
-            str(run_id),
-            "--repo",
-            REPO,
-            "--name",
+        download_stage(
+            run_id,
             "clipforge-" + artifact_stage + "-" + identity,
-            "--dir",
-            str(staging),
-            timeout=300,
+            staging,
+            gh,
         )
         verify(staging)
         if destination.exists() or destination.is_symlink():

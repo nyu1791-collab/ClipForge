@@ -120,7 +120,7 @@
             "RESULT_DIRECTORY": "${{ github.workspace }}/artifacts/audio-stage",
             "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
           },
-          "run": "python3 -m clipforge.github_cli publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+          "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
         }
       ]
     },
@@ -231,7 +231,7 @@
             "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-out",
             "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
           },
-          "run": "python3 -m clipforge.github_cli publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
+          "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
         },
         {
           "name": "Delete the private transfer release",

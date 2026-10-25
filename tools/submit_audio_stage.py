@@ -13,6 +13,7 @@ import sys
 import tempfile
 
 from clipforge import github_cli
+from clipforge.release_transfer import download_stage
 from clipforge.storage import PipelineError, digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
@@ -446,18 +447,7 @@ def collect(identity, destination):
         prefix=".clipforge-collect-", dir=destination.parent
     ) as temporary:
         staging = Path(temporary) / "result"
-        gh(
-            "run",
-            "download",
-            str(run_id),
-            "--repo",
-            REPO,
-            "--name",
-            "clipforge-result-" + identity,
-            "--dir",
-            str(staging),
-            timeout=300,
-        )
+        download_stage(run_id, "clipforge-result-" + identity, staging, gh)
         count = verify_stage_artifact(staging, identity, stage, request, run_id)
         if destination.exists() or destination.is_symlink():
             raise AudioStageError(

@@ -1502,3 +1502,12 @@ def test_collect_batch_without_retransmitting_input_media(collector, tmp_path):
     assert module.main(collect_args(destination)) == 0
     assert len(list(destination.glob("delivery/clips/clip-*/video.mp4"))) == 2
     assert not (destination / "audio.m4a").exists()
+
+
+@pytest.fixture(autouse=True)
+def legacy_artifact_repository(monkeypatch):
+    """These fixtures describe older runs without Release stage transfers."""
+    from clipforge import release_transfer
+
+    monkeypatch.setattr(release_transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(release_transfer, "release", lambda tag: None)

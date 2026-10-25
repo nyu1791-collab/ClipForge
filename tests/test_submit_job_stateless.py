@@ -472,3 +472,12 @@ def test_stateless_collect_rejects_another_or_missing_run_in_artifact(
     with pytest.raises(RuntimeError, match="identity"):
         invoke(monkeypatch, module, *standard_args(output))
     assert not output.exists()
+
+
+@pytest.fixture(autouse=True)
+def legacy_artifact_repository(monkeypatch):
+    """These fixtures describe older runs without Release stage transfers."""
+    from clipforge import release_transfer
+
+    monkeypatch.setattr(release_transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(release_transfer, "release", lambda tag: None)

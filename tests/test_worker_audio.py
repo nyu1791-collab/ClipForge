@@ -1262,3 +1262,12 @@ def test_main_rejects_a_configuration_outside_the_repository_root(
     )
     assert code == 1
     assert "invalid private worker identity" in capsys.readouterr().err
+
+
+@pytest.fixture(autouse=True)
+def legacy_artifact_repository(monkeypatch):
+    """These fixtures describe older runs without Release stage transfers."""
+    from clipforge import release_transfer
+
+    monkeypatch.setattr(release_transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(release_transfer, "release", lambda tag: None)

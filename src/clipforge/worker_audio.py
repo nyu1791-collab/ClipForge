@@ -20,6 +20,7 @@ from . import (
     topic_hints,
 )
 from .github_cli import run as run_gh
+from .release_transfer import download_stage
 from .kick_media import KickVOD
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript
@@ -576,17 +577,7 @@ def download_parts(text, directory):
         if not successful_stage_run(run, request):
             raise PipelineError("clip render did not complete successfully")
         destination = directory / request
-        gh(
-            "run",
-            "download",
-            run_id,
-            "--repo",
-            REPO,
-            "--name",
-            "clipforge-result-" + request,
-            "--dir",
-            str(destination),
-        )
+        download_stage(run_id, "clipforge-result-" + request, destination, gh)
         parts.append((destination, request))
     return parts
 
@@ -764,16 +755,11 @@ def main(argv=None):
                 raise PipelineError("previous analysis did not complete successfully")
             with tempfile.TemporaryDirectory(prefix="clipforge-previous-") as temporary:
                 previous = Path(temporary) / "analysis"
-                gh(
-                    "run",
-                    "download",
+                download_stage(
                     args.previous_run,
-                    "--repo",
-                    REPO,
-                    "--name",
                     "clipforge-result-" + args.previous_request,
-                    "--dir",
-                    str(previous),
+                    previous,
+                    gh,
                 )
                 result = execute(
                     previous,
