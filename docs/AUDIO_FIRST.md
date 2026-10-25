@@ -32,7 +32,7 @@ Kickに加え、YouTubeの単一動画、Twitchのアーカイブ・クリップ
 
 追加経路のメタデータに長さがない場合は、runnerで取得・実測してからGPU割り当ての可否を決める。直接ファイルは音声抽出のためにも全体転送が必要な場合がある。追加経路の映像描画では元ファイル全体をremuxし、元時刻を保ったまま採用区間を描画する。Kickの区間取得だけに適用される通信量の説明と区別する。
 
-URLだけの投入は既定で2分割。境界前後5秒の文脈を付けたFLACを独立した2つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [ASR_SPLIT.md](COLAB.md#2分割asr)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
+URLだけの投入は既定で2分割。境界前後5秒の文脈を付けたFLACを独立した2つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [Colabの2分割ASR](COLAB.md#2分割asr)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
 
 ```bash
 uv sync --locked --extra media-fetch --extra chat
@@ -107,7 +107,7 @@ uv run --no-sync python tools/submit_job.py \
 - `max_source_seconds` の設定可能上限は43,200秒（12時間）。landscape設定は21,600秒（6時間）なので、URLだけの投入も既定で6時間まで受け付ける。モデルの既定3,600秒はローカル動画の `pipeline` / `landscape` の長さ制限にも使われるため維持する。6時間を超える終了済み配信は、必要な上限を `--config` で明示する。
 - 音声取得時の `max_transport_bytes` は既定6 GiB、設定可能範囲1 KiB〜16 GiB。最低画質に映像が含まれる場合の一時TS取得予算であり、保存音声の上限とは別。保存音声には `max_input_bytes`（既定1 GiB、上限2 GiB）を適用する。AAC 48 kbpsの6時間音声は概算130 MB（コンテナ等を除く）。最低画質のビットレート次第では6時間未満でも転送予算に達するので、必要なら16 GiB以内で明示する。
 - 後段workerのプレビュー・1080p区間取得は2 GiBを上限とし、`max_transport_bytes` がそれ未満なら小さい値を使う。直接CLIの `previews` / `render` は従来の `max_input_bytes` 予算を維持し、`audio` / `topics` の音声取得にだけ `max_transport_bytes` を使う。選定区間のみの映像取得に全編音声用の予算を広げない。
-- 6時間音声のメモリ見積もりと実測の未確認事項は [品質記録](HISTORY.md#過去の品質規則と検証) の「長時間音声のメモリ見積もり（2026-10-22）」を参照する。
+- 6時間音声のメモリ見積もりと実測の未確認事項は [長時間音声のメモリ見積もり](HISTORY.md#長時間音声のメモリ見積もり)を参照する。
 
 十分なCPUのある環境なら、同じworkspaceに対して `--stage topics` でも実行できる。
 制御VMで `topics`・`previews`・`render`を実行しない。回収済み音声と `transcripts/` を対応付けて、十分なCPUのある私有環境へ渡す。
@@ -250,7 +250,7 @@ WARP は使い捨て GitHub-hosted runner のみで使用し、終了時に切�
 メタデータ比較後に実際の全音声取得・ASR用変換も検証し、成功時のみ音声を private Artifact に7日間保存する。
 GPU 割当や ASR は行わない。成功・失敗、UTC 時刻、経過秒も private Artifact に残る。
 PO Token や Cookie、WARP による成功を保証しない。
-過去の匿名8条件の結果と追加検証は [YOUTUBE_DIAGNOSTICS.md](HISTORY.md#colab取得依存の調査) を参照。
+過去の匿名8条件の結果と追加検証は [過去のYouTube診断](HISTORY.md#統合前の資料) を参照。
 
 通常のURL音声取得へWARP経路を明示する場合は、
 `submit_job.py --youtube-audio-transport warp`を使う。
