@@ -15,16 +15,21 @@ if [[ ${drive_active,,} != "$drive_owner" ]]; then
   exit 1
 fi
 command -v gh >/dev/null || { echo 'GitHub CLI (gh) is required in this Cloud Shell.' >&2; exit 1; }
+python3 - "$drive_client" <<'PYCLIENT'
+import json,sys
+with open(sys.argv[1]) as stream: client=json.load(stream).get('installed',{})
+if client.get('project_id')!='project-fdadb4dd-cb77-4270-9cd':
+ raise SystemExit('Use a Desktop OAuth client created in the designated project.')
+PYCLIENT
 gcloud services enable drive.googleapis.com --project="$drive_project" --quiet
-gcloud auth application-default login --client-id-file="$drive_client" --no-launch-browser --scopes='openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.file'
-gcloud auth application-default set-quota-project "$drive_project" --quiet
+gcloud auth application-default login --client-id-file="$drive_client" --no-launch-browser --scopes='openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/drive.file'
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   gh auth login --hostname github.com --git-protocol https --web --scopes repo
 fi
 python3 - <<'PYCODE'
 import json,os,pathlib,subprocess,urllib.request
 p=subprocess.run(['gcloud','auth','application-default','print-access-token'],capture_output=True,text=True,check=True)
-req=urllib.request.Request('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',headers={'Authorization':'Bearer '+p.stdout.strip(),'x-goog-user-project':'project-fdadb4dd-cb77-4270-9cd'})
+req=urllib.request.Request('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',headers={'Authorization':'Bearer '+p.stdout.strip()})
 with urllib.request.urlopen(req,timeout=60) as r: account=json.load(r).get('user',{}).get('emailAddress','').lower()
 if account!='n.yu1791@gmail.com':raise SystemExit('Drive account differs; no secret was registered.')
 if subprocess.check_output(['gh','api','user','--jq','.login'],text=True).strip()!='nyu1791-collab':raise SystemExit('Use the repository owner GitHub login.')

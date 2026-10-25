@@ -17,7 +17,7 @@ bash /tmp/clipforge-drive-setup.sh /path/in/cloudshell/desktop-oauth-client.json
 
 先に[対象プロジェクトのOAuthクライアント画面](https://console.cloud.google.com/auth/clients?project=project-fdadb4dd-cb77-4270-9cd)で「デスクトップアプリ」のOAuthクライアントを作成し、JSONをCloud Shellに置く。チャットへ送らない。Googleの同意画面がテスト公開の場合はn.yu1791@gmail.comをテストユーザーに含める。Cloud SDK標準クライアントのままDriveスコープを追加する方法は使わない。
 
-このスクリプトはDrive APIの有効化、本人のGoogle同意、GitHub所有者ログイン、専用Drive資格情報のSecrets登録を行う。Google・GitHubの同意画面は本人が操作する。資格情報や認可コードはチャットへ送らない。Drive権限はアプリが作成したファイルを扱うdrive.fileを使う。gcloudの標準CloudスコープもADCに含め、指定プロジェクトでquotaを扱う。APIキーやサービスアカウント秘密鍵は作らない。既存のColab認証は変更しない。
+このスクリプトはDrive APIの有効化、本人のGoogle同意、GitHub所有者ログイン、専用Drive資格情報のSecrets登録を行う。Google・GitHubの同意画面は本人が操作する。資格情報や認可コードはチャットへ送らない。Drive権限はアプリが作成したファイルを扱うdrive.fileを使う。Drive用ADCにはCloudスコープを含めず、指定プロジェクトで作成した専用OAuthクライアントのquotaを使う。APIキーやサービスアカウント秘密鍵は作らない。既存のColab認証は変更しない。
 
 ## 制作から転送まで
 
@@ -31,3 +31,5 @@ uv run python tools/produce_with_gemini.py 'https://www.youtube.com/watch?v=VIDE
 ## 2026-10-25のYouTube依頼
 
 対象huUd9Qw015wのRun 40220968442は音声取得のメタデータ取得段階で、YouTubeからログイン要求（botでないことの確認）を返され停止した。GPU・ASR・Geminiは未起動、MP4は0本。再投入していないためDriveアップロードも未実施。既存の別アカウントへ誤って保存する経路は使わない。
+
+Google公式: https://docs.cloud.google.com/docs/authentication/application-default-credentials
