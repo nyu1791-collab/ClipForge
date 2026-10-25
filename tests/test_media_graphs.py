@@ -501,7 +501,7 @@ def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
 
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is required for the final AAC peak check")
-    target = tmp_path / "peaks.m4a"
+    target = tmp_path / "peaks.mp4"
     signal = "aevalsrc='if(lt(mod(t,0.1),0.001),0.99,0)':s=48000:d=2"
     command = [
         "ffmpeg",
@@ -512,10 +512,20 @@ def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
         "lavfi",
         "-i",
         signal,
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=32x32:r=10:d=2",
         "-filter_complex",
         "[0:a]anull[mix];" + media._audio_tail(make(), 2, None),
         "-map",
         "[aout]",
+        "-map",
+        "1:v:0",
+        "-c:v",
+        "libx264",
+        "-threads",
+        "1",
         "-c:a",
         "aac",
         "-b:a",
@@ -523,4 +533,4 @@ def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
         str(target),
     ]
     subprocess.run(command, capture_output=True, check=True, timeout=30)
-    assert quality.inspect_output(target, True, 10)["true_peak_dbtp"] < -1.0
+    assert quality.inspect_output(target, True, 2)["true_peak_dbtp"] < -1.0

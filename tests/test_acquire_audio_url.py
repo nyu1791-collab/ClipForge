@@ -17,7 +17,8 @@ AUDIO_URL = "https://cdn.example/audio.mp3"
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 9 and inputs["probe_only"]["default"] is False
+    assert len(inputs) == 10 and inputs["probe_only"]["default"] is False
+    assert inputs["result_store"]["type"] == "choice"
     assert "!inputs.probe_only" in workflow["jobs"]["colab-auto"]["if"]
     probe = workflow["jobs"]["url-probe"]
     assert "inputs.probe_only" in probe["if"]
@@ -320,7 +321,9 @@ def test_workflow_acquires_and_verifies_audio_before_any_gpu():
     # The coordinator reads the acquired audio on the runner; it is never staged whole.
     assert "gh release" not in script
     assert '--directory "$RUNNER_TEMP/clipforge-input"' in steps[recognise]["run"]
-    validate = steps[0]["run"]
+    validate = next(
+        step["run"] for step in steps if "COLAB_ADC_JSON" in step.get("env", {})
+    )
     assert validate.index("if os.environ['AUDIO_URL']") < validate.index(
         "if not os.environ.get('COLAB_ADC_JSON')"
     )
@@ -401,9 +404,18 @@ def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages(
         in execute["run"]
     )
     assert '--config "$RUNNER_TEMP/preview-settings.json"' in execute["run"]
-    upload = steps[-1]
+    upload = next(
+        step
+        for step in steps
+        if step.get("uses") == "actions/upload-artifact@v4"
+        and step["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
+    )
     assert upload["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
-    assert upload["if"] == "always()"
+    assert upload["if"] == "always() && inputs.result_store != 'release'"
+    transfer = next(
+        step for step in steps if step.get("name") == "Save the verified private result transfer"
+    )
+    assert "inputs.result_store == 'release'" in transfer["if"]
     cpu = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())["jobs"][
         "audio-stage"
     ]

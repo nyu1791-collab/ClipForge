@@ -263,7 +263,7 @@ def test_main_workflow_ends_transport_before_any_gpu_and_keeps_receipt_private()
     assert "always()" in steps[close]["if"]
     assert "YOUTUBE_COOKIES_B64" not in json.dumps(steps[setup])
     assert (
-        len(workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]) == 9
+        len(workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]) == 10
     )
 
 
