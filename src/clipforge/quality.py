@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pysubs2
 
-from . import caption_sentences, fonts
+from . import caption_breaks, fonts
 from .caption_breaks import MIN_DISPLAY_SECONDS, parser
 from .captions import (
     MAX_CAPTION_CPS,
@@ -173,7 +173,7 @@ def word_splits(events):
 def _morpheme_ends(text):
     """Character positions where a morpheme of the text ends (fugashi); empty without fugashi."""
     try:
-        tagger = caption_sentences._tagger()
+        tagger = caption_breaks._tagger()
     except ImportError:
         return set()
     ends, position = set(), 0

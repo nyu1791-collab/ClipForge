@@ -1,10 +1,10 @@
-"""Resolve local hardware without importing PyTorch or downloading a model."""
+"Resolve hardware and the requested model cache; no inference at import time."
 
-from functools import lru_cache
 import ctypes
 import os
 import subprocess
-
+from functools import lru_cache
+from pathlib import Path
 from .storage import PipelineError
 
 
@@ -130,3 +130,33 @@ def video_options(settings, quality):
         "-threads",
         str(encode_threads(settings)),
     ]
+
+
+def model_path(model, revision=None):
+    if Path(model).is_dir():
+        return model
+    from faster_whisper.utils import download_model
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    try:
+        path = download_model(model, revision=revision, local_files_only=True)
+        if all(
+            (Path(path) / name).is_file()
+            for name in ("model.bin", "config.json", "tokenizer.json")
+        ):
+            print("Whisper model found in cache; Hub download skipped.", flush=True)
+            return path
+    except LocalEntryNotFoundError:
+        pass
+    if (
+        os.environ.get("CLIPFORGE_OFFLINE") == "1"
+        or os.environ.get("HF_HUB_OFFLINE") == "1"
+    ):
+        raise PipelineError(
+            "requested Whisper model is not cached; offline mode forbids downloading"
+        )
+    print(
+        "Requested Whisper model is missing; downloading it once to the model cache.",
+        flush=True,
+    )
+    return download_model(model, revision=revision, local_files_only=False)

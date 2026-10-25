@@ -160,7 +160,7 @@ import json, tempfile, wave
 from pathlib import Path
 from faster_whisper import WhisperModel
 from clipforge.hardware import nvenc_available
-from clipforge.whisper_cache import model_path
+from clipforge.hardware import model_path
 model = WhisperModel(model_path('small'), device='cuda', compute_type='float16')
 assert model.model.device == 'cuda'
 assert model.model.compute_type == 'float16'

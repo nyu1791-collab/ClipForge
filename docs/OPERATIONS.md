@@ -3,7 +3,7 @@
 ## リポジトリと権限
 
 公開ClipForgeはコードの保存先。動画・音声・文字起こし・成果物は非公開workerで扱う。
-`deploy/clipforge.yml` と `deploy/audio-stages.yml` の配置・処理の関係は [ARCHITECTURE.md](ARCHITECTURE.md#配置) を参照する。
+`deploy/clipforge.yml` と `deploy/audio-stages.yml` の配置・処理の関係は [構成と配備先](../INDEX.md#worker-と成果物) を参照する。
 公開側の `Build package` は開発用wheelを7日間保存する。動画生成・SNS投稿・PyPI公開は行わず、ビルド成功はモデル呼び出しや切り抜き品質の確認ではない。
 
 通常の `GITHUB_TOKEN` によるpushやPR作成では、別workflowは自動起動しない。必要な処理は `workflow_dispatch` で起動する。権限は対象リポジトリと処理に必要な範囲へ付与し、workflowからの自動マージは行わない。

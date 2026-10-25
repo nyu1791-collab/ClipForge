@@ -10,7 +10,7 @@ import shutil
 import sys
 import tempfile
 
-from . import audio_first, audio_volume, landscape, media, pipeline, review_draft
+from . import audio_first, signals, landscape, media, pipeline, review_draft
 from .github_cli import run as run_gh
 from .kick_media import KickVOD
 from .media_sources import canonical, open_source
@@ -212,8 +212,8 @@ ORIGIN_FIELDS = (
 def _volume_series(source, info):
     """(series, reason): per-second loudness on the topic clock, or None and a reason code."""
     try:
-        return audio_volume.loudness_series(source, offset=info["audio_start"]), None
-    except audio_volume.VolumeUnavailable as error:
+        return signals.loudness_series(source, offset=info["audio_start"]), None
+    except signals.VolumeUnavailable as error:
         return None, error.reason
 
 
@@ -272,7 +272,7 @@ def execute(
                     vod, output, settings, analysis_result=analysis, **options
                 )
                 volume, volume_reason = _volume_series(source, info)
-                from .chat_activity import candidate_series
+                from .kick_chat import candidate_series
 
                 chat, chat_diagnostics = candidate_series(vod, analysis[0], result)
                 draft, diagnostics = review_draft.build_review_draft(

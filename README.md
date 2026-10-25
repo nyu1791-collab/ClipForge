@@ -47,7 +47,7 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 
 この経路は候補映像・音声・該当ASRを指定Geminiモデルへ送り、選定して描画します。モデルIDを明示し、別モデルへ自動切替しません。workerは既定 `colab-auto`、CPUを使う場合は `--worker cpu`。設定例のモデル名は現在の提供・無料枠を保証しません。
 
-十分なCPUのある環境では `clipforge run/analyze/cut/batch` を直接使えます。横動画には `--config config.landscape.example.json` を指定します。手動選定は `--selection-file`、ASRの再利用は `--transcript-cache`。詳細は [構成](docs/ARCHITECTURE.md) と [運用](docs/OPERATIONS.md) を参照してください。
+十分なCPUのある環境では `clipforge run/analyze/cut/batch` を直接使えます。横動画には `--config config.landscape.example.json` を指定します。手動選定は `--selection-file`、ASRの再利用は `--transcript-cache`。詳細は [構成](INDEX.md#処理構成) と [運用](docs/OPERATIONS.md) を参照してください。
 
 ## 設定・結果・文書
 
@@ -57,12 +57,11 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 
 | 知りたいこと | 参照先 |
 | --- | --- |
-| コードの入口・共通ルール | [INDEX.md](INDEX.md)・[AGENTS.md](AGENTS.md) |
-| データと処理の流れ | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| 構成・コードの入口・共通ルール | [INDEX.md](INDEX.md)・[AGENTS.md](AGENTS.md) |
 | URLの段階・映像承認 | [AUDIO_FIRST.md](docs/AUDIO_FIRST.md) |
 | 認証・Colab・キャッシュ | [COLAB.md](docs/COLAB.md) |
 | 回収・再開・私有データ | [OPERATIONS.md](docs/OPERATIONS.md) |
-| 品質規則・納品の確認 | [QUALITY_DECISIONS.md](docs/QUALITY_DECISIONS.md)・[LANDSCAPE_PLAN.md](docs/LANDSCAPE_PLAN.md) |
+| 品質規則・納品の確認 | [QUALITY_DECISIONS.md](docs/QUALITY_DECISIONS.md) |
 | 開発・軽量検査・重い検査の選択 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| 過去の調査・計測 | [archive](docs/archive/README.md) |
+| 過去の調査・計測 | [HISTORY.md](docs/HISTORY.md) |
 | ライブラリとライセンス | [THIRD_PARTY.md](docs/THIRD_PARTY.md) |

@@ -1,7 +1,7 @@
 # YouTube 音声取得の運用基盤
 
 YouTube の全音声取得に成功した経路を、通常の取得と診断で共通化する。
-成功した実行と計測値は [YOUTUBE_DIAGNOSTICS.md](archive/YOUTUBE_DIAGNOSTICS.md) を参照。
+成功した実行と計測値は [YOUTUBE_DIAGNOSTICS.md](HISTORY.md#colab取得依存の調査) を参照。
 この経路は音声取得用。ASR、プレビュー、承認後の映像描画は別工程である。
 
 ## 通常の投入
