@@ -144,7 +144,8 @@ def make_prompt_and_audio(analysis, out, transcript, whole, selection):
         sequence.append(f"[clip{i}]")
         if i < len(audio_paths) - 1:
             sequence.append(f"[silence{i}]")
-    filters.append(f"{''.join(sequence)}concat=n={2 * len(audio_paths) - 1}:v=0:a=1[out]")
+    sequence_text = "".join(sequence)
+    filters.append(f"{sequence_text}concat=n={2 * len(audio_paths) - 1}:v=0:a=1[out]")
     command.extend([
         "-filter_complex", ";".join(filters),
         "-map", "[out]", "-c:a", "libopus", "-b:a", "24k",
@@ -183,6 +184,10 @@ def make_prompt_and_audio(analysis, out, transcript, whole, selection):
     return slots, fast_ids, parts, round(time.monotonic() - started, 3), audio_info
 
 def stream_generate(parts, output, record):
+    audio_part_count = sum("inlineData" in part or "fileData" in part for part in parts)
+    if audio_part_count != 1:
+        raise PipelineError("Gemini 3.8 Flash HIGH review requires exactly one audio input file")
+    record["audio_input_file_count"] = audio_part_count
     schema = {
         "type": "OBJECT",
         "required": ["audio_access", "segments", "reviewed_fast_segment_ids", "uncertain_segment_ids", "notes"],
