@@ -267,7 +267,6 @@ def run(args):
     args.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     plan = asr_split.prepare(source, args.state_root / "input", request, settings, info)
     staged = []
-    completed = False
     count = len(plan["parts"])
     part_directories = [args.state_root / f"result-{index}" for index in range(count)]
     part_pools = pools(plan)
@@ -347,26 +346,12 @@ def run(args):
                 "ASR failed; private part outputs were retained"
             ) from None
         finish(source, args.output, plan, part_directories, os.environ["GITHUB_RUN_ID"])
-        completed = True
         print("All ASR parts verified and merged; topics allocated once.", flush=True)
     finally:
-        # Each release also holds the returned transcript. Preserve it on failure.
-        for tag in staged if completed else []:
-            try:
-                github_cli.run(
-                    "release",
-                    "delete",
-                    tag,
-                    "--repo",
-                    PRIVATE_REPO,
-                    "--yes",
-                    "--cleanup-tag",
-                )
-            except RuntimeError:
-                print(
-                    "Temporary ASR input cleanup remains for the workflow cleanup step.",
-                    file=sys.stderr,
-                )
+        # Returned transcripts share these releases with the input WAV. Only the
+        # caller can confirm that the merged output has been durably uploaded.
+        if staged:
+            print("Private ASR part releases retained until merged output is saved.", flush=True)
 
 
 def main():

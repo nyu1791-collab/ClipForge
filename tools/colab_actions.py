@@ -450,9 +450,10 @@ del _clipforge_bootstrap
             private_payload.unlink(missing_ok=True)
             try:
                 runtime.stop()
-            except Exception:
-                if execution_error is None:
-                    raise
+            except Exception as error:
+                # Local websocket shutdown must not skip GPU release or saved results.
+                print("Colab connection cleanup warning: " + type(error).__name__,
+                      file=sys.stderr, flush=True)
         release_error = None
         # The results are already published in the Release, so the runtime is freed before
         # downloading them. stop() is idempotent; the workflow's final stop step retries if
