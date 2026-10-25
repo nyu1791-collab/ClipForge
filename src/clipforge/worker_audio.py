@@ -325,7 +325,7 @@ def execute(
                 )
             elif mode == "render" and review_file is not None:
                 saved_review = json.loads(review_file.read_text())
-                if saved_review.get("selection_basis") == "saved_video_analysis":
+                if saved_review.get("selection_basis") in {"saved_video_analysis", "saved_asr_audio_review"}:
                     if saved_review.get("source_url") != url:
                         raise PipelineError("Saved video analysis belongs to another source")
                     # Keep ASR and its clock; use the already selected video topics.
