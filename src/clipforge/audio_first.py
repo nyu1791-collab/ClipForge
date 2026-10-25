@@ -211,7 +211,7 @@ def allocate_audio(source, root, settings, source_url):
             "duration": info["duration"],
             "topics": rows,
             "selection_method": "local_lexical_cohesion_and_pauses",
-            "semantic_topic_review": "required",
+            "semantic_topic_review": "not_required",
             "video_review_performed": False,
             "model_generation_requests": 0,
         }
@@ -680,7 +680,9 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
         "selection_receipt": {"provider": "manual", "generation_requests": 0},
         "analysis_key": analysis["analysis_key"],
         "selection_sha256": digest(review_file),
-        "video_review_attested": True,
+        "video_review_attested": all(
+            row.get("video_reviewed") is True for row in value["clips"]
+        ),
         "human_review_performed": False,
         "transcript_cache": json.loads((root / "asr-receipt.json").read_text()),
         "timings": timings,
@@ -688,7 +690,11 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
     summary = landscape.summarize_delivery(
         manifest, output, settings.clips, settings.height
     )
-    summary["topic_content_review"] = "attested_in_selection_file"
+    summary["topic_content_review"] = (
+        "attested_in_selection_file"
+        if all(row.get("video_reviewed") is True for row in value["clips"])
+        else "not_performed"
+    )
     summary["reproducibility"] = landscape.code_identity(settings)
     write_json(output / "manifest.json", manifest)
     write_json(output / "e2e-summary.json", summary)

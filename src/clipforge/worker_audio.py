@@ -475,7 +475,7 @@ def merge_parts(parts, output, settings, source_ref, config_file=None):
         "selection_receipt": {"provider": "manual", "generation_requests": 0},
         "analysis_key": identity["analysis_key"],
         "selection_sha256": identity["selection_sha256"],
-        "video_review_attested": True,
+        "video_review_attested": False,
         "human_review_performed": False,
         "transcript_cache": loaded[0]["cache"],
         "timings": timings,
@@ -483,7 +483,7 @@ def merge_parts(parts, output, settings, source_ref, config_file=None):
     summary = landscape.summarize_delivery(
         manifest, delivery, settings.clips, settings.height
     )
-    summary["topic_content_review"] = "attested_in_selection_file"
+    summary["topic_content_review"] = "not_required"
     # Merge uses stored quality/media receipts; do not resolve fonts or invoke ffmpeg.
     summary["reproducibility"] = landscape.code_identity()
     write_json(delivery / "manifest.json", manifest)

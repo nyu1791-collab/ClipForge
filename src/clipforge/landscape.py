@@ -143,7 +143,7 @@ def summarize_delivery(manifest, output, expected, height=1080):
         "clips": summaries,
         "model_generation_requests": 0,
         "human_review_performed": False,
-        "topic_content_review": "required",
+        "topic_content_review": "not_required",
         "timings": manifest.get("timings", {}),
         "transcript_cache": {
             k: manifest.get("transcript_cache", {}).get(k)

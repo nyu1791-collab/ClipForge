@@ -1,4 +1,4 @@
-"""Unapproved review drafts from previewed topics; hints do not judge meaning."""
+"""Long-form selections from saved transcript topics without an approval gate."""
 
 from .audio_first import shifted_transcript
 from .storage import PipelineError

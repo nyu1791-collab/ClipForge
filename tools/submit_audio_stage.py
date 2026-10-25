@@ -587,7 +587,7 @@ def main(argv=None):
         help="render on the hosted runner (default) or on Colab runtimes",
     )
     parser.add_argument(
-        "--clips", type=int, help="render N approved clips in one GPU batch"
+        "--clips", type=int, help="render N selected clips in one GPU batch"
     )
     parser.add_argument("--clip-index", type=int, help="render only this clip")
     parser.add_argument(
@@ -655,7 +655,7 @@ def main(argv=None):
             raise AudioStageError("render requires reviewed topic intervals")
         require_video_review(review)
         if args.clips is not None and args.clips != len(review["clips"]):
-            raise AudioStageError("--clips must match the number of approved clips")
+            raise AudioStageError("--clips must match the number of selected clips")
     worker = args.worker or ("colab-auto" if args.stage == "render" else "cpu")
     if args.stage == "render" and worker != "colab-auto":
         raise AudioStageError("render requires the Parakeet GPU/NVENC production route")
