@@ -14,7 +14,7 @@ from .storage import PipelineError
 KICK_V1 = "https://kick.com/api/v1"
 KICK_V2 = "https://kick.com/api/v2/channels"
 REQUEST_TIMEOUT = 30
-ATTEMPTS = 4
+ATTEMPTS = 1
 MAX_BACKOFF = 8.0
 MAX_RETRY_AFTER = 30.0
 CHAT_STEP = dt.timedelta(seconds=5)

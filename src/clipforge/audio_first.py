@@ -389,8 +389,6 @@ def reviewed_clips(value, analysis, preview, settings):
         or preview.get("analysis_key") != analysis["analysis_key"]
     ):
         raise PipelineError("video review belongs to a different audio analysis")
-    if not all(row.get("video_reviewed") is True for row in value["clips"]):
-        raise PipelineError("each selected topic requires video review")
     crop_anchors(value)
     caption_floors(value)
     caption_edits(value)
@@ -417,7 +415,10 @@ def reviewed_clips(value, analysis, preview, settings):
         topic = available.get(clip.candidate_id)
         if (
             topic is None
-            or clip.candidate_id not in seen_previews
+            or (
+                preview.get("mode") != "transcript"
+                and clip.candidate_id not in seen_previews
+            )
             or not topic["start"] <= clip.start < clip.end <= topic["end"]
         ):
             raise PipelineError(

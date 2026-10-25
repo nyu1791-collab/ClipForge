@@ -1,7 +1,6 @@
 """Reviewed landscape clip selection, code identity and delivery summary."""
 
 from importlib.metadata import version
-import json
 import math
 from pathlib import Path
 import subprocess
@@ -65,9 +64,9 @@ def safe_quality_summary(report):
 
 def validate_selection(value, settings, duration):
     clips = [SelectedClip.model_validate(row) for row in value["clips"]]
-    if not 3 <= len(clips) <= 5 or len(clips) != settings.clips:
+    if not 5 <= len(clips) <= 10 or len(clips) != settings.clips:
         raise PipelineError(
-            "landscape delivery needs exactly the requested 3 to 5 clips"
+            "landscape delivery needs exactly the requested 5 to 10 clips"
         )
     validate_picks(clips, duration, settings)
     if any(not clip.title.strip() for clip in clips):
@@ -129,7 +128,7 @@ def summarize_delivery(manifest, output, expected, height=1080):
             "completed manual selection with zero generation requests is required"
         )
     rows = manifest.get("rendered", [])
-    if len(rows) != expected or not 3 <= expected <= 5:
+    if len(rows) != expected or not 5 <= expected <= 10:
         raise PipelineError("rendered landscape clip count does not match the plan")
     summaries = []
     for index, row in enumerate(rows, 1):

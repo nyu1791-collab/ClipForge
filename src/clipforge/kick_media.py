@@ -406,7 +406,7 @@ class KickVOD:
 
     def _fetch(self, session, url, limit, *, segment=False, lock=None):
         last_status, forbidden_retried = "unavailable", False
-        for attempt in range(1, 5):
+        for attempt in range(1, 2):
             try:
                 return self._fetch_once(session, url, limit, segment=segment, lock=lock)
             except HTTPFailure as error:
@@ -419,7 +419,7 @@ class KickVOD:
                     break
             except self._transport_errors:
                 delay = (5, 15, 45)[min(attempt - 1, 2)]
-            if attempt == 4:
+            if attempt == 1:
                 break
             time.sleep(delay)
         raise PipelineError(

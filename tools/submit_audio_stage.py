@@ -20,9 +20,10 @@ REPO = "nyu1791-collab/ai-model-workers"
 BRANCH = "main"
 WORKFLOW = "clipforge-stages.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
-MAX_ACTIVE = {"colab-auto": 5}
+MAX_ACTIVE = {"colab-auto": 1}
+MAX_BATCH_CLIPS = 10
 RESULT_STATUS = {
-    "previews": "awaiting_video_review",
+    "previews": "selection_ready",
     "render": "complete",
     "merge": "complete",
 }
@@ -474,17 +475,14 @@ CROP_ANCHORS = ("auto", "left", "center", "right")
 
 
 def require_video_review(value):
-    """Reject unapproved drafts before any render request is prepared or dispatched."""
+    """Require a usable selection JSON without a separate video-approval gate."""
     clips = value.get("clips") if isinstance(value, dict) else None
     if (
         not isinstance(clips, list)
         or not clips
-        or any(
-            not isinstance(row, dict) or row.get("video_reviewed") is not True
-            for row in clips
-        )
+        or any(not isinstance(row, dict) for row in clips)
     ):
-        raise AudioStageError("each selected topic requires video review")
+        raise AudioStageError("selected topics must be JSON objects")
     # Same set as pipeline.CROP_ANCHORS; this tool does not import the package.
     if any(row.get("crop_anchor", "auto") not in CROP_ANCHORS for row in clips):
         raise AudioStageError("crop_anchor must be auto, left, center or right")
@@ -522,9 +520,9 @@ def clip_indices(args, worker):
             raise AudioStageError("clip index must be 1 to 20")
         return [args.clip_index]
     if args.clips is not None:
-        if not 1 <= args.clips <= MAX_ACTIVE["colab-auto"] or worker != "colab-auto":
+        if not 5 <= args.clips <= MAX_BATCH_CLIPS or worker != "colab-auto":
             raise AudioStageError(
-                "batch rendering needs --worker colab-auto and 1 to 5 clips"
+                "batch rendering needs --worker colab-auto and 5 to 10 clips"
             )
         return [None]
     return [None]

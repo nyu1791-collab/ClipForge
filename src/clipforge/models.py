@@ -52,10 +52,10 @@ class SelectedClip(Span):
 
 
 class Settings(Record):
-    clips: int = Field(default=3, ge=1, le=10)
+    clips: int = Field(default=5, ge=1, le=10)
     candidates: int = Field(default=8, ge=1, le=10)
-    min_seconds: float = Field(default=20, ge=2, le=120)
-    max_seconds: float = Field(default=75, ge=3, le=1800)
+    min_seconds: float = Field(default=300, ge=2, le=1800)
+    max_seconds: float = Field(default=900, ge=3, le=1800)
     # Colab GPU runtimes that recognise the audio side by side with Parakeet (asr_split).
     asr_parts: Literal[1, 2, 3, 4] = 4
     # Explicit hosted-runner audio acquisition route; not an automatic fallback.
@@ -82,7 +82,7 @@ class Settings(Record):
     caption_scale: float = Field(default=1.0, ge=0.8, le=2.0)
     # Landscape only (aspect 16:9; ignored for 9:16). A caption is lifted above a busy static band
     # touching the bottom edge (auto_layout). False keeps every caption at the base margin.
-    caption_lift: bool = True
+    caption_lift: bool = False
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
     horizontal_target_cps: float = Field(default=7, ge=1, le=20)
     horizontal_warn_cps: float = Field(default=7, ge=1, le=20)
@@ -97,8 +97,8 @@ class Settings(Record):
     workers: int = Field(default=2, ge=1, le=4)
     loudness_two_pass: Literal[False] = False
     topics: bool = True
-    topic_min_seconds: float = Field(default=25, ge=5, le=120)
-    topic_max_seconds: float = Field(default=180, ge=30, le=1800)
+    topic_min_seconds: float = Field(default=300, ge=5, le=900)
+    topic_max_seconds: float = Field(default=900, ge=30, le=1800)
     fade_seconds: float = Field(default=0.3, ge=0, le=2)
     progress_bar: bool = True
     # Legacy request compatibility only; production rendering does not audit outputs.

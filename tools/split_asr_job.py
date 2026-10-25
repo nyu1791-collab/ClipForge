@@ -18,13 +18,12 @@ PRIVATE_REPO = "nyu1791-collab/ai-model-workers"
 ROOT = Path(__file__).resolve().parents[1]
 # The account runs at most two T4 and two L4 at once (measured 2026-10-22). Every part asks
 # for any GPU, the two longest trying L4 first, so a refused kind falls back to the next and
-# a part that finds none waits until another part's runtime is released.
+# a part that finds none stops without waiting.
 FAST_POOL = "L4,T4:high-ram,T4:standard"
 POOL = "T4:high-ram,T4:standard,L4"
-ALLOCATION_WAIT_SECONDS = 2700
-# A part whose runtime failed after allocation is recognised once more on a fresh runtime
-# (2026-10-24: one of four runtimes failed in its first seconds; the other three finished).
-ATTEMPTS = 2
+ALLOCATION_WAIT_SECONDS = 0
+# One recognition attempt per part; failures are returned without a fresh-runtime retry.
+ATTEMPTS = 1
 TIMEOUTS = {"start": ALLOCATION_WAIT_SECONDS + 300, "run": 5400, "stop": 600}
 
 
@@ -317,28 +316,13 @@ def run(args):
                 "CLIPFORGE_ALLOCATION_WAIT_SECONDS": str(ALLOCATION_WAIT_SECONDS),
             }
             output = part_directories[index]
-            for attempt in range(ATTEMPTS):
-                state = args.state_root / state_name(index, attempt)
-                if attempt:
-                    print(
-                        f"ASR part {index + 1}: retrying on a new runtime", flush=True
-                    )
-                    shutil.rmtree(output, ignore_errors=True)
-                try:
-                    # No GPU within the allocation wait is final; waiting again would
-                    # only double it.
-                    control(args.control_python, state, "start", output, environment)
-                    try:
-                        control(args.control_python, state, "run", output, environment)
-                        return
-                    except PipelineError:
-                        if attempt + 1 == ATTEMPTS:
-                            raise
-                finally:
-                    # A release that is not confirmed stops the part, so no retry can
-                    # hold a second runtime for it.
-                    if (state / "state.json").exists():
-                        control(args.control_python, state, "stop", output, environment)
+            state = args.state_root / state_name(index)
+            try:
+                control(args.control_python, state, "start", output, environment)
+                control(args.control_python, state, "run", output, environment)
+            finally:
+                if (state / "state.json").exists():
+                    control(args.control_python, state, "stop", output, environment)
 
         with ThreadPoolExecutor(max_workers=count) as executor:
             futures = [executor.submit(recognise, index) for index in range(count)]

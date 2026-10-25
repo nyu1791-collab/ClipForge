@@ -8,7 +8,7 @@ maximum length, so each one can yield its own clip candidates.
 import math
 from itertools import pairwise
 
-CONTEXT_CHARS = 40
+CONTEXT_CHARS = 200
 
 
 def _bigrams(text):
@@ -62,7 +62,7 @@ def boundary_strengths(segments):
     return strengths
 
 
-def split(transcript, duration, min_seconds=25.0, max_seconds=180.0):
+def split(transcript, duration, min_seconds=300.0, max_seconds=900.0):
     """Return ordered (start, end) topic spans that cover [0, duration]."""
     duration = float(duration)
     segments = sorted(transcript.segments, key=lambda s: s.start)

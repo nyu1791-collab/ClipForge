@@ -12,12 +12,10 @@ import tempfile
 
 from . import (
     audio_first,
-    audio_volume,
     landscape,
     media,
     pipeline,
     review_draft,
-    topic_hints,
 )
 from .github_cli import run as run_gh
 from .release_transfer import download_stage
@@ -68,7 +66,8 @@ def restore_analysis(previous, output, previous_id):
     manifest = json.loads((previous / "manifest.json").read_text())
     if (
         receipt.get("request_id") != previous_id
-        or receipt.get("status") not in {"topics_allocated", "awaiting_video_review"}
+        or receipt.get("status")
+        not in {"topics_allocated", "awaiting_video_review", "selection_ready"}
         or manifest.get("status") != receipt["status"]
         or manifest.get("model_generation_requests") != 0
     ):
@@ -100,11 +99,7 @@ def restore_analysis(previous, output, previous_id):
         (previous / "transcripts" / (key + ".json")).read_text()
     )
     for name in hashes:
-        allowed = (
-            name in required - {"manifest.json"}
-            or name == "previews.json"
-            or re.fullmatch(r"previews/topic-[0-9]{3}\.mp4(?:\.receipt\.json)?", name)
-        )
+        allowed = name in required - {"manifest.json"} or name == "previews.json"
         if allowed:
             target = within(output, output / name)
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -214,23 +209,6 @@ ORIGIN_FIELDS = (
 )
 
 
-def _hint_ranking(analysis, volume):
-    """Topic IDs best first by the text, speech and loudness hints; empty if they fail."""
-    try:
-        ranked = topic_hints.hint_topics(analysis, volume=volume)["topics"]
-    except (ValueError, KeyError, TypeError):
-        return []
-    return [row["id"] for row in ranked]
-
-
-def _volume_series(source, info):
-    """(series, reason): per-second loudness on the topic clock, or None and a reason code."""
-    try:
-        return audio_volume.loudness_series(source, offset=info["audio_start"]), None
-    except audio_volume.VolumeUnavailable as error:
-        return None, error.reason
-
-
 def execute(
     previous, output, previous_id, settings, mode, review_file=None, clip_index=None
 ):
@@ -265,11 +243,6 @@ def execute(
             }
         )
         source = output / "audio.m4a"
-        info = audio_first.audio_info(source)
-        if pipeline.saved_transcript(settings) is None:
-            raise PipelineError(
-                "the saved ASR does not match; no new recognition was started"
-            )
         analysis = audio_first.allocate_audio(source, output, settings, url)
         cache = json.loads((output / "asr-receipt.json").read_text())
         if not cache["reused"]:
@@ -279,55 +252,38 @@ def execute(
             name: origin[name] for name in ORIGIN_FIELDS if name in origin
         }
         write_json(output / "asr-receipt.json", cache)
-        vod = open_source(
-            url,
-            output / "segments",
-            kick_factory=KickVOD,
-            # The same transport bound as acquisition, so a later stage never refuses
-            # input that an earlier stage accepted.
-            max_bytes=settings.max_transport_bytes,
-            max_seconds=settings.max_source_seconds,
-        )
+        vod = None
+        if mode == "render":
+            vod = open_source(
+                url,
+                output / "segments",
+                kick_factory=KickVOD,
+                # The same transport bound as acquisition, so a later stage never refuses
+                # input that an earlier stage accepted.
+                max_bytes=settings.max_transport_bytes,
+                max_seconds=settings.max_source_seconds,
+            )
         try:
             if mode == "previews":
-                selection = (
-                    json.loads(review_file.read_text())
-                    if review_file is not None
-                    else {}
-                )
-                options = (
-                    {"topic_ids": selection["topic_ids"]}
-                    if "topic_ids" in selection
-                    else {}
-                )
-                volume, volume_reason = _volume_series(source, info)
-                # Rank by the hints that need no video, so the previewed candidates are
-                # the strongest ones rather than the longest-talking ones.
-                ranking = _hint_ranking(analysis[0], volume)
-                result = audio_first.previews(
-                    vod,
-                    output,
-                    settings,
-                    analysis_result=analysis,
-                    ranking=ranking,
-                    **options,
-                )
-                from .chat_activity import candidate_series
-
-                chat, chat_diagnostics = candidate_series(vod, analysis[0], result)
+                # Candidate planning uses saved ASR only: no full-audio RMS pass,
+                # chat requests, preview downloads, frame sheets or approval wait.
+                result = {
+                    "status": "selection_ready",
+                    "mode": "transcript",
+                    "analysis_key": analysis[0]["analysis_key"],
+                    "previews": [],
+                    "video_review_performed": False,
+                }
+                write_json(output / "previews.json", result)
                 draft, diagnostics = review_draft.build_review_draft(
                     analysis[0],
                     result,
                     settings,
                     transcript=analysis[1],
-                    volume=volume,
-                    volume_reason=volume_reason,
-                    chat=chat,
-                    chat_diagnostics=chat_diagnostics,
+                    volume_reason="disabled_for_fast_production",
                 )
                 write_json(output / "review-draft.json", draft)
                 write_json(output / "review-draft-diagnostics.json", diagnostics)
-                preview_contact_sheet(output, result)
                 result.update(rendered=[], model_generation_requests=0)
             elif mode == "render" and review_file is not None:
                 audio_first.render(
@@ -346,7 +302,8 @@ def execute(
                 raise PipelineError("invalid audio worker stage or missing review")
         finally:
             audio_first.discard_transport_cache(vod)
-            vod.close()
+            if vod is not None:
+                vod.close()
         result.update(
             source_url=url,
             source_sha256=digest(source),

@@ -1,8 +1,8 @@
 {
-  "clips": 3,
+  "clips": 5,
   "candidates": 8,
-  "min_seconds": 20,
-  "max_seconds": 180,
+  "min_seconds": 300,
+  "max_seconds": 900,
   "language": "ja",
   "aspect": "16:9",
   "height": 360,
@@ -18,10 +18,12 @@
   "max_source_seconds": 21600,
   "max_transport_bytes": 6442450944,
   "topics": true,
-  "topic_min_seconds": 25,
-  "topic_max_seconds": 180,
+  "topic_min_seconds": 300,
+  "topic_max_seconds": 900,
   "quality_gate": "off",
   "chat_panel_width": 160,
   "video_encoder": "h264_nvenc",
-  "loudness_two_pass": false
+  "loudness_two_pass": false,
+  "caption_lift": false,
+  "heading": true
 }

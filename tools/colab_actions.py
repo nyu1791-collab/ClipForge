@@ -259,7 +259,7 @@ class Controller:
         pool = colab_pool(mode)
         try:
             allocation_wait = int(
-                os.environ.get("CLIPFORGE_ALLOCATION_WAIT_SECONDS", "900")
+                os.environ.get("CLIPFORGE_ALLOCATION_WAIT_SECONDS", "0")
             )
         except ValueError:
             raise ControlError(
