@@ -109,3 +109,9 @@ Run 40220449164で成功。3.8/MEDIUMの指示生成3.220秒、3.5/MINIMALのURL
 ## 個人Driveへの自動納品
 
 ユーザー指定の宛先はn.yu1791@gmail.com。--deliver-driveで描画・回収後に自動転送する。Gemini/Vertexの認証と個人Driveの認証は別で、モデルへOAuth情報を渡さない。初回の本人接続は[TARGET_DRIVE.md](TARGET_DRIVE.md)を参照。
+
+## YouTube動画を3.8で直接解析
+
+vertex_video.pyはYouTube URLをfileDataとしてGemini 3.8 Flashへ渡す。思考はMEDIUM、低解像度・0.2fpsの入力で、映像と音声から要約・元時刻付きの根拠・切り抜き候補・字幕補助を1回のリクエストで取得する。VM側のダウンロード・Parakeet・GPUは不要。解析結果はMP4ではなく編集計画として保存する。動画入力のトークン内訳とモデル自身のアクセス申告を記録し、未取得の動画をURLだけから推測した結果と区別する。
+
+公式仕様: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/video-understanding

@@ -3,6 +3,12 @@
 set -euo pipefail
 drive_owner='n.yu1791@gmail.com'
 drive_project='project-fdadb4dd-cb77-4270-9cd'
+drive_client=${1:-${CLIPFORGE_DRIVE_CLIENT_ID_FILE:-}}
+if [[ -z "$drive_client" || ! -f "$drive_client" ]]; then
+  echo 'Provide the downloaded Desktop OAuth client JSON path as the first argument.' >&2
+  echo 'Create it in the target project: https://console.cloud.google.com/auth/clients?project=project-fdadb4dd-cb77-4270-9cd' >&2
+  exit 1
+fi
 drive_active=$(gcloud auth list --filter=status:ACTIVE --format='value(account)')
 if [[ ${drive_active,,} != "$drive_owner" ]]; then
   echo "Open Cloud Shell as $drive_owner." >&2
@@ -10,7 +16,7 @@ if [[ ${drive_active,,} != "$drive_owner" ]]; then
 fi
 command -v gh >/dev/null || { echo 'GitHub CLI (gh) is required in this Cloud Shell.' >&2; exit 1; }
 gcloud services enable drive.googleapis.com --project="$drive_project" --quiet
-gcloud auth application-default login --no-launch-browser --scopes='openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.file'
+gcloud auth application-default login --client-id-file="$drive_client" --no-launch-browser --scopes='openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.file'
 gcloud auth application-default set-quota-project "$drive_project" --quiet
 if ! gh auth status --hostname github.com >/dev/null 2>&1; then
   gh auth login --hostname github.com --git-protocol https --web --scopes repo
