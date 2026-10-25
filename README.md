@@ -1,4 +1,4 @@
-> 公開ClipForgeへのActions統合を準備中です。移行設定と未完了事項は[PUBLIC_ACTIONS.md](docs/PUBLIC_ACTIONS.md)を参照してください。動画・ASRの保存庫は非公開を維持します。
+> 公開ClipForgeへのActions定義の統合は完了し、認証の移行が残っています。移行設定と未完了事項は[PUBLIC_ACTIONS.md](docs/PUBLIC_ACTIONS.md)を参照してください。動画・ASRの保存庫は非公開を維持します。
 
 # ClipForge
 
