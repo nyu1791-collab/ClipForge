@@ -693,9 +693,10 @@ def main():
         "--audio-analysis-url",
         help="Kick / YouTube / Twitch または HTTPS の mp4・m4a・mp3・webm・m3u8。あなたが権利を持つファイルを置いた場所の URL",
     )
-    parser.add_argument("--ref", default="main")
+    parser.add_argument("--ref", default="fix/pr18-verified-transfer")
     parser.add_argument(
         "--workflow-ref",
+        default="fix/pr18-verified-transfer",
         help="Private worker branch/tag for review runs; default: main (persisted for resume)",
     )
     parser.add_argument("--config", type=Path)

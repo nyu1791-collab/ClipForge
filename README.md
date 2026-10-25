@@ -2,7 +2,7 @@
 
 同じ配信から、話題別の**横動画（16:9）**を作るパイプラインです。動画・音声・文字起こしは非公開の worker（`nyu1791-collab/ai-model-workers`）の GitHub Actions と Colab で扱い、このリポジトリにはコードだけを置きます。
 
-通常経路の設定・検査範囲は [GPU_ROUTE.md](docs/GPU_ROUTE.md) を正本とする。
+通常経路の設定・工程は [GPU_ROUTE.md](docs/GPU_ROUTE.md) を正本とする。
 
 ## 流れ
 
@@ -10,12 +10,12 @@
 | --- | --- | --- | --- |
 | 1 | 配信の音声を取得する（Kick・YouTube・Twitch・直接 HTTPS） | yt-dlp・ffmpeg（YouTube は任意で WARP） | Actions runner |
 | 2 | 全編を最大4台で文字起こしする | NVIDIA Parakeet（`nvidia/parakeet-tdt_ctc-0.6b-ja`） | Colab GPU（L4・T4） |
-| 3 | 話題に分け、候補の低画質映像と未承認の下書きを作る | 規則（間と語彙の変化）・ffmpeg | Actions runner |
-| 4 | 候補を確認し、承認ファイルを作る | 人（または Claude） | 手元 |
+| 3 | 5分以上の話題にまとめ、保存済みASRから採用候補を作る | 規則（間と語彙の変化） | Actions runner |
+| 4 | 5本以上の採用区間と見出しをJSONへ保存する | 制御側 | 手元 |
 | 5 | 採用した区間だけ取得し、字幕を焼き込んで描画する | ffmpeg・BudouX・fugashi | Colab GPU/NVENC |
-| 6 | クリップを検証してまとめる | — | 制御VM |
+| 6 | 完成クリップと記録を回収・非公開納品する | — | 制御VM |
 
-文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。外部の生成AIは呼びません。
+既定は5本、1本5〜15分です。品質監査・承認待ち・失敗時の自動再実行は行いません。文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。外部の生成AIは呼びません。
 
 ## 使い方
 
@@ -25,6 +25,7 @@
 uv sync --locked --extra media-fetch --extra chat
 uv run --no-sync python tools/submit_job.py \
   --audio-analysis-url 'https://kick.com/CHANNEL/videos/VOD_ID' \
+  --workflow-ref fix/pr18-verified-transfer \
   --ref REVIEWED_COMMIT_SHA --config config.landscape-long.example.json \
   --auto-previews --wait --output /private/NAME-previews
 ```

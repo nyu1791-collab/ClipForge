@@ -17,7 +17,7 @@ from clipforge.release_transfer import download_stage
 from clipforge.storage import PipelineError, digest, write_json
 
 REPO = "nyu1791-collab/ai-model-workers"
-BRANCH = "main"
+BRANCH = "fix/pr18-verified-transfer"
 WORKFLOW = "clipforge-stages.yml"
 # Each clip render on Colab owns its own runtime; the pool grants four or more at once.
 MAX_ACTIVE = {"colab-auto": 1}
