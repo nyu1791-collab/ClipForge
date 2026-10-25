@@ -1,4 +1,4 @@
-"""Immutable, verified private Releases for stage handoff (standard library only)."""
+"""Private stage handoff without post-upload readback audits (standard library only)."""
 
 import argparse
 import hashlib
@@ -61,7 +61,7 @@ def member(name):
     return path
 
 
-def inventory(root):
+def inventory(root, *, include_hashes=True):
     root = Path(root)
     if root.is_symlink() or not root.is_dir():
         fail("RESULT_STRUCTURE_INVALID")
@@ -77,13 +77,15 @@ def inventory(root):
             total += size
             if total > MAX_BYTES or len(files) >= MAX_FILES:
                 fail("RESULT_STRUCTURE_INVALID")
-            files[name] = {"bytes": size, "sha256": sha(path)}
+            files[name] = {"bytes": size}
+            if include_hashes:
+                files[name]["sha256"] = sha(path)
     if not files:
         fail("RESULT_STRUCTURE_INVALID")
     return files
 
 
-def validate_identity(root, run_id, name, source_ref=None):
+def validate_identity(root, run_id, name, source_ref=None, *, audit_hashes=True):
     match = re.fullmatch(r"clipforge-(analysis|result)-([a-f0-9]{32})", name)
     if not re.fullmatch(r"[0-9]{1,20}", str(run_id)) or not match:
         fail("RESULT_STRUCTURE_INVALID")
@@ -103,7 +105,7 @@ def validate_identity(root, run_id, name, source_ref=None):
         path = root / filename
         if not path.is_file() or path.is_symlink():
             fail("RESULT_STRUCTURE_INVALID")
-        if sha(path) != expected:
+        if audit_hashes and sha(path) != expected:
             fail("RESULT_SHA_MISMATCH")
     return receipt
 
@@ -175,10 +177,9 @@ def release(tag):
     fail("RESULT_STRUCTURE_INVALID")
 
 
-def download(run_id, name, destination, expected=None):
-    private_repo()
+def download(run_id, name, destination, expected=None, *, record=None):
     tag = tag_for(run_id, name)
-    record = release(tag)
+    record = record if record is not None else release(tag)
     if record is None:
         fail("RESULT_NOT_FOUND")
     assets = record["assets"]
@@ -204,11 +205,11 @@ def download(run_id, name, destination, expected=None):
             or (expected is not None and manifest != expected)
         ):
             fail("RESULT_STRUCTURE_INVALID")
-        if sha(work / "result.zip") != manifest.get("archive_sha256"):
-            fail("RESULT_SHA_MISMATCH")
         unpacked = work / "unpacked"
         safe_extract(work / "result.zip", unpacked)
-        verify_manifest(unpacked, manifest)
+        validate_identity(
+            unpacked, run_id, name, manifest["source_ref"], audit_hashes=False
+        )
         if destination.exists() or destination.is_symlink():
             fail("RESULT_STRUCTURE_INVALID")
         unpacked.rename(destination)
@@ -217,9 +218,9 @@ def download(run_id, name, destination, expected=None):
 
 def download_stage(run_id, name, destination, artifact_runner=None):
     """Prefer the immutable Release; only absence permits legacy Artifact retrieval."""
-    private_repo()
-    if release(tag_for(run_id, name)) is not None:
-        return download(run_id, name, destination)
+    record = release(tag_for(run_id, name))
+    if record is not None:
+        return download(run_id, name, destination, record=record)
     runner = artifact_runner or gh
     runner(
         "run",
@@ -235,25 +236,67 @@ def download_stage(run_id, name, destination, artifact_runner=None):
     return None
 
 
+def read_transfer(run_id, name):
+    """Read only the small transfer record, never the media archive."""
+    tag = tag_for(run_id, name)
+    with tempfile.TemporaryDirectory() as temporary:
+        gh(
+            "release",
+            "download",
+            tag,
+            "--repo",
+            REPO,
+            "--pattern",
+            "transfer.json",
+            "--dir",
+            temporary,
+        )
+        record = json.loads((Path(temporary) / "transfer.json").read_text())
+    if record.get("run_id") != str(run_id) or record.get("name") != name:
+        fail("RESULT_STRUCTURE_INVALID")
+    return record
+
+
 def publish(directory, name):
     private_repo()
     root = Path(directory)
     run_id = os.environ.get("GITHUB_RUN_ID", "")
     tag = tag_for(run_id, name)
-    files = inventory(root)
     receipt = validate_identity(
         root,
         run_id,
         name,
         os.environ.get("CLIPFORGE_SOURCE_REF") or os.environ.get("SOURCE_REF"),
+        audit_hashes=False,
     )
-    print("RESULT_PACKAGED", flush=True)
+    files = inventory(root, include_hashes=False)
+    manifest = {
+        "schema": 2,
+        "run_id": run_id,
+        "name": name,
+        "source_ref": receipt["source_ref"],
+        "files": files,
+        "producer_sha256": receipt.get("sha256", {}),
+        "request_receipt": receipt,
+        "stage_manifest": json.loads((root / "manifest.json").read_text())
+        if (root / "manifest.json").is_file()
+        else {},
+        "gpu_receipt": json.loads((root / "gpu-receipt.json").read_text())
+        if (root / "gpu-receipt.json").is_file()
+        else None,
+        "post_upload_audit": "not_run",
+    }
+    if release(tag) is not None:
+        existing = read_transfer(run_id, name)
+        if existing != manifest:
+            fail("RESULT_STRUCTURE_INVALID")
+        print("RESULT_REUSED", flush=True)
+        return
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary)
         archive = work / "result.zip"
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
             for filename in files:
-                # Fixed metadata gives byte-identical archives on retry.
                 info = zipfile.ZipInfo(filename)
                 info.external_attr = (stat.S_IFREG | 0o600) << 16
                 with (
@@ -263,53 +306,23 @@ def publish(directory, name):
                     shutil.copyfileobj(source, out, 1024 * 1024)
         if archive.stat().st_size > MAX_BYTES:
             fail("RESULT_STRUCTURE_INVALID")
-        manifest = {
-            "schema": 1,
-            "run_id": run_id,
-            "name": name,
-            "source_ref": receipt["source_ref"],
-            "files": files,
-            "archive_sha256": sha(archive),
-        }
-        verify_manifest(root, manifest)
         (work / "transfer.json").write_text(json.dumps(manifest, sort_keys=True))
-        if release(tag) is None:
-            gh(
-                "release",
-                "create",
-                tag,
-                str(archive),
-                str(work / "transfer.json"),
-                "--repo",
-                REPO,
-                "--title",
-                tag,
-                "--notes",
-                "Private stage transfer",
-                "--latest=false",
-            )
-        print("RESULT_UPLOADED", flush=True)
-        # A separate interpreter must fetch remote bytes before success is reported.
-        command = [
-            sys.executable,
-            "-m",
-            "clipforge.release_transfer",
-            "download",
-            run_id,
-            name,
-            str(work / "verified"),
-            "--expected-manifest",
+        print("RESULT_PACKAGED", flush=True)
+        gh(
+            "release",
+            "create",
+            tag,
+            str(archive),
             str(work / "transfer.json"),
-        ]
-        result = subprocess.run(command, capture_output=True, timeout=600)
-        if result.returncode:
-            fail("RESULT_UPLOAD_FAILED")
-        downloaded = json.loads(
-            (work / "verified" / "request-receipt.json").read_text()
+            "--repo",
+            REPO,
+            "--title",
+            tag,
+            "--notes",
+            "Private stage transfer",
+            "--latest=false",
         )
-        if downloaded != receipt or inventory(work / "verified") != files:
-            fail("RESULT_SHA_MISMATCH")
-    print("RESULT_VERIFIED", flush=True)
+    print("RESULT_UPLOADED", flush=True)
 
 
 def main(argv=None):

@@ -291,6 +291,10 @@ class Controller:
             "status": "creating",
             "account": EXPECTED_ACCOUNT,
             "units_before": units,
+            "workflow_run": os.environ.get("GITHUB_RUN_ID"),
+            "result_transport": "final-release"
+            if mode == "audio-stage" and os.environ.get("RESULT_STORE") == "release"
+            else "input-bundle",
         }
         write_private(self.state_path, record)
         from colab_cli.client import Accelerator, TooManyAssignmentsError, Variant
@@ -376,7 +380,8 @@ class Controller:
         payload = {
             **record,
             "github_token": token,
-            "workflow_run": os.environ.get("GITHUB_RUN_ID", "manual"),
+            "workflow_run": record.get("workflow_run")
+            or os.environ.get("GITHUB_RUN_ID", "manual"),
         }
         if record["mode"] == "audio-stage":
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
@@ -498,6 +503,40 @@ del _clipforge_bootstrap
             return
 
     def collect(self, record, output, execution_failed, token):
+        if record.get("result_transport") == "final-release":
+            # Only execution records return to Actions. The large MP4s stay in the
+            # final Release for the collector/Drive to download once when needed.
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+            from clipforge.release_transfer import read_transfer
+
+            data = read_transfer(
+                record["workflow_run"], "clipforge-result-" + record["request_id"]
+            )
+            receipt = data["request_receipt"]
+            manifest = data.get("stage_manifest", {})
+            output = Path(output)
+            output.mkdir(parents=True, exist_ok=True, mode=0o700)
+            write_private(output / "request-receipt.json", receipt)
+            write_private(output / "manifest.json", manifest)
+            if data.get("gpu_receipt") is not None:
+                write_private(output / "gpu-receipt.json", data["gpu_receipt"])
+            expected = "clip_rendered" if record["stage"]["clip_index"] else "complete"
+            if (
+                receipt.get("request_id") != record["request_id"]
+                or receipt.get("source_ref") != record["source_ref"]
+            ):
+                raise ControlError(
+                    "Returned Colab result identity differs from the request"
+                )
+            if (
+                execution_failed
+                or receipt.get("status") != expected
+                or manifest.get("status") != expected
+            ):
+                raise ControlError(
+                    "Colab job failed; private partial outputs remain in the final Release"
+                )
+            return
         ReleaseBundles(token).restore(
             record["input_tag"], output, record["request_id"], required=True
         )

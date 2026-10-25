@@ -78,47 +78,72 @@ def safe_tar_filter(root):
     return choose
 
 
+class _ChunkWriter:
+    """Write tar bytes directly into upload parts, without a second disk copy."""
+
+    def __init__(self, work, chunk_bytes):
+        self.work, self.chunk_bytes = work, chunk_bytes
+        self.total = self.size = 0
+        self.handle = None
+        self.chunks = []
+
+    def write(self, data):
+        count = len(data)
+        if self.total + count > MAX_BYTES:
+            raise BundleError("Bundle exceeds the transfer limit")
+        self.total += count
+        remaining = memoryview(data)
+        while remaining:
+            if self.handle is None:
+                self.handle = (self.work / "next.part").open("wb")
+                self.sha = hashlib.sha256()
+                self.size = 0
+            length = min(len(remaining), self.chunk_bytes - self.size)
+            self.handle.write(remaining[:length])
+            self.sha.update(remaining[:length])
+            self.size += length
+            remaining = remaining[length:]
+            if self.size == self.chunk_bytes:
+                self.finish()
+        return count
+
+    def finish(self):
+        if self.handle is None:
+            return
+        self.handle.close()
+        self.handle = None
+        checksum = self.sha.hexdigest()
+        name = f"cf-result-{checksum}.part"
+        (self.work / "next.part").replace(self.work / name)
+        self.chunks.append({"name": name, "sha256": checksum, "bytes": self.size})
+
+
 def pack(root, work, identity, chunk_bytes=CHUNK_BYTES):
     root, work = Path(root).resolve(), Path(work).resolve()
-    if work.is_relative_to(root):
-        raise BundleError("Bundle staging must be outside its source")
+    if work.is_relative_to(root) or chunk_bytes <= 0:
+        raise BundleError(
+            "Bundle staging must be outside its source with positive chunks"
+        )
     work.mkdir(parents=True, exist_ok=True)
-    archive = work / "bundle.tar"
-    # Results are already compressed (MP4, WAV is never returned), so the tar is plain.
-    with tarfile.open(archive, "w") as bundle:
-        for path in sorted(root.iterdir()):
-            bundle.add(
-                path, arcname=str(path.relative_to(root)), filter=safe_tar_filter(root)
-            )
-    if archive.stat().st_size > MAX_BYTES:
-        raise BundleError("Bundle exceeds the transfer limit")
-    chunks = []
-    with archive.open("rb") as source:
-        while True:
-            temporary = work / "next.part"
-            size = 0
-            sha = hashlib.sha256()
-            with temporary.open("wb") as out:
-                while size < chunk_bytes:
-                    data = source.read(min(1024 * 1024, chunk_bytes - size))
-                    if not data:
-                        break
-                    out.write(data)
-                    sha.update(data)
-                    size += len(data)
-            if not size:
-                temporary.unlink()
-                break
-            name = f"cf-result-{sha.hexdigest()}.part"
-            temporary.replace(work / name)
-            chunks.append({"name": name, "sha256": sha.hexdigest(), "bytes": size})
-    archive.unlink()
+    stream = _ChunkWriter(work, chunk_bytes)
+    try:
+        with tarfile.open(fileobj=stream, mode="w|") as bundle:
+            for path in sorted(root.iterdir()):
+                bundle.add(
+                    path,
+                    arcname=str(path.relative_to(root)),
+                    filter=safe_tar_filter(root),
+                )
+        stream.finish()
+    finally:
+        if stream.handle is not None:
+            stream.handle.close()
     manifest = {
         "schema": 1,
         "kind": "result",
         "identity": identity,
-        "bytes": sum(c["bytes"] for c in chunks),
-        "chunks": chunks,
+        "bytes": stream.total,
+        "chunks": stream.chunks,
     }
     path = work / "cf-result-manifest.json"
     path.write_text(json.dumps(manifest))

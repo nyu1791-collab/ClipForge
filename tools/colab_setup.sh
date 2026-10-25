@@ -9,10 +9,17 @@ clipforge_record_timing() {
     'BEGIN { printf "%s\t%.3f\n", name, finished - started }' >> "$clipforge_timings"
 }
 source tools/colab_cache_env.sh
-bash tools/ensure_node.sh
-os_deps_started=$(date +%s.%N)
-bash tools/colab_os_deps.sh
-clipforge_record_timing os_deps "$os_deps_started"
+# OS tools / Node and Python wheels have independent prerequisites.
+(
+  os_deps_started=$(date +%s.%N)
+  bash tools/colab_os_deps.sh
+  clipforge_record_timing os_deps "$os_deps_started"
+  node_started=$(date +%s.%N)
+  bash tools/ensure_node.sh
+  clipforge_record_timing node "$node_started"
+) &
+clipforge_os_pid=$!
+trap 'wait "$clipforge_os_pid" || true' EXIT
 uv_bootstrap_started=$(date +%s.%N)
 if [[ $(uv --version 2>/dev/null || true) != 'uv 0.12.23'* ]]; then
   mkdir -p "$CLIPFORGE_CACHE_ROOT/bootstrap"
@@ -24,10 +31,20 @@ if [[ $(uv --version 2>/dev/null || true) != 'uv 0.12.23'* ]]; then
 fi
 clipforge_record_timing uv_bootstrap "$uv_bootstrap_started"
 uv_sync_started=$(date +%s.%N)
-uv_sync_args=(--locked --python 3.11 --extra chat --extra media-fetch --no-dev)
+uv_sync_args=(--locked --python 3.11 --extra media-fetch --no-dev)
+clipforge_chat_enabled=$(python3 - <<'PYCODE'
+import json,os,pathlib
+config=pathlib.Path(os.environ.get('CLIPFORGE_RENDER_CONFIG','config.landscape.example.json'))
+print('1' if json.loads(config.read_text()).get('chat_panel',False) else '0')
+PYCODE
+)
+if [[ $clipforge_chat_enabled == 1 ]]; then uv_sync_args+=(--extra chat); fi
 if uv sync --offline "${uv_sync_args[@]}"; then
   echo 'Python dependencies installed from the local cache; no package download required.'
 else
   uv sync "${uv_sync_args[@]}"
 fi
 clipforge_record_timing uv_sync "$uv_sync_started"
+
+wait "$clipforge_os_pid"
+trap - EXIT

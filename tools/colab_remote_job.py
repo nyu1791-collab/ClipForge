@@ -62,6 +62,8 @@ def publish_result(bundles, payload, output, report, timings):
                     "request_id": payload["request_id"],
                     "source_ref": payload["source_ref"],
                     "status": "failed",
+                    "workflow_run": payload["workflow_run"],
+                    "sha256": {},
                     "rendered_clips": 0,
                 }
             )
@@ -76,7 +78,31 @@ def publish_result(bundles, payload, output, report, timings):
             timed(timings, "result_publish"),
             tempfile.TemporaryDirectory(prefix="clipforge-result-upload-") as work,
         ):
-            bundles.publish(payload["input_tag"], output, work, payload["request_id"])
+            if payload.get("result_transport") == "final-release":
+                transfer_env = {
+                    **os.environ,
+                    "GH_TOKEN": payload["github_token"],
+                    "GITHUB_RUN_ID": payload["workflow_run"],
+                    "CLIPFORGE_SOURCE_REF": payload["source_ref"],
+                    "PYTHONPATH": str(ROOT / "src"),
+                }
+                command(
+                    [
+                        sys.executable,
+                        "-m",
+                        "clipforge.release_transfer",
+                        "publish",
+                        str(output),
+                        "clipforge-result-" + payload["request_id"],
+                    ],
+                    transfer_env,
+                    "result-upload",
+                    timeout=1800,
+                )
+            else:
+                bundles.publish(
+                    payload["input_tag"], output, work, payload["request_id"]
+                )
     except Exception as error:
         report["result_error_type"] = type(error).__name__
         return False
@@ -301,9 +327,15 @@ def render_stage(payload, output, report, timings, environment):
     # One reviewed clip (or every clip) is rendered from the verified analysis artifact;
     # the worker itself checks the previous run and its identity.
     report["stage"] = "asset-setup"
+    stage = payload["stage"]
+    setup_environment = {
+        **environment,
+        "CLIPFORGE_RENDER_CONFIG": stage.get("config_file")
+        or "config.landscape.example.json",
+    }
     with timed(timings, "setup"):
         try:
-            command(["bash", "tools/colab_setup.sh"], environment, "setup")
+            command(["bash", "tools/colab_setup.sh"], setup_environment, "setup")
         finally:
             timings.update(read_setup_timings(WORK / "setup-timings.tsv"))
     report["stage"] = "render"
@@ -366,7 +398,11 @@ def main():
     if payload["input_tag"] != "clipforge-input-" + payload["request_id"]:
         raise RuntimeError("Input identity mismatch")
     WORK.mkdir(mode=0o700)
-    bundles = ReleaseBundles(payload["github_token"])
+    bundles = (
+        None
+        if payload.get("result_transport") == "final-release"
+        else ReleaseBundles(payload["github_token"])
+    )
     accelerator = payload.get("accelerator", "T4")
     timings = {}
     environment = {

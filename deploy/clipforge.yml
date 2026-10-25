@@ -200,7 +200,7 @@
           }
         },
         {
-          "name": "Save the verified private result transfer",
+          "name": "Save private stage output",
           "if": "success() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
@@ -439,7 +439,7 @@
           }
         },
         {
-          "name": "Retrieve the verified private analysis transfer",
+          "name": "Retrieve the saved analysis output",
           "if": "inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
@@ -477,7 +477,7 @@
           }
         },
         {
-          "name": "Save the verified private result transfer",
+          "name": "Save private stage output",
           "if": "success() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
@@ -546,7 +546,7 @@
             "artifact",
             "release"
           ],
-          "default": "artifact"
+          "default": "release"
         }
       }
     }

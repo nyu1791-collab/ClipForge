@@ -111,7 +111,7 @@
           }
         },
         {
-          "name": "Save the verified private result transfer",
+          "name": "Save private stage output",
           "if": "always() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
@@ -139,7 +139,8 @@
         "REVIEW_JSON": "${{ inputs.review_json }}",
         "CONFIG_FILE": "${{ inputs.config_file }}",
         "PYTHONUNBUFFERED": "1",
-        "CLIPFORGE_PUBLIC_CACHE": "off"
+        "CLIPFORGE_PUBLIC_CACHE": "off",
+        "RESULT_STORE": "${{ inputs.result_store }}"
       },
       "steps": [
         {
@@ -188,7 +189,8 @@
           "env": {
             "GH_TOKEN": "${{ github.token }}"
           },
-          "run": "gh release create \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" --target main \\\n  --title \"$INPUT_TAG\" --latest=false \\\n  --notes 'Temporary private ClipForge clip transfer. Deleted after collection.'\n"
+          "run": "gh release create \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" --target main \\\n  --title \"$INPUT_TAG\" --latest=false \\\n  --notes 'Temporary private ClipForge clip transfer. Deleted after collection.'\n",
+          "if": "inputs.result_store != 'release'"
         },
         {
           "name": "Allocate the cheapest runtime the account grants",
@@ -198,7 +200,7 @@
           "run": "REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  clipforge-source/tools/colab_actions.py start --mode audio-stage\n"
         },
         {
-          "name": "Render on Colab and retrieve verified private outputs",
+          "name": "Render on Colab and publish final private outputs",
           "env": {
             "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
             "GH_TOKEN": "${{ github.token }}"
@@ -222,22 +224,10 @@
           }
         },
         {
-          "name": "Save the verified private result transfer",
-          "if": "always() && inputs.result_store == 'release'",
-          "timeout-minutes": 10,
-          "env": {
-            "GH_TOKEN": "${{ github.token }}",
-            "PYTHONPATH": "${{ github.workspace }}/clipforge-source/src",
-            "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-out",
-            "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
-          },
-          "run": "python3 -m clipforge.release_transfer publish \"$RESULT_DIRECTORY\" \"$RESULT_NAME\""
-        },
-        {
           "name": "Delete the private transfer release",
           "id": "input-cleanup",
           "timeout-minutes": 10,
-          "if": "always()",
+          "if": "inputs.result_store != 'release' && always()",
           "continue-on-error": true,
           "env": {
             "GH_TOKEN": "${{ github.token }}"
@@ -247,7 +237,7 @@
         {
           "name": "Report a transfer release that could not be deleted",
           "timeout-minutes": 5,
-          "if": "always() && steps.input-cleanup.outcome != 'success'",
+          "if": "always() && inputs.result_store != 'release' && steps.input-cleanup.outcome != 'success'",
           "run": "echo \"::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG.\"\n{\n  echo '### Temporary private transfer remains'\n  echo \"The release \\`$INPUT_TAG\\` could not be confirmed deleted. Delete it with \\`tools/submit_job.py --cleanup-tag $INPUT_TAG\\`.\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
         }
       ]
@@ -320,7 +310,7 @@
             "artifact",
             "release"
           ],
-          "default": "artifact"
+          "default": "release"
         }
       }
     }
