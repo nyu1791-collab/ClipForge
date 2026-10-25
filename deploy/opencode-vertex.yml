@@ -35,10 +35,18 @@
   },
   "jobs": {
     "task": {
-      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private",
+      "if": "github.repository == 'nyu1791-collab/ClipForge'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 25,
       "steps": [
+        {
+          "name": "Require private storage credentials before processing",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "STORE_MODE": "${{ inputs.result_store }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+        },
         {
           "name": "Prepare explicit task",
           "env": {
@@ -92,11 +100,14 @@
           "name": "Save the task report privately",
           "if": "always()",
           "env": {
-            "GH_TOKEN": "${{ github.token }}"
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "python3 - <<'PYCODE'\nimport os,pathlib,shutil,json,subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])\nreports=root/'opencode-report';reports.mkdir(exist_ok=True)\nfor result in (root/'opencode-state/opencode-agents/runs').glob('*/result.json'):\n data=json.loads(result.read_text())\n shutil.copyfile(result,reports/'result.json')\n src=result.parent/'report.md'\n if src.exists():shutil.copyfile(src,reports/'report.md')\n if data.get('mode')=='write':\n  diff=subprocess.run(['git','-C',data['workdir'],'diff','--binary'],capture_output=True,check=True)\n  (reports/'changes.patch').write_bytes(diff.stdout)\nPYCODE\nif [ -f \"$RUNNER_TEMP/opencode-report/result.json\" ]; then\n gh release create \"clipforge-opencode-$GITHUB_RUN_ID\" \"$RUNNER_TEMP/opencode-report/\"* --repo \"$GITHUB_REPOSITORY\" --latest=false --title \"OpenCode task $GITHUB_RUN_ID\" --notes 'Private task result; no automatic retry.'\nfi"
+          "run": "python3 - <<'PYCODE'\nimport os,pathlib,shutil,json,subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])\nreports=root/'opencode-report';reports.mkdir(exist_ok=True)\nfor result in (root/'opencode-state/opencode-agents/runs').glob('*/result.json'):\n data=json.loads(result.read_text())\n shutil.copyfile(result,reports/'result.json')\n src=result.parent/'report.md'\n if src.exists():shutil.copyfile(src,reports/'report.md')\n if data.get('mode')=='write':\n  diff=subprocess.run(['git','-C',data['workdir'],'diff','--binary'],capture_output=True,check=True)\n  (reports/'changes.patch').write_bytes(diff.stdout)\nPYCODE\nif [ -f \"$RUNNER_TEMP/opencode-report/result.json\" ]; then\n gh release create \"clipforge-opencode-$GITHUB_RUN_ID\" \"$RUNNER_TEMP/opencode-report/\"* --repo \"$CLIPFORGE_STORAGE_REPO\" --latest=false --title \"OpenCode task $GITHUB_RUN_ID\" --notes 'Private task result; no automatic retry.'\nfi"
         }
-      ]
+      ],
+      "env": {
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
+      }
     }
   }
 }

@@ -11,7 +11,7 @@
   },
   "jobs": {
     "colab-auto": {
-      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && !inputs.probe_only",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && !inputs.probe_only",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 180,
       "env": {
@@ -19,16 +19,25 @@
         "INPUT_TAG": "${{ inputs.input_tag }}",
         "REQUEST_ID": "${{ inputs.request_id }}",
         "PYTHONUNBUFFERED": "1",
-        "CLIPFORGE_PUBLIC_CACHE": "off"
+        "CLIPFORGE_PUBLIC_CACHE": "off",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
       },
       "steps": [
         {
+          "name": "Require private storage credentials before processing",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "STORE_MODE": "${{ inputs.result_store }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+        },
+        {
           "name": "Select a compatible production source",
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/d85a64c56bc6a2b358f93903cb4010edbc960d51...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
@@ -110,7 +119,7 @@
           "timeout-minutes": 5,
           "if": "inputs.verified_audio_run != '' || inputs.verified_audio_request != ''",
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "AUDIO_URL": "${{ inputs.audio_url }}",
             "VERIFIED_AUDIO_RUN": "${{ inputs.verified_audio_run }}",
             "VERIFIED_AUDIO_REQUEST": "${{ inputs.verified_audio_request }}"
@@ -139,22 +148,10 @@
           "run": "uv run --no-sync python tools/youtube_transport.py cleanup --state-dir \"$RUNNER_TEMP/clipforge-youtube\""
         },
         {
-          "name": "Keep private URL acquisition and transport receipts",
-          "timeout-minutes": 2,
-          "if": "always() && inputs.audio_url != '' && inputs.result_store != 'release'",
-          "uses": "actions/upload-artifact@v4",
-          "with": {
-            "name": "clipforge-acquisition-${{ inputs.request_id }}",
-            "path": "${{ runner.temp }}/clipforge-youtube/\n${{ runner.temp }}/clipforge-input/acquisition-report.json\n",
-            "retention-days": 7,
-            "if-no-files-found": "warn"
-          }
-        },
-        {
           "name": "Recognise the audio parts on owned Colab GPUs and allocate topics",
           "timeout-minutes": 140,
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
           },
           "run": "clipforge-source/.venv/bin/python clipforge-source/tools/split_asr_job.py \\\n  --directory \"$RUNNER_TEMP/clipforge-input\" --output \"$RUNNER_TEMP/clipforge-out\" \\\n  --control-python \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  --state-root \"$RUNNER_TEMP/clipforge-split\"\n"
@@ -166,45 +163,21 @@
           "run": "failed=0\nfor state in $RUNNER_TEMP/clipforge-split/control-*; do\n  if [ -f \"$state/state.json\" ]; then\n    \"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py stop --state-dir \"$state\" || failed=1\n  fi\ndone\nexit \"$failed\"\n"
         },
         {
-          "name": "Keep available ASR part outputs privately after a failure",
-          "timeout-minutes": 10,
-          "if": "(failure() || cancelled()) && inputs.result_store != 'release'",
-          "uses": "actions/upload-artifact@v4",
-          "with": {
-            "name": "clipforge-partial-${{ inputs.request_id }}",
-            "path": "${{ runner.temp }}/clipforge-split/result-*/",
-            "retention-days": 7,
-            "if-no-files-found": "ignore"
-          }
-        },
-        {
           "name": "Delete temporary private ASR part releases",
           "timeout-minutes": 10,
           "if": "always()",
           "continue-on-error": true,
           "env": {
-            "GH_TOKEN": "${{ github.token }}"
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "if [ \"$(gh api \"repos/$GITHUB_REPOSITORY\" --jq .private)\" != true ]; then exit 1; fi\ntags=()\nif [ -f \"$RUNNER_TEMP/clipforge-split/staged-tags\" ]; then\n  mapfile -t tags < \"$RUNNER_TEMP/clipforge-split/staged-tags\"\nfi\nfailed=0\nfor tag in \"${tags[@]}\"; do\n  [[ $tag =~ ^clipforge-input-[a-f0-9]{32}$ ]] || { failed=1; continue; }\n  if gh release view \"$tag\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then\n    gh release delete \"$tag\" --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag || failed=1\n  fi\ndone\nif [ \"$failed\" = 1 ]; then echo '::warning::Temporary private ASR part input cleanup failed.'; fi\nexit \"$failed\"\n"
-        },
-        {
-          "uses": "actions/upload-artifact@v4",
-          "timeout-minutes": 10,
-          "if": "always() && inputs.result_store != 'release'",
-          "with": {
-            "name": "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}",
-            "path": "${{ runner.temp }}/clipforge-out/",
-            "compression-level": 0,
-            "retention-days": 7,
-            "if-no-files-found": "warn"
-          }
+          "run": "if [ \"$(gh api \"repos/$CLIPFORGE_STORAGE_REPO\" --jq .private)\" != true ]; then exit 1; fi\ntags=()\nif [ -f \"$RUNNER_TEMP/clipforge-split/staged-tags\" ]; then\n  mapfile -t tags < \"$RUNNER_TEMP/clipforge-split/staged-tags\"\nfi\nfailed=0\nfor tag in \"${tags[@]}\"; do\n  [[ $tag =~ ^clipforge-input-[a-f0-9]{32}$ ]] || { failed=1; continue; }\n  if gh release view \"$tag\" --repo \"$CLIPFORGE_STORAGE_REPO\" >/dev/null 2>&1; then\n    gh release delete \"$tag\" --repo \"$CLIPFORGE_STORAGE_REPO\" --yes --cleanup-tag || failed=1\n  fi\ndone\nif [ \"$failed\" = 1 ]; then echo '::warning::Temporary private ASR part input cleanup failed.'; fi\nexit \"$failed\"\n"
         },
         {
           "name": "Save private stage output",
           "if": "success() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "PYTHONPATH": "${{ github.workspace }}/clipforge-source/src",
             "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-out",
             "RESULT_NAME": "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}"
@@ -218,9 +191,9 @@
           "if": "always()",
           "continue-on-error": true,
           "env": {
-            "GH_TOKEN": "${{ github.token }}"
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then\n  echo 'Unexpected temporary input tag; nothing was deleted.' >&2\n  exit 1\nfi\nif [ \"$(gh api \"repos/$GITHUB_REPOSITORY\" --jq .private)\" != true ]; then\n  echo 'The worker repository must remain private; nothing was deleted.' >&2\n  exit 1\nfi\nif gh release view \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" >/dev/null 2>&1; then\n  gh release delete \"$INPUT_TAG\" --repo \"$GITHUB_REPOSITORY\" --yes --cleanup-tag\n  echo 'Temporary private input release deleted.'\nelse\n  echo 'No temporary private input release remains.'\nfi\n"
+          "run": "if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then\n  echo 'Unexpected temporary input tag; nothing was deleted.' >&2\n  exit 1\nfi\nif [ \"$(gh api \"repos/$CLIPFORGE_STORAGE_REPO\" --jq .private)\" != true ]; then\n  echo 'The worker repository must remain private; nothing was deleted.' >&2\n  exit 1\nfi\nif gh release view \"$INPUT_TAG\" --repo \"$CLIPFORGE_STORAGE_REPO\" >/dev/null 2>&1; then\n  gh release delete \"$INPUT_TAG\" --repo \"$CLIPFORGE_STORAGE_REPO\" --yes --cleanup-tag\n  echo 'Temporary private input release deleted.'\nelse\n  echo 'No temporary private input release remains.'\nfi\n"
         },
         {
           "name": "Report a temporary input that could not be deleted",
@@ -231,7 +204,7 @@
       ]
     },
     "url-probe": {
-      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.probe_only",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.probe_only",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 45,
       "permissions": {
@@ -240,16 +213,25 @@
       "env": {
         "SOURCE_REF": "${{ inputs.source_ref }}",
         "REQUEST_ID": "${{ inputs.request_id }}",
-        "AUDIO_URL": "${{ inputs.audio_url }}"
+        "AUDIO_URL": "${{ inputs.audio_url }}",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
       },
       "steps": [
         {
+          "name": "Require private storage credentials before processing",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "STORE_MODE": "${{ inputs.result_store }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+        },
+        {
           "name": "Select a compatible production source",
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/d85a64c56bc6a2b358f93903cb4010edbc960d51...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
@@ -335,36 +317,12 @@
           "if": "steps.audio_probe.outputs.audio_acquired == 'true' && steps.transport_close.outcome == 'success'",
           "timeout-minutes": 2,
           "run": "uv run --no-sync python tools/probe_youtube_reuse.py --url \"$AUDIO_URL\" --directory \"$RUNNER_TEMP/clipforge-audio-probe\" --output \"$RUNNER_TEMP/clipforge-audio-reuse\""
-        },
-        {
-          "name": "Keep verified audio privately for subsequent ASR",
-          "if": "always() && steps.audio_probe.outputs.audio_acquired == 'true'",
-          "timeout-minutes": 10,
-          "uses": "actions/upload-artifact@v4",
-          "with": {
-            "name": "clipforge-verified-audio-${{ inputs.request_id }}",
-            "path": "${{ runner.temp }}/clipforge-audio-probe/audio.m4a\n${{ runner.temp }}/clipforge-audio-probe/audio-source.json\n",
-            "retention-days": 7,
-            "compression-level": 0,
-            "if-no-files-found": "warn"
-          }
-        },
-        {
-          "uses": "actions/upload-artifact@v4",
-          "timeout-minutes": 2,
-          "if": "always()",
-          "with": {
-            "name": "clipforge-url-probe-${{ github.run_id }}",
-            "path": "probe-result/\n${{ runner.temp }}/clipforge-youtube/\n",
-            "retention-days": 7,
-            "if-no-files-found": "warn"
-          }
         }
       ]
     },
     "previews": {
       "needs": "colab-auto",
-      "if": "github.repository == 'nyu1791-collab/ai-model-workers' && github.event.repository.private && inputs.auto_previews && needs.colab-auto.result == 'success'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.auto_previews && needs.colab-auto.result == 'success'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 90,
       "env": {
@@ -373,16 +331,25 @@
         "CPU_PACKAGES": "ffmpeg fontconfig fonts-noto-cjk libcairo2",
         "PYTHONUNBUFFERED": "1",
         "CLIPFORGE_TOPIC_MODEL": "gemini-3.8-flash",
-        "CLIPFORGE_VERTEX_PROJECT": "project-fdadb4dd-cb77-4270-9cd"
+        "CLIPFORGE_VERTEX_PROJECT": "project-fdadb4dd-cb77-4270-9cd",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
       },
       "steps": [
         {
+          "name": "Require private storage credentials before processing",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "STORE_MODE": "${{ inputs.result_store }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+        },
+        {
           "name": "Select a compatible production source",
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/d85a64c56bc6a2b358f93903cb4010edbc960d51...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
@@ -429,7 +396,7 @@
           "if": "inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "PYTHONPATH": "${{ github.workspace }}/src"
           },
           "run": "python3 -m clipforge.release_transfer download \"$GITHUB_RUN_ID\" \"clipforge-analysis-$REQUEST_ID\" \"$RUNNER_TEMP/clipforge-analysis\""
@@ -466,23 +433,11 @@
           "run": "uv run --no-sync python tools/run_audio_stage.py --stage previews \\\n  --same-run-analysis \"$RUNNER_TEMP/clipforge-analysis\" \\\n  --previous-run \"$GITHUB_RUN_ID\" --previous-request \"$REQUEST_ID\" \\\n  --request-id \"$REQUEST_ID\" --source-ref \"$CLIPFORGE_SOURCE_REF\" \\\n  --config \"$RUNNER_TEMP/preview-settings.json\" --output \"$RUNNER_TEMP/clipforge-previews\"\n"
         },
         {
-          "uses": "actions/upload-artifact@v4",
-          "timeout-minutes": 10,
-          "if": "always() && inputs.result_store != 'release'",
-          "with": {
-            "name": "clipforge-result-${{ inputs.request_id }}",
-            "path": "${{ runner.temp }}/clipforge-previews/",
-            "compression-level": 0,
-            "retention-days": 7,
-            "if-no-files-found": "warn"
-          }
-        },
-        {
           "name": "Save private stage output",
           "if": "success() && inputs.result_store == 'release'",
           "timeout-minutes": 10,
           "env": {
-            "GH_TOKEN": "${{ github.token }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "PYTHONPATH": "${{ github.workspace }}/src",
             "RESULT_DIRECTORY": "${{ runner.temp }}/clipforge-previews",
             "RESULT_NAME": "clipforge-result-${{ inputs.request_id }}"
@@ -493,9 +448,9 @@
           "name": "Keep Gemini failure timing without another generation",
           "if": "failure()",
           "env": {
-            "GH_TOKEN": "${{ github.token }}"
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "receipt=\"$RUNNER_TEMP/clipforge-previews/vertex-selection-receipt.json\"\nif [ -f \"$receipt\" ]; then\n  gh release create \"clipforge-vertex-failure-$GITHUB_RUN_ID\" \"$receipt\" --repo \"$GITHUB_REPOSITORY\" --latest=false --title \"Gemini failure $GITHUB_RUN_ID\" --notes 'One attempt; no retry. Private timing and usage record.'\nfi\n"
+          "run": "receipt=\"$RUNNER_TEMP/clipforge-previews/vertex-selection-receipt.json\"\nif [ -f \"$receipt\" ]; then\n  gh release create \"clipforge-vertex-failure-$GITHUB_RUN_ID\" \"$receipt\" --repo \"$CLIPFORGE_STORAGE_REPO\" --latest=false --title \"Gemini failure $GITHUB_RUN_ID\" --notes 'One attempt; no retry. Private timing and usage record.'\nfi\n"
         }
       ],
       "permissions": {

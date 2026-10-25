@@ -8,10 +8,11 @@ Reads only the run's job metadata and the public lines the workflows print thems
 import argparse
 from datetime import datetime
 import json
+import os
 import re
 import subprocess
 
-REPO = "nyu1791-collab/ai-model-workers"
+REPO = os.environ.get("CLIPFORGE_ACTIONS_REPO", "nyu1791-collab/ClipForge")
 MARKERS = (
     "Colab runtime allocated",
     "Colab refused",
