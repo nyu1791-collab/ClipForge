@@ -554,12 +554,23 @@ def test_render_records_seconds_per_clip_in_manifest_and_output(
     stub_clip_render(monkeypatch, events)
     run_render(vod, root, settings, review)
     timings = json.loads((root / "delivery/manifest.json").read_text())["timings"]
-    assert set(timings) == {"clip-001", "clip-002", "clip-003", "total"}
+    assert set(timings) == {
+        "clip-001",
+        "clip-002",
+        "clip-003",
+        "total",
+        "wall_seconds",
+        "wall_clock_sec",
+        "substep_breakdown",
+    }
     for name in ("clip-001", "clip-002", "clip-003"):
         assert set(timings[name]) == {"prefetch_wait", "fetch", "render"}
         assert all(isinstance(v, float) and v >= 0 for v in timings[name].values())
     stage_seconds = [
-        v for name in timings if name != "total" for v in timings[name].values()
+        v
+        for name in timings
+        if name.startswith("clip-")
+        for v in timings[name].values()
     ]
     assert timings["total"] == pytest.approx(sum(stage_seconds), abs=0.05)
     out = capsys.readouterr().out
@@ -610,7 +621,13 @@ def test_only_fetches_and_renders_one_clip_without_lookahead(audio_job, monkeypa
             "source_interval": {"start": 120, "end": 175, "topic_id": "topic-002"},
         }
     ]
-    assert set(manifest["timings"]) == {"clip-002", "total"}
+    assert set(manifest["timings"]) == {
+        "clip-002",
+        "total",
+        "wall_seconds",
+        "wall_clock_sec",
+        "substep_breakdown",
+    }
     assert set(manifest["timings"]["clip-002"]) == {"prefetch_wait", "fetch", "render"}
     assert not (root / "delivery/e2e-summary.json").exists()
 

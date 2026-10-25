@@ -173,10 +173,11 @@ def test_decoding_accepts_a_valid_file_and_reports_a_broken_one(tmp_path):
         ],
         check=True,
     )
-    assert quality.decode_errors(good) == []
+    assert quality.inspect_output(good, False, 1)["integrated_lufs"] is None
     broken = tmp_path / "broken.mp4"
     broken.write_bytes(b"not a video stream" * 64)
-    assert quality.decode_errors(broken)
+    with pytest.raises(PipelineError, match="decode cleanly"):
+        quality.inspect_output(broken, False, 1)
 
 
 def test_a_line_break_inside_a_word_is_a_counted_warning(tmp_path, on_target_loudness):

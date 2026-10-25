@@ -28,7 +28,8 @@
             "GH_TOKEN": "${{ github.token }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/e61883d4ee3eace5a21ea5da3681583d1fafd0b6...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n"
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/e61883d4ee3eace5a21ea5da3681583d1fafd0b6...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n",
+          "timeout-minutes": 1
         },
         {
           "name": "Validate request and one-time Colab OAuth setup",
@@ -248,7 +249,8 @@
             "GH_TOKEN": "${{ github.token }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/e61883d4ee3eace5a21ea5da3681583d1fafd0b6...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n"
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/e61883d4ee3eace5a21ea5da3681583d1fafd0b6...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n",
+          "timeout-minutes": 1
         },
         {
           "name": "Validate metadata probe input",
@@ -378,7 +380,8 @@
             "GH_TOKEN": "${{ github.token }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/e61883d4ee3eace5a21ea5da3681583d1fafd0b6...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n"
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/e61883d4ee3eace5a21ea5da3681583d1fafd0b6...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"Obsolete source: Parakeet production lineage is required.\"; exit 1; }\n",
+          "timeout-minutes": 1
         },
         {
           "uses": "actions/checkout@v4",

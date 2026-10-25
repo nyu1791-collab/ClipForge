@@ -16,7 +16,7 @@ AUDIO_URL = "https://cdn.example/audio.mp3"
 
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
     assert len(inputs) == 9 and inputs["probe_only"]["default"] is False
     assert "!inputs.probe_only" in workflow["jobs"]["colab-auto"]["if"]
     probe = workflow["jobs"]["url-probe"]
@@ -287,7 +287,7 @@ def test_acquisition_refuses_empty_or_oversized_audio(acquisition, audio):
 
 def test_workflow_acquires_and_verifies_audio_before_any_gpu():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
     assert inputs["settings_json"]["type"] == "string"
     job = workflow["jobs"]["colab-auto"]
     assert job["runs-on"] == "ubuntu-24.04"
@@ -360,7 +360,7 @@ def test_cpu_render_package_install_retains_media_tools_with_timeout():
 
 def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
     assert inputs["auto_previews"] == {
         "description": "Continue URL-only analysis with CPU previews and an unapproved review draft",
         "type": "boolean",
@@ -466,7 +466,7 @@ VERIFIED_REQUEST = "c" * 32
 
 def test_verified_audio_reuse_inputs_are_optional_and_wired_before_acquisition():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
     for name in ("verified_audio_run", "verified_audio_request"):
         assert inputs[name]["type"] == "string" and inputs[name]["default"] == ""
     steps = workflow["jobs"]["colab-auto"]["steps"]

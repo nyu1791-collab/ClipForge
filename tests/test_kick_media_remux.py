@@ -7,7 +7,7 @@ import shutil
 import pysubs2
 import pytest
 
-from clipforge import audio_first, kick_media, media, pipeline, quality
+from clipforge import audio_first, kick_media, media, pipeline
 from clipforge.models import SelectedClip, Transcript
 from clipforge.storage import process
 
@@ -156,7 +156,7 @@ def test_synthetic_ts_remux_and_final_cut(tmp_path, monkeypatch, settings):
     assert row["media"]["duration"] == pytest.approx(expected_duration, abs=0.06)
     captions = pysubs2.load(str(output / "clip-001/captions.srt"))
     assert captions[0].start == 320
-    measured = quality.measure_output(output / "clip-001/video.mp4")
+    measured = row["quality"]["metrics"]
     assert measured["integrated_lufs"] == pytest.approx(-16.0, abs=0.5)
 
     # Before the first caption, compare the final picture with the exact

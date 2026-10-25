@@ -825,6 +825,9 @@ def test_clip_index_is_limited_to_one_to_twenty(clip_index):
 def test_single_clip_retains_only_merge_inputs_and_consistent_hashes(
     previous_analysis, monkeypatch
 ):
+    from clipforge import hardware
+
+    monkeypatch.setattr(hardware, "nvenc_available", lambda: True)
     previous, output, settings = previous_analysis
     monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
     monkeypatch.setattr(worker, "gh", _previous_gh(previous))

@@ -599,7 +599,7 @@ def main(argv=None):
         help="render on the hosted runner (default) or on Colab runtimes",
     )
     parser.add_argument(
-        "--clips", type=int, help="render clips 1..N as separate parallel requests"
+        "--clips", type=int, help="render N approved clips in one GPU batch"
     )
     parser.add_argument("--clip-index", type=int, help="render only this clip")
     parser.add_argument(
