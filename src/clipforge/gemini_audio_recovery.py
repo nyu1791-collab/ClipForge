@@ -153,7 +153,7 @@ def stream_generate(parts, output, record):
     if len(encoded) > MAX_REQUEST_BYTES:
         raise PipelineError("HIGH audio request exceeds the bounded inline payload")
     record["request_bytes"] = len(encoded)
-    output_path = output / "careful-clip-transcript.stream.jsonl"
+    output_path = output / "careful-clip-transcript.stream.sse.txt"
     event_data = []
     text_parts = []
     usage = {}
@@ -162,7 +162,7 @@ def stream_generate(parts, output, record):
     event_count = 0
     total_bytes = 0
 
-    def consume_event(lines, stream_file):
+    def consume_event(lines):
         nonlocal event_count, usage, model_version, finish_reason
         if not lines:
             return
@@ -170,8 +170,6 @@ def stream_generate(parts, output, record):
         if not payload or payload == b"[DONE]":
             return
         item = json.loads(payload)
-        stream_file.write(json.dumps(item, ensure_ascii=False) + "\n")
-        stream_file.flush()
         event_count += 1
         if item.get("usageMetadata"):
             usage = item["usageMetadata"]
@@ -206,7 +204,7 @@ def stream_generate(parts, output, record):
                 while True:
                     line = response.readline(MAX_SSE_LINE_BYTES + 1)
                     if not line:
-                        consume_event(event_data, stream_file)
+                        consume_event(event_data)
                         break
                     total_bytes += len(line)
                     if total_bytes > MAX_STREAM_BYTES:
@@ -216,7 +214,7 @@ def stream_generate(parts, output, record):
                     stream_file.write(line.decode("utf-8", errors="replace"))
                     stream_file.flush()
                     if line in (b"\n", b"\r\n"):
-                        consume_event(event_data, stream_file)
+                        consume_event(event_data)
                         event_data = []
                     elif line.startswith(b"data:"):
                         event_data.append(line[5:].lstrip().rstrip(b"\r\n"))
