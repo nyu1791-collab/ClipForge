@@ -37,7 +37,7 @@ REPO = "nyu1791-collab/ai-model-workers"
 PART_RUN = re.compile(r"([0-9]{1,20}):([a-f0-9]{32})")
 RUN_FIELDS = "status,conclusion,displayTitle,event,workflowName,headBranch"
 STAGE_WORKFLOWS = {"ClipForge audio-first stages", "ClipForge"}
-STAGE_BRANCHES = {"main"}
+STAGE_BRANCHES = {"main", "fix/pr18-verified-transfer"}
 # Configuration files at the repository root; receipts without the field predate the choice.
 DEFAULT_CONFIG_FILE = "config.landscape.example.json"
 CONFIG_FILE_PATTERN = r"config\.[a-z0-9-]+\.example\.json"
@@ -625,7 +625,8 @@ def verify_same_run_analysis(previous, request_id, source_ref, run_id, previous_
         os.environ.get("GITHUB_EVENT_NAME") != "workflow_dispatch"
         or os.environ.get("GITHUB_WORKFLOW") != "ClipForge"
         or os.environ.get("GITHUB_JOB") != "previews"
-        or os.environ.get("GITHUB_REF") != "refs/heads/main"
+        or os.environ.get("GITHUB_REF")
+        not in {"refs/heads/" + branch for branch in STAGE_BRANCHES}
         or os.environ.get("GITHUB_RUN_ID") != run_id
         or os.environ.get("REQUEST_ID") != request_id
         or os.environ.get("CLIPFORGE_SOURCE_REF") != source_ref
