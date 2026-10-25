@@ -37,7 +37,7 @@ def collect_sse_response(response, path):
     total_bytes = 0
     event_count = 0
 
-    def consume(lines, stream_file):
+    def consume(lines):
         nonlocal usage, model_version, finish_reason, event_count
         if not lines:
             return
@@ -45,8 +45,6 @@ def collect_sse_response(response, path):
         if not payload or payload == b"[DONE]":
             return
         item = json.loads(payload)
-        stream_file.write(json.dumps(item, ensure_ascii=False) + "\n")
-        stream_file.flush()
         event_count += 1
         usage = item.get("usageMetadata", usage)
         model_version = item.get("modelVersion", model_version)
@@ -60,7 +58,7 @@ def collect_sse_response(response, path):
         while True:
             line = response.readline(1024 * 1024 + 1)
             if not line:
-                consume(event_data, stream_file)
+                consume(event_data)
                 break
             total_bytes += len(line)
             if len(line) > 1024 * 1024 or total_bytes > 8 * 1024**2:
@@ -68,7 +66,7 @@ def collect_sse_response(response, path):
             stream_file.write(line.decode("utf-8", errors="replace"))
             stream_file.flush()
             if line in (b"\n", b"\r\n"):
-                consume(event_data, stream_file)
+                consume(event_data)
                 event_data = []
             elif line.startswith(b"data:"):
                 event_data.append(line[5:].lstrip().rstrip(b"\r\n"))
@@ -138,7 +136,7 @@ def run(args):
             with urllib.request.urlopen(request, timeout=900) as response:
                 if streaming:
                     result, text, response_bytes, event_count = collect_sse_response(
-                        response, out / (phase + ".stream.sse")
+                        response, out / (phase + ".stream.sse.txt")
                     )
                     item.update(stream_bytes=response_bytes, stream_events=event_count)
                 else:
