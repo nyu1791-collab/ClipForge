@@ -41,11 +41,11 @@ def collect_sse_response(response, path):
         nonlocal usage, model_version, finish_reason, event_count
         if not lines:
             return
-        payload = b"\\n".join(lines).strip()
+        payload = b"\n".join(lines).strip()
         if not payload or payload == b"[DONE]":
             return
         item = json.loads(payload)
-        stream_file.write(json.dumps(item, ensure_ascii=False) + "\\n")
+        stream_file.write(json.dumps(item, ensure_ascii=False) + "\n")
         stream_file.flush()
         event_count += 1
         usage = item.get("usageMetadata", usage)
@@ -67,11 +67,11 @@ def collect_sse_response(response, path):
                 raise PipelineError("Gemini streaming response exceeded the bounded size")
             stream_file.write(line.decode("utf-8", errors="replace"))
             stream_file.flush()
-            if line in (b"\\n", b"\\r\\n"):
+            if line in (b"\n", b"\r\n"):
                 consume(event_data, stream_file)
                 event_data = []
             elif line.startswith(b"data:"):
-                event_data.append(line[5:].lstrip().rstrip(b"\\r\\n"))
+                event_data.append(line[5:].lstrip().rstrip(b"\r\n"))
 
     result = {
         "usageMetadata": usage,
@@ -159,7 +159,7 @@ def run(args):
             print("GEMINI_AUDIO_PHASE=" + phase + "; model=" + model, flush=True)
             return value
         except Exception as error:
-            message = re.sub(r"(?i)Bearer\\s+[^\\s,;]+", "Bearer [REDACTED]", str(error))[:1000]
+            message = re.sub(r"(?i)Bearer\s+[^\s,;]+", "Bearer [REDACTED]", str(error))[:1000]
             item.update(status="failed", error_type=type(error).__name__, error_message=message)
             if isinstance(error, urllib.error.HTTPError):
                 item["http_status"] = error.code
