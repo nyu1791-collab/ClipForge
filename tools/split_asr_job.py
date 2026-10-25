@@ -267,6 +267,7 @@ def run(args):
     args.state_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     plan = asr_split.prepare(source, args.state_root / "input", request, settings, info)
     staged = []
+    completed = False
     count = len(plan["parts"])
     part_directories = [args.state_root / f"result-{index}" for index in range(count)]
     part_pools = pools(plan)
@@ -346,9 +347,11 @@ def run(args):
                 "ASR failed; private part outputs were retained"
             ) from None
         finish(source, args.output, plan, part_directories, os.environ["GITHUB_RUN_ID"])
+        completed = True
         print("All ASR parts verified and merged; topics allocated once.", flush=True)
     finally:
-        for tag in staged:
+        # Each release also holds the returned transcript. Preserve it on failure.
+        for tag in staged if completed else []:
             try:
                 github_cli.run(
                     "release",
