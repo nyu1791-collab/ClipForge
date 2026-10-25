@@ -30,6 +30,57 @@ def encode_audio(source, target, start, duration, bitrate):
     ], timeout=900, stage="gemini-audio-input")
 
 
+def collect_sse_response(response, path):
+    """Persist every received SSE line and assemble one complete GenerateContentResponse."""
+    event_data, text_parts = [], []
+    usage, model_version, finish_reason = {}, None, None
+    total_bytes = 0
+    event_count = 0
+
+    def consume(lines, stream_file):
+        nonlocal usage, model_version, finish_reason, event_count
+        if not lines:
+            return
+        payload = b"\\n".join(lines).strip()
+        if not payload or payload == b"[DONE]":
+            return
+        item = json.loads(payload)
+        stream_file.write(json.dumps(item, ensure_ascii=False) + "\\n")
+        stream_file.flush()
+        event_count += 1
+        usage = item.get("usageMetadata", usage)
+        model_version = item.get("modelVersion", model_version)
+        for candidate in item.get("candidates", []):
+            finish_reason = candidate.get("finishReason", finish_reason)
+            for part in candidate.get("content", {}).get("parts", []):
+                if isinstance(part.get("text"), str) and not part.get("thought"):
+                    text_parts.append(part["text"])
+
+    with path.open("x", encoding="utf-8") as stream_file:
+        while True:
+            line = response.readline(1024 * 1024 + 1)
+            if not line:
+                consume(event_data, stream_file)
+                break
+            total_bytes += len(line)
+            if len(line) > 1024 * 1024 or total_bytes > 8 * 1024**2:
+                raise PipelineError("Gemini streaming response exceeded the bounded size")
+            stream_file.write(line.decode("utf-8", errors="replace"))
+            stream_file.flush()
+            if line in (b"\\n", b"\\r\\n"):
+                consume(event_data, stream_file)
+                event_data = []
+            elif line.startswith(b"data:"):
+                event_data.append(line[5:].lstrip().rstrip(b"\\r\\n"))
+
+    result = {
+        "usageMetadata": usage,
+        "modelVersion": model_version,
+        "candidates": [{"finishReason": finish_reason}],
+    }
+    return result, "".join(text_parts), total_bytes, event_count
+
+
 def run(args):
     os.umask(0o077)
     out = args.output
@@ -72,31 +123,50 @@ def run(args):
         save()
         tick = time.monotonic()
         try:
-            request = urllib.request.Request(
-                f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/{model}:generateContent",
-                method="POST", data=encoded,
-                headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"},
+            streaming = phase == "careful-clip-transcript"
+            endpoint = (
+                f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/{model}:"
+                + ("streamGenerateContent?alt=sse" if streaming else "generateContent")
             )
+            headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
+            if streaming:
+                headers["Accept"] = "text/event-stream"
+                item["transport"] = "streamGenerateContent_sse"
+            else:
+                item["transport"] = "generateContent"
+            request = urllib.request.Request(endpoint, method="POST", data=encoded, headers=headers)
             with urllib.request.urlopen(request, timeout=900) as response:
-                data = response.read(8 * 1024**2 + 1)
-            if len(data) > 8 * 1024**2:
-                raise PipelineError("Audio transcription response too large")
-            result = json.loads(data)
+                if streaming:
+                    result, text, response_bytes, event_count = collect_sse_response(
+                        response, out / (phase + ".stream.sse")
+                    )
+                    item.update(stream_bytes=response_bytes, stream_events=event_count)
+                else:
+                    data = response.read(8 * 1024**2 + 1)
+                    if len(data) > 8 * 1024**2:
+                        raise PipelineError("Audio transcription response too large")
+                    result = json.loads(data)
+                    candidate = result["candidates"][0]
+                    text = "".join(p.get("text", "") for p in candidate["content"]["parts"] if not p.get("thought"))
             item.update(usage=result.get("usageMetadata", {}), model_version=result.get("modelVersion"))
             candidate = result["candidates"][0]
             item["finish_reason"] = candidate.get("finishReason")
-            if candidate.get("finishReason") != "STOP":
+            if item["finish_reason"] != "STOP":
                 raise PipelineError("Audio transcription incomplete; no retry")
-            text = "".join(p.get("text", "") for p in candidate["content"]["parts"] if not p.get("thought"))
             value = json.loads(text)
             write_json(out / (phase + ".json"), value)
             item["status"] = "complete"
             print("GEMINI_AUDIO_PHASE=" + phase + "; model=" + model, flush=True)
             return value
         except Exception as error:
-            item.update(status="failed", error_type=type(error).__name__)
+            message = re.sub(r"(?i)Bearer\\s+[^\\s,;]+", "Bearer [REDACTED]", str(error))[:1000]
+            item.update(status="failed", error_type=type(error).__name__, error_message=message)
             if isinstance(error, urllib.error.HTTPError):
                 item["http_status"] = error.code
+                for key in ("x-goog-request-id", "x-cloud-trace-context", "x-guploader-uploadid"):
+                    value = error.headers.get(key) if error.headers else None
+                    if value:
+                        item.setdefault("response_ids", {})[key] = value
             raise PipelineError("Gemini audio phase failed: " + phase + "; no retry or model fallback") from None
         finally:
             item["elapsed_sec"] = round(time.monotonic() - tick, 3)
