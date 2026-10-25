@@ -413,7 +413,9 @@ def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages(
     assert upload["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
     assert upload["if"] == "always() && inputs.result_store != 'release'"
     transfer = next(
-        step for step in steps if step.get("name") == "Save the verified private result transfer"
+        step
+        for step in steps
+        if step.get("name") == "Save the verified private result transfer"
     )
     assert "inputs.result_store == 'release'" in transfer["if"]
     cpu = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())["jobs"][
