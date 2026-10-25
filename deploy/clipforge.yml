@@ -405,29 +405,13 @@
           "run": "python -m pip install uv==0.12.23"
         },
         {
-          "name": "Prepare CPU package cache",
-          "timeout-minutes": 10,
-          "id": "debs",
-          "run": "mkdir -p \"$RUNNER_TEMP/clipforge-debs\"\npackage_hash=$(printf '%s' \"$CPU_PACKAGES\" | sha256sum | cut -d' ' -f1)\nprintf 'key=debs-%s-%s-%s\\n' \"$ImageOS\" \"$ImageVersion\" \"$package_hash\" >> \"$GITHUB_OUTPUT\"\n"
-        },
-        {
-          "name": "Restore CPU package archives",
-          "timeout-minutes": 10,
-          "uses": "actions/cache@v4",
-          "with": {
-            "path": "${{ runner.temp }}/clipforge-debs/*.deb",
-            "key": "${{ steps.debs.outputs.key }}"
-          }
-        },
-        {
-          "name": "Install missing CPU media tools and fonts",
-          "timeout-minutes": 10,
-          "run": "missing=()\nfor package in $CPU_PACKAGES; do\n  if [ \"$(dpkg-query -W -f='${Status}' \"$package\" 2>/dev/null || true)\" != 'install ok installed' ]; then\n    missing+=(\"$package\")\n  fi\ndone\nif [ \"${#missing[@]}\" -gt 0 ]; then\n  cache=\"$RUNNER_TEMP/clipforge-debs\"\n  options=(-y --no-install-recommends -o \"Dir::Cache::archives=$cache\" -o APT::Keep-Downloaded-Packages=true)\n  if ! sudo apt-get install --no-download \"${options[@]}\" \"${missing[@]}\"; then\n    sudo apt-get update -qq\n    sudo apt-get install \"${options[@]}\" \"${missing[@]}\"\n  fi\nfi\n"
+          "name": "Install audio metadata tool only if absent",
+          "run": "if ! command -v ffprobe >/dev/null 2>&1; then sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends ffmpeg; fi"
         },
         {
           "name": "Install Python stage dependencies",
           "timeout-minutes": 10,
-          "run": "uv sync --locked --extra media-fetch --no-dev"
+          "run": "uv sync --locked --no-dev"
         },
         {
           "uses": "actions/download-artifact@v4",

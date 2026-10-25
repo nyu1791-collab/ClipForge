@@ -62,13 +62,13 @@
         },
         {
           "name": "Prepare CPU package cache",
-          "if": "inputs.audio_stage != 'merge'",
+          "if": "inputs.audio_stage == 'render'",
           "id": "debs",
           "run": "mkdir -p \"$RUNNER_TEMP/clipforge-debs\"\npackage_hash=$(printf '%s' \"$CPU_PACKAGES\" | sha256sum | cut -d' ' -f1)\nprintf 'key=debs-%s-%s-%s\\n' \"$ImageOS\" \"$ImageVersion\" \"$package_hash\" >> \"$GITHUB_OUTPUT\"\n"
         },
         {
           "name": "Restore CPU package archives",
-          "if": "inputs.audio_stage != 'merge'",
+          "if": "inputs.audio_stage == 'render'",
           "uses": "actions/cache@v4",
           "with": {
             "path": "${{ runner.temp }}/clipforge-debs/*.deb",
@@ -78,18 +78,24 @@
         {
           "name": "Install missing CPU media tools and fonts",
           "timeout-minutes": 10,
-          "if": "inputs.audio_stage != 'merge'",
+          "if": "inputs.audio_stage == 'render'",
           "run": "missing=()\nfor package in $CPU_PACKAGES; do\n  if [ \"$(dpkg-query -W -f='${Status}' \"$package\" 2>/dev/null || true)\" != 'install ok installed' ]; then\n    missing+=(\"$package\")\n  fi\ndone\nif [ \"${#missing[@]}\" -gt 0 ]; then\n  cache=\"$RUNNER_TEMP/clipforge-debs\"\n  options=(-y --no-install-recommends -o \"Dir::Cache::archives=$cache\" -o APT::Keep-Downloaded-Packages=true)\n  if ! sudo apt-get install --no-download \"${options[@]}\" \"${missing[@]}\"; then\n    sudo apt-get update -qq\n    sudo apt-get install \"${options[@]}\" \"${missing[@]}\"\n  fi\nfi\n"
         },
         {
+          "name": "Install audio metadata tool only if absent",
+          "run": "if ! command -v ffprobe >/dev/null 2>&1; then sudo apt-get update -qq; sudo apt-get install -y --no-install-recommends ffmpeg; fi",
+          "if": "inputs.audio_stage == 'previews'"
+        },
+        {
           "name": "Install Python stage dependencies",
-          "run": "uv sync --locked --extra media-fetch --no-dev\n"
+          "run": "if [ \"$AUDIO_STAGE\" = render ]; then uv sync --locked --extra media-fetch --no-dev; else uv sync --locked --no-dev; fi"
         },
         {
           "uses": "actions/setup-node@v4",
           "with": {
             "node-version": "22"
-          }
+          },
+          "if": "inputs.audio_stage == 'render'"
         },
         {
           "name": "Reuse verified ASR and execute only the requested stage",

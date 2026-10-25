@@ -22,3 +22,5 @@ Release転送メタデータはschema 2。ZIP本体とtransfer.jsonの2アセッ
 YouTube/Twitch/Kick/直接HTTPSのURL取得を維持。ASR再利用、5本以上・各5分以上、品質監査なし、承認待ちなし、失敗後の自動再生成なしを継続。
 
 小さな合成データでストリーム梱包と新形式の受け渡しをローカル実行。実動画の監査、全件テスト、実機速度再計測は行っていない。38秒だった前回のRelease保存や37.82秒だったColab準備が短縮対象だが、改修後の時間は未測定。
+
+候補作成のCPU runnerも、字幕フォント・Cairo・Node・media-fetch extraの導入とaptキャッシュ復元を省く。音声メタデータの読み取りに必要なFFprobeだけ、不在時に導入する。URL素材を実際に取得する描画側のmedia-fetch / Nodeは維持する。
