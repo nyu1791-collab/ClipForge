@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -267,8 +268,8 @@ def run(args):
     out = args.output
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
     statefile = out / "audio-editor-receipt.json"
-    if statefile.exists():
-        raise PipelineError("Recovery output already has a receipt; no retry")
+    if any(out.iterdir()):
+        raise PipelineError("Recovery output directory is not empty; use a fresh directory")
     token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
     if not token:
         raise PipelineError("Vertex identity is not connected")
@@ -276,14 +277,27 @@ def run(args):
     manifest, transcript, whole, selection, previous = validate_recovery_inputs(args.analysis, args.prior_review)
     settings = Settings.model_validate_json(args.config.read_text())
     validate_selection(selection, settings, manifest["duration"])
+    prior_high = next(row for row in previous["requests"] if row.get("phase") == "careful-clip-transcript")
+    preserved = (
+        "whole-audio-transcript.json",
+        "whole-audio-transcript.txt",
+        "whole-stream-selection.json",
+        "initial-selection.json",
+    )
+    for name in preserved:
+        source = args.prior_review / name
+        if not source.is_file():
+            raise PipelineError(f"Prior editorial release is missing {name}")
+        shutil.copy2(source, out / name)
+    shutil.copy2(args.prior_review / "audio-editor-receipt.json", out / "prior-audio-editor-receipt.json")
     receipt = {
         "source_url": manifest["source_url"],
         "project": PROJECT,
         "status": "preparing",
         "attempt_type": "explicit_high_only_recovery",
         "recovery_of_run_id": args.prior_run_id,
-        "prior_high_attempt_error": "RemoteDisconnected",
-        "prior_high_usage": "unknown",
+        "prior_high_attempt_error": prior_high.get("error_type"),
+        "prior_high_usage": prior_high.get("usage", "unknown"),
         "requests": [{
             "phase": "careful-clip-transcript",
             "model": MODEL,
@@ -370,7 +384,8 @@ def run(args):
             "reused_whole_audio_transcription": True,
             "reused_whole_stream_selection": True,
             "new_high_requests": 1,
-            "previous_high_usage": "unknown",
+            "previous_high_usage": prior_high.get("usage", "unknown"),
+            "previous_high_error_type": prior_high.get("error_type"),
         })
         receipt.update(
             status="complete",
