@@ -101,3 +101,7 @@ uv run python tools/produce_with_gemini.py 'https://kick.com/CHANNEL/videos/VOD_
 3.5の2体は独立したAPI呼び出しとして並列実行する。3.8は返された結果を使って編集計画を仕上げる。モデルごと・役割ごとの時間、トークン、要求モデル名、実応答モデル名、指定思考レベルを記録する。失敗時に別モデルへ切り替えたり再送したりしない。
 
 従来の動画APIはthinkingConfig未指定で、公式の3.8既定値MEDIUMに依存していた。今回から明示設定に変更した。公式仕様: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/thinking
+
+### 3体構成の実呼び出し
+
+Run 40220449164で成功。3.8/MEDIUMの指示生成3.220秒、3.5/MINIMALのURL作業1.260秒、3.5/MINIMALの整形作業1.626秒（2体並列）、3.8/MEDIUMの編集判断24.843秒。計画全体29.695秒。要求・応答モデルはそれぞれgemini-3.8-flash / gemini-3.5-flashと一致し、5本を選定した。保存済みASRのみ使用し、GPU・再描画・自動再試行は実行していない。
