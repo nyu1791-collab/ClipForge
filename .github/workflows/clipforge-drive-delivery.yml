@@ -17,7 +17,8 @@
         {
           "uses": "actions/checkout@v4",
           "with": {
-            "persist-credentials": false
+            "persist-credentials": false,
+            "ref": "d85a64c56bc6a2b358f93903cb4010edbc960d51"
           }
         },
         {

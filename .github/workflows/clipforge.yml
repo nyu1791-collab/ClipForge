@@ -37,7 +37,7 @@
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/d85a64c56bc6a2b358f93903cb4010edbc960d51...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
@@ -231,7 +231,7 @@
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/d85a64c56bc6a2b358f93903cb4010edbc960d51...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
@@ -349,7 +349,7 @@
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/b3898a6f3035817ace8bb0b1a04fb6d724c08789...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the Vertex-enabled source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/d85a64c56bc6a2b358f93903cb4010edbc960d51...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
           "timeout-minutes": 1
         },
         {
