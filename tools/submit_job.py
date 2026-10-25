@@ -891,6 +891,7 @@ def dispatch(args, state_root):
         settings["youtube_audio_transport"] = args.youtube_audio_transport
     if args.clips is not None:
         settings["clips"] = args.clips
+        settings["candidates"] = max(settings.get("candidates", 8), args.clips)
     clips = settings.get("clips", 3)
     if type(clips) is not int or not 1 <= clips <= 10:
         raise RuntimeError("clip count must be between 1 and 10")
