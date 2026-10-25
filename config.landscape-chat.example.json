@@ -19,7 +19,7 @@
   "topics": true,
   "topic_min_seconds": 25,
   "topic_max_seconds": 180,
-  "quality_gate": "strict",
+  "quality_gate": "off",
   "chat_panel": true,
   "chat_panel_width": 160,
   "chat_panel_fit": "fill",

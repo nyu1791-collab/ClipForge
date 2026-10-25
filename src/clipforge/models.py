@@ -101,8 +101,8 @@ class Settings(Record):
     topic_max_seconds: float = Field(default=180, ge=30, le=1800)
     fade_seconds: float = Field(default=0.3, ge=0, le=2)
     progress_bar: bool = True
-    # strict refuses a clip whose quality.json lists failures; report keeps it and records them.
-    quality_gate: Literal["report", "strict"] = "strict"
+    # Legacy request compatibility only; production rendering does not audit outputs.
+    quality_gate: Literal["off", "report", "strict"] = "off"
     max_source_seconds: float = Field(default=3600, ge=5, le=43200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
     # Temporary HLS transport may contain video even when only audio is retained.

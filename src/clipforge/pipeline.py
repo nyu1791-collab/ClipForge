@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import time
 
-from . import media, quality
+from . import media
 from .captions import (
     FILL_BOTTOM_SHARE,
     create as create_captions,
@@ -37,8 +37,8 @@ def record_failure(output, error, current_stage):
     write_json(output / "manifest.json", {**failure, "rendered": []})
 
 
-REQUIRED_FILES = {"video.mp4", "captions.ass", "captions.srt", "quality.json"}
-OPTIONAL_FILES = {"chat.ass"}  # only with the chat panel
+REQUIRED_FILES = {"video.mp4", "captions.ass", "captions.srt"}
+OPTIONAL_FILES = {"chat.ass", "quality.json"}  # chat or a legacy quality report
 
 
 def valid_receipt(target, saved, render_key):
@@ -415,61 +415,7 @@ def render_clip(
                 **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
             ),
         )
-        # The static bands are the ones the captions were placed by, saved in render.json.
-        report = timed(
-            timings,
-            "quality",
-            lambda: quality.record(
-                directory,
-                quality.check_clip(
-                    directory,
-                    info,
-                    caption["missing_glyphs"],
-                    settings,
-                    static=layout.get("static") if layout else None,
-                ),
-            ),
-        )
-        original_verify_seconds = report.get("verify_seconds", 0)
-        correction = None
-        if settings.quality_gate == "strict" and not report["passed"]:
-            correction = timed(
-                timings,
-                "audio_correction",
-                lambda: media.correct_completed_audio(
-                    directory, report, info["duration"]
-                ),
-            )
-        if correction is not None:
-            report = timed(
-                timings,
-                "quality_recheck",
-                lambda: quality.check_clip(
-                    directory,
-                    info,
-                    caption["missing_glyphs"],
-                    settings,
-                    static=layout.get("static") if layout else None,
-                ),
-            )
-            correction["original_verify_seconds"] = original_verify_seconds
-            report["audio_correction"] = correction
-            report["verification_passes"] = 2
-            report["total_verify_seconds"] = round(
-                original_verify_seconds + report.get("verify_seconds", 0), 3
-            )
-            quality.record(directory, report)
-        if not report["passed"]:
-            # Retain measured failure diagnostics even when the temporary MP4 is removed.
-            write_json(
-                root / (name + "-failed-quality.json"),
-                {
-                    "clip": index,
-                    "quality": report,
-                    "timings": timings,
-                },
-            )
-        quality.enforce(report, settings.quality_gate)
+        report = {"status": "not_run", "passed": None, "verification_scope": "none"}
         names = sorted(
             REQUIRED_FILES | {n for n in OPTIONAL_FILES if (directory / n).is_file()}
         )

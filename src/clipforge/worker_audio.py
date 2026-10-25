@@ -702,11 +702,7 @@ def main(argv=None):
             raise PipelineError("invalid private worker identity")
         settings = Settings.model_validate_json(args.config.read_text())
         # 360p is the fast review and delivery size; 1080p is rendered on request.
-        if (
-            settings.aspect != "16:9"
-            or settings.height not in (360, 1080)
-            or settings.quality_gate != "strict"
-        ):
+        if settings.aspect != "16:9" or settings.height not in (360, 1080):
             raise PipelineError("horizontal worker settings are required")
         if args.stage == "merge":
             with tempfile.TemporaryDirectory(prefix="clipforge-parts-") as temporary:

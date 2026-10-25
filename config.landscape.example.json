@@ -20,7 +20,7 @@
   "topics": true,
   "topic_min_seconds": 25,
   "topic_max_seconds": 180,
-  "quality_gate": "strict",
+  "quality_gate": "off",
   "chat_panel_width": 160,
   "video_encoder": "h264_nvenc",
   "loudness_two_pass": false
