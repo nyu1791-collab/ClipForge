@@ -17,7 +17,9 @@ AUDIO_URL = "https://cdn.example/audio.mp3"
 def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
     workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
     inputs = workflow[True]["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 12 and inputs["probe_only"]["default"] is False
+    assert inputs["probe_only"]["default"] is False
+    assert inputs["result_store"]["default"] == "artifact"
+    assert inputs["result_store"]["options"] == ["artifact", "release"]
     for name in ("clip", "colab-auto"):
         assert "!inputs.probe_only" in workflow["jobs"][name]["if"]
     probe = workflow["jobs"]["url-probe"]
@@ -417,9 +419,19 @@ def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages(
         in execute["run"]
     )
     assert '--config "$RUNNER_TEMP/preview-settings.json"' in execute["run"]
-    upload = steps[-1]
+    upload = next(s for s in steps if s.get("uses") == "actions/upload-artifact@v4")
     assert upload["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
-    assert upload["if"] == "always()"
+    assert upload["if"] == "always() && inputs.result_store != 'release'"
+    publish = next(s for s in steps if "github_cli publish" in s.get("run", ""))
+    assert publish["if"] == "success() && inputs.result_store == 'release'"
+    assert publish["env"]["RESULT_NAME"] == "clipforge-result-${{ inputs.request_id }}"
+    release_download = next(
+        s for s in steps if "github_cli download" in s.get("run", "")
+    )
+    assert release_download["if"] == "inputs.result_store == 'release'"
+    assert (
+        '"$GITHUB_RUN_ID" "clipforge-analysis-$REQUEST_ID"' in release_download["run"]
+    )
     cpu = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())["jobs"][
         "audio-stage"
     ]

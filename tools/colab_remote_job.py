@@ -213,7 +213,7 @@ def main():
     # restoring the 602 MB public cache plus setup took 30-72s, before publication.
     cache_wanted = cache_profile != "cpu" or mode == "prepare-cache"
     # "off" measures setup without the public cache: nothing is restored or published.
-    public_cache = payload.get("public_cache", "on")
+    public_cache = payload.get("public_cache", "off")
     if public_cache not in {"on", "off"}:
         raise RuntimeError("Invalid public cache setting: use on or off")
     use_public_cache = cache_wanted and public_cache == "on"

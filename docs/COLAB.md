@@ -78,7 +78,7 @@ uv pip install --python /tmp/clipforge-colab-control/bin/python --require-hashes
 | Whisperモデル | モデル専用キャッシュをローカル優先で参照し、存在すればHubへの取得要求を省略 |
 | 同一セッションのツール | 導入済みツールを再利用。apt updateや重複するPython/uv導入を省略 |
 
-**公開キャッシュは既定off**（`CLIPFORGE_PUBLIC_CACHE=off`）です。offでは公開アセット用キャッシュの復元・保存を行いません。有効にした場合の保存先は非公開workerの `clipforge-cache-<互換性キー>` Releaseです。512MiB以下のチャンクに分割し、転送・復元時にSHA-256を照合します。既存キャッシュと同じ内容なら再アップロードしません。更新後の不要チャンクは、そのキャッシュRelease内だけで整理します。
+**公開キャッシュは既定off**（`CLIPFORGE_PUBLIC_CACHE=off`）です。workflow・controller・workerのいずれも未指定時はoffとし、古い状態ファイルに設定がない場合も復元・保存を行いません。有効化は `public_cache=on`（controllerを直接使う場合は `CLIPFORGE_PUBLIC_CACHE=on`）の明示指定が必要です。有効にした場合の保存先は非公開workerの `clipforge-cache-<互換性キー>` Releaseです。512MiB以下のチャンクに分割し、転送・復元時にSHA-256を照合します。既存キャッシュと同じ内容なら再アップロードしません。更新後の不要チャンクは、そのキャッシュRelease内だけで整理します。
 
 依存スナップショット自体は展開しやすいtar、GitHubへの公開アセット転送は低圧縮率のgzipで通信量を減らします。元から圧縮済みのMP4成果物は再圧縮しません。古い未圧縮キャッシュの復元にも対応します。
 

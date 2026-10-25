@@ -35,6 +35,12 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 
 同時に依頼できる初回動画ジョブは、worker種別によらず1件（`tools/submit_job.py` の `MAX_ACTIVE`）。1件の2分割ASRが最大2ランタイムを使うことと、2件の動画ジョブを並行投入することは別。クリップの並列描画は別枠で4件まで（`tools/submit_audio_stage.py`）。入口とActionsで重複実行を防ぎ、待機ジョブを蓄積する用途には使わない。制御VMは依頼・回収・検証・結合だけを担当する。
 
+## 実行前の照合
+
+初回利用または配備・認証・保存先を変えたときに、実workflowとの対応と保存容量を確認する。同じ構成の各ジョブで全項目を監査し直す必要はない。依頼・出力の同一性やハッシュは通常の投入・回収処理で検証する。
+
+完了したASRと工程成果物は納品まで保持し、後段の失敗で再認識しない。dispatch応答が不明なら依頼IDで既存runを照合し、重ねて投入しない。
+
 ## 非公開データの経路と保管
 
 1. ローカル入力は送信元でSHA-256と設定を記録し、非公開workerの一時Releaseへ入力・依頼JSON・任意のチャットJSONを送信する。URLだけの投入はrunnerが音声取得後に一時Releaseを作る。
@@ -49,7 +55,7 @@ python tools/submit_job.py --input /path/to/source.mp4 \
 ## 結果の回収と再開
 
 依頼記録は `~/.local/state/clipforge/<request_id>/receipt.json`。
-`STAGING` / `STAGED` / `DISPATCHED` / `RUNNING` / `COMPLETE` / `FAILED` / `UNCONFIRMED` 等の状態を区別する。APIの応答が不明な場合は自動再送せず、同じ依頼IDのworkflowを確認する。
+`STAGING` / `STAGED` / `DISPATCHED` / `RUNNING` / `COMPLETE` / `FAILED` / `UNCONFIRMED` 等の状態を区別する。POST前に `DISPATCHING`、正常応答後に `DISPATCHED`、応答不明時に `DISPATCH_UNCONFIRMED` を保存する。APIの応答が不明な場合は自動再送せず、同じ依頼IDと完全一致するworkflow runを検索し、見つかったrun IDを記録して追跡する。見つからないだけでは未送信と断定せず、不明状態が解消するまで再dispatchしない。
 
 `--wait` を使わなかった場合、SSH切断、待機上限到達時も、runを再投入せず状態確認・回収を続ける。
 
@@ -59,6 +65,16 @@ python tools/submit_job.py --collect REQUEST_ID --output /private/result-NEW
 ```
 
 音声後段の回収には `python tools/submit_audio_stage.py --collect REQUEST_ID --output /private/stage-NEW` を使う。回収は新しい出力先へ行い、依頼ID・元コミットSHA・前段run・manifest・各ファイルのSHA-256を検査する。`complete` やActions成功は、人による内容・字幕確認や公開とは別。
+
+### Actions保存枠が満杯の場合の一時転送
+
+後段CLIでは `--result-store release` で非公開Release転送を選べる（既定 `artifact`）。依頼記録をホーム以外に置く場合は、投入・結合・回収に同じ `--state-dir /private/state` を指定する。ローカル結合は依頼記録を使わないため対象外。
+
+workerの `result_store=release` は、結果を非公開 `clipforge-output-result-REQUEST_ID`（中間解析は `clipforge-output-analysis-REQUEST_ID`）へ保存する明示指定。最終納品先はGoogle Driveで、Releaseは段階間の受け渡しだけに使う。動画やASRをGitへ入れない。
+
+同じ依頼のActions artifactがない場合、共通GitHub runnerはこの固定名のReleaseを確認する。非公開repo、run ID、資料名、コードSHA、サイズとSHA-256を照合し、展開前にパス・symlink・件数・2GiBの予算を検査する。既存の出力先は上書きしない。段階ごとのreceipt・ASR再利用検査も続けて行う。
+
+Releaseの `expires_at` は7日後の削除予定を示す記録であり、GitHubの自動期限ではない。Driveへの転送とチェックサム確認後に、その依頼で作った一時Releaseだけを削除する。途中で停止した場合は記録したタグを確認して整理する。応答不明時に同じ処理を自動再送しない。
 
 ### ローカル受付票がない環境での音声解析の回収
 

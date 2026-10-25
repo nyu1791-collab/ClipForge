@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -17,7 +18,7 @@ import colab_remote_job as remote_job
 class PublicCacheSwitchTests(unittest.TestCase):
     """The GPU public cache is neither restored nor published when public_cache is off."""
 
-    def run_prepare_cache(self, public_cache):
+    def run_prepare_cache(self, public_cache=None):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             content = root / "content"
@@ -31,7 +32,11 @@ class PublicCacheSwitchTests(unittest.TestCase):
                         "workflow_run": "1",
                         "github_token": "",
                         "cache_profile": "gpu",
-                        "public_cache": public_cache,
+                        **(
+                            {"public_cache": public_cache}
+                            if public_cache is not None
+                            else {}
+                        ),
                     }
                 )
             )
@@ -49,6 +54,7 @@ class PublicCacheSwitchTests(unittest.TestCase):
             bundles.restore.return_value = False
             cache_root = root / "cache"
             with (
+                patch.dict(os.environ, {}),
                 patch.object(remote_job, "Path", side_effect=fake_path),
                 patch.object(remote_job, "WORK", root / "work"),
                 patch.object(remote_job, "ReleaseBundles", return_value=bundles),
@@ -73,6 +79,13 @@ class PublicCacheSwitchTests(unittest.TestCase):
         bundles.restore.assert_not_called()
         bundles.publish.assert_not_called()
         command.assert_called()
+        self.assertEqual(report["public_cache_restored"], "skipped_disabled")
+        self.assertEqual(report["public_cache_saved"], "skipped_disabled")
+
+    def test_missing_setting_neither_restores_nor_publishes_the_gpu_cache(self):
+        bundles, _, report = self.run_prepare_cache()
+        bundles.restore.assert_not_called()
+        bundles.publish.assert_not_called()
         self.assertEqual(report["public_cache_restored"], "skipped_disabled")
         self.assertEqual(report["public_cache_saved"], "skipped_disabled")
 

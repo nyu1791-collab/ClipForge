@@ -24,5 +24,6 @@
   "topic_max_seconds": 180,
   "image_search": false,
   "table_query": null,
-  "quality_gate": "strict"
+  "quality_gate": "strict",
+  "heading": true
 }

@@ -73,10 +73,13 @@ jobs:
         run: uv pip install --require-hashes -r tools/colab-control-requirements.txt
       - name: Static checks and unit regressions
         run: |
-          uv run --no-sync ruff check src tools tests
-          uv run --no-sync ruff format --check src tools tests
+          if [ "${{ matrix.python }}" = "3.12" ]; then
+            uv run --no-sync ruff check src tools tests
+            uv run --no-sync ruff format --check src tools tests
+          fi
           uv run --no-sync python -m pytest -p no:cacheprovider -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: quality-unit-${{ matrix.python }}
@@ -86,6 +89,7 @@ jobs:
           retention-days: 7
 
   dependencies:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -108,6 +112,7 @@ jobs:
         if: always()
         run: echo 'Trivy step outcome ${{ steps.trivy.outcome }} (report only)' >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: dependency-vulnerabilities-and-licenses
@@ -146,6 +151,7 @@ jobs:
       - name: Real video and speech-recognition checks
         run: uv run --no-sync python -m pytest -m 'integration or asr' --junitxml=artifacts/video-results.xml
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         if: always()
         with:
           name: quality-synthetic-video

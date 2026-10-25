@@ -56,6 +56,11 @@ on:
         type: boolean
         default: false
 
+      result_store:
+        description: Temporary private output transfer; the final delivery is Google Drive
+        type: choice
+        options: [artifact, release]
+        default: artifact
 permissions:
   contents: write
   actions: read
@@ -175,13 +180,22 @@ jobs:
             ${{ runner.temp }}/clipforge-out/.state
       - uses: actions/upload-artifact@v4
         timeout-minutes: 10
-        if: always()
+        if: always() && inputs.result_store != 'release'
         with:
           name: clipforge-result-${{ inputs.request_id }}
           path: ${{ runner.temp }}/clipforge-out/
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+      - name: Save the verified private result transfer
+        if: success() && inputs.result_store == 'release'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/clipforge-source/src
+          RESULT_DIRECTORY: ${{ runner.temp }}/clipforge-out
+          RESULT_NAME: clipforge-result-${{ inputs.request_id }}
+        run: python3 -m clipforge.github_cli publish "$RESULT_DIRECTORY" "$RESULT_NAME"
       - name: Delete temporary private input
         id: input-cleanup
         timeout-minutes: 10
@@ -360,7 +374,7 @@ jobs:
         run: uv run --no-sync python tools/youtube_transport.py cleanup --state-dir "$RUNNER_TEMP/clipforge-youtube"
       - name: Keep private URL acquisition and transport receipts
         timeout-minutes: 2
-        if: always() && inputs.audio_url != ''
+        if: always() && inputs.audio_url != '' && inputs.result_store != 'release'
         uses: actions/upload-artifact@v4
         with:
           name: clipforge-acquisition-${{ inputs.request_id }}
@@ -471,13 +485,22 @@ jobs:
           exit "$failed"
       - uses: actions/upload-artifact@v4
         timeout-minutes: 10
-        if: always()
+        if: always() && inputs.result_store != 'release'
         with:
           name: clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}
           path: ${{ runner.temp }}/clipforge-out/
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+      - name: Save the verified private result transfer
+        if: success() && inputs.result_store == 'release'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/clipforge-source/src
+          RESULT_DIRECTORY: ${{ runner.temp }}/clipforge-out
+          RESULT_NAME: clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}
+        run: python3 -m clipforge.github_cli publish "$RESULT_DIRECTORY" "$RESULT_NAME"
       - name: Delete temporary private input and result transfer chunks
         id: input-cleanup
         timeout-minutes: 10
@@ -668,10 +691,18 @@ jobs:
         timeout-minutes: 10
         run: uv sync --locked --extra media-fetch --no-dev
       - uses: actions/download-artifact@v4
+        if: inputs.result_store != 'release'
         timeout-minutes: 10
         with:
           name: clipforge-analysis-${{ inputs.request_id }}
           path: ${{ runner.temp }}/clipforge-analysis
+      - name: Retrieve the verified private analysis transfer
+        if: inputs.result_store == 'release'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/src
+        run: python3 -m clipforge.github_cli download "$GITHUB_RUN_ID" "clipforge-analysis-$REQUEST_ID" "$RUNNER_TEMP/clipforge-analysis"
       - name: Prepare the submitted preview settings
         timeout-minutes: 10
         env:
@@ -698,10 +729,19 @@ jobs:
             --config "$RUNNER_TEMP/preview-settings.json" --output "$RUNNER_TEMP/clipforge-previews"
       - uses: actions/upload-artifact@v4
         timeout-minutes: 10
-        if: always()
+        if: always() && inputs.result_store != 'release'
         with:
           name: clipforge-result-${{ inputs.request_id }}
           path: ${{ runner.temp }}/clipforge-previews/
           compression-level: 0
           retention-days: 7
           if-no-files-found: warn
+      - name: Save the verified private result transfer
+        if: success() && inputs.result_store == 'release'
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: ${{ github.workspace }}/src
+          RESULT_DIRECTORY: ${{ runner.temp }}/clipforge-previews
+          RESULT_NAME: clipforge-result-${{ inputs.request_id }}
+        run: python3 -m clipforge.github_cli publish "$RESULT_DIRECTORY" "$RESULT_NAME"

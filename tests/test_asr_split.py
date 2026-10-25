@@ -325,6 +325,15 @@ def test_gpu_worker_recognises_only_its_part_and_writes_verified_receipts(
     run_request.main()
     assert calls == [(25, "cuda", 1)]
     assert split_asr_job.verify_part(output, child, "123") == raw
+    # The Colab publisher adds this diagnostic to the receipted files.
+    write_json(output / "gpu-receipt.json", {"synthetic": "GPU diagnostic"})
+    receipt = json.loads((output / "request-receipt.json").read_text())
+    receipt["sha256"]["gpu-receipt.json"] = digest(output / "gpu-receipt.json")
+    write_json(output / "request-receipt.json", receipt)
+    assert split_asr_job.verify_part(output, child, "123") == raw
+    (output / "gpu-receipt.json").write_text("tampered diagnostic")
+    with pytest.raises(PipelineError, match="checksum"):
+        split_asr_job.verify_part(output, child, "123")
     assert not (output / "topics.json").exists()
 
 
