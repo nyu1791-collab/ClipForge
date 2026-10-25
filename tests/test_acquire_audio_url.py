@@ -217,7 +217,7 @@ def test_refused_inputs_leave_a_reason_code_and_never_reach_the_network(
 def test_refused_reused_artifact_records_its_own_reason_code(
     acquisition, monkeypatch, tmp_path
 ):
-    from clipforge import audio_inputs
+    from clipforge import media_sources as audio_inputs
     from clipforge.storage import PipelineError
 
     def refuse(*args, **kwargs):

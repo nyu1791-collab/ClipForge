@@ -1,7 +1,7 @@
 import json
 
 from clipforge.storage import write_json
-from tools import compare_asr
+from tools import inspect_job
 
 
 def output(root, ref, segments, topics, split=None):
@@ -46,7 +46,7 @@ def test_compare_reports_numbers_only_and_splits_at_the_cut(tmp_path, capsys):
         [topic(0, 92), topic(92, 180), topic(180, 260)],
         split=[140.0, 160.0],
     )
-    compare_asr.main([str(base), str(other)])
+    inspect_job.main(["compare", str(base), str(other)])
     captured = capsys.readouterr()
     report = json.loads(captured.out)
     assert "あいう" not in captured.out and captured.err == ""
@@ -64,8 +64,9 @@ def test_compare_reports_numbers_only_and_splits_at_the_cut(tmp_path, capsys):
 
 def test_compare_warns_when_the_baseline_came_from_other_code(tmp_path, capsys):
     rows = [segment(0, "あ")], [topic(0, 10), topic(10, 20)]
-    compare_asr.main(
+    inspect_job.main(
         [
+            "compare",
             str(output(tmp_path / "b", "a" * 40, *rows)),
             str(output(tmp_path / "o", "b" * 40, *rows)),
         ]
@@ -73,3 +74,67 @@ def test_compare_warns_when_the_baseline_came_from_other_code(tmp_path, capsys):
     captured = capsys.readouterr()
     assert json.loads(captured.out)["same_code"] is False
     assert "different code" in captured.err
+
+
+def test_timeline_lists_jobs_slow_steps_and_only_marked_log_lines(monkeypatch, capsys):
+    run = {
+        "conclusion": "success",
+        "run_started_at": "2026-10-23T10:35:05Z",
+        "updated_at": "2026-10-23T10:45:05Z",
+    }
+    step = lambda name, start, end, conclusion="success": {  # noqa: E731
+        "name": name,
+        "started_at": f"2026-10-23T{start}Z",
+        "completed_at": f"2026-10-23T{end}Z",
+        "conclusion": conclusion,
+    }
+    jobs = {
+        "jobs": [
+            {
+                "id": 7,
+                **step("colab-auto", "10:35:09", "10:45:05"),
+                "steps": [
+                    step("Acquire audio", "10:36:04", "10:38:05"),
+                    step("Checkout", "10:35:12", "10:35:13"),
+                    step("Single runtime", "10:38:07", "10:40:00", "skipped"),
+                ],
+            },
+            {
+                "id": 8,
+                **step("previews", "10:45:05", "10:45:05", "skipped"),
+                "steps": [],
+            },
+        ]
+    }
+    log = (
+        "2026-10-23T10:38:46.75Z Colab runtime allocated for the verified account: T4 HIGH_RAM\n"
+        "2026-10-23T10:38:47.00Z ASR progress: 120 of 7400 s\n"
+        "2026-10-23T10:44:23.15Z Compute units used by this job: 0.18\n"
+    )
+
+    def gh(*arguments):
+        path = arguments[1]
+        if path.endswith("/jobs"):
+            return json.dumps(jobs)
+        if path.endswith("/logs"):
+            assert path.endswith("/jobs/7/logs")
+            return log
+        return json.dumps(run)
+
+    monkeypatch.setattr(inspect_job, "gh", gh)
+    lines = inspect_job.timeline(1)
+    assert lines[0] == "run 1 success: 10:35:05-10:45:05"
+    assert lines[1] == "job colab-auto: 10:35:09-10:45:05 596 s success"
+    assert "     121 s  Acquire audio" in lines
+    assert not any(
+        "Checkout" in line or "Single runtime" in line or "previews" in line
+        for line in lines
+    )
+    assert (
+        "  10:38:46  Colab runtime allocated for the verified account: T4 HIGH_RAM"
+        in lines
+    )
+    assert not any("ASR progress" in line for line in lines)
+    assert lines[-1] == "  10:44:23  Compute units used by this job: 0.18"
+    assert inspect_job.main(["timings", "1"]) == 0
+    assert capsys.readouterr().out == "\n".join(lines) + "\n"

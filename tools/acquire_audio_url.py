@@ -127,7 +127,7 @@ def main(argv=None):
             root = Path(temporary)
             reused = None
             if args.verified_audio_dir is not None:
-                from clipforge.audio_inputs import verify_audio_artifact
+                from clipforge.media_sources import verify_audio_artifact
 
                 report["phase"] = "reuse_verify"
                 with rejected(report, "invalid_reuse_artifact"):

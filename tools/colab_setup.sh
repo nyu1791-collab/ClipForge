@@ -72,7 +72,7 @@ model_prepare_started=$(date +%s.%N)
 if [[ $CLIPFORGE_CACHE_PROFILE == gpu && ${CLIPFORGE_SKIP_MODEL_PREPARE:-0} != 1 ]]; then
   if ! HF_HUB_OFFLINE=1 .venv/bin/python - >/dev/null 2>&1 <<'PY'
 import os
-from clipforge.whisper_cache import model_path
+from clipforge.hardware import model_path
 model_path(os.environ.get('CLIPFORGE_WHISPER_MODEL', 'small'), os.environ.get('CLIPFORGE_WHISPER_REVISION'))
 PY
   then
@@ -80,7 +80,7 @@ PY
   fi
   .venv/bin/python - <<'PY'
 import os
-from clipforge.whisper_cache import model_path
+from clipforge.hardware import model_path
 try:
     model_path(os.environ.get('CLIPFORGE_WHISPER_MODEL', 'small'), os.environ.get('CLIPFORGE_WHISPER_REVISION'))
 except Exception as error:

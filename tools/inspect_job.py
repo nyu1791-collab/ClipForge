@@ -1,17 +1,80 @@
 #!/usr/bin/env python3
-"""Compare two private analysis outputs of one source, such as one-part and two-part ASR.
-
-Prints numbers only, never transcript text, so the result can be shared in a report.
-Both directories are submit_job outputs (topics.json, request-receipt.json, transcripts/).
-"""
+"""Inspect a worker run or compare saved ASR results; never print media text."""
 
 import argparse
 import bisect
+from datetime import datetime
 import difflib
 import json
 from pathlib import Path
+import re
 import statistics
+import subprocess
 import sys
+
+REPO = "nyu1791-collab/ai-model-workers"
+MARKERS = (
+    "Colab runtime allocated",
+    "Colab refused",
+    "Runtime held:",
+    "Colab stage:",
+    "Compute units",
+    "ASR part ",
+    "Both ASR parts",
+)
+STAMP = re.compile(r"^\S+Z ")
+
+
+def gh(*arguments):
+    return subprocess.run(
+        ["gh", *arguments], check=True, capture_output=True, text=True, timeout=120
+    ).stdout
+
+
+def seconds(item):
+    if not item.get("started_at") or not item.get("completed_at"):
+        return None
+    start, end = (
+        datetime.fromisoformat(item[key].replace("Z", "+00:00"))
+        for key in ("started_at", "completed_at")
+    )
+    return (end - start).total_seconds()
+
+
+def clock(text):
+    return text[11:19] if text else "--:--:--"
+
+
+def timeline(run_id, repo=REPO, minimum=3.0):
+    run = json.loads(gh("api", f"repos/{repo}/actions/runs/{run_id}"))
+    jobs = json.loads(gh("api", f"repos/{repo}/actions/runs/{run_id}/jobs"))["jobs"]
+    lines = [
+        f"run {run_id} {run.get('conclusion')}: {clock(run.get('run_started_at'))}"
+        f"-{clock(run.get('updated_at'))}"
+    ]
+    for job in jobs:
+        took = seconds(job)
+        if took is None or job.get("conclusion") == "skipped":
+            continue
+        lines.append(
+            f"job {job['name']}: {clock(job['started_at'])}-{clock(job['completed_at'])}"
+            f" {took:.0f} s {job.get('conclusion')}"
+        )
+        for step in job.get("steps", []):
+            took = seconds(step)
+            if (
+                took is not None
+                and took >= minimum
+                and step.get("conclusion") != "skipped"
+            ):
+                lines.append(f"  {took:6.0f} s  {step['name']}")
+        log = gh("api", f"repos/{repo}/actions/jobs/{job['id']}/logs")
+        for raw in log.splitlines():
+            text = STAMP.sub("", raw)
+            if text.startswith(MARKERS):
+                lines.append(f"  {clock(raw)}  {text}")
+    return lines
+
 
 THRESHOLDS = (0.5, 2.0, 10.0, 30.0)
 WINDOW = 60.0
@@ -132,9 +195,22 @@ def compare(base, other):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("baseline", type=Path)
-    parser.add_argument("other", type=Path)
+    commands = parser.add_subparsers(dest="command", required=True)
+    timings = commands.add_parser(
+        "timings", help="measured jobs and stages of a worker run"
+    )
+    timings.add_argument("run_id", type=int)
+    timings.add_argument("--repo", default=REPO)
+    timings.add_argument("--minimum", type=float, default=3.0)
+    comparison = commands.add_parser(
+        "compare", help="numeric comparison of two saved analyses"
+    )
+    comparison.add_argument("baseline", type=Path)
+    comparison.add_argument("other", type=Path)
     args = parser.parse_args(argv)
+    if args.command == "timings":
+        print("\n".join(timeline(args.run_id, args.repo, args.minimum)))
+        return 0
     report = compare(load(args.baseline), load(args.other))
     print(json.dumps(report, indent=2))
     if not report["same_code"]:
@@ -142,7 +218,8 @@ def main(argv=None):
             "warning: the outputs come from different code; a difference may not be the split's",
             file=sys.stderr,
         )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

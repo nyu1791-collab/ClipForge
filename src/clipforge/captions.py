@@ -38,7 +38,7 @@ from .models import (
     CAPTION_OUTLINE_ALLOWANCE,
     CAPTION_REFERENCE_HEIGHT,
 )
-from .caption_sentences import (
+from .caption_breaks import (
     _tagger,
     _ends_sentence,
     sentence_ends,

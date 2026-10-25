@@ -129,15 +129,16 @@ def colab_shape():
     return shapes[name]
 
 
-# Clip rendering is CPU work (x264), so it tries the cheapest runtime first and moves on only
-# on TooManyAssignmentsError (412), never on permission or rate-limit errors.
+# Rendering is CPU work (x264): the default pool never escalates it to a GPU.
+# A 412 tries the next shape of the same resource kind; permissions/rate limits stop.
+# Other accelerator kinds require an explicit CLIPFORGE_COLAB_POOL override.
 # Measured 2026-10-22: at most two T4 and two
 # L4 at once, counted per kind; three CPU high-ram and two CPU standard were granted together.
 # Rates then: CPU high-ram 0.26, T4 1.07, T4 high-ram 1.27, L4 1.54 compute units an hour.
 # Measured 2026-10-22: a second pipeline's T4 high-ram was refused; capacity varies.
 DEFAULT_POOLS = {
-    "pipeline": "T4:high-ram,T4:standard,L4",
-    "audio-stage": "CPU:high-ram,CPU:standard,T4:high-ram,L4",
+    "pipeline": "T4:high-ram,T4:standard",
+    "audio-stage": "CPU:high-ram,CPU:standard",
 }
 
 
@@ -151,7 +152,7 @@ def colab_pool(mode):
         if mode == "pipeline":
             colab_shape()
             if os.environ.get("CLIPFORGE_COLAB_SHAPE") == "standard":
-                raw = "T4:standard,T4:high-ram,L4"
+                raw = "T4:standard,T4:high-ram"
     if not raw:
         accelerator = Accelerator.NONE if mode == "prepare-cache" else Accelerator.T4
         return [(accelerator, colab_shape())]

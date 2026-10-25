@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pysubs2
 import pytest
 
-from clipforge import caption_sentences, quality
+from clipforge import caption_breaks, quality
 from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
@@ -364,7 +364,7 @@ def test_without_fugashi_only_the_budoux_edges_count(monkeypatch):
     def no_tagger():
         raise ImportError("fugashi is not installed")
 
-    monkeypatch.setattr(caption_sentences, "_tagger", no_tagger)
+    monkeypatch.setattr(caption_breaks, "_tagger", no_tagger)
     assert quality.word_splits([(0, 2000, "すげー村山優人\n俺マイクラやりますね")]) == [
         "山優人|俺マイ"
     ]

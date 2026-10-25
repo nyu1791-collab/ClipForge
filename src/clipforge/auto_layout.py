@@ -12,6 +12,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 
+from .review import MAX_CAPTION_FLOOR
 from .storage import PipelineError
 
 
@@ -42,7 +43,7 @@ PERSIST_MAX = 64
 # A caption's bottom edge sits this share of the height above the top of the busy band.
 LIFT_PAD = 0.015
 # No caption is lifted above this share of the height.
-MAX_LIFT = 0.32
+MAX_LIFT = MAX_CAPTION_FLOOR
 # Frames are processed in blocks so float32 temporaries stay small for long samples.
 BLOCK = 256
 

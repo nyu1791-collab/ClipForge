@@ -15,7 +15,7 @@
 
 `topics.json`は、発話の間と語彙の変化で割り振った区間とASR本文を含む。
 意味的な話題の一致・完結や面白さを承認した結果ではない。プレビュー候補の優先順位は発話秒数による。
-`tools/topic_hints.py` は本文を出力せず、NFKC正規化・空白/句読点/記号除去後の文字3-gramのJaccard類似度が0.5以上の相手IDを `near_duplicates`（類似度順・最大3件）、全相手との最大値を `max_similarity`（小数3桁）で示す。
+`python -m clipforge.topic_hints` は本文を出力せず、NFKC正規化・空白/句読点/記号除去後の文字3-gramのJaccard類似度が0.5以上の相手IDを `near_duplicates`（類似度順・最大3件）、全相手との最大値を `max_similarity`（小数3桁）で示す。
 ほぼ重複のペアでは発話密度 `speech_ratio` が低い方（同率なら後ろ）に `duplicate` の目印と0.2の減点を一度だけ付ける。自動除外はせず、採否は担当者が判断する。
 音声が手元にある previews では、1秒RMSの dB 系列を前後60秒の非無音窓の中央値と比べる（-50dB未満は無音として基準に使わず、自身の突出も0）。話題の区間内の窓のうち上位3窓の平均突出（6dB未満は0、15dB以上は1）を求め、重み0.05の加点（`volume_score`・`volume_bump_db`）とする。音声を読めない場合は加点せず、diagnostics の `volume_hints.data` が `not_available`、`reason` が `decode_failed`（復号失敗）または `no_audio`（音声サンプルなし）になる。
 長い話題は現行上限180秒で区切る。20分等への尺拡張は行っていない。
@@ -32,11 +32,11 @@ Kickに加え、YouTubeの単一動画、Twitchのアーカイブ・クリップ
 
 追加経路のメタデータに長さがない場合は、runnerで取得・実測してからGPU割り当ての可否を決める。直接ファイルは音声抽出のためにも全体転送が必要な場合がある。追加経路の映像描画では元ファイル全体をremuxし、元時刻を保ったまま採用区間を描画する。Kickの区間取得だけに適用される通信量の説明と区別する。
 
-URLだけの投入は既定で2分割。境界前後5秒の文脈を付けたFLACを独立した2つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [ASR_SPLIT.md](ASR_SPLIT.md)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
+URLだけの投入は既定で2分割。境界前後5秒の文脈を付けたFLACを独立した2つのColabランタイムへ渡し、単語時刻・依頼ID・ハッシュを検証して結合してから話題分割を一度だけ行う。`--asr-parts 1` または設定 `asr_parts: 1` で連続ASRを使う。キャッシュの識別と終了処理は [Colabの2分割ASR](COLAB.md#2分割asr)。直接CLIの `topics` は連続ASR用で、2分割は非公開workerへのURL投入で使う。
 
 ```bash
 uv sync --locked --extra media-fetch --extra chat
-uv run --no-sync python tools/kick_audio_first.py \
+uv run --no-sync python -m clipforge.audio_first \
   --url 'https://kick.com/CHANNEL/videos/VOD_ID' \
   --workspace inputs/private-vod --stage audio
 ```
@@ -106,8 +106,8 @@ uv run --no-sync python tools/submit_job.py \
 
 - `max_source_seconds` の設定可能上限は43,200秒（12時間）。landscape設定は21,600秒（6時間）なので、URLだけの投入も既定で6時間まで受け付ける。モデルの既定3,600秒はローカル動画の `pipeline` / `landscape` の長さ制限にも使われるため維持する。6時間を超える終了済み配信は、必要な上限を `--config` で明示する。
 - 音声取得時の `max_transport_bytes` は既定6 GiB、設定可能範囲1 KiB〜16 GiB。最低画質に映像が含まれる場合の一時TS取得予算であり、保存音声の上限とは別。保存音声には `max_input_bytes`（既定1 GiB、上限2 GiB）を適用する。AAC 48 kbpsの6時間音声は概算130 MB（コンテナ等を除く）。最低画質のビットレート次第では6時間未満でも転送予算に達するので、必要なら16 GiB以内で明示する。
-- 後段workerのプレビュー・1080p区間取得は従来の2 GiB予算。直接CLIの `previews` / `render` は従来の `max_input_bytes` 予算を維持し、`audio` / `topics` の音声取得にだけ `max_transport_bytes` を使う。選定区間のみの映像取得に全編音声用の予算を広げない。
-- 6時間音声のメモリ見積もりと実測の未確認事項は [品質記録](QUALITY_REVIEW.md) の「長時間音声のメモリ見積もり（2026-10-22）」を参照する。
+- 後段workerのプレビュー・1080p区間取得は2 GiBを上限とし、`max_transport_bytes` がそれ未満なら小さい値を使う。直接CLIの `previews` / `render` は従来の `max_input_bytes` 予算を維持し、`audio` / `topics` の音声取得にだけ `max_transport_bytes` を使う。選定区間のみの映像取得に全編音声用の予算を広げない。
+- 6時間音声のメモリ見積もりと実測の未確認事項は [長時間音声のメモリ見積もり](HISTORY.md#長時間音声のメモリ見積もり)を参照する。
 
 十分なCPUのある環境なら、同じworkspaceに対して `--stage topics` でも実行できる。
 制御VMで `topics`・`previews`・`render`を実行しない。回収済み音声と `transcripts/` を対応付けて、十分なCPUのある私有環境へ渡す。
@@ -214,7 +214,7 @@ SHA-256一覧は除去後に作成し、manifestのクリップ別一覧も残�
 確認していない候補、別ASRの分析キー、改変されたプレビュー、重複した話題を拒否する。
 
 ```bash
-uv run --no-sync python tools/kick_audio_first.py \
+uv run --no-sync python -m clipforge.audio_first \
   --url 'https://kick.com/CHANNEL/videos/VOD_ID' --workspace inputs/private-vod \
   --stage render --review-file inputs/reviewed-topics.json
 ```
@@ -250,7 +250,7 @@ WARP は使い捨て GitHub-hosted runner のみで使用し、終了時に切�
 メタデータ比較後に実際の全音声取得・ASR用変換も検証し、成功時のみ音声を private Artifact に7日間保存する。
 GPU 割当や ASR は行わない。成功・失敗、UTC 時刻、経過秒も private Artifact に残る。
 PO Token や Cookie、WARP による成功を保証しない。
-過去の匿名8条件の結果と追加検証は [YOUTUBE_DIAGNOSTICS.md](YOUTUBE_DIAGNOSTICS.md) を参照。
+過去の匿名8条件の結果と追加検証は [過去のYouTube診断](HISTORY.md#統合前の資料) を参照。
 
 通常のURL音声取得へWARP経路を明示する場合は、
 `submit_job.py --youtube-audio-transport warp`を使う。

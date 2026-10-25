@@ -388,7 +388,7 @@ def main(argv=None):
         terms = _read_terms(args.profanity_dict) if args.profanity_dict else None
         volume = None
         if args.audio:
-            from .audio_volume import loudness_series
+            from .signals import loudness_series
 
             volume = loudness_series(args.audio)
         chat = json.loads(args.chat_windows.read_text()) if args.chat_windows else None

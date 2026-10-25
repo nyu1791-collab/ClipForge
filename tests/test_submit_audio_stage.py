@@ -6,6 +6,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+from unittest.mock import Mock
 
 import pytest
 
@@ -481,6 +482,37 @@ def test_collect_delivery_without_analysis_files(delivery_collector, tmp_path):
     saved = json.loads((state / "receipt.json").read_text())
     assert saved["status"] == "COLLECTED" and saved["run_id"] == RUN_ID
     assert control["downloads"] == 1
+
+
+def test_colab_published_clip_can_be_collected_and_detects_changed_report(
+    collector, tmp_path, monkeypatch
+):
+    module, control, state = build_delivery_collector(collector, "render")
+    monkeypatch.syspath_prepend(str(Path("tools").resolve()))
+    import colab_remote_job
+
+    root = control["artifact"]
+    request = json.loads((state / "request.json").read_text())
+    bundles = Mock()
+    bundles.publish.side_effect = lambda *args: module.verify_stage_artifact(
+        root, COLLECT_REQUEST, "render", request, RUN_ID
+    )
+    assert colab_remote_job.publish_result(
+        bundles,
+        {
+            "input_tag": "clipforge-input-" + COLLECT_REQUEST,
+            "request_id": COLLECT_REQUEST,
+            "source_ref": SOURCE_REF,
+        },
+        root,
+        {"mode": "audio-stage", "source_ref": SOURCE_REF, "status": "clip_rendered"},
+        {},
+    )
+    bundles.publish.assert_called_once()
+    assert module.main(collect_args(tmp_path / "collected")) == 0
+    (root / "gpu-receipt.json").write_text("{}")
+    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
+        module.verify_stage_artifact(root, COLLECT_REQUEST, "render", request, RUN_ID)
 
 
 @pytest.mark.parametrize("clip_index", ["1", "3"])

@@ -5,11 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
-      full_repetitions:
-        description: Full CPU suite repetitions on Python 3.12 (no ASR fixture or GPU)
-        type: choice
-        options: ['1', '10']
-        default: '1'
       video_checks:
         description: Also run the synthetic video and CPU ASR fixture checks
         type: boolean
@@ -23,6 +18,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  scope:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      media: ${{ steps.scope.outputs.media }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: scope
+        env:
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          python - <<'PYTHON'
+          import os
+          from pathlib import Path
+          import subprocess
+          base = os.environ.get("PUSH_BASE") or "HEAD^"
+          diff = subprocess.run(["git", "diff", "--name-only", base, "HEAD"], capture_output=True, text=True)
+          # A missing shallow-history base runs the media checks conservatively.
+          files = diff.stdout.splitlines() if diff.returncode == 0 else ["src/clipforge/"]
+          media = any(name.startswith(("src/clipforge/", "tools/make_quality_fixture.py", "tests/test_video_integration.py", ".github/workflows/quality.yml")) for name in files)
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write("media=" + str(media).lower() + "\n")
+          PYTHON
+
   unit:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -53,20 +75,6 @@ jobs:
         run: |
           uv run --no-sync ruff check src tools tests
           uv run --no-sync ruff format --check src tools tests
-          if [ "${{ github.event_name }}" = workflow_dispatch ]; then
-            repetitions=1
-            if [ "${{ matrix.python }}" = '3.12' ]; then repetitions='${{ inputs.full_repetitions }}'; fi
-            failed=0
-            mkdir -p artifacts
-            for iteration in $(seq 1 "$repetitions"); do
-              echo "Full CPU suite: $iteration/$repetitions"
-              uv run --no-sync python -m pytest -q -p no:cacheprovider \
-                --junitxml="artifacts/full-suite-$iteration.xml" \
-                >"artifacts/full-suite-$iteration.log" 2>&1 || failed=1
-              tail -n 8 "artifacts/full-suite-$iteration.log"
-            done
-            exit "$failed"
-          fi
           uv run --no-sync python -m pytest -p no:cacheprovider -m 'not integration and not asr' --cov=clipforge --cov-fail-under=90 --cov-report=term-missing --cov-report=xml --junitxml=artifacts/unit-results.xml
       - uses: actions/upload-artifact@v4
         if: always()
@@ -74,7 +82,6 @@ jobs:
           name: quality-unit-${{ matrix.python }}
           path: |
             artifacts/unit-results.xml
-            artifacts/full-suite-*
             coverage.xml
           retention-days: 7
 
@@ -109,7 +116,8 @@ jobs:
           if-no-files-found: warn
 
   video:
-    if: github.event_name != 'workflow_dispatch' || inputs.video_checks
+    needs: scope
+    if: (github.event_name == 'workflow_dispatch' && inputs.video_checks) || (github.event_name != 'workflow_dispatch' && needs.scope.outputs.media == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:

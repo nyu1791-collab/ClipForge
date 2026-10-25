@@ -13,7 +13,7 @@ import tempfile
 import time
 from contextlib import contextmanager
 
-from colab_bundle import ReleaseBundles, REPOSITORY
+from colab_bundle import ReleaseBundles, REPOSITORY, digest
 from colab_cache import configuration, mark_restored, release_parts, release_tag
 
 ROOT = Path("/content/ClipForge")
@@ -64,6 +64,10 @@ def publish_result(bundles, payload, output, report, timings):
         )
     (output / "gpu-receipt.json").write_text(json.dumps(report))
     try:
+        returned = json.loads(receipt.read_text())
+        if isinstance(returned.get("sha256"), dict):
+            returned["sha256"]["gpu-receipt.json"] = digest(output / "gpu-receipt.json")
+            receipt.write_text(json.dumps(returned))
         with (
             timed(timings, "result_publish"),
             tempfile.TemporaryDirectory(prefix="clipforge-result-upload-") as work,
@@ -156,7 +160,7 @@ import json, tempfile, wave
 from pathlib import Path
 from faster_whisper import WhisperModel
 from clipforge.hardware import nvenc_available
-from clipforge.whisper_cache import model_path
+from clipforge.hardware import model_path
 model = WhisperModel(model_path('small'), device='cuda', compute_type='float16')
 assert model.model.device == 'cuda'
 assert model.model.compute_type == 'float16'

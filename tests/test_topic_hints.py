@@ -1,6 +1,5 @@
 import math
 import json
-from pathlib import Path
 import subprocess
 import sys
 
@@ -8,7 +7,7 @@ import pytest
 
 from clipforge import topic_hints as th
 
-TOOL = Path(__file__).resolve().parents[1] / "tools" / "topic_hints.py"
+HINT_COMMAND = [sys.executable, "-m", "clipforge.topic_hints"]
 SECRET = "秘密の本文マーカーXYZ"
 
 
@@ -200,7 +199,7 @@ def test_cli_outputs_json_without_body(tmp_path):
     }
     source.write_text(json.dumps(analysis, ensure_ascii=False), encoding="utf-8")
     completed = subprocess.run(
-        [sys.executable, str(TOOL), str(source)],
+        [*HINT_COMMAND, str(source)],
         capture_output=True,
         text=True,
         check=False,
