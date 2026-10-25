@@ -37,6 +37,11 @@ def main():
     ap.add_argument("--analysis-request")
     ap.add_argument("--clips", type=int, choices=range(5, 11))
     ap.add_argument("--config-file", default="config.landscape-long.example.json")
+    ap.add_argument(
+        "--deliver-drive",
+        action="store_true",
+        help="Upload once to the explicitly configured target Drive after rendering",
+    )
     ap.add_argument("--timeout", type=int, default=7200)
     args = ap.parse_args()
     if not re.fullmatch("[a-f0-9]{40}", args.source_ref):
@@ -77,15 +82,24 @@ def main():
     def save():
         statefile.write_text(json.dumps(state, ensure_ascii=False, indent=2))
 
-    def dispatch(workflow, inputs):
+    def dispatch(workflow, inputs, delivery=False):
         identity = uuid.uuid4().hex
-        inputs = {
-            **inputs,
-            "request_id": identity,
-            "input_tag": "clipforge-input-" + identity,
-            "source_ref": args.source_ref,
-            "result_store": "release",
-        }
+        if delivery:
+            inputs = {
+                **inputs,
+                "input_tag": "clipforge-drive-" + identity,
+                "source_ref": args.source_ref,
+            }
+            expected_title = "ClipForge Drive upload-release " + inputs["input_tag"]
+        else:
+            inputs = {
+                **inputs,
+                "request_id": identity,
+                "input_tag": "clipforge-input-" + identity,
+                "source_ref": args.source_ref,
+                "result_store": "release",
+            }
+            expected_title = "ClipForge " + identity
         stage = {
             "workflow": workflow,
             "request_id": identity,
@@ -129,7 +143,7 @@ def main():
                 found = [
                     r
                     for r in runs
-                    if r["displayTitle"] == "ClipForge " + identity
+                    if r["displayTitle"] == expected_title
                     and r["event"] == "workflow_dispatch"
                 ]
                 if len(found) > 1:
@@ -214,6 +228,20 @@ def main():
         state["render_request_id"] = final_request
         save()
         download(final_run, "clipforge-result-" + final_request, args.output / "clips")
+        state["render_complete"] = True
+        save()
+        if args.deliver_drive:
+            drive_run, _ = dispatch(
+                "clipforge-drive-delivery.yml",
+                {
+                    "mode": "upload-release",
+                    "render_run": final_run,
+                    "render_request": final_request,
+                },
+                delivery=True,
+            )
+            state["drive_run_id"] = drive_run
+            state["drive_status"] = "uploaded"
         state.update(
             status="complete", elapsed_sec=round(time.time() - state["started_at"], 3)
         )
@@ -231,7 +259,9 @@ def main():
         )
     except Exception:
         state.update(
-            status="failed_or_unknown",
+            status="delivery_failed_or_unknown"
+            if state.get("render_complete")
+            else "failed_or_unknown",
             elapsed_sec=round(time.time() - state["started_at"], 3),
         )
         save()

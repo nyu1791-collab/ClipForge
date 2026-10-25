@@ -63,7 +63,7 @@ gh workflow run clipforge-opencode.yml --repo nyu1791-collab/ClipForge \
 
 ## 現在の達成状態
 
-コードと初回接続スクリプトは用意済み。Google側の初回連携・変数登録後に使用する。実API生成の成功や、当該モデルのVertex提供・クレジット適用は未確認。スクリーンショットの残高を無料保証とは扱わない。モデルを別名へ自動置換しない。
+非公開Actionsでは3.8と3.5の実推論、3.8によるYouTube動画の直接解析まで成功済み。公開ClipForge側はActions定義をmainへ統合済みだが、公開側認証の移行は未完了。適用単価の公示額と実際のクレジット充当額を区別し、請求画面を確認せず実支払額を保証しない。モデルを別名へ自動置換しない。
 
 ## Geminiへの編集指示
 
@@ -105,3 +105,15 @@ uv run python tools/produce_with_gemini.py 'https://kick.com/CHANNEL/videos/VOD_
 ### 3体構成の実呼び出し
 
 Run 40220449164で成功。3.8/MEDIUMの指示生成3.220秒、3.5/MINIMALのURL作業1.260秒、3.5/MINIMALの整形作業1.626秒（2体並列）、3.8/MEDIUMの編集判断24.843秒。計画全体29.695秒。要求・応答モデルはそれぞれgemini-3.8-flash / gemini-3.5-flashと一致し、5本を選定した。保存済みASRのみ使用し、GPU・再描画・自動再試行は実行していない。
+
+## 個人Driveへの自動納品
+
+ユーザー指定の宛先はn.yu1791@gmail.com。--deliver-driveで描画・回収後に自動転送する。Gemini/Vertexの認証と個人Driveの認証は別で、モデルへOAuth情報を渡さない。初回の本人接続は[TARGET_DRIVE.md](TARGET_DRIVE.md)を参照。
+
+## YouTube動画を3.8で直接解析
+
+vertex_video.pyはYouTube URLをfileDataとしてGemini 3.8 Flashへ渡す。思考はMEDIUM、低解像度・0.2fpsの入力で、映像と音声から要約・元時刻付きの根拠・切り抜き候補・字幕補助を1回のリクエストで取得する。VM側のダウンロード・Parakeet・GPUは不要。解析結果はMP4ではなく編集計画として保存する。動画入力のトークン内訳とモデル自身のアクセス申告を記録し、未取得の動画をURLだけから推測した結果と区別する。
+
+公式仕様: https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/video-understanding
+
+直接動画解析の実行例: Run 40222184955。3.8 Flash / MEDIUM、51.720秒、動画・音声入力あり、5区間の提案を取得。YouTube素材のVM取得がログイン要求で止まっていても、公開YouTube URLを正規の動画入力として解析できた。これはMP4の取得・書き出しの成功を意味しない。

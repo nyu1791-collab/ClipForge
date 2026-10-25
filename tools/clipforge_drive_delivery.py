@@ -1,7 +1,7 @@
 """Use existing private Actions Google credentials without exposing them to the VM."""
 import hashlib,json,os,re,subprocess,sys,time,secrets,base64,zipfile,urllib.request,urllib.parse,urllib.error
 from pathlib import Path
-ACCOUNT='n.yu17919191@gmail.com'
+ACCOUNT='n.yu1791@gmail.com'
 REPO='nyu1791-collab/ai-model-workers'
 
 def request(url,method='GET',payload=None,headers=None,raw=None):

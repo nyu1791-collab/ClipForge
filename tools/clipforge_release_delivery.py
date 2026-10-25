@@ -9,9 +9,148 @@ import time
 import urllib.error
 import urllib.parse
 import zipfile
+import uuid
+import subprocess
 
 from clipforge.release_transfer import download, read_transfer, validate_identity
 from clipforge_drive_delivery import request
+
+
+TARGET_ACCOUNTS = {"n.yu1791@gmail.com", "n.yu17919191@gmail.com"}
+
+
+def authorize_target():
+    print("DELIVERY_STAGE=authorize_upload", flush=True)
+    raw = os.environ.get("GOOGLE_DRIVE_ADC_JSON")
+    if not raw:
+        raise RuntimeError("DRIVE_AUTH_NOT_CONFIGURED_FOR_TARGET_ACCOUNT")
+    credential = json.loads(raw)
+    body = urllib.parse.urlencode(
+        {k: credential[k] for k in ("refresh_token", "client_id", "client_secret")}
+        | {"grant_type": "refresh_token"}
+    ).encode()
+    with request(
+        "https://oauth2.googleapis.com/token",
+        "POST",
+        raw=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    ) as response:
+        token = json.load(response)["access_token"]
+    auth = {"Authorization": "Bearer " + token}
+    if credential.get("quota_project_id"):
+        auth["x-goog-user-project"] = credential["quota_project_id"]
+    with request(
+        "https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)",
+        headers=auth,
+    ) as response:
+        account = json.load(response).get("user", {}).get("emailAddress", "").lower()
+    if account not in TARGET_ACCOUNTS:
+        raise RuntimeError("DRIVE_TARGET_ACCOUNT_MISMATCH")
+    print("DRIVE_TARGET_ACCOUNT=" + account, flush=True)
+    return auth
+
+
+def upload_analysis():
+    run = os.environ.get("ANALYSIS_RUN", "")
+    if not re.fullmatch(r"[1-9][0-9]*", run):
+        raise RuntimeError("DRIVE_INVALID_ANALYSIS_RUN")
+    auth = authorize_target()
+    root = Path(os.environ["RUNNER_TEMP"]) / "drive-video-analysis"
+    root.mkdir(mode=0o700)
+    result = subprocess.run(
+        [
+            "gh",
+            "release",
+            "download",
+            "clipforge-video-analysis-" + run,
+            "--repo",
+            "nyu1791-collab/ai-model-workers",
+            "--dir",
+            str(root),
+        ],
+        capture_output=True,
+    )
+    if result.returncode:
+        raise RuntimeError("DRIVE_ANALYSIS_DOWNLOAD_FAILED")
+    receipt = json.loads((root / "video-analysis-receipt.json").read_text())
+    analysis = json.loads((root / "video-analysis.json").read_text())
+    if (
+        receipt.get("status") != "complete"
+        or receipt.get("model_version") != "gemini-3.8-flash"
+    ):
+        raise RuntimeError("DRIVE_ANALYSIS_NOT_COMPLETE")
+
+    def clock(value):
+        value = int(value)
+        return f"{value // 60:02}:{value % 60:02}"
+
+    lines = [
+        analysis["source_title"],
+        receipt["source_url"],
+        "",
+        analysis["summary"],
+        "",
+        "切り抜き候補（MP4はまだ作成していません）",
+    ]
+    for index, clip in enumerate(analysis["clips"], 1):
+        lines += [
+            f"{index}. {clip['title']}  {clock(clip['start_seconds'])}〜{clock(clip['end_seconds'])}",
+            clip["reason"],
+            "字幕補助: " + " / ".join(clip["subtitle_help"]),
+            "",
+        ]
+    (root / "analysis.txt").write_text("\n".join(lines))
+    with request(
+        "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
+        "POST",
+        payload={
+            "name": "ClipForge 動画解析 " + run,
+            "mimeType": "application/vnd.google-apps.folder",
+        },
+        headers=auth,
+    ) as response:
+        folder = json.load(response)
+    for path in [
+        root / "analysis.txt",
+        root / "video-analysis.json",
+        root / "video-analysis-receipt.json",
+    ]:
+        if path.stat().st_size > 4 * 1024**2:
+            raise RuntimeError("DRIVE_ANALYSIS_FILE_TOO_LARGE")
+        boundary = "clipforge_" + uuid.uuid4().hex
+        mime = "text/plain" if path.suffix == ".txt" else "application/json"
+        metadata = json.dumps({"name": path.name, "parents": [folder["id"]]}).encode()
+        body = (
+            f"--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode()
+            + metadata
+            + f"\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n".encode()
+            + path.read_bytes()
+            + f"\r\n--{boundary}--\r\n".encode()
+        )
+        with request(
+            "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,size,webViewLink",
+            "POST",
+            raw=body,
+            headers=auth | {"Content-Type": "multipart/related; boundary=" + boundary},
+        ) as response:
+            saved = json.load(response)
+        print(
+            "DRIVE_FILE_UPLOADED="
+            + json.dumps(
+                {
+                    "name": saved["name"],
+                    "link": saved["webViewLink"],
+                    "bytes": int(saved["size"]),
+                    "kind": "analysis_record",
+                }
+            ),
+            flush=True,
+        )
+    print("DRIVE_FOLDER=" + folder["webViewLink"], flush=True)
+    print(
+        "DRIVE_DELIVERY_STATUS=analysis_uploaded; no MP4 was uploaded; private sharing unchanged",
+        flush=True,
+    )
 
 
 def deliver():
@@ -29,24 +168,7 @@ def deliver():
     transfer = read_transfer(run_id, name)
     if transfer.get("source_ref") != source:
         raise RuntimeError("Render source identity differs")
-    print("DELIVERY_STAGE=authorize_upload", flush=True)
-    credential = json.loads(
-        os.environ.get("GOOGLE_DRIVE_ADC_JSON") or os.environ["COLAB_ADC_JSON"]
-    )
-    body = urllib.parse.urlencode(
-        {k: credential[k] for k in ("refresh_token", "client_id", "client_secret")}
-        | {"grant_type": "refresh_token"}
-    ).encode()
-    with request(
-        "https://oauth2.googleapis.com/token",
-        "POST",
-        raw=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    ) as response:
-        token = json.load(response)["access_token"]
-    auth = {"Authorization": "Bearer " + token}
-    if credential.get("quota_project_id"):
-        auth["x-goog-user-project"] = credential["quota_project_id"]
+    auth = authorize_target()
     print("DELIVERY_STAGE=create_folder", flush=True)
     with request(
         "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
@@ -173,10 +295,18 @@ def deliver():
 
 if __name__ == "__main__":
     try:
-        deliver()
+        if os.environ.get("DELIVERY_MODE") == "identity":
+            authorize_target()
+            print("DRIVE_AUTH_STATUS=target_account_ready", flush=True)
+        elif os.environ.get("DELIVERY_MODE") == "upload-analysis":
+            upload_analysis()
+        else:
+            deliver()
     except urllib.error.HTTPError as error:
         print("DRIVE_DELIVERY_FAILED_HTTP=" + str(error.code), flush=True)
         sys.exit(1)
     except Exception as error:
         print("DRIVE_DELIVERY_FAILED_TYPE=" + type(error).__name__, flush=True)
+        if isinstance(error, RuntimeError) and str(error).startswith("DRIVE_"):
+            print(str(error), flush=True)
         sys.exit(1)
