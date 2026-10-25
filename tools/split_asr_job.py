@@ -63,7 +63,8 @@ def verify_part(directory, child, workflow_run):
     hashes = receipt.get("sha256")
     if (
         not isinstance(hashes, dict)
-        or set(hashes) != {"manifest.json", "transcript.json"}
+        or not {"manifest.json", "transcript.json"} <= set(hashes)
+        or not set(hashes) <= {"manifest.json", "transcript.json", "gpu-receipt.json"}
         or any(
             (directory / name).is_symlink() or digest(directory / name) != checksum
             for name, checksum in hashes.items()
