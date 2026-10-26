@@ -369,7 +369,7 @@ def render_stage(payload, output, report, timings, environment):
     stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
     if payload.get("audio_review_release"):
         tag = payload["audio_review_release"]
-        if not re.fullmatch(r"clipforge-kick-editorial-[0-9]+", tag):
+        if not re.fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
             raise RuntimeError("Invalid audio review release")
         bundles = ReleaseBundles(payload["github_token"])
         release = bundles.json_request("GET", "https://api.github.com/repos/nyu1791-collab/ai-model-workers/releases/tags/" + tag)

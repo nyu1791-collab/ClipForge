@@ -188,7 +188,7 @@ def stage_request():
     review = Path(os.environ.get("REVIEW_FILE", "")).read_text(encoding="utf-8")
     # A completed private audio review can contain many timestamped subtitle edits.
     editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
-    if editorial and not re.fullmatch(r"clipforge-kick-editorial-[0-9]+", editorial):
+    if editorial and not re.fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", editorial):
         raise ControlError("Invalid audio review release")
     bound = 4 * 1024**2 if editorial else 60_000
     if len(review.encode()) > bound:
@@ -394,7 +394,7 @@ class Controller:
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
             editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
             if editorial:
-                if not re.fullmatch(r"clipforge-kick-editorial-[0-9]+", editorial):
+                if not re.fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", editorial):
                     raise ControlError("Invalid audio review release")
                 payload["audio_review_release"] = editorial
             saved = os.environ.get("CLIPFORGE_SAVED_SOURCE_RELEASE", "")
