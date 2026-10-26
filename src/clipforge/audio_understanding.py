@@ -81,6 +81,10 @@ class Client:
             if part
         )
         prompt_sha256 = hashlib.sha256(complete_prompt.encode("utf-8")).hexdigest()
+        # A changed ruleset or stage request gets a new response key. This lets
+        # --continue-missing generate with the new instructions without colliding
+        # with an already completed response from an older prompt.
+        phase = f"{phase}-{prompt_sha256[:10]}"
         print(
             json.dumps({"phase": phase, "status": "checking_saved_response"}),
             flush=True,
