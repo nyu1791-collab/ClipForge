@@ -606,7 +606,23 @@ def main():
             args.continue_missing,
         )
     else:
-        render(args.review, args.transcripts, args.output, settings)
+        try:
+            render(args.review, args.transcripts, args.output, settings)
+        except Exception as error:
+            pipeline.record_failure(args.output, error, "render")
+            message = (
+                str(error)[:240]
+                if isinstance(error, PipelineError)
+                else "Render failed"
+            )
+            message = __import__("re").sub(
+                r"https?://\S+", "[source URL omitted]", message
+            )
+            write_json(
+                args.output / "stage-error.json",
+                {"error_type": type(error).__name__, "message": message},
+            )
+            raise
 
 
 if __name__ == "__main__":
