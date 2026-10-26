@@ -261,14 +261,64 @@ def align_selected(client, index, value, audio, duration):
         raise PipelineError("Selected timing audio unavailable")
     timed = timing.get("segments", [])
     ids = [r.get("id") for r in timed]
+    expected = set(range(len(original)))
     if (
-        len(ids) != len(original)
-        or any(type(i) is not int for i in ids)
-        or set(ids) != set(range(len(original)))
+        any(type(i) is not int for i in ids)
+        or len(ids) != len(set(ids))
+        or set(ids) - expected
     ):
         raise PipelineError(
-            "Timing response must preserve every subtitle ID exactly once"
+            "Timing response contains duplicate or invalid subtitle IDs"
         )
+    missing = sorted(expected - set(ids))
+    if missing:
+        # Complete only an omitted suffix in a separate bounded task. Never resend the
+        # completed alignment request or silently discard its unaligned utterances.
+        if missing != list(range(missing[0], len(original))):
+            raise PipelineError("Timing response omitted non-tail subtitle IDs")
+        tail_start = max(0, duration - 90)
+        tail_audio = client.output / f"timing-tail-{index}.ogg"
+        if not client.resume or client.continue_missing:
+            encode_audio(audio, tail_audio, tail_start, duration - tail_start, "24k")
+        completed, _ = client.generate(
+            f"alignment-tail-{index}",
+            "添付は採用区間の最後の音声だけです。字幕の最後の未照合IDだけを時刻合わせします。"
+            "本文を変更せず、指定された全IDを各1回返してください。時刻はこの添付音声の先頭を0秒とします。"
+            f"全長は{duration - tail_start}秒。聞き取れない本文は創作せずaudio_access=unavailable。"
+            "JSON {audio_access:'heard',segments:[{id:整数,start:秒,end:秒}]}。未照合本文:\n"
+            + json.dumps(
+                [{"id": i, "text": original[i]["text"]} for i in missing],
+                ensure_ascii=False,
+            ),
+            tail_audio,
+        )
+        extra = completed.get("segments", [])
+        extra_ids = [r.get("id") for r in extra]
+        if (
+            completed.get("audio_access") != "heard"
+            or len(extra_ids) != len(missing)
+            or any(type(i) is not int for i in extra_ids)
+            or set(extra_ids) != set(missing)
+        ):
+            raise PipelineError(
+                "Tail timing did not preserve every omitted subtitle ID"
+            )
+        for row in extra:
+            if (
+                any(
+                    type(row.get(k)) not in (int, float) or not math.isfinite(row[k])
+                    for k in ("start", "end")
+                )
+                or not 0 <= row["start"] < row["end"] <= duration - tail_start
+            ):
+                raise PipelineError("Tail timing exceeded its audio")
+            timed.append(
+                {
+                    **row,
+                    "start": row["start"] + tail_start,
+                    "end": row["end"] + tail_start,
+                }
+            )
     by_id = {r["id"]: r for r in timed}
     return {
         **value,
