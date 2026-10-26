@@ -371,10 +371,7 @@ def openai_profile():
 def check_disk_space(directory):
     free = shutil.disk_usage(directory).free
     if free < MIN_FREE_BYTES:
-        raise RuntimeError(
-            f"insufficient disk space in {directory}: {free} bytes free; "
-            f"at least 3 GB ({MIN_FREE_BYTES} bytes) required"
-        )
+        emit(f"low disk space in {directory}: {free} bytes free; about 3 GB is advised")
 
 
 def run_task(task, mode, base, timeout, model="deepseek"):

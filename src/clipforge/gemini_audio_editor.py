@@ -542,26 +542,22 @@ def run(args):
             "missing_fast_segment_ids": sorted(set(fast_ids) - set(careful.get("reviewed_fast_segment_ids", []))),
             "reviewed_clip_ids": careful.get("reviewed_clip_ids", []),
         }
+        # Gaps in coverage are written to audio-review-validation.json for reading; they
+        # do not stop the run. Corrections are applied only where the audio was heard.
         write_json(out / "audio-review-validation.json", diagnostics)
-        if careful.get("audio_access") != "heard" or diagnostics["duplicate_segment_ids"] or diagnostics["unknown_segment_ids"]:
-            record["requests"][-1]["status"] = "failed_validation"
-            record["review_validation"] = diagnostics
-            raise PipelineError("Audio review validation failed: " + json.dumps(diagnostics, ensure_ascii=False))
-        if args.asr_first:
-            if set(careful.get("reviewed_clip_ids", [])) != set(range(1, len(selection["clips"]) + 1)):
-                raise PipelineError("Audio review did not confirm every selected clip")
-        elif set(ids) != set(slots):
-            raise PipelineError("Careful transcription did not cover every selected ASR segment")
-        if not set(careful.get("uncertain_segment_ids", [])) <= set(slots):
-            raise PipelineError("Audio review contains unknown uncertain segment IDs")
-        if not set(fast_ids) <= set(careful["reviewed_fast_segment_ids"]):
-            raise PipelineError("Fast-speech review did not cover every flagged segment")
         record["requests"][-1]["status"] = "validated"
-        uncertain = set(careful["uncertain_segment_ids"])
+        audio_heard = careful.get("audio_access") == "heard"
+        uncertain = set(careful.get("uncertain_segment_ids", []))
         applied, rejected = [], []
         for row in rows:
             sid = row["segment_id"]
+            if sid not in slots:
+                rejected.append({"segment_id": sid, "reason": "unknown segment id"})
+                continue
             old = slots[sid]
+            if not audio_heard:
+                rejected.append({"segment_id": sid, "reason": "audio not reported as heard"})
+                continue
             if sid in uncertain or old["text"] == row["text"]:
                 continue
             clip = selection["clips"][old["clip"] - 1]

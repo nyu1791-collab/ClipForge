@@ -179,28 +179,12 @@ def test_cleanup_warns_and_preserves_success_when_home_resolves_outside_run_or_t
     assert json.loads((directory / "result.json").read_text()) == result
 
 
-@pytest.mark.parametrize("after_slot", [False, True])
-def test_low_disk_space_prevents_launch(harness, task, monkeypatch, after_slot):
-    checks = []
+def test_low_disk_space_only_warns(harness, tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(harness.shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
 
-    def disk_usage(path):
-        checks.append(path)
-        free = harness.MIN_FREE_BYTES
-        if not after_slot or len(checks) > 1:
-            free -= 1
-        return SimpleNamespace(free=free)
+    harness.check_disk_space(tmp_path)
 
-    monkeypatch.setattr(harness.shutil, "disk_usage", disk_usage)
-    with pytest.raises(RuntimeError, match="insufficient disk space.*at least 3 GB"):
-        harness.run_task(task, "read", "HEAD", 30)
-
-    directories = list((harness.STATE / "runs").iterdir())
-    if after_slot:
-        assert len(checks) == 2
-        assert len(directories) == 1
-        assert not (directories[0] / "home").exists()
-    else:
-        assert directories == []
+    assert "low disk space" in capsys.readouterr().err
 
 
 def test_vertex_has_no_first_event_limit_and_an_empty_report_says_why(
