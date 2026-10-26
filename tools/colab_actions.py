@@ -400,6 +400,9 @@ class Controller:
                 ):
                     raise ControlError("Invalid audio review release")
                 payload["audio_review_release"] = editorial
+            payload["resume_render"] = (
+                os.environ.get("CLIPFORGE_RESUME_RENDER") == "true"
+            )
         # Google OAuth/Colab proxy credentials are NOT uploaded to the GPU worker.
         for name in ("url", "token", "endpoint", "status"):
             payload.pop(name, None)
