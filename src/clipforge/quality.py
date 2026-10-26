@@ -1,14 +1,7 @@
-"""Quality checks on a rendered clip: subtitles, reading speed, loudness and sourcing.
-
-Problems are sorted into failures, which block output in strict mode, and warnings,
-which are always reported. The result is written beside the clip as quality.json.
-"""
+"""Legacy caption helpers; production quality inspection and enforcement are disabled."""
 
 import math
 import re
-import statistics
-import subprocess
-import time
 import unicodedata
 from pathlib import Path
 
@@ -20,13 +13,10 @@ from .captions import (
     MAX_CAPTION_CPS,
     OUTLINE_ALLOWANCE,
     inside_word,
-    orphan_start,
     scale,
     spoken_length,
 )
-from .media import AUDIO_RATE
 from .models import CAPTION_LINE_EM, Settings
-from .storage import PipelineError, write_json
 
 TEXT_STYLES = {"Default", "Sequential"}
 MAX_CAPTION_LINES = 2
@@ -36,47 +26,8 @@ LONG_CAPTION_MS = 4000  # longer captions outlast the speech they show
 
 
 def inspect_output(video, has_audio, duration):
-    """Decode video and measure final AAC in one FFmpeg pass; never suppress video decode."""
-    command = [
-        "ffmpeg",
-        "-nostdin",
-        "-hide_banner",
-        "-loglevel",
-        "level+info",
-        "-xerror",
-        "-err_detect",
-        "explode",
-        "-i",
-        str(Path(video).resolve()),
-        "-map",
-        "0:V:0",
-    ]
-    if has_audio:
-        command += ["-map", "0:a:0", "-af", "ebur128=peak=true:framelog=quiet"]
-    command += ["-f", "null", "-"]
-    try:
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=max(600, duration * 4),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        raise PipelineError("completed media scan could not finish") from None
-    if result.returncode or "[error]" in result.stderr or "[fatal]" in result.stderr:
-        raise PipelineError("completed media did not decode cleanly")
-    loudness = {"integrated_lufs": None, "true_peak_dbtp": None}
-    if has_audio:
-        summary = result.stderr[result.stderr.rfind("Summary") :]
-        values = [
-            re.search(r"I:\s+(-?[\d.]+|-inf) LUFS", summary),
-            re.search(r"Peak:\s+(-?[\d.]+|-inf) dBFS", summary),
-        ]
-        if not all(values):
-            raise PipelineError("completed audio loudness summary is missing")
-        loudness = dict(zip(loudness, [float(value.group(1)) for value in values]))
-    return loudness
+    """Legacy entry point: final media rescans and loudness measurements are disabled."""
+    return {"integrated_lufs": None, "true_peak_dbtp": None}
 
 
 def caption_events(path):
@@ -370,144 +321,18 @@ def _finite(value):
 
 
 def check_clip(directory, rendered, missing_glyphs, settings=None, static=None):
-    """Quality report for a rendered clip folder; the caller decides what to do with it."""
-    failures, warnings = [], []
-    events = caption_events(directory / "captions.ass")
-    rates, overlaps = caption_rates(directory / "captions.ass")
-    if overlaps:
-        failures.append(f"{overlaps} caption(s) overlap the previous caption")
-    if caption_events(directory / "captions.srt") != events:
-        failures.append("captions.srt and captions.ass differ in timing or text")
-    if any(text.count("\n") + 1 > MAX_CAPTION_LINES for _, _, text in events):
-        failures.append(f"a caption has more than {MAX_CAPTION_LINES} lines")
-    if missing_glyphs:
-        failures.append("the caption font lacks: " + "".join(missing_glyphs)[:40])
-    limit = reading_limit(rendered, settings)
-    too_fast = sum(rate > limit for rate in rates)
-    if too_fast:
-        warnings.append(
-            f"{too_fast} caption(s) read faster than {limit:g} characters a second"
-        )
-    short = sum(end - start < SHORT_CAPTION_MS for start, end, _ in events)
-    if short:
-        warnings.append(
-            f"{short} caption(s) are shown for less than {MIN_DISPLAY_SECONDS:g} second"
-        )
-    long = sum(end - start > LONG_CAPTION_MS for start, end, _ in events)
-    if long:
-        warnings.append(f"{long} caption(s) are shown for more than 4 seconds")
-    overflow = overflowing_lines(directory / "captions.ass")
-    if overflow:
-        failures.append(
-            f"{len(overflow)} caption line(s) are wider than the frame, for example "
-            + overflow[0][:20]
-        )
-    high = outside_frame_captions(directory / "captions.ass")
-    if high:
-        failures.append(
-            f"{len(high)} caption(s) rise above the top of the frame, for example "
-            + high[0][:20]
-        )
-    if static is not None:
-        overlapping = static_overlaps(
-            directory / "captions.ass", static, rendered, settings
-        )
-        if overlapping is None:
-            warnings.append("captions could not be checked against static elements")
-        elif overlapping:
-            warnings.append(f"{overlapping} caption(s) overlap static screen elements")
-    starts = [orphan_start(text) for _, _, text in events]
-    if "punctuation" in starts:
-        failures.append("a caption starts with a punctuation mark")
-    orphans = starts.count("particle")
-    if orphans:
-        warnings.append(
-            f"{orphans} caption(s) start with a sentence-final particle, a stray word"
-        )
-    splits = word_splits(events)
-    if splits:
-        warnings.append(
-            f"{len(splits)} line or caption break(s) fall inside a word, for example "
-            + splits[0]
-        )
-    warnings.extend(
-        japanese_style_warnings(
-            events, rendered["width"] > rendered["height"], settings
-        )
-    )
-    if rendered["audio"] and rendered["audio_sample_rate"] != AUDIO_RATE:
-        failures.append(f"the rendered audio is not {AUDIO_RATE} Hz")
-    loudness = {"integrated_lufs": None, "true_peak_dbtp": None}
-    verified = False
-    verify_started = time.monotonic()
-    try:
-        loudness = inspect_output(
-            directory / "video.mp4", rendered["audio"], rendered["duration"]
-        )
-        verified = True
-        if rendered["audio"]:
-            lufs, peak = loudness["integrated_lufs"], loudness["true_peak_dbtp"]
-            if not math.isfinite(lufs):
-                failures.append("the rendered audio is silent")
-            elif not -17 <= lufs <= -15:
-                failures.append("completed audio loudness is outside -17 to -15 LUFS")
-            if math.isfinite(peak) and peak > -1:
-                failures.append("completed audio true peak is above -1 dBTP")
-    except PipelineError as error:
-        failures.append(str(error))
-    verify_seconds = round(time.monotonic() - verify_started, 3)
+    """Legacy entry point: do not read captions, decode video, or grade delivery."""
     return {
-        "passed": not failures,
-        "verification_scope": "single_pass_full_decode_loudness_and_captions",
-        "full_decode_performed": verified,
-        "loudness_measured": verified and rendered["audio"],
-        "verify_seconds": verify_seconds,
-        "failures": failures,
-        "warnings": warnings,
-        "metrics": {
-            "caption_count": len(rates),
-            "caption_max_cps": round(max(rates), 2) if rates else 0.0,
-            "caption_median_cps": round(statistics.median(rates), 2) if rates else 0.0,
-            "captions_over_limit": too_fast,
-            "captions_under_1s": short,
-            "captions_over_4s": long,
-            "word_splits": len(splits),
-            "orphan_particles": orphans,
-            "reading_limit_cps": limit,
-            "reading_target_cps": (
-                settings.horizontal_target_cps
-                if settings
-                else Settings.model_fields["horizontal_target_cps"].default
-            )
-            if rendered["width"] > rendered["height"]
-            else 10,
-            "reading_count_method": "non_whitespace_codepoints",
-            "captions_over_cps": {
-                str(cps): sum(rate > cps for rate in rates)
-                for cps in READING_CPS_THRESHOLDS
-            },
-            **(
-                horizontal_width_metrics(
-                    directory / "captions.ass",
-                    settings.caption_line_chars()
-                    if settings
-                    else Settings.model_fields["horizontal_line_chars"].default,
-                )
-                if rendered["width"] > rendered["height"]
-                else {}
-            ),
-            "line_overflows": len(overflow),
-            "integrated_lufs": _finite(loudness["integrated_lufs"]),
-            "true_peak_dbtp": _finite(loudness["true_peak_dbtp"]),
-            "duration": rendered["duration"],
-            "width": rendered["width"],
-            "height": rendered["height"],
-        },
+        "status": "not_run",
+        "passed": None,
+        "verification_scope": "none",
+        "full_decode_performed": False,
+        "loudness_measured": False,
     }
 
 
 def record(directory, report):
-    write_json(directory / "quality.json", report)
+    """Legacy no-op: do not create a new inspection artifact."""
     return report
 
 

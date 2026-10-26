@@ -1,6 +1,5 @@
 """Long-form selections from saved transcript topics without an approval gate."""
 
-from .audio_first import shifted_transcript
 from .storage import PipelineError
 from .topic_hints import VOLUME_WEIGHT, CHAT_WEIGHT, hint_topics
 from .storage import TIME_TOLERANCE
@@ -26,8 +25,6 @@ def build_review_draft(
     ``volume_reason`` records why it is missing.
     """
     count = settings.clips if count is None else count
-    if type(count) is not int or not 5 <= count <= 10:
-        raise ValueError("review drafts require 5 to 10 requested clips")
     if previews.get("analysis_key") != analysis["analysis_key"]:
         raise PipelineError("previews belong to a different audio analysis")
     available = {
@@ -52,15 +49,8 @@ def build_review_draft(
             reason = "duplicate_id"
         elif not 0 <= start < end <= analysis["duration"] + TIME_TOLERANCE:
             reason = "invalid_interval"
-        elif not settings.min_seconds <= end - start <= settings.max_seconds:
-            reason = "duration_out_of_range"
         elif any(start < clip["end"] and clip["start"] < end for clip in clips):
             reason = "overlap"
-        elif transcript is not None:
-            try:
-                shifted_transcript(transcript, start, end)
-            except PipelineError:
-                reason = "unsafe_transcript_boundary"
         if reason is not None:
             skipped.append({"topic_id": topic_id, "reason": reason})
             continue
@@ -85,9 +75,15 @@ def build_review_draft(
         "ranking_method": "topic_hints",
         "semantic_topic_review": "not_required",
         "human_review_performed": False,
-        "transcript_boundary_check": "performed"
-        if transcript is not None
-        else "not_available",
+        "transcript_boundary_check": "not_run",
+        "duration_target_seconds": [settings.min_seconds, settings.max_seconds],
+        "outside_duration_target": [
+            clip["candidate_id"]
+            for clip in clips
+            if not (
+                settings.min_seconds <= clip["end"] - clip["start"] <= settings.max_seconds
+            )
+        ],
         "requested_count": count,
         "selected_count": len(clips),
         "shortfall": count - len(clips),

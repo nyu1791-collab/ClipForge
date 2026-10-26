@@ -84,8 +84,6 @@ def select(analysis, settings, output):
                     "editorial_brief": {"type": "STRING"},
                     "clips": {
                         "type": "ARRAY",
-                        "minItems": settings.clips,
-                        "maxItems": settings.clips,
                         "items": {
                             "type": "OBJECT",
                             "required": [

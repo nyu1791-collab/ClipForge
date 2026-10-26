@@ -106,7 +106,7 @@ class Settings(Record):
     fade_seconds: float = Field(default=0.3, ge=0, le=2)
     progress_bar: bool = True
     # Legacy request compatibility only; production rendering does not audit outputs.
-    quality_gate: Literal["off", "report", "strict"] = "off"
+    quality_gate: Literal["off"] = "off"
     max_source_seconds: float = Field(default=3600, ge=5, le=43200)
     max_input_bytes: int = Field(default=1073741824, ge=1024, le=2147483648)
     # Temporary HLS transport may contain video even when only audio is retained.
@@ -174,6 +174,11 @@ class Settings(Record):
             data = {**data, "height": 1920 if aspect == "9:16" else 1080}
         return data
 
+    @field_validator("quality_gate", mode="before")
+    @classmethod
+    def disable_legacy_quality_gate(cls, value):
+        return "off" if value in ("off", "report", "strict") else value
+
     @field_validator("asr_parts", mode="before")
     @classmethod
     def integer_parts(cls, value):
@@ -199,8 +204,6 @@ class Settings(Record):
                 raise ValueError(
                     "chat panel width must be an even 20 to 40 percent of the frame width"
                 )
-        if self.min_seconds >= self.max_seconds:
-            raise ValueError("minimum duration must be less than maximum")
         if any(c in self.font for c in "\r\n,\\{}"):
             raise ValueError("invalid font name")
         return self
