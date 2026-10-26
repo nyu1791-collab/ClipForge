@@ -146,12 +146,8 @@
   420:                 and clip.candidate_id not in seen_previews
 ```
 
-## src/clipforge/audio_first.py 520-532
+## src/clipforge/audio_first.py 524-532
 ```python
-  520:         topic = next(t for t in analysis["topics"] if t["id"] == row["topic_id"])
-  521:         target = root / "previews" / (topic["id"] + ".mp4")
-  522:         if not target.is_file() or row["receipt"].get("sha256") != digest(target):
-  523:             raise PipelineError("reviewed preview changed")
   524:     local_transcripts = [
   525:         shifted_transcript(
   526:             edited_transcript(transcript, clip.start, edits) if edits else transcript,
@@ -163,34 +159,36 @@
   532:     output = root / "delivery"
 ```
 
-## src/clipforge/gemini_audio_editor.py 438-446
+## src/clipforge/gemini_audio_editor.py 441-449
 ```python
-  438:                 "start": {"type": "NUMBER"}, "end": {"type": "NUMBER"}, "title": {"type": "STRING"}, "reason": {"type": "STRING"}, "confidence": {"type": "NUMBER"},
-  439:             }}},
-  440:         }}, 65536)
   441:         selection = {"source_url": manifest["source_url"], "analysis_key": manifest["analysis_key"], "selection_basis": "saved_asr_audio_review", "clips": []}
   442:         words = [w for segment in transcript.segments for w in segment.words]
   443:         shifts = []
   444:         for i, clip in enumerate(sorted(choice["clips"], key=lambda row: row["start"]), 1):
   445:             clip = dict(clip, candidate_id=f"audio-review-{i:03}")
   446:             for name in ["start", "end"]:
+  447:                 original = clip[name]
+  448:                 while crossed := [w.end for w in words if w.start < clip[name] < w.end]:
+  449:                     clip[name] = max(crossed)
 ```
 
-## src/clipforge/gemini_audio_editor.py 560-572
+## src/clipforge/gemini_audio_editor.py 555-569
 ```python
-  560:         uncertain = set(careful["uncertain_segment_ids"])
-  561:         applied, rejected = [], []
-  562:         for row in rows:
-  563:             sid = row["segment_id"]
-  564:             old = slots[sid]
-  565:             if sid in uncertain or old["text"] == row["text"]:
-  566:                 continue
-  567:             clip = selection["clips"][old["clip"] - 1]
-  568:             edits = clip.setdefault("caption_edits", [])
-  569:             edit = {"at": old["start"], "from": old["text"], "to": row["text"]}
-  570:             try:
-  571:                 changed = edited_transcript(transcript, clip["start"], [*edits, edit])
-  572:                 shifted_transcript(changed, clip["start"], clip["end"])
+  555:                 rejected.append({"segment_id": sid, "reason": "unknown segment id"})
+  556:                 continue
+  557:             old = slots[sid]
+  558:             if not audio_heard:
+  559:                 rejected.append({"segment_id": sid, "reason": "audio not reported as heard"})
+  560:                 continue
+  561:             if sid in uncertain or old["text"] == row["text"]:
+  562:                 continue
+  563:             clip = selection["clips"][old["clip"] - 1]
+  564:             edits = clip.setdefault("caption_edits", [])
+  565:             edit = {"at": old["start"], "from": old["text"], "to": row["text"]}
+  566:             try:
+  567:                 changed = edited_transcript(transcript, clip["start"], [*edits, edit])
+  568:                 shifted_transcript(changed, clip["start"], clip["end"])
+  569:             except PipelineError:
 ```
 
 ## tools/colab_actions.py 188-194
