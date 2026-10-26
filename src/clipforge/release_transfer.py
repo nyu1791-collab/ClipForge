@@ -183,10 +183,11 @@ def download(run_id, name, destination, expected=None, *, record=None):
     if record is None:
         fail("RESULT_NOT_FOUND")
     assets = record["assets"]
+    primary = [a for a in assets if a["name"] in {"result.zip", "transfer.json"}]
     if (
-        len(assets) != 2
-        or {a["name"] for a in assets} != {"result.zip", "transfer.json"}
-        or any(a["size"] > MAX_BYTES for a in assets)
+        len(primary) != 2
+        or {a["name"] for a in primary} != {"result.zip", "transfer.json"}
+        or any(a["size"] > MAX_BYTES for a in primary)
     ):
         fail("RESULT_STRUCTURE_INVALID")
     destination = Path(destination).absolute()
@@ -197,7 +198,19 @@ def download(run_id, name, destination, expected=None, *, record=None):
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
         work = Path(temporary)
-        gh("release", "download", tag, "--repo", REPO, "--dir", str(work))
+        gh(
+            "release",
+            "download",
+            tag,
+            "--repo",
+            REPO,
+            "--pattern",
+            "result.zip",
+            "--pattern",
+            "transfer.json",
+            "--dir",
+            str(work),
+        )
         manifest = json.loads((work / "transfer.json").read_text())
         if (
             manifest.get("run_id") != str(run_id)
