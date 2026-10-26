@@ -22,6 +22,8 @@ flowchart TD
 
 ## 入口と選び方
 
+接続済みなら `python tools/produce_with_gemini.py URL --output NEW_PRIVATE_DIR` で通常制作を開始できる。`--source-ref` 省略時は既定の専用実行ブランチのSHAを一度だけ取得して固定し、production-stateへ記録する。VertexはActionsのOIDC、Colabは登録済み専用資格情報をそのまま使う。設定確認のためのテスト・監査・試験的なモデル要求やGPU確保は挟まない。
+
 | やりたいこと | 入口 | 戻らない工程 |
 |---|---|---|
 | 新しい配信から制作 | `tools/produce_with_gemini.py URL --source-ref SHA --output PRIVATE_DIR` | 全編ASR・全文GPU文字起こしへ戻らない |

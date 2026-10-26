@@ -6,7 +6,7 @@
 
 同じ配信から、話題別の**横動画（16:9）**を作るパイプラインです。コードと実行用Actionsはこの公開リポジトリで管理し、計算はActionsとColabで行います。動画・音声・文字起こしは非公開の保存庫へ転送します。
 
-通常経路の設定・工程は [GPU_ROUTE.md](docs/GPU_ROUTE.md) を正本とする。
+通常制作・修正・再開の入口は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) にまとめています。
 
 ## 流れ
 
@@ -16,25 +16,23 @@
 | 2 | 音声から話題と採用区間を決める | Gemini 3.8 Flash | Actions runner |
 | 3 | 採用音声を切り出し、用語表記を調べる | ffmpeg・Gemini 3.5 Flash | Actions runner |
 | 4 | 採用区間だけを60秒単位で字幕化し、本文と区間時刻を結合 | Gemini 3.8 Flash | Actions runner |
-| 5 | 選択字幕を焼き込み、360pで描画 | FFmpeg ASS・NVENC | Colab GPU |
+| 5 | 最大360p素材を標準720pキャンバスへ拡大して字幕描画 | FFmpeg ASS・NVENC | Colab GPU |
 | 6 | 完成動画と工程記録を回収 | 非公開Release | 制御側 |
 
-既定5本、各5〜15分。話題分けと字幕のルールは `src/clipforge/prompts/` に置き、実際のGemini入力へ読み込みます。字幕の要約・言い換え・文字数圧縮はせず、無意味な言い淀みだけを除きます。字幕時刻はGemini推定です。完了済み応答は同じルールで作られた場合だけ再利用し、失敗時の自動再送や全文ASRへの復帰は行いません。
+本数・尺は既定5本、各5〜15分を目安にします。話題分けと字幕のルールは `src/clipforge/prompts/` からGemini入力へ読み込みます。字幕は意味・口調・確かさを保って短文化し、感情・効果音も同じ字幕応答に含めます。字幕時刻はGemini推定です。完了済み応答は同じ依頼文とルールで作られた場合だけ再利用します。監査・strict品質検査・追加の時刻照合・目標未達による再生成・全文ASRへの復帰は行いません。
 
 ## 使い方
 
-手順の全体は [docs/GPU_ROUTE.md](docs/GPU_ROUTE.md) です。最初の Google 認証は [docs/COLAB.md](docs/COLAB.md)。
+接続済みなら以下の入口からそのまま開始できます。既存のGitHub接続からActionsを投入し、runnerのVertex OIDCとColab専用資格情報を使います。初回設定が必要な場合は [docs/COLAB.md](docs/COLAB.md) と [docs/VERTEX_GEMINI.md](docs/VERTEX_GEMINI.md) を参照します。
 
 ```bash
 uv sync --locked --extra media-fetch
 uv run --no-sync python tools/produce_with_gemini.py \
   'https://kick.com/CHANNEL/videos/VOD_ID' \
-  --source-ref PRODUCTION_COMMIT_SHA \
-  --workflow-ref fix/pr18-verified-transfer \
   --output /private/NAME-production
 ```
 
-`PRODUCTION_COMMIT_SHA`は新方式を含む40桁SHA。音声を理解して字幕を生成し、GPU描画・回収まで待ちます。`--deliver-drive`を付けた場合は既存の専用資格情報で納品します。過去の失敗を再開する際は[保存済み応答の再利用手順](docs/GEMINI_AUDIO_REVIEW.md)を先に確認してください。
+コードSHAは専用実行ブランチから一度取得して固定・記録します。明示する場合は `--source-ref 40桁SHA` を使います。音声理解・字幕生成・GPU描画・非公開保存・回収までつなぎます。`--deliver-drive` を付けた場合だけ既存の専用資格情報で納品します。再開は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) の該当入口を使い、同じ出力先から新規投入を繰り返しません。
 
 ## 文書
 
