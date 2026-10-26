@@ -5,11 +5,13 @@ import hashlib
 import json
 import math
 import os
+import shutil
 from pathlib import Path
 import time
 import urllib.request
 
 from . import audio_first, pipeline
+from .caption_emotions import annotation
 from .gemini_audio_editor import (
     PROJECT,
     MAX_REQUEST_BYTES,
@@ -30,6 +32,7 @@ WINDOW_SECONDS = 5400
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 EDITORIAL_RULES_FILE = PROMPT_DIR / "gemini_editorial_rulebook_ja.md"
 SUBTITLE_POLICY = "meaning_preserving_compact_v1"
+EDITORIAL_RENDER_VERSION = "editorial-render-v2"
 TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
 TRANSCRIPTION_CHUNK_SECONDS = 60
@@ -112,7 +115,8 @@ class Client:
             entries = [
                 r
                 for r in saved["requests"]
-                if r["phase"] == phase and r.get("finish_reason") == "STOP"
+                if r["phase"] == phase
+                and r.get("finish_reason") == "STOP"
                 and (
                     r.get("prompt_sha256") == prompt_sha256
                     or (not rule_files and not r.get("prompt_sha256"))
@@ -257,7 +261,11 @@ def selected_transcript(value, duration, offset=0):
             raise PipelineError("Subtitle text is required")
         if not text.strip():
             continue
-        rows.append(Segment(start=start + offset, end=end + offset, text=text))
+        rows.append(
+            Segment(
+                start=start + offset, end=end + offset, text=text, **annotation(row)
+            )
+        )
         speaker, confidence = row.get("speaker_id"), row.get("confidence", 0)
         certain = (
             isinstance(speaker, str)
@@ -294,6 +302,7 @@ def selected_transcript(value, duration, offset=0):
                 start=min(r.start for r in members),
                 end=max(r.end for r in members),
                 text="\n".join(r.text for r in members),
+                **(annotation(members[0].model_dump()) if len(members) == 1 else {}),
             )
         )
         if len(members) > 1:
@@ -347,7 +356,9 @@ def transcribe_selected_clip(
                 window["input_duration"],
                 "24k",
             )
-        audio_parts = [("字幕対象音声（このパートだけを意味を保って短文化）", chunk_path)]
+        audio_parts = [
+            ("字幕対象音声（このパートだけを意味を保って短文化）", chunk_path)
+        ]
         audio_parts.extend(
             (
                 f"話者参照音声 {speaker['speaker_id']}（識別だけに使用）",
@@ -382,6 +393,9 @@ def transcribe_selected_clip(
                         "text": "元発言の意味・口調・確かさを保つ、読みやすく短文化した表示字幕",
                         "speaker_id": "speaker_1〜speaker_6 または unknown",
                         "confidence": "0〜1",
+                        "emotion": "neutral / surprise / joy / frustration / sadness / curiosity",
+                        "emotion_level": "0=通常、1=控えめ、2=明確な感情の山だけ強め",
+                        "emotion_confidence": "音声に基づく演出判断の確信度0〜1。不確かならneutral",
                     }
                 ],
                 "sound_effects": [
@@ -399,8 +413,12 @@ def transcribe_selected_clip(
             audio_parts,
         )
         if value.get("audio_access") != "heard":
-            raise PipelineError("Selected audio transcription is incomplete/unavailable")
-        for cue in prepare_cues(value.get("sound_effects", []), window["input_duration"]):
+            raise PipelineError(
+                "Selected audio transcription is incomplete/unavailable"
+            )
+        for cue in prepare_cues(
+            value.get("sound_effects", []), window["input_duration"]
+        ):
             if window["core_start_local"] <= cue["at"] < window["core_end_local"]:
                 sound_effects.append(
                     {**cue, "at": round(cue["at"] + window["input_start"], 3)}
@@ -554,7 +572,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             "outside_duration_target": [
                 {"start": clip.start, "end": clip.end, "seconds": clip.end - clip.start}
                 for clip in chosen
-                if not settings.min_seconds <= clip.end - clip.start <= settings.max_seconds
+                if not settings.min_seconds
+                <= clip.end - clip.start
+                <= settings.max_seconds
             ],
         }
         client.save()
@@ -652,13 +672,18 @@ def render(review, transcripts_file, output, settings):
     if data.get("subtitle_policy") == SUBTITLE_POLICY:
         # Edited text has no word alignment; show the phrase as a whole and preserve it.
         settings = settings.model_copy(
-            update={"caption_preserve_text": True, "caption": "plain"}
+            update={
+                "caption_preserve_text": True,
+                "caption_emotions": True,
+                "caption": "plain",
+            }
         )
     clips = validate_selection(
         {
             "clips": [
                 {
-                    k: v for k, v in c.items()
+                    k: v
+                    for k, v in c.items()
                     if k not in {"speaker_turns", "sound_effects"}
                 }
                 for c in value["clips"]
@@ -684,6 +709,44 @@ def render(review, transcripts_file, output, settings):
     rows = []
     try:
         for index, (clip, raw) in enumerate(zip(clips, data["clips"]), 1):
+            clip_settings = settings.model_copy(
+                update={
+                    "caption_emotions": settings.caption_emotions
+                    or any(
+                        annotation(segment)["emotion_level"] > 0
+                        for segment in raw.get("segments", [])
+                    )
+                }
+            )
+            # Per-clip identity keeps an unrelated title/subtitle edit from invalidating
+            # every other finished clip. Revision lineage is recorded separately.
+            clip_key = fingerprint(
+                {
+                    "source_url": value["source_url"],
+                    "clip": value["clips"][index - 1],
+                    "transcript": raw,
+                    "settings": clip_settings.model_dump(),
+                    "subtitle_policy": data.get("subtitle_policy"),
+                    "render_version": EDITORIAL_RENDER_VERSION,
+                }
+            )
+            completed = output / "clips" / f"clip-{index:03}"
+            if completed.is_symlink():
+                raise PipelineError("Copied render directory must not be a symlink")
+            if completed.exists():
+                saved_path = completed / "render.json"
+                saved = (
+                    json.loads(saved_path.read_text()) if saved_path.is_file() else {}
+                )
+                if saved.get("editorial_input_sha256") == clip_key:
+                    if not pipeline.valid_receipt(completed, saved, saved.get("key")):
+                        raise PipelineError("Saved clip media is missing or changed")
+                    rows.append(
+                        {"directory": f"clips/clip-{index:03}", **saved, "reused": True}
+                    )
+                    continue
+                # This is the new job's copied render, never the source release.
+                shutil.rmtree(completed)
             target = ranges / f"selected-{index}.mp4"
             target.parent.mkdir(exist_ok=True)
             receipt = audio_first.retrieved(
@@ -705,23 +768,29 @@ def render(review, transcripts_file, output, settings):
                     index,
                     local,
                     transcript,
-                    settings,
-                    fingerprint(
-                        {
-                            "selection": value,
-                            "transcripts": data,
-                            "settings": settings.model_dump(),
-                        }
-                    ),
+                    clip_settings,
+                    clip_key,
                     speaker_turns=value["clips"][index - 1]["speaker_turns"],
                     sound_effects=value["clips"][index - 1].get("sound_effects", []),
                 )
+            )
+            rows[-1]["editorial_input_sha256"] = clip_key
+            rows[-1]["editorial_render_version"] = EDITORIAL_RENDER_VERSION
+            write_json(
+                completed / "render.json",
+                {k: v for k, v in rows[-1].items() if k != "directory"},
             )
         write_json(
             output / "manifest.json",
             {
                 "status": "complete",
                 "rendered": rows,
+                "reused_clips": sum(row.get("reused") is True for row in rows),
+                "newly_rendered_clips": sum(
+                    row.get("reused") is not True for row in rows
+                ),
+                "editorial_revision": value.get("editorial_revision"),
+                "editorial_render_version": EDITORIAL_RENDER_VERSION,
                 "source_url": value["source_url"],
                 "full_source_asr": False,
                 "timestamp_source": "gemini_estimated",

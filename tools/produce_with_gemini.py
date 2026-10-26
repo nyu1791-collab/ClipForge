@@ -10,6 +10,7 @@ import subprocess
 import time
 import uuid
 
+from clipforge.editorial_revision import EDITORIAL_TAG_PATTERN, create_revision
 from clipforge.media_sources import canonical
 from clipforge.release_transfer import download, read_transfer
 
@@ -37,8 +38,18 @@ def main():
     ap.add_argument("--editorial-release", default="")
     ap.add_argument("--continue-missing", action="store_true")
     ap.add_argument("--render-only", action="store_true")
-    ap.add_argument("--analysis-run")
-    ap.add_argument("--analysis-request")
+    ap.add_argument("--analysis-run", "--previous-run", dest="analysis_run")
+    ap.add_argument("--analysis-request", "--previous-request", dest="analysis_request")
+    ap.add_argument(
+        "--revision-file",
+        type=Path,
+        help="Private explicit edits; requires render-only",
+    )
+    ap.add_argument(
+        "--reuse-render",
+        action="store_true",
+        help="Reuse completed clips from the previous render pair",
+    )
     ap.add_argument("--clips", type=int)
     ap.add_argument("--config-file", default="config.landscape-long.example.json")
     ap.add_argument(
@@ -51,9 +62,21 @@ def main():
     if args.workflow_ref not in {"main", "fix/pr18-verified-transfer"}:
         ap.error("workflow-ref must use a configured public execution branch")
     if args.editorial_release and not re.fullmatch(
-        r"clipforge-kick-editorial-(?:replay-)?[0-9]+", args.editorial_release
+        EDITORIAL_TAG_PATTERN, args.editorial_release
     ):
         ap.error("invalid saved editorial release")
+    if args.revision_file and not (args.render_only and args.editorial_release):
+        ap.error("revision-file requires render-only and the parent editorial-release")
+    if "-revision-" in args.editorial_release and not args.render_only:
+        ap.error(
+            "An editorial revision goes directly to render-only, never back to Gemini"
+        )
+    if args.reuse_render and not args.render_only:
+        ap.error(
+            "reuse-render requires render-only and the previous render run/request pair"
+        )
+    if args.render_only and args.continue_missing:
+        ap.error("render-only does not generate missing model responses")
     if args.continue_missing and not args.editorial_release:
         ap.error("continue-missing requires editorial-release")
     if args.render_only and not (
@@ -195,6 +218,26 @@ def main():
         )
 
     try:
+        if args.revision_file:
+            revision = create_revision(
+                args.editorial_release,
+                args.revision_file,
+                args.output / "editorial-revision",
+                publish=False,
+            )
+            if canonical(revision["source_url"]) != url:
+                raise RuntimeError("Editorial revision belongs to another source URL")
+            # Publish once after source identity is known, without regenerating anything.
+            from clipforge.editorial_revision import publish_revision
+
+            revision = publish_revision(args.output / "editorial-revision")
+            args.editorial_release = revision["release"]
+            state["editorial_revision"] = revision
+            save()
+        state["editorial_release"] = args.editorial_release
+        state["mode"] = "render_only" if args.render_only else "production"
+        state["reuse_render"] = args.reuse_render
+        save()
         final_run, final_request = dispatch(
             "clipforge-stages.yml",
             {
@@ -207,6 +250,7 @@ def main():
                 "editorial_release": args.editorial_release,
                 "continue_missing": args.continue_missing,
                 "auto_render": not args.render_only,
+                "resume_render": args.reuse_render,
             },
         )
         state["render_run_id"] = final_run
@@ -239,7 +283,9 @@ def main():
                 {
                     "status": "complete",
                     "target_clips": args.clips,
-                    "clips": len(metadata.get("stage_manifest", {}).get("rendered", [])),
+                    "clips": len(
+                        metadata.get("stage_manifest", {}).get("rendered", [])
+                    ),
                     "output": str(args.output / "clips"),
                     "elapsed_sec": state["elapsed_sec"],
                 }

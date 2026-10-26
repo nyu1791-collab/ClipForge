@@ -38,6 +38,7 @@ SETTINGS_FIELDS = {
     "encode_preset",
     "caption",
     "caption_preserve_text",
+    "caption_emotions",
     "caption_scale",
     "caption_lift",
     "font",

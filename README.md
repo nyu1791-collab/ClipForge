@@ -1,5 +1,7 @@
 > 最新の制作経路と再開方法は[音声経路の手順](docs/GEMINI_AUDIO_REVIEW.md)を参照してください。動画・音声・字幕・モデル応答は非公開で保存します。
 
+通常制作・字幕/見出し/演出の修正・描画再開・回収は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) を参照。新規字幕の基準は [Gemini必読編集ルールブック](src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。
+
 # ClipForge
 
 同じ配信から、話題別の**横動画（16:9）**を作るパイプラインです。コードと実行用Actionsはこの公開リポジトリで管理し、計算はActionsとColabで行います。動画・音声・文字起こしは非公開の保存庫へ転送します。

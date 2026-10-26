@@ -1,3 +1,5 @@
+> 通常制作・修正・再開・回収の入口は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。
+
 # 現行の通常経路（2026-10-26追加指示）
 
 全文GPU ASRと3.5の全文文字起こしを停止。runnerで音声取得→3.8の音声理解による話題区分→話題ごとの仮切り出し→3.5の出典付き表記調査→採用音声を60秒単位に分けて3.8で字幕化→Colab GPU/NVENCで360p描画。話題と字幕のルールは`src/clipforge/prompts/`に置き、Geminiの実リクエストへ読み込む。字幕は原発言の意味・口調・確かさを保って短文化する。必読の共通編集ルールブックと工程別ルールを各3.8リクエストのsystemInstructionへ読み込む。必要な効果音は同じ応答から描画側で合成・ミックスする。固定圧縮率や最低品質での停止は設けない。実装・モデル回数・推定時刻の限界は[GEMINI_AUDIO_REVIEW.md](GEMINI_AUDIO_REVIEW.md)を参照。旧全文ASR工程は保存済み成果物の復旧用として以下に残す。

@@ -204,7 +204,7 @@
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "[[ \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
+          "run": "[[ \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" =~ ^clipforge-kick-editorial-((replay-)?[0-9]+|revision-[a-f0-9]{32})$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
         },
         {
           "name": "Validate the clip render request",
@@ -611,7 +611,7 @@
         "editorial_release": {
           "type": "string",
           "default": "",
-          "description": "Private saved responses to reuse before generating never-submitted phases"
+          "description": "Private editorial bundle or explicit revision; revision bundles render without Gemini"
         },
         "continue_missing": {
           "type": "boolean",
