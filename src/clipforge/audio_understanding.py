@@ -137,7 +137,22 @@ class Client:
         # --continue-missing generate with the new instructions without colliding
         # with an already completed response from an older prompt.
         phase_base = phase
-        phase = f"{phase}-{prompt_sha256[:10]}"
+        model = (
+            "gemini-3.5-flash"
+            if research or phase_base.startswith("transcript-")
+            else "gemini-3.8-flash"
+        )
+        thinking_level = "MINIMAL" if research else "MEDIUM"
+        # The model is part of a subtitle response's identity: an earlier 3.8
+        # response must not be reported as a 3.5 result even for the same text.
+        phase_hash = (
+            hashlib.sha256(
+                f"{prompt_sha256}:{model}:{thinking_level}".encode()
+            ).hexdigest()
+            if phase_base.startswith("transcript-")
+            else prompt_sha256
+        )
+        phase = f"{phase}-{phase_hash[:10]}"
         print(
             json.dumps({"phase": phase, "status": "checking_saved_response"}),
             flush=True,
@@ -232,7 +247,6 @@ class Client:
                 raise PipelineError("No complete saved response for " + phase)
         print(json.dumps({"phase": phase, "status": "new_request"}), flush=True)
         token = self.vertex_token()
-        model = "gemini-3.5-flash" if research else "gemini-3.8-flash"
         prompt_path = self.output / (phase + ".prompt.txt")
         prompt_path.write_text(complete_prompt, encoding="utf-8")
         parts = [{"text": user_prompt}]
@@ -242,9 +256,7 @@ class Client:
         body = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
-                "thinkingConfig": {
-                    "thinkingLevel": "MINIMAL" if research else "MEDIUM"
-                },
+                "thinkingConfig": {"thinkingLevel": thinking_level},
                 "maxOutputTokens": 8192 if research else 65536,
             },
         }
@@ -261,6 +273,7 @@ class Client:
         row = {
             "phase": phase,
             "model": model,
+            "thinking_level": thinking_level,
             "status": "submitted",
             "started_at": time.time(),
         }

@@ -1,4 +1,4 @@
-# ClipForge 編集ルールブック — Gemini 3.8 Flash 必読
+# ClipForge 編集ルールブック — Gemini 必読
 
 版: 2026-10-26 / 要約しない整文・控えめな効果音
 

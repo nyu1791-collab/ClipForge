@@ -1,6 +1,6 @@
 # Gemini 3.8の必読編集ルールと適用経路
 
-> 字幕表現の最新指示は [要約しない整文の引き継ぎ](HANDOFF_SEIBUN_2026-10-26.md)。本文の旧「短文化・自然な言い換え」の許可は上書きされる。GPU文字起こしと3.8整文の役割も同文書を参照。
+> 字幕表現の最新指示は [要約しない整文の引き継ぎ](HANDOFF_SEIBUN_2026-10-26.md)。本文の旧「短文化・自然な言い換え」の許可は上書きされる。GPU文字起こしと3.5整文の役割も同文書を参照。
 
 新規制作のルール本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。工程別の字幕契約は [gemini_subtitles_ja.md](../src/clipforge/prompts/gemini_subtitles_ja.md)。要約せず意味・口調・確かさを保つ整文、固有名詞と不明箇所の扱い、良い例/避ける例、時刻、話者、控えめな効果音を定義する。逐語全文を表示する旧方針を更新した。
 
@@ -8,13 +8,13 @@
 
 ## 必読は実リクエストへの注入
 
-`audio_understanding.Client.generate` は各Gemini 3.8呼び出しで共通本文と工程別本文を読み、その連結をVertexの `systemInstruction.parts[].text` へ入れる。話題選定時も共通本文を読み、字幕工程と担当範囲を区別する。3.5の表記調査には字幕生成を担当させない。欠落・空ファイルはデプロイ不備として報告し、ルールなしで別の制作を始めない。「読みました」というモデルの自己申告や読了検査は追加しない。
+`audio_understanding.Client.generate` は話題選定の3.8と字幕整文の3.5の呼び出しで共通本文と工程別本文を読み、その連結をVertexの `systemInstruction.parts[].text` へ入れる。話題選定時も共通本文を読み、字幕工程と担当範囲を区別する。3.5の表記調査には字幕生成を担当させない。欠落・空ファイルはデプロイ不備として報告し、ルールなしで別の制作を始めない。「読みました」というモデルの自己申告や読了検査は追加しない。
 
 `*.prompt.txt` は実際に送るsystemInstructionとユーザー依頼文を保存する。`audio-editor-receipt.json` の `prompt_rules_sources` は各ルールのパスとSHA-256、`prompt_rules_sha256` は連結本文、`prompt_sha256` は実依頼文全体のハッシュ。工程キーにも実依頼文ハッシュが入るので、ルール更新前の応答を新ルールの成果として再利用しない。モデルによる内容遵守をハッシュだけで保証するものではない。
 
 ## 字幕から描画まで
 
-採用話題だけをGPUで文字起こしし、本文と発話時刻を3.8へ話題ごと1回渡す。60秒窓への細分化はしない。`segments[].text` は要約しない整文字幕。時刻はGPU ASRの元発話区間を引き継ぐ。音声自体を短縮しない。
+採用話題だけをGPUで文字起こしし、本文と発話時刻を3.5 Flash/MEDIUMへ話題ごと1回渡す。60秒窓への細分化はしない。`segments[].text` は要約しない整文字幕。時刻はGPU ASRの元発話区間を引き継ぐ。音声自体を短縮しない。
 
 新規の `selected-transcripts.json` と `final-selection.json` に `subtitle_policy=meaning_preserving_cleanup_v1` を保存する。旧meaning_preserving_compact_v1も保存済みデータの描画互換性のため受け入れる。描画側はこの字幕方針で `caption=plain`、`caption_preserve_text=true` を使い、話者色と横幅のあるレイアウトを維持する。発言と文字が一対一にならない編集字幕へカラオケの単語追跡を付けない。旧ASRの反復/定型句/圧縮率による文字削除は、この編集字幕では呼ばない。行組み・時刻の表示範囲への整形は維持する。
 
