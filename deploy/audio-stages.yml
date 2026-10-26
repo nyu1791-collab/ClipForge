@@ -176,7 +176,8 @@
         "PYTHONUNBUFFERED": "1",
         "CLIPFORGE_PUBLIC_CACHE": "off",
         "RESULT_STORE": "${{ inputs.result_store }}",
-        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers",
+        "CLIPFORGE_AUDIO_REVIEW_RELEASE": "${{ inputs.editorial_release }}"
       },
       "steps": [
         {
@@ -197,8 +198,16 @@
           "timeout-minutes": 1
         },
         {
+          "name": "Load saved selected-only subtitles for render-only continuation",
+          "if": "inputs.editorial_release != ''",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "[[ \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
+        },
+        {
           "name": "Validate the clip render request",
-          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=60000\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
+          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=(pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json').read_text() if os.environ.get('CLIPFORGE_AUDIO_REVIEW_RELEASE') else os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=4*1024**2\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
         },
         {
           "uses": "actions/checkout@v4",

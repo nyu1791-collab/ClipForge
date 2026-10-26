@@ -36,6 +36,7 @@ def main():
     ap.add_argument("--workflow-ref", default="fix/pr18-verified-transfer")
     ap.add_argument("--editorial-release", default="")
     ap.add_argument("--continue-missing", action="store_true")
+    ap.add_argument("--render-only", action="store_true")
     ap.add_argument("--analysis-run")
     ap.add_argument("--analysis-request")
     ap.add_argument("--clips", type=int, choices=range(5, 11))
@@ -55,6 +56,12 @@ def main():
         ap.error("invalid saved editorial release")
     if args.continue_missing and not args.editorial_release:
         ap.error("continue-missing requires editorial-release")
+    if args.render_only and not (
+        args.editorial_release and args.analysis_run and args.analysis_request
+    ):
+        ap.error(
+            "render-only requires editorial-release and the saved run/request pair"
+        )
     if args.repository != "nyu1791-collab/ClipForge":
         ap.error("new audio-understanding production runs from ClipForge")
     if not re.fullmatch("[a-f0-9]{40}", args.source_ref):
@@ -193,15 +200,15 @@ def main():
         final_run, final_request = dispatch(
             "clipforge-stages.yml",
             {
-                "audio_stage": "understanding",
-                "worker": "cpu",
+                "audio_stage": "render" if args.render_only else "understanding",
+                "worker": "colab-auto" if args.render_only else "cpu",
                 "previous_run_id": args.analysis_run or "",
                 "previous_request_id": args.analysis_request or "",
                 "source_url": url,
                 "config_file": args.config_file,
                 "editorial_release": args.editorial_release,
                 "continue_missing": args.continue_missing,
-                "auto_render": True,
+                "auto_render": not args.render_only,
             },
         )
         state["render_run_id"] = final_run
