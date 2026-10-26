@@ -499,7 +499,7 @@ def heading_size(title, frame_width, height, font_path, scale_factor=1.0):
     for size in range(base, max(12, round(base * 0.6)) - 1, -1):
         if fonts.Measure(font_path, size).width(title) <= limit:
             return size
-    raise PipelineError("heading does not fit the frame; shorten the clip title")
+    return max(12, round(base * 0.6))
 
 
 def _caption_layout(settings):
@@ -675,6 +675,14 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
         heading_text = safe(title)
         size = heading_size(
             heading_text, area, height, font_path, settings.heading_scale
+        )
+        heading_text = with_breaks(
+            heading_text,
+            wrap_breaks(
+                heading_text,
+                fonts.Measure(font_path, size),
+                area - 2 * margin_px(height),
+            ),
         )
         subtitles.styles["Heading"] = pysubs2.SSAStyle(
             fontname=settings.font,
