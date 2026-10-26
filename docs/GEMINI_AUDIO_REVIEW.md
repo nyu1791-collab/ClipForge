@@ -12,7 +12,7 @@
 4. 選んだ音声だけを60秒ごとの小区間に分け、前後1.5秒を文脈用に重ねて3.8 Flash / MEDIUMへ渡す。共通ルールブックと `src/clipforge/prompts/gemini_subtitles_ja.md` を実リクエストのsystemInstructionへ含め、意味・口調を保つ短文化と自然な言い換えを行う。否定・数字・条件・伝聞や推測の度合い・オチは残す。必要な効果音指示も同じ応答で受け取る。
 5. 各小区間の字幕時刻は、その小区間の音声パート先頭を0秒として返させ、コードで切り抜き内の時刻へ移す。前後の文脈音声は各区間へ付けますが、話者参照音声は別パートで渡すため、時刻に足されません。単語単位の時刻とは扱いません。
 6. プロンプト本文を `transcript-*.prompt.txt` として出力へ保存し、使用ファイル名・SHA-256を `audio-editor-receipt.json` に記録する。規則ファイルが変わった場合は、その規則で生成していない古い回答を同じ回答として再利用しません。
-7. Colab GPU/NVENCが選択区間だけ360pで取得し、従来のASS字幕位置・サイズで描画する。字幕の画面座標はGeminiに決めさせず、描画設定で固定する。GPU ASRは実行しません。
+7. Colab GPU/NVENCが選択区間だけ360pで取得し、設定された文字キャンバス（標準720p・プレビュー360p・指定1080p）へ拡大してからASS字幕を描画する。字幕の画面座標はGeminiに決めさせず、描画設定で固定する。GPU ASRは実行しません。
 
 実装は `python -m clipforge.audio_understanding acquire|plan|render`。`plan --audio ORIGINAL_AUDIO --url SOURCE_URL --output NEW_DIRECTORY --config config.landscape-long.example.json` はASRなしで動作する。保存済み応答は別出力先と `--resume-from ORIGINAL_OUTPUT` で再生できる（同じ音声ハッシュ・URL・設定が必要）。
 
@@ -120,3 +120,7 @@ strict/report設定はoffへ正規化する。旧quality.check_clip/inspect_outp
 ### 最新：意味を保つ編集字幕と効果音
 
 新規制作では[共通編集ルールブック](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)を必読にする。旧「要約・言い換え禁止」は上書きされる。必読経路・保存記録・音の合成の詳細は[GEMINI_EDITORIAL_RULEBOOK.md](GEMINI_EDITORIAL_RULEBOOK.md)を参照。上の旧ASR経路は保存済み結果の復旧資料であり、新しい短文化をその旧経路へ迂回させない。
+
+### 最新：仕上げの補助と目標
+
+[FINISHING_TARGETS.md](FINISHING_TARGETS.md)に、境界重複・採用音声の波形時刻補助・禁則/表示時間・切り出し余白・音量/SE・文字キャンバス・参考画像を整理した。補助未適用や目標未達は品質不合格にしない。Geminiの推定時刻を単語精度や強制アライメントと扱わず、参考画像生成を動画品質の確認済みと混同しない。

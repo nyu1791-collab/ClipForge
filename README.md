@@ -1,6 +1,6 @@
 > 最新の制作経路と再開方法は[音声経路の手順](docs/GEMINI_AUDIO_REVIEW.md)を参照してください。動画・音声・字幕・モデル応答は非公開で保存します。
 
-通常制作・字幕/見出し/演出の修正・描画再開・回収は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) を参照。新規字幕の基準は [Gemini必読編集ルールブック](src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。
+通常制作・字幕/見出し/演出の修正・描画再開・回収は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) を参照。新規字幕の基準は [Gemini必読編集ルールブック](src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。 字幕・音・余白・解像度・参考画像の数値は [仕上げ目標](docs/FINISHING_TARGETS.md) として扱い、品質の停止条件にはしません。
 
 # ClipForge
 

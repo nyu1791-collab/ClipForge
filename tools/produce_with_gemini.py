@@ -53,12 +53,23 @@ def main():
     ap.add_argument("--clips", type=int)
     ap.add_argument("--config-file", default="config.landscape-long.example.json")
     ap.add_argument(
+        "--render-profile",
+        choices=["preview", "standard", "full-hd"],
+        help="360p / 720p / 1080p text canvas; source stays <=360p",
+    )
+    ap.add_argument(
         "--deliver-drive",
         action="store_true",
         help="Upload once to the explicitly configured target Drive after rendering",
     )
     ap.add_argument("--timeout", type=int, default=7200)
     args = ap.parse_args()
+    if args.render_profile:
+        args.config_file = {
+            "preview": "config.landscape-long-preview.example.json",
+            "standard": "config.landscape-long.example.json",
+            "full-hd": "config.landscape-long-fullhd.example.json",
+        }[args.render_profile]
     if args.workflow_ref not in {"main", "fix/pr18-verified-transfer"}:
         ap.error("workflow-ref must use a configured public execution branch")
     if args.editorial_release and not re.fullmatch(
@@ -115,6 +126,9 @@ def main():
         "source_url": url,
         "source_ref": args.source_ref,
         "repository": args.repository,
+        "config_file": args.config_file,
+        "render_height": settings.get("height"),
+        "source_height_limit": 360,
         "started_at": time.time(),
         "stages": [],
     }

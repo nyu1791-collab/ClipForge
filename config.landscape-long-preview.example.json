@@ -27,5 +27,6 @@
   "chat_panel": false,
   "video_encoder": "h264_nvenc",
   "loudness_two_pass": false,
-  "caption_lift": false
+  "caption_lift": false,
+  "visual_reference_sheet": true
 }

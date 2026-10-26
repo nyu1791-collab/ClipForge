@@ -322,6 +322,28 @@ def publish(directory, name):
             "Private stage transfer",
             "--latest=false",
         )
+        # Standalone references are convenient, but never block the primary archive.
+        references = []
+        try:
+            for path in root.glob("clips/clip-*/contact-sheet.jpg"):
+                reference = work / (path.parent.name + "-contact-sheet.jpg")
+                shutil.copyfile(path, reference)
+                references.append(str(reference))
+            if references:
+                run(
+                    "release",
+                    "upload",
+                    tag,
+                    *references,
+                    "--repo",
+                    REPO,
+                    timeout=60,
+                    error_type=TransferError,
+                    message="REFERENCE_IMAGE_UPLOAD_FAILED",
+                )
+                print("REFERENCE_IMAGES_UPLOADED; no readback audit", flush=True)
+        except (OSError, TransferError, subprocess.TimeoutExpired):
+            print("REFERENCE_IMAGE_UPLOAD_SKIPPED; video archive preserved", flush=True)
     print("RESULT_UPLOADED", flush=True)
 
 

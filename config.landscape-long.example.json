@@ -5,7 +5,7 @@
   "max_seconds": 900,
   "language": "ja",
   "aspect": "16:9",
-  "height": 360,
+  "height": 720,
   "framing": "fit",
   "layout": "fit",
   "encode_preset": "slow",
@@ -27,5 +27,6 @@
   "chat_panel": false,
   "video_encoder": "h264_nvenc",
   "loudness_two_pass": false,
-  "caption_lift": false
+  "caption_lift": false,
+  "visual_reference_sheet": true
 }
