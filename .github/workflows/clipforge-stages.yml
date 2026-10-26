@@ -6,12 +6,12 @@
     "actions": "read"
   },
   "concurrency": {
-    "group": "${{ (inputs.audio_stage == 'understanding' || inputs.worker == 'colab-auto') && format('clipforge-production-{0}', inputs.request_id) || 'clipforge-video' }}",
+    "group": "${{ (inputs.audio_stage == 'understanding' || inputs.audio_stage == 'selected-asr' || inputs.worker == 'colab-auto') && format('clipforge-production-{0}', inputs.request_id) || 'clipforge-video' }}",
     "cancel-in-progress": false
   },
   "jobs": {
     "audio-stage": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'cpu' && inputs.audio_stage != 'understanding'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'cpu' && inputs.audio_stage != 'understanding' && inputs.audio_stage != 'selected-asr'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 90,
       "env": {
@@ -160,7 +160,7 @@
       }
     },
     "colab-render": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'colab-auto' && inputs.audio_stage != 'understanding'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'colab-auto' && inputs.audio_stage != 'understanding' && inputs.audio_stage != 'selected-asr'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 100,
       "env": {
@@ -405,7 +405,7 @@
       }
     },
     "selected-audio-render": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.audio_stage == 'understanding' && inputs.auto_render",
+      "if": "always() && github.repository == 'nyu1791-collab/ClipForge' && inputs.auto_render && ((inputs.audio_stage == 'understanding' && needs.audio-understanding.result == 'success') || (inputs.audio_stage == 'selected-asr' && needs.selected-asr-editorial.result == 'success'))",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 100,
       "env": {
@@ -528,7 +528,151 @@
         }
       ],
       "needs": [
-        "audio-understanding"
+        "audio-understanding",
+        "selected-asr-editorial"
+      ]
+    },
+    "selected-asr-editorial": {
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.audio_stage == 'selected-asr'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 100,
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      },
+      "env": {
+        "PYTHONPATH": "src",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "INPUT_TAG": "${{ inputs.input_tag }}",
+        "SOURCE_URL": "${{ inputs.source_url }}",
+        "CONFIG_FILE": "${{ inputs.config_file }}",
+        "PARENT_EDITORIAL": "${{ inputs.editorial_release }}",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
+      },
+      "steps": [
+        {
+          "name": "Require private storage access",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Dedicated private storage credential is missing.\"; exit 1; }"
+        },
+        {
+          "name": "Require the configured public Vertex execution branch",
+          "env": {
+            "CLIPFORGE_RUN_REF": "${{ github.ref }}"
+          },
+          "run": "[[ \"$CLIPFORGE_RUN_REF\" == refs/heads/fix/pr18-verified-transfer ]] || { echo \"Use the configured Vertex execution branch.\"; exit 1; }"
+        },
+        {
+          "name": "Validate selected GPU ASR inputs",
+          "run": "[[ \"$CLIPFORGE_SOURCE_REF\" =~ ^[a-f0-9]{40}$ ]] && [[ \"$REQUEST_ID\" =~ ^[a-f0-9]{32}$ ]]\ntest \"$INPUT_TAG\" = \"clipforge-input-$REQUEST_ID\"\n[[ \"$PARENT_EDITORIAL\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]]\n[[ \"$CONFIG_FILE\" =~ ^config\\.[a-z0-9-]+\\.example\\.json$ ]]\ntest -n \"$SOURCE_URL\"\n"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "with": {
+            "version": "0.12.23"
+          }
+        },
+        {
+          "uses": "FedericoCarboni/setup-ffmpeg@36c6454b5a2348e7794ba2d82a21506605921e3d"
+        },
+        {
+          "name": "Install lightweight editing dependencies",
+          "timeout-minutes": 6,
+          "run": "uv sync --locked --no-dev --extra media-fetch"
+        },
+        {
+          "name": "Install the existing Colab control SDK",
+          "id": "control",
+          "run": "uv venv \"$RUNNER_TEMP/colab-control\" --python 3.12\nuv pip install --python \"$RUNNER_TEMP/colab-control/bin/python\" --require-hashes -r tools/colab-control-requirements.txt\n"
+        },
+        {
+          "name": "Restore selected topics without calling the topic model",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "mkdir -p \"$RUNNER_TEMP/saved-selection\"\ngh release download \"$PARENT_EDITORIAL\" --repo \"$CLIPFORGE_STORAGE_REPO\" --pattern final-selection.json --dir \"$RUNNER_TEMP/saved-selection\"\n"
+        },
+        {
+          "name": "Acquire original audio once; GPU receives selected topics only",
+          "env": {
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}"
+          },
+          "run": ".venv/bin/python -m clipforge.audio_understanding acquire --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/analysis\"\n.venv/bin/python -m clipforge.selected_asr prepare --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --review \"$RUNNER_TEMP/saved-selection/final-selection.json\" --output \"$RUNNER_TEMP/selected-input\" --url \"$SOURCE_URL\" --source-ref \"$CLIPFORGE_SOURCE_REF\" --request-id \"$REQUEST_ID\"\n"
+        },
+        {
+          "name": "Store only the selected audio in the private ASR input",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "gh release create \"$INPUT_TAG\" \"$RUNNER_TEMP/selected-input/audio.wav\" \"$RUNNER_TEMP/selected-input/request.json\" --repo \"$CLIPFORGE_STORAGE_REPO\" --latest=false --notes 'Private selected-topic GPU ASR input; no full-source ASR.'\n"
+        },
+        {
+          "name": "Allocate the existing Parakeet GPU worker",
+          "env": {
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
+          },
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/colab_actions.py start --mode asr\n"
+        },
+        {
+          "name": "Run selected-topic GPU ASR and collect its source clock",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/colab_actions.py run --output \"$RUNNER_TEMP/selected-asr\"\n"
+        },
+        {
+          "name": "Release and verify removal of the ASR runtime",
+          "if": "always() && steps.control.outcome == 'success'",
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/colab_actions.py stop\n"
+        },
+        {
+          "name": "Connect the designated Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "token_format": "access_token",
+            "access_token_lifetime": "3600s",
+            "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
+            "create_credentials_file": false,
+            "export_environment_variables": false
+          }
+        },
+        {
+          "name": "Edit each topic once with text-only 3.8; inherit ASR clock",
+          "env": {
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}"
+          },
+          "run": ".venv/bin/python -m clipforge.selected_asr edit --transcript \"$RUNNER_TEMP/selected-asr/transcript.json\" --mapping \"$RUNNER_TEMP/selected-input/selected-audio-map.json\" --output \"$RUNNER_TEMP/editorial\" --parent-release \"$PARENT_EDITORIAL\"\n"
+        },
+        {
+          "name": "Preserve source ASR and editorial results privately",
+          "if": "always()",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "mkdir -p \"$RUNNER_TEMP/editorial\"\nif [ -f \"$RUNNER_TEMP/selected-asr/transcript.json\" ]; then cp \"$RUNNER_TEMP/selected-asr/transcript.json\" \"$RUNNER_TEMP/editorial/gpu-asr-transcript.json\"; fi\nif [ -f \"$RUNNER_TEMP/selected-input/selected-audio-map.json\" ]; then cp \"$RUNNER_TEMP/selected-input/selected-audio-map.json\" \"$RUNNER_TEMP/editorial/selected-audio-map.json\"; fi\nshopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo \"$CLIPFORGE_STORAGE_REPO\" --latest=false --notes 'Selected-topic Parakeet GPU ASR then text-only Gemini 3.8 edits. Source segment IDs inherit the ASR clock. No new topic selection.'\nfi\n"
+        }
       ]
     }
   },
@@ -553,7 +697,8 @@
             "previews",
             "render",
             "merge",
-            "understanding"
+            "understanding",
+            "selected-asr"
           ],
           "required": true
         },
