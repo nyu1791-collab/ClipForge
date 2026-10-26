@@ -241,7 +241,8 @@ def attempt(
         stdout=subprocess.PIPE,
         stderr=errors if errors is not None else subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         env=environment,
         cwd=workdir,
         start_new_session=True,
@@ -285,7 +286,12 @@ def attempt(
                         "non-zero cost reported; stopped (free model only)"
                     )
                     return True
-        process.wait(timeout=30)
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            # The output ended but the process did not exit; end it and keep the result.
+            kill_task(process)
+            process.wait()
         if stalled.is_set():
             result["error"] = "stalled before the first event"
             return False
