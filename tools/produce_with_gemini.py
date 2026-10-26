@@ -11,12 +11,15 @@ import time
 import uuid
 
 from clipforge.editorial_revision import EDITORIAL_TAG_PATTERN, create_revision
+from clipforge.actions_monitor import MonitoringPending, wait_for_stage
 from clipforge.media_sources import canonical
 from clipforge.release_transfer import download, read_transfer
 
 
 def gh(*args, body=None):
-    p = subprocess.run(["gh", *args], input=body, text=True, capture_output=True)
+    p = subprocess.run(
+        ["gh", *args], input=body, text=True, capture_output=True, timeout=120
+    )
     if p.returncode:
         raise RuntimeError(
             "GitHub operation failed; inspect the saved request, no resubmission"
@@ -28,6 +31,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("url")
     ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument(
+        "--resume-existing-run",
+        type=int,
+        help="Observe and collect this saved production run; never dispatch another run",
+    )
     ap.add_argument(
         "--source-ref",
         help="Pin this commit; omitted resolves the execution branch once before dispatch",
@@ -67,6 +75,27 @@ def main():
     )
     ap.add_argument("--timeout", type=int, default=7200)
     args = ap.parse_args()
+    resumed = None
+    if args.resume_existing_run is not None:
+        if args.resume_existing_run <= 0:
+            ap.error("resume-existing-run requires a positive run ID")
+        resumed = json.loads((args.output / "production-state.json").read_text())
+        if canonical(resumed["source_url"]) != canonical(args.url):
+            ap.error("saved production belongs to another source URL")
+        if args.source_ref and args.source_ref != resumed["source_ref"]:
+            ap.error("saved production uses another source commit")
+        if (
+            args.revision_file
+            or args.continue_missing
+            or args.deliver_drive
+            or args.render_profile
+        ):
+            ap.error(
+                "resume-existing-run only observes and collects the saved production"
+            )
+        args.source_ref = resumed["source_ref"]
+        args.repository = resumed["repository"]
+        args.config_file = resumed["config_file"]
     if args.render_profile:
         args.config_file = {
             "preview": "config.landscape-long-preview.example.json",
@@ -128,20 +157,25 @@ def main():
     url = canonical(args.url)
     args.output.mkdir(parents=True, exist_ok=True)
     statefile = args.output / "production-state.json"
-    if statefile.exists():
+    if statefile.exists() and resumed is None:
         raise RuntimeError(
             "This production already has a saved state; inspect its run before any new submission"
         )
-    state = {
-        "source_url": url,
-        "source_ref": args.source_ref,
-        "repository": args.repository,
-        "config_file": args.config_file,
-        "render_height": settings.get("height"),
-        "source_height_limit": 360,
-        "started_at": time.time(),
-        "stages": [],
-    }
+    state = (
+        resumed
+        if resumed is not None
+        else {
+            "source_url": url,
+            "source_ref": args.source_ref,
+            "repository": args.repository,
+            "config_file": args.config_file,
+            "render_height": settings.get("height"),
+            "source_height_limit": 360,
+            "target_clips": args.clips,
+            "started_at": time.time(),
+            "stages": [],
+        }
+    )
     deadline = time.monotonic() + args.timeout
 
     def save():
@@ -170,6 +204,7 @@ def main():
             "request_id": identity,
             "status": "dispatching_or_unknown",
             "started_at": time.time(),
+            "expected_title": expected_title,
         }
         state["stages"].append(stage)
         save()
@@ -185,63 +220,11 @@ def main():
         )
         stage["status"] = "dispatched"
         save()
-        while time.monotonic() < deadline:
-            if "run_id" not in stage:
-                runs = json.loads(
-                    gh(
-                        "run",
-                        "list",
-                        "--repo",
-                        args.repository,
-                        "--workflow",
-                        workflow,
-                        "--limit",
-                        "50",
-                        "--json",
-                        "databaseId,displayTitle,event",
-                    )
-                )
-                found = [
-                    r
-                    for r in runs
-                    if r["displayTitle"] == expected_title
-                    and r["event"] == "workflow_dispatch"
-                ]
-                if len(found) > 1:
-                    raise RuntimeError("Duplicate run identity; stopped")
-                if found:
-                    stage["run_id"] = found[0]["databaseId"]
-                    save()
-            if "run_id" in stage:
-                r = json.loads(
-                    gh(
-                        "run",
-                        "view",
-                        str(stage["run_id"]),
-                        "--repo",
-                        args.repository,
-                        "--json",
-                        "status,conclusion,url",
-                    )
-                )
-                stage.update(r)
-                save()
-                print(
-                    json.dumps({"workflow": workflow, "run_id": stage["run_id"], **r}),
-                    flush=True,
-                )
-                if r["status"] == "completed":
-                    stage["elapsed_sec"] = round(time.time() - stage["started_at"], 3)
-                    save()
-                    if r["conclusion"] != "success":
-                        raise RuntimeError("Stage failed; no retry or model fallback")
-                    return str(stage["run_id"]), identity
-            time.sleep(15)
-        raise RuntimeError(
-            "Production timeout; inspect the recorded run, no resubmission"
+        return wait_for_stage(
+            stage, args.repository, expected_title, deadline, gh, save
         )
 
-    try:
+    def start_production():
         if args.revision_file:
             revision = create_revision(
                 args.editorial_release,
@@ -277,13 +260,19 @@ def main():
                 "resume_render": args.reuse_render,
             },
         )
+        return final_run, final_request
+
+    def collect(final_run, final_request):
         state["render_run_id"] = final_run
         state["render_request_id"] = final_request
         save()
         metadata = read_transfer(final_run, "clipforge-result-" + final_request)
         if canonical(metadata["stage_manifest"]["source_url"]) != url:
             raise RuntimeError("Rendered output belongs to another source URL")
-        download(final_run, "clipforge-result-" + final_request, args.output / "clips")
+        if not state.get("render_complete"):
+            download(
+                final_run, "clipforge-result-" + final_request, args.output / "clips"
+            )
         state["render_complete"] = True
         save()
         if args.deliver_drive:
@@ -316,6 +305,35 @@ def main():
             ),
             flush=True,
         )
+
+    try:
+        if resumed is not None:
+            stages = [
+                s for s in state["stages"] if s["workflow"] == "clipforge-stages.yml"
+            ]
+            if len(stages) != 1:
+                raise RuntimeError("A single saved production stage is required")
+            stage = stages[0]
+            if stage.get("run_id") not in (None, args.resume_existing_run):
+                raise RuntimeError("Saved stage belongs to another run")
+            stage["run_id"] = args.resume_existing_run
+            state["status"] = "observing_existing_run"
+            save()
+            final_run, final_request = wait_for_stage(
+                stage,
+                args.repository,
+                "ClipForge " + stage["request_id"],
+                deadline,
+                gh,
+                save,
+            )
+        else:
+            final_run, final_request = start_production()
+        collect(final_run, final_request)
+    except MonitoringPending:
+        state["status"] = "monitoring_paused"
+        save()
+        raise
     except Exception:
         state.update(
             status="delivery_failed_or_unknown"

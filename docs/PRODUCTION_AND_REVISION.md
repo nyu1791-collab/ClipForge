@@ -26,6 +26,21 @@ flowchart TD
 
 YouTubeの新規音声取得とGPU上の採用映像取得は、同じ既存の `YOUTUBE_COOKIES_B64` Secretを利用する。値をログ・公開入力・成果物へ出さない。未設定時にログインなしで取得できることは保証しない。YouTubeがログイン確認を要求した場合は認証接続の問題として記録し、別アカウント・別経路への切り替えや自動再投入は行わない。
 
+### 待機と既存Runへの再接続
+
+通常の音声理解・Colab描画はrequest IDごとの待ち行列を使い、無関係な制作依頼との共通ロックを避ける。同じrequestの排他は保持し、進行中Runを自動キャンセルしない。GitHub内部のジョブ生成時間やrunner供給時間を保証するものではない。
+
+状態取得APIの一時失敗は監視の問題として記録し、最後に得た制作状態を残して読み取りだけを再試行する。モデル要求・workflow dispatchは再送しない。初期の汎用タイトルから別Runを推測せず、request ID付きタイトルを待つ。監視状態・待機時間はproduction-stateと約60秒ごとの表示へ残す。監視期限切れは `monitoring_paused` とし、遠隔の制作失敗と区別する。
+
+監視が途切れた場合は、同じURL・同じ出力先と、確認済みRun IDを指定する。
+
+```sh
+python tools/produce_with_gemini.py "$SOURCE_URL" \
+  --output "$EXISTING_PRIVATE_OUTPUT" --resume-existing-run "$RUN_ID"
+```
+
+この入口は保存済みrequest IDとRunを照合し、既存制作の監視と完成物回収だけを行う。新しいモデル要求・制作・Drive納品の投入は行わない。参考JPEG等の単体assetが追加されていても、回収対象は `result.zip` と `transfer.json` の2件だけとし、画像不足を理由に動画を再制作しない。
+
 | やりたいこと | 入口 | 戻らない工程 |
 |---|---|---|
 | 新しい配信から制作 | `tools/produce_with_gemini.py URL --source-ref SHA --output PRIVATE_DIR` | 全編ASR・全文GPU文字起こしへ戻らない |

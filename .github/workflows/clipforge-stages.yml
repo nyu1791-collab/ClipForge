@@ -6,7 +6,7 @@
     "actions": "read"
   },
   "concurrency": {
-    "group": "${{ inputs.worker == 'colab-auto' && format('clipforge-colab-{0}', inputs.request_id) || 'clipforge-video' }}",
+    "group": "${{ (inputs.audio_stage == 'understanding' || inputs.worker == 'colab-auto') && format('clipforge-production-{0}', inputs.request_id) || 'clipforge-video' }}",
     "cancel-in-progress": false
   },
   "jobs": {
