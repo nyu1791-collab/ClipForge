@@ -12,7 +12,7 @@
   "caption": "karaoke",
   "horizontal_target_cps": 7,
   "horizontal_warn_cps": 7,
-  "horizontal_line_chars": 13,
+  "horizontal_line_chars": 30,
   "workers": 2,
   "max_source_seconds": 21600,
   "max_transport_bytes": 6442450944,

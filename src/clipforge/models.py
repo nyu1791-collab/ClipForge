@@ -86,7 +86,11 @@ class Settings(Record):
     font: str = Field(default="Noto Sans CJK JP", min_length=1, max_length=100)
     horizontal_target_cps: float = Field(default=7, ge=1, le=20)
     horizontal_warn_cps: float = Field(default=7, ge=1, le=20)
-    horizontal_line_chars: int = Field(default=13, ge=8, le=40)
+    horizontal_line_chars: int = Field(default=30, ge=8, le=40)
+    # Prefer two lines; a third may finish a sentence instead of flashing a new caption.
+    horizontal_max_lines: Literal[2, 3] = 3
+    horizontal_min_caption_seconds: float = Field(default=2.5, ge=1, le=4)
+    horizontal_max_caption_seconds: float = Field(default=8, ge=4, le=10)
     # blur fills the frame with a softened copy of the picture; fit leaves black bars.
     layout: Literal["fit", "blur"] = "blur"
     heading: bool = False
@@ -132,7 +136,7 @@ class Settings(Record):
         """Caption font in pixels; caption_scale multiplies it.
 
         With fit top the captions are in the band below the picture: the font is at most 6.7
-        percent of the height (72 px at 1080), and two lines must fit in 80 percent of the
+        percent of the height (72 px at 1080), and the configured lines fit in 80 percent of the
         band. With fit fill the captions sit over the picture, so the font is the same 6.7
         percent with no band to fit.
         """
@@ -141,7 +145,7 @@ class Settings(Record):
         if not self.chat_panel or self.chat_panel_fit != "top":
             return round(self.height * 0.048 * self.caption_scale)
         band = self.height - self.chat_video_height()
-        fit = math.floor(band * 0.8 / (2 * CAPTION_LINE_EM))
+        fit = math.floor(band * 0.8 / (self.horizontal_max_lines * CAPTION_LINE_EM))
         return min(round(self.height * 0.0667 * self.caption_scale), fit)
 
     def caption_line_chars(self):

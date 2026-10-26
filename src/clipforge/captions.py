@@ -45,6 +45,7 @@ from .caption_sentences import (
     orphan_start,
 )
 from .models import Word
+from .speaker_captions import SPEAKER_COLORS, speaker_for_token, validate_turns
 from .storage import PipelineError
 
 __all__ = [
@@ -291,7 +292,16 @@ def _lasts_a_caption(members):
     return members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS
 
 
-def group(tokens, measure, line_px, max_lines=2):
+def group(
+    tokens,
+    measure,
+    line_px,
+    max_lines=2,
+    *,
+    min_seconds=MIN_CAPTION_SECONDS,
+    max_seconds=4,
+    preferred_lines=2,
+):
     """Caption groups that fit in max_lines.
 
     A pause ends a group. When the text overflows, the group ends at the last word boundary
@@ -301,7 +311,24 @@ def group(tokens, measure, line_px, max_lines=2):
     def overflows(members, token):
         joined = "".join(item[2] for item in members) + token[2]
         too_many_lines = len(wrap_breaks(joined, measure, line_px)) + 1 > max_lines
-        return too_many_lines or token[1] - members[0][0] > 4
+        return too_many_lines or token[1] - members[0][0] > max_seconds
+
+    def finishes_in_extra_line(members, index):
+        # Use the third line only when it can reach the next sentence/pause boundary.
+        # Otherwise break at two lines, rather than filling three on every caption.
+        trial = list(members)
+        for following in range(index, len(tokens)):
+            token = tokens[following]
+            if overflows(trial, token):
+                return False
+            trial.append(token)
+            if (
+                following in final
+                or following == len(tokens) - 1
+                or tokens[following + 1][0] - token[1] > PAUSE_SECONDS
+            ):
+                return True
+        return False
 
     final = sentence_ends(tokens)
     groups, current = [], []
@@ -311,10 +338,24 @@ def group(tokens, measure, line_px, max_lines=2):
             and token[0] - current[-1][1] > PAUSE_SECONDS
             or current
             and index - 1 in final
-            and _lasts_a_caption(current)
+            and current[-1][1] - current[0][0] >= min_seconds
         ):
             groups.append(current)
             current = []
+        if (
+            current
+            and max_lines > preferred_lines
+            and len(
+                wrap_breaks("".join(t[2] for t in [*current, token]), measure, line_px)
+            )
+            + 1
+            > preferred_lines
+            and current[-1][1] - current[0][0] >= min_seconds
+            and not finishes_in_extra_line(current, index)
+        ):
+            cut = _word_cut(current) or len(current)
+            groups.append(current[:cut])
+            current = current[cut:]
         while current and overflows(current, token):
             cut = _word_cut(current) or len(current)
             groups.append(current[:cut])
@@ -322,16 +363,18 @@ def group(tokens, measure, line_px, max_lines=2):
         current.append(token)
     if current:
         groups.append(current)
-    return _join_short(groups, measure, line_px, max_lines)
+    return _join_short(groups, measure, line_px, max_lines, min_seconds, max_seconds)
 
 
-def _fits_caption(members, measure, line_px, max_lines):
+def _fits_caption(members, measure, line_px, max_lines, max_seconds=4):
     text = "".join(item[2] for item in members)
     within_lines = len(wrap_breaks(text, measure, line_px)) + 1 <= max_lines
-    return within_lines and members[-1][1] - members[0][0] <= 4
+    return within_lines and members[-1][1] - members[0][0] <= max_seconds
 
 
-def _join_short(groups, measure, line_px, max_lines):
+def _join_short(
+    groups, measure, line_px, max_lines, min_seconds=MIN_CAPTION_SECONDS, max_seconds=4
+):
     """Join a caption shorter than MIN_CAPTION_SECONDS to a neighbour, when that still fits.
 
     Only neighbours with no pause between them qualify. A short caption that cannot join
@@ -341,7 +384,7 @@ def _join_short(groups, measure, line_px, max_lines):
     index = 0
     while index < len(merged) and len(merged) > 1:
         members = merged[index]
-        if members[-1][1] - members[0][0] >= MIN_CAPTION_SECONDS:
+        if members[-1][1] - members[0][0] >= min_seconds:
             index += 1
             continue
         options = []
@@ -356,7 +399,7 @@ def _join_short(groups, measure, line_px, max_lines):
             (
                 (position, combined)
                 for position, combined in options
-                if _fits_caption(combined, measure, line_px, max_lines)
+                if _fits_caption(combined, measure, line_px, max_lines, max_seconds)
             ),
             None,
         )
@@ -467,7 +510,11 @@ def _caption_layout(settings):
     frame_width = round(height * numerator / denominator / 2) * 2
     font_size = settings.caption_font_size()
     font_path = fonts.resolve(settings.font)
-    measure = fonts.Measure(font_path, font_size)
+    measure = (
+        fonts.AssMeasure(font_path, font_size)
+        if frame_width > height
+        else fonts.Measure(font_path, font_size)
+    )
     # With the chat panel the video area is narrower than the frame.
     area = frame_width - settings.chat_panel_pixels()
     line_px = area - 2 * margin - round(OUTLINE_ALLOWANCE * scale(height))
@@ -479,7 +526,9 @@ def _caption_layout(settings):
     return font_size, font_path, measure, line_px, landscape
 
 
-def _caption_groups(transcript, clip, settings, measure, line_px, landscape):
+def _caption_groups(
+    transcript, clip, settings, measure, line_px, landscape, speaker_turns=None
+):
     """Caption groups, their (start, end) in ms on the output timeline, and cleanup info."""
     duration = clip.end - clip.start
     segments, cleanup = clean_segments(transcript.segments)
@@ -487,7 +536,26 @@ def _caption_groups(transcript, clip, settings, measure, line_px, landscape):
     tokens, approximate = collect_tokens(caption_transcript, clip)
     tokens, split = split_long(tokens, measure, line_px)
     approximate += split
-    groups = group(tokens, measure, line_px)
+    turns = validate_turns(speaker_turns or [], duration)
+    runs, previous_speaker = [], None
+    for token in tokens:
+        speaker = speaker_for_token(token[0], token[1], turns)
+        if not runs or speaker != previous_speaker:
+            runs.append([])
+        runs[-1].append(token)
+        previous_speaker = speaker
+    options = (
+        dict(
+            max_lines=settings.horizontal_max_lines,
+            min_seconds=settings.horizontal_min_caption_seconds,
+            max_seconds=settings.horizontal_max_caption_seconds,
+        )
+        if landscape
+        else {}
+    )
+    groups = [
+        items for run in runs for items in group(run, measure, line_px, **options)
+    ]
     if transcript.language == "ja":
         groups = [pause_marks(items) for items in groups]
     plain_lines = ["".join(item[2] for item in items) for items in groups]
@@ -505,24 +573,23 @@ def _caption_groups(transcript, clip, settings, measure, line_px, landscape):
         plain_lines,
         round(duration * 1000),
         settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
-        floor_ms=round(MIN_CAPTION_SECONDS * 1000),
-        lead_ms=500
-        if landscape
-        and any(
-            _is_kanji(c) or _is_hiragana(c) or _is_katakana(c)
-            for text in plain_lines
-            for c in text
-        )
-        else 0,
+        floor_ms=round(
+            (
+                settings.horizontal_min_caption_seconds
+                if landscape
+                else MIN_CAPTION_SECONDS
+            )
+            * 1000
+        ),
     )
     return groups, spans, plain_lines, cleanup, approximate
 
 
-def event_spans(transcript, clip, settings):
+def event_spans(transcript, clip, settings, speaker_turns=None):
     """Start and end in seconds, on the output timeline, of each caption create() writes."""
     _, _, measure, line_px, landscape = _caption_layout(settings)
     groups, spans, _, _, _ = _caption_groups(
-        transcript, clip, settings, measure, line_px, landscape
+        transcript, clip, settings, measure, line_px, landscape, speaker_turns
     )
     return [(start / 1000, end / 1000) for start, end in spans]
 
@@ -534,7 +601,7 @@ def _lift_margins(lifts, count, height):
     return [round(lift * height) for lift in lifts]
 
 
-def create(transcript, clip, directory, settings, lifts=None):
+def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None):
     """Write captions.ass and captions.srt.
 
     lifts gives the bottom margin of each caption as a share of the height, in order. Given lifts
@@ -581,7 +648,9 @@ def create(transcript, clip, directory, settings, lifts=None):
     )
     if band:
         # Two lines centred in the caption band below the picture.
-        base["marginv"] = round((band - 2 * font_size * CAPTION_LINE_EM) / 2)
+        base["marginv"] = round(
+            (band - settings.horizontal_max_lines * font_size * CAPTION_LINE_EM) / 2
+        )
     subtitles.styles["Default"] = pysubs2.SSAStyle(
         secondarycolor=pysubs2.Color(*YELLOW), **base
     )
@@ -589,6 +658,16 @@ def create(transcript, clip, directory, settings, lifts=None):
     subtitles.styles["Sequential"] = pysubs2.SSAStyle(
         secondarycolor=pysubs2.Color(*YELLOW, 255), **base
     )
+    for speaker, color in SPEAKER_COLORS.items():
+        speaker_base = {**base, "primarycolor": pysubs2.Color(*color)}
+        # Karaoke retains the speaker's hue on both sides of the fill; sequential
+        # reveal keeps its transparent secondary color. The hue never cycles yellow.
+        subtitles.styles[speaker] = pysubs2.SSAStyle(
+            secondarycolor=pysubs2.Color(
+                *color, 255 if settings.caption == "sequential" else 0
+            ),
+            **speaker_base,
+        )
 
     heading_text = None
     title = getattr(clip, "title", None)
@@ -624,7 +703,7 @@ def create(transcript, clip, directory, settings, lifts=None):
         )
 
     groups, spans, plain_lines, cleanup, approximate = _caption_groups(
-        transcript, clip, settings, measure, line_px, landscape
+        transcript, clip, settings, measure, line_px, landscape, speaker_turns
     )
     style = "Sequential" if settings.caption == "sequential" else "Default"
     # Fill always places captions by their own MarginV. Elsewhere, lifts place them only without the
@@ -633,18 +712,20 @@ def create(transcript, clip, directory, settings, lifts=None):
     placed = fill or (lifts is not None and not settings.chat_panel)
     margins = _lift_margins(lifts, len(groups), height) if placed else [0] * len(groups)
     for items, (start, end), margin in zip(groups, spans, margins):
+        speaker = speaker_for_token(items[0][0], items[0][1], speaker_turns or [])
+        event_style = speaker or style
         text = group_text(items, measure, line_px, settings.caption)
         if placed:
             # Bottom centre (\an2); the event's own MarginV sets how high the caption sits.
             event = pysubs2.SSAEvent(
                 start=start,
                 end=end,
-                style=style,
+                style=event_style,
                 text=r"{\an2}" + text,
                 marginv=margin,
             )
         else:
-            event = pysubs2.SSAEvent(start=start, end=end, style=style, text=text)
+            event = pysubs2.SSAEvent(start=start, end=end, style=event_style, text=text)
         subtitles.append(event)
 
     corpus = "".join(plain_lines) + (heading_text or "")
@@ -669,5 +750,6 @@ def create(transcript, clip, directory, settings, lifts=None):
         "approximate_tokens": approximate,
         "missing_glyphs": missing,
         "caption_mode": settings.caption,
+        "speaker_colored_events": sum(e.style in SPEAKER_COLORS for e in subtitles),
         "asr_cleanup": cleanup,
     }
