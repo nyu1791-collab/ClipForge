@@ -9,16 +9,28 @@ import threading
 import time
 import urllib.request
 
+# How long the local server may take to open its event stream. Connecting costs nothing;
+# no model request exists until the client starts.
+SERVER_WAIT_SECONDS = 240
+
 
 def note(message):
     # Progress goes to stderr, which the harness keeps privately; stdout carries events only.
     print(f"opencode_vertex_guard: {message}", file=sys.stderr, flush=True)
 
 
+def relay(pipe):
+    # The server's own output is kept with the run's private stderr log.
+    for line in pipe:
+        text = line.decode(errors="replace").rstrip()
+        print(f"opencode serve: {text}", file=sys.stderr, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary")
     parser.add_argument("--dir", required=True)
+    parser.add_argument("--server-wait", type=float, default=SERVER_WAIT_SECONDS)
     parser.add_argument("prompt")
     args = parser.parse_args()
     with socket.socket() as sock:
@@ -29,8 +41,10 @@ def main():
     server = subprocess.Popen(
         [args.binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)],
         cwd=args.dir,
-        stdout=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
+    threading.Thread(target=relay, args=(server.stdout,), daemon=True).start()
     client = None
     stopped = threading.Event()
     reason = []
@@ -49,39 +63,52 @@ def main():
                 server.kill()
 
     def watch():
+        # Only a retry request stops the run. A broken or closed event stream does not.
         try:
             for raw in stream:
                 if not raw.startswith(b"data: "):
                     continue
-                event = json.loads(raw[6:])
+                try:
+                    event = json.loads(raw[6:])
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
                 event = event.get("payload", event)
                 if not seen:
                     seen.append(event.get("type"))
                     note(f"first server event: {seen[0]}")
                 if event.get("type") == "session.status":
                     status = event.get("properties", {}).get("status", {})
-                    if status.get("type") == "retry":
+                    if isinstance(status, dict) and status.get("type") == "retry":
                         stop(
                             "OpenCode requested an API retry; stopped without resending"
                         )
                         return
-            if not stopped.is_set():
-                stop("OpenCode event stream ended; no reconnect")
-        except (OSError, ValueError):
-            if not stopped.is_set():
-                stop("OpenCode event stream failed; no reconnect")
+            note("server event stream ended; the run continues without it")
+        except (OSError, ValueError) as error:
+            note(
+                f"server event stream failed ({type(error).__name__}); the run continues"
+            )
 
     try:
-        # Wait for the local server only. No model request exists before the client starts.
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline and server.poll() is None:
+        # Wait for the local server only. Each try is short so progress is visible.
+        deadline = time.monotonic() + args.server_wait
+        attempts = 0
+        while stream is None and time.monotonic() < deadline and server.poll() is None:
+            attempts += 1
             try:
-                stream = local.open(url + "/event", timeout=180)
-                break
-            except OSError:
-                time.sleep(0.1)
+                stream = local.open(url + "/event", timeout=5)
+            except OSError as error:
+                if attempts % 12 == 0:
+                    note(
+                        f"still waiting for the event stream: {type(error).__name__}, try {attempts}"
+                    )
+                time.sleep(0.5)
         if stream is None:
-            stop("OpenCode server did not start; no model request sent")
+            stop(
+                f"OpenCode server did not start; no model request sent (server exit: {server.poll()})"
+            )
             return 1
         note("server event stream connected")
         threading.Thread(target=watch, daemon=True).start()

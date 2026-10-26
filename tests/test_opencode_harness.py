@@ -203,7 +203,7 @@ def test_low_disk_space_prevents_launch(harness, task, monkeypatch, after_slot):
         assert directories == []
 
 
-def test_vertex_waits_longer_and_an_empty_report_says_why(
+def test_vertex_has_no_first_event_limit_and_an_empty_report_says_why(
     harness, task, tmp_path, monkeypatch
 ):
     credential = tmp_path / "synthetic-credential.json"
@@ -221,7 +221,7 @@ def test_vertex_waits_longer_and_an_empty_report_says_why(
     monkeypatch.setattr(harness, "attempt", attempt)
     result = harness.run_task(task, "read", "HEAD", 30, "vertex")
 
-    assert seen["stall"] == 300
+    assert seen["stall"] is None
     assert seen["errors"] is not None
     directory = Path(result["report"]).parent
     assert (directory / "stderr.log").is_file()
@@ -242,6 +242,21 @@ def test_stderr_tail_hides_credential_like_text(harness, tmp_path):
     assert "synthetic-token" not in tail
     assert '"synthetic"' not in tail
     assert tail.count("[REDACTED]") == 2
+
+
+def test_report_keeps_every_text_part(harness, task, monkeypatch):
+    def attempt(
+        command, environment, workdir, out, timeout, result, texts, free, **options
+    ):
+        texts.extend(["First part.", "Final part."])
+        result["status"] = "complete"
+        return True
+
+    monkeypatch.setattr(harness, "attempt", attempt)
+    result = harness.run_task(task, "read", "HEAD", 30)
+
+    report = Path(result["report"]).read_text(encoding="utf-8")
+    assert report == "First part.\n\nFinal part."
 
 
 @pytest.mark.parametrize(

@@ -29,7 +29,7 @@ MODELS = {
         "free": False,
         "slots": 1,
         "attempts": 1,
-        "stall_seconds": 300,
+        "stall_seconds": None,
     },
     "deepseek": {"id": MODEL, "provider": "opencode", "free": True},
     "sol": {
@@ -44,8 +44,9 @@ MODELS = {
 DEFAULT_MODEL = {"write": "vertex", "read": "vertex"}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
-# No first event within this many seconds is a stall. On 2026-10-26 a Vertex task printed
-# nothing for 120 s and its stderr was discarded, so the cause could not be told apart.
+# Other routes: no first event within this many seconds is a stall. The Vertex route has
+# no separate first-event limit; its guard bounds the wait for the local server, and the
+# task timeout bounds the rest.
 STALL_SECONDS = 120
 SECRET_PATTERN = re.compile(
     r'(?i)bearer\s+\S+|ya29\.[\w.-]+|"private_key"\s*:\s*"[^"]*"'
@@ -249,7 +250,8 @@ def attempt(
     stalled = threading.Event()
 
     def watch():
-        if not answered.wait(min(stall, timeout)):
+        limit = timeout if stall is None else min(stall, timeout)
+        if not answered.wait(limit):
             stalled.set()
             kill_task(process)
 
@@ -464,7 +466,8 @@ def _run_task(task, mode, base, timeout, model, name, directory):
         result["stderr_tail"] = redacted_tail(stderr_log)
     report = directory / "report.md"
     if texts:
-        report_text = texts[-1]
+        # Keep every text part; the final answer may arrive in more than one piece.
+        report_text = "\n\n".join(texts)
     else:
         # An empty file cannot be uploaded as a release asset, so the report says why.
         reason = result.get("error", "none")
