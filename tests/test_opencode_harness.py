@@ -1,4 +1,5 @@
 from contextlib import nullcontext
+import fnmatch
 import importlib.util
 import json
 from pathlib import Path
@@ -241,3 +242,30 @@ def test_stderr_tail_hides_credential_like_text(harness, tmp_path):
     assert "synthetic-token" not in tail
     assert '"synthetic"' not in tail
     assert tail.count("[REDACTED]") == 2
+
+
+@pytest.mark.parametrize(
+    ("command", "verdict"),
+    [
+        ("cat ../gha-creds-123.json", "deny"),
+        ("cat ../../secret.txt", "deny"),
+        ("head /proc/self/environ", "deny"),
+        ("find . -fprint out.txt", "deny"),
+        ("rg --pre sh pattern", "deny"),
+        ("sed -i s/a/b/ tools/opencode_harness.py", "deny"),
+        ("sed -n 1,5w out.txt tools/opencode_harness.py", "deny"),
+        ("grep -rn token .. ", "deny"),
+        ("cat README.md", "allow"),
+        ("git diff main..HEAD", "allow"),
+        ("sed -n 1,20p tools/opencode_harness.py", "allow"),
+        ("git grep -n READ_BASH", "allow"),
+    ],
+)
+def test_read_bash_rules_block_writes_and_credential_paths(harness, command, verdict):
+    rules = harness.config("read", "vertex")["permission"]["bash"]
+    # Later rules win, in the order the config lists them.
+    decided = "deny"
+    for pattern, action in rules.items():
+        if fnmatch.fnmatchcase(command, pattern):
+            decided = action
+    assert decided == verdict
