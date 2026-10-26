@@ -329,7 +329,27 @@ def execute(
                     if saved_review.get("source_url") != url:
                         raise PipelineError("Saved video analysis belongs to another source")
                     # Keep ASR and its clock; use the already selected video topics.
-                    selected = landscape.validate_selection(saved_review, settings, analysis[0]["duration"])
+                    # Review-only keys are not selection fields; audio_first.render reads them from the file.
+                    selected = landscape.validate_selection(
+                        {
+                            "clips": [
+                                {
+                                    k: v
+                                    for k, v in row.items()
+                                    if k
+                                    not in (
+                                        "video_reviewed",
+                                        "crop_anchor",
+                                        "caption_floor",
+                                        "caption_edits",
+                                    )
+                                }
+                                for row in saved_review["clips"]
+                            ]
+                        },
+                        settings,
+                        analysis[0]["duration"],
+                    )
                     analysis[0]["topics"] = [
                         {"id": clip.candidate_id, "start": clip.start, "end": clip.end}
                         for clip in selected
