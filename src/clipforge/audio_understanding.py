@@ -477,7 +477,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
                 f"topics-{index}",
                 "今回の全体把握用音声窓について話題区間だけを返します。"
                 f"この窓は元配信の{start}秒から{start + length}秒で、添付音声の長さは{length}秒です。"
-                f"採用候補は{settings.min_seconds}〜{settings.max_seconds}秒で、話が自然に一区切りする範囲です。"
+                f"採用候補の長さの目安は{settings.min_seconds}〜{settings.max_seconds}秒ですが、短くても長くても自然な話題の区切りを優先してください。"
                 "JSON {audio_access:'heard',topics:[{start:秒,end:秒,title,reason,confidence:0から1}]}。"
                 "start/endは添付した今回の音声窓の先頭を0秒とする秒数です。",
                 path,
