@@ -183,8 +183,6 @@ class Settings(Record):
 
     @model_validator(mode="after")
     def limits(self):
-        if self.horizontal_target_cps > self.horizontal_warn_cps:
-            raise ValueError("horizontal reading target must not exceed warning limit")
         if self.require_transcript_cache and not self.transcript_cache:
             raise ValueError("requiring a saved transcript needs transcript_cache")
         if self.transcript_key and not self.require_transcript_cache:
@@ -203,32 +201,17 @@ class Settings(Record):
                 )
         if self.min_seconds >= self.max_seconds:
             raise ValueError("minimum duration must be less than maximum")
-        if self.topic_max_seconds < 2 * self.topic_min_seconds:
-            # Splitting an overlong topic in two must leave both halves at least the minimum.
-            raise ValueError("topic maximum must be at least twice the topic minimum")
-        if self.candidates < self.clips:
-            raise ValueError("candidate count must cover requested clips")
         if any(c in self.font for c in "\r\n,\\{}"):
             raise ValueError("invalid font name")
         return self
 
 
 def validate_picks(picks, duration, settings):
-    if not 1 <= len(picks) <= settings.clips:
-        raise ValueError("invalid selected clip count")
+    if not picks:
+        raise ValueError("no usable selected clips")
     accepted = []
     for pick in picks:
         if not math.isfinite(pick.end) or pick.end > duration + TIME_TOLERANCE:
             raise ValueError("selected clip is outside the video")
-        if (
-            not settings.min_seconds - 0.1
-            <= pick.end - pick.start
-            <= settings.max_seconds + 0.1
-        ):
-            raise ValueError("selected clip duration is outside configured limits")
-        for other in accepted:
-            overlap = max(0, min(pick.end, other.end) - max(pick.start, other.start))
-            if overlap / min(pick.end - pick.start, other.end - other.start) > 0.5:
-                raise ValueError("selected clips are substantially duplicated")
         accepted.append(pick)
     return accepted

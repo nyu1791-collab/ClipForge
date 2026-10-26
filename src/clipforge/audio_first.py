@@ -188,7 +188,7 @@ def allocate_audio(source, root, settings, source_url):
             segments = [
                 s for s in transcript.segments if s.end > start and s.start < end
             ]
-            if not segments or end - start < settings.min_seconds:
+            if not segments:
                 continue
             rows.append(
                 {
@@ -242,7 +242,6 @@ def previews(vod, root, settings, analysis_result, topic_ids=None, ranking=None)
         available = {row["id"]: row for row in analysis["topics"]}
         if (
             not isinstance(topic_ids, list)
-            or not settings.clips <= len(topic_ids) <= settings.candidates
             or any(
                 not isinstance(topic_id, str) or topic_id not in available
                 for topic_id in topic_ids

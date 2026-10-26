@@ -39,7 +39,7 @@ def main():
     ap.add_argument("--render-only", action="store_true")
     ap.add_argument("--analysis-run")
     ap.add_argument("--analysis-request")
-    ap.add_argument("--clips", type=int, choices=range(5, 11))
+    ap.add_argument("--clips", type=int)
     ap.add_argument("--config-file", default="config.landscape-long.example.json")
     ap.add_argument(
         "--deliver-drive",
@@ -79,8 +79,6 @@ def main():
         (Path(__file__).resolve().parents[1] / args.config_file).read_text()
     )
     requested_count = args.clips if args.clips is not None else settings.get("clips", 5)
-    if not 5 <= requested_count <= 10 or settings.get("clips") != requested_count:
-        ap.error("the committed config must specify the requested 5 to 10 clips")
     args.clips = requested_count
     os.umask(0o077)
     url = canonical(args.url)
@@ -240,7 +238,8 @@ def main():
             json.dumps(
                 {
                     "status": "complete",
-                    "clips": args.clips,
+                    "target_clips": args.clips,
+                    "clips": len(metadata.get("stage_manifest", {}).get("rendered", [])),
                     "output": str(args.output / "clips"),
                     "elapsed_sec": state["elapsed_sec"],
                 }

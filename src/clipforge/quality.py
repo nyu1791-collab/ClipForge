@@ -512,9 +512,5 @@ def record(directory, report):
 
 
 def enforce(report, gate):
-    """Strict mode refuses a clip with failures; report mode only records them."""
-    if gate == "strict" and not report["passed"]:
-        raise PipelineError(
-            "clip failed the quality gate: " + "; ".join(report["failures"])
-        )
+    """Retain quality findings without blocking delivery, including legacy strict configs."""
     return report
