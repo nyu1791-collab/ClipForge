@@ -37,6 +37,7 @@ SETTINGS_FIELDS = {
     "height",
     "encode_preset",
     "caption",
+    "caption_preserve_text",
     "caption_scale",
     "caption_lift",
     "font",

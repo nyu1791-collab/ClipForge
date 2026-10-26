@@ -20,6 +20,7 @@ from .gemini_audio_editor import (
 )
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript, Segment, SelectedClip
+from .sound_effects import prepare_cues
 from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
@@ -27,6 +28,8 @@ from .terminology import RESEARCH_INSTRUCTIONS, grounded_terms
 
 WINDOW_SECONDS = 5400
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+EDITORIAL_RULES_FILE = PROMPT_DIR / "gemini_editorial_rulebook_ja.md"
+SUBTITLE_POLICY = "meaning_preserving_compact_v1"
 TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
 TRANSCRIPTION_CHUNK_SECONDS = 60
@@ -61,9 +64,24 @@ class Client:
 
     def generate(self, phase, prompt, audio=None, research=False):
         rule_file = rules_file_for_phase(phase)
-        rule_text = (
-            rule_file.read_text(encoding="utf-8").strip() if rule_file else ""
-        )
+        # All director calls receive the common book, plus their stage rules.
+        # A missing/empty book is a deployment error, never a silent prompt fallback.
+        rule_files = [] if research else [EDITORIAL_RULES_FILE]
+        if rule_file:
+            rule_files.append(rule_file)
+        rule_parts, rule_sources = [], []
+        for path in rule_files:
+            text = path.read_text(encoding="utf-8").strip()
+            if not text:
+                raise PipelineError("Required Gemini rulebook is empty: " + path.name)
+            rule_parts.append(text)
+            rule_sources.append(
+                {
+                    "file": str(path.relative_to(PROMPT_DIR.parent)),
+                    "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                }
+            )
+        rule_text = "\n\n".join(rule_parts)
         audio_items = []
         if audio:
             audio_items = audio if isinstance(audio, list) else [("添付音声", audio)]
@@ -97,7 +115,7 @@ class Client:
                 if r["phase"] == phase and r.get("finish_reason") == "STOP"
                 and (
                     r.get("prompt_sha256") == prompt_sha256
-                    or (not rule_file and not r.get("prompt_sha256"))
+                    or (not rule_files and not r.get("prompt_sha256"))
                 )
             ]
             if entries:
@@ -151,9 +169,10 @@ class Client:
             "status": "submitted",
             "started_at": time.time(),
         }
-        if rule_file:
+        if rule_files:
             row.update(
-                prompt_rules_file=str(rule_file.relative_to(PROMPT_DIR.parent)),
+                prompt_rules_file=" + ".join(source["file"] for source in rule_sources),
+                prompt_rules_sources=rule_sources,
                 prompt_rules_sha256=hashlib.sha256(
                     rule_text.encode("utf-8")
                 ).hexdigest(),
@@ -317,7 +336,7 @@ def transcribe_selected_clip(
 ):
     """Transcribe only a chosen clip, in short timestamp-local audio pieces."""
     duration = clip.end - clip.start
-    segments = []
+    segments, sound_effects = [], []
     for part_index, window in enumerate(transcription_windows(duration), 1):
         chunk_path = output / f"transcript-audio-{clip_index}-{part_index:03}.ogg"
         if not chunk_path.is_file():
@@ -328,7 +347,7 @@ def transcribe_selected_clip(
                 window["input_duration"],
                 "24k",
             )
-        audio_parts = [("字幕対象音声（このパートだけを文字起こし）", chunk_path)]
+        audio_parts = [("字幕対象音声（このパートだけを意味を保って短文化）", chunk_path)]
         audio_parts.extend(
             (
                 f"話者参照音声 {speaker['speaker_id']}（識別だけに使用）",
@@ -337,6 +356,8 @@ def transcribe_selected_clip(
             for speaker in registry
         )
         request = {
+            "subtitle_policy": SUBTITLE_POLICY,
+            "task": "必読ルールブックに従い、原音の意味と口調に近い短い字幕と、必要な効果音指示を同じ応答で作る。",
             "topic_context": {"title": clip.title, "reason": clip.reason},
             "target_audio_duration": window["input_duration"],
             "target_time_range_to_transcribe": {
@@ -358,9 +379,16 @@ def transcribe_selected_clip(
                     {
                         "start": "字幕対象音声パート内の秒数",
                         "end": "字幕対象音声パート内の秒数",
-                        "text": "実際の発話",
+                        "text": "元発言の意味・口調・確かさを保つ、読みやすく短文化した表示字幕",
                         "speaker_id": "speaker_1〜speaker_6 または unknown",
                         "confidence": "0〜1",
+                    }
+                ],
+                "sound_effects": [
+                    {
+                        "at": "字幕対象音声パート内の秒数",
+                        "kind": "soft_pop / light_chime / transition_tick",
+                        "reason": "実際の発言に基づく採用理由。不要なら空配列",
                     }
                 ],
             },
@@ -372,6 +400,11 @@ def transcribe_selected_clip(
         )
         if value.get("audio_access") != "heard":
             raise PipelineError("Selected audio transcription is incomplete/unavailable")
+        for cue in prepare_cues(value.get("sound_effects", []), window["input_duration"]):
+            if window["core_start_local"] <= cue["at"] < window["core_end_local"]:
+                sound_effects.append(
+                    {**cue, "at": round(cue["at"] + window["input_start"], 3)}
+                )
         rows = value.get("segments", [])
         if not isinstance(rows, list):
             rows = []
@@ -435,7 +468,12 @@ def transcribe_selected_clip(
             )
             known.add(speaker)
 
-    return {"audio_access": "heard", "complete": True, "segments": segments}
+    return {
+        "audio_access": "heard",
+        "complete": True,
+        "segments": segments,
+        "sound_effects": prepare_cues(sound_effects, duration),
+    }
 
 
 def plan(audio, url, output, settings, resume=None, continue_missing=False):
@@ -557,12 +595,19 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
                 }
             )
             client.save()
-            selection.append({**clip.model_dump(), "speaker_turns": turns})
+            selection.append(
+                {
+                    **clip.model_dump(),
+                    "speaker_turns": turns,
+                    "sound_effects": value["sound_effects"],
+                }
+            )
             transcripts.append(transcript.model_dump())
         write_json(
             output / "selected-transcripts.json",
             {
                 "timestamp_source": "gemini_estimated",
+                "subtitle_policy": SUBTITLE_POLICY,
                 "transcription_window_seconds": TRANSCRIPTION_CHUNK_SECONDS,
                 "transcription_context_seconds": TRANSCRIPTION_CONTEXT_SECONDS,
                 "clips": transcripts,
@@ -572,6 +617,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             output / "final-selection.json",
             {
                 "selection_basis": "audio_understanding",
+                "subtitle_policy": SUBTITLE_POLICY,
                 "source_url": url,
                 "clips": selection,
             },
@@ -580,6 +626,8 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             status="complete",
             timestamp_alignment="not_forced_aligned",
             timestamp_method="selected_audio_60_second_windows",
+            subtitle_policy=SUBTITLE_POLICY,
+            sound_effects_status="planned_not_rendered",
         )
     except Exception:
         client.record["status"] = "failed"
@@ -601,10 +649,18 @@ def render(review, transcripts_file, output, settings):
     )
     value = json.loads(review.read_text())
     data = json.loads(transcripts_file.read_text())
+    if data.get("subtitle_policy") == SUBTITLE_POLICY:
+        # Edited text has no word alignment; show the phrase as a whole and preserve it.
+        settings = settings.model_copy(
+            update={"caption_preserve_text": True, "caption": "plain"}
+        )
     clips = validate_selection(
         {
             "clips": [
-                {k: v for k, v in c.items() if k != "speaker_turns"}
+                {
+                    k: v for k, v in c.items()
+                    if k not in {"speaker_turns", "sound_effects"}
+                }
                 for c in value["clips"]
             ]
         },
@@ -658,6 +714,7 @@ def render(review, transcripts_file, output, settings):
                         }
                     ),
                     speaker_turns=value["clips"][index - 1]["speaker_turns"],
+                    sound_effects=value["clips"][index - 1].get("sound_effects", []),
                 )
             )
         write_json(

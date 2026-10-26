@@ -370,12 +370,17 @@ def _loudness_args(measured):
     return text
 
 
-def _audio_tail(settings, duration, measured):
+def _audio_tail(settings, duration, measured, sound_effects=None):
     fade = settings.fade_seconds
-    tail = (
-        f"[mix]{_loudness_args(measured)},aresample={AUDIO_RATE},"
-        f"alimiter=limit={PEAK_LIMIT}:level=disabled:attack=5:release=50"
-    )
+    tail = f"[mix]{_loudness_args(measured)},aresample={AUDIO_RATE}"
+    if sound_effects:
+        from .sound_effects import mix_graph
+
+        tail += ",aformat=channel_layouts=stereo[voice];"
+        tail += mix_graph(sound_effects, duration, AUDIO_RATE) + ";[accented]"
+    else:
+        tail += ","
+    tail += f"alimiter=limit={PEAK_LIMIT}:level=disabled:attack=5:release=50"
     if fade > 0 and duration > 2 * fade:
         tail += f",afade=t=in:st=0:d={fade:.3f},afade=t=out:st={duration - fade:.3f}:d={fade:.3f}"
     return tail + "[aout]"
@@ -389,6 +394,7 @@ def render(
     ass=None,
     chat_ass=None,
     crop_x=None,
+    sound_effects=None,
 ):
     """Render one clip with its captions and, optionally, the chat column."""
     width, height = frame_size(settings)
@@ -426,8 +432,12 @@ def render(
         )
     ]
     if has_audio:
+        from .sound_effects import prepare_cues
+
         graph.append(_audio_graph())
-        graph.append(_audio_tail(settings, duration, None))
+        graph.append(
+            _audio_tail(settings, duration, None, prepare_cues(sound_effects, duration))
+        )
     command = [
         "ffmpeg",
         "-nostdin",
