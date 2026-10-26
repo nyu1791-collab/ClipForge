@@ -55,3 +55,25 @@ class Measure:
 
     def width(self, text):
         return self.font.getlength(text)
+
+
+class AssMeasure(Measure):
+    """Widths on libass's ascender/descender size scale, with room for bold glyphs.
+
+    Pillow sizes by em; libass sizes by the font's full ascender/descender height.
+    For Noto CJK the difference is substantial: em measurements prematurely wrap
+    a caption occupying only about 70 percent of its intended screen width.
+    """
+
+    def __init__(self, path, size):
+        super().__init__(path, size)
+        font = TTFont(str(path), fontNumber=0, lazy=True)
+        try:
+            self.ratio = font["head"].unitsPerEm / (
+                font["hhea"].ascent - font["hhea"].descent
+            )
+        finally:
+            font.close()
+
+    def width(self, text):
+        return super().width(text) * self.ratio * 1.04

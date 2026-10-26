@@ -1,3 +1,5 @@
+> 2026-10-26：実行入口は公開ClipForgeへ統合済みです。Colab認証Secretの登録先も`nyu1791-collab/ClipForge`です。`tools/configure_colab_oauth.py --login`の既定先を修正しました。非公開workerへの登録だけでは公開ClipForgeのActionsへ認証情報は渡りません。以下の非公開worker前提は旧手順です。
+
 # ActionsからColabを自動起動
 
 対象アカウントは **n.yu17919191@gmail.com** です。Google公式 [google-colab-cli](https://github.com/googlecolab/google-colab-cli) 0.7.5のSDKを使い、Actions実行時に専用ランタイムを作り、処理・結果回収後に解放します。Colab Enterpriseや別のGPUクラウドは作成しません。

@@ -13,20 +13,12 @@
           "type": "string",
           "required": true,
           "description": "One explicit coding task; no automatic audit task"
-        },
-        "mode": {
-          "type": "choice",
-          "options": [
-            "read",
-            "write"
-          ],
-          "default": "read"
         }
       }
     }
   },
   "permissions": {
-    "contents": "write",
+    "contents": "read",
     "id-token": "write"
   },
   "concurrency": {
@@ -37,7 +29,7 @@
     "task": {
       "if": "github.repository == 'nyu1791-collab/ClipForge'",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 25,
+      "timeout-minutes": 35,
       "steps": [
         {
           "name": "Require private storage credentials before processing",
@@ -91,10 +83,9 @@
           "env": {
             "GOOGLE_APPLICATION_CREDENTIALS": "${{ steps.vertex.outputs.credentials_file_path }}",
             "CLIPFORGE_OPENCODE_BIN": "${{ runner.temp }}/opencode/node_modules/.bin/opencode",
-            "CLIPFORGE_AGENT_STATE": "${{ runner.temp }}/opencode-state",
-            "TASK_MODE": "${{ inputs.mode }}"
+            "CLIPFORGE_AGENT_STATE": "${{ runner.temp }}/opencode-state"
           },
-          "run": "python3 tools/opencode_harness.py --mode \"$TASK_MODE\" --model vertex --task \"$RUNNER_TEMP/opencode-task.md\" --parallel 1 --timeout 900"
+          "run": "python3 tools/opencode_harness.py --task \"$RUNNER_TEMP/opencode-task.md\" --timeout 1800"
         },
         {
           "name": "Save the task report privately",
@@ -102,7 +93,7 @@
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "python3 - <<'PYCODE'\nimport os,pathlib,shutil,json,subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])\nreports=root/'opencode-report';reports.mkdir(exist_ok=True)\nfor result in (root/'opencode-state/opencode-agents/runs').glob('*/result.json'):\n data=json.loads(result.read_text())\n shutil.copyfile(result,reports/'result.json')\n src=result.parent/'report.md'\n if src.exists():shutil.copyfile(src,reports/'report.md')\n if data.get('mode')=='write':\n  diff=subprocess.run(['git','-C',data['workdir'],'diff','--binary'],capture_output=True,check=True)\n  (reports/'changes.patch').write_bytes(diff.stdout)\nPYCODE\nif [ -f \"$RUNNER_TEMP/opencode-report/result.json\" ]; then\n gh release create \"clipforge-opencode-$GITHUB_RUN_ID\" \"$RUNNER_TEMP/opencode-report/\"* --repo \"$CLIPFORGE_STORAGE_REPO\" --latest=false --title \"OpenCode task $GITHUB_RUN_ID\" --notes 'Private task result; no automatic retry.'\nfi"
+          "run": "python3 - <<'PYCODE'\nimport os,pathlib,shutil,json,subprocess\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])\nreports=root/'opencode-report';reports.mkdir(exist_ok=True)\nfor result in (root/'opencode-state/opencode-agents/runs').glob('*/result.json'):\n data=json.loads(result.read_text())\n shutil.copyfile(result,reports/'result.json')\n src=result.parent/'report.md'\n if src.exists():shutil.copyfile(src,reports/'report.md')\nPYCODE\nif [ -f \"$RUNNER_TEMP/opencode-report/result.json\" ]; then\n gh release create \"clipforge-opencode-$GITHUB_RUN_ID\" \"$RUNNER_TEMP/opencode-report/\"* --repo \"$CLIPFORGE_STORAGE_REPO\" --latest=false --title \"OpenCode task $GITHUB_RUN_ID\" --notes 'Private task result; no automatic retry.'\nfi\nif [ -f \"$RUNNER_TEMP/opencode-report/result.json\" ]; then\n  for f in \"$RUNNER_TEMP/opencode-report/\"*; do\n    name=$(basename \"$f\")\n    gh api --method PUT \"repos/$CLIPFORGE_STORAGE_REPO/contents/opencode-reports/$GITHUB_RUN_ID/$name\" -f message=\"OpenCode report $GITHUB_RUN_ID $name\" -f branch=opencode-reports -f content=\"$(base64 -w0 \"$f\")\" >/dev/null || echo \"could not store $name in the private repository\"\n  done\nfi"
         }
       ],
       "env": {

@@ -186,8 +186,13 @@ def stage_request():
     ):
         raise ControlError("Invalid audio stage request")
     review = Path(os.environ.get("REVIEW_FILE", "")).read_text(encoding="utf-8")
-    # The workflow input is bounded at 60,000 bytes; this is the same bound for the file.
-    if len(review.encode()) > 60_000:
+    # Private audio-editor selections include speaker turns and sparse text edits.
+    editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
+    if editorial and not re.fullmatch(
+        r"clipforge-kick-editorial-(?:replay-)?[0-9]+", editorial
+    ):
+        raise ControlError("Invalid audio review release")
+    if len(review.encode()) > (4 * 1024**2 if editorial else 60_000):
         raise ControlError("Review is too large")
     json.loads(review)
     stage["review"] = review
@@ -388,6 +393,13 @@ class Controller:
         }
         if record["mode"] == "audio-stage":
             payload["youtube_cookies_b64"] = os.environ.get("YOUTUBE_COOKIES_B64", "")
+            editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
+            if editorial:
+                if not re.fullmatch(
+                    r"clipforge-kick-editorial-(?:replay-)?[0-9]+", editorial
+                ):
+                    raise ControlError("Invalid audio review release")
+                payload["audio_review_release"] = editorial
         # Google OAuth/Colab proxy credentials are NOT uploaded to the GPU worker.
         for name in ("url", "token", "endpoint", "status"):
             payload.pop(name, None)

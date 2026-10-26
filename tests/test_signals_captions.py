@@ -45,7 +45,7 @@ def test_subtitle_time_layout_escaping_and_formats(
     )
     for event in ass:
         lines = event.plaintext.splitlines()
-        assert len(lines) <= 2
+        assert len(lines) <= (3 if aspect == "16:9" else 2)
         assert all(measure.width(line) <= line_px for line in lines)
 
 
@@ -387,7 +387,7 @@ def test_a_two_line_caption_is_balanced_at_a_word_edge(monkeypatch):
     assert captions.wrap_breaks(text, FixedWidth(), 100) == [7]
 
 
-def test_landscape_captions_keep_to_thirteen_full_width_characters_a_line(
+def test_landscape_captions_keep_to_thirty_full_width_characters_a_line(
     tmp_path, settings
 ):
     settings.aspect, settings.height = "16:9", 1080
@@ -471,7 +471,7 @@ def test_chat_panel_moves_caption_margins_into_the_video_area(tmp_path, settings
         column = 480 if chat_panel else 0
         assert subtitles.styles["Default"].marginl == margin
         assert subtitles.styles["Default"].marginr == margin + column
-        limit = 9 if chat_panel else 13
+        limit = 22 if chat_panel else 30
         for event in subtitles:
             for line in event.plaintext.splitlines():
                 assert len(line) <= limit
@@ -538,8 +538,8 @@ def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
     subtitles = pysubs2.load(str(tmp_path / "captions.ass"))
     style = subtitles.styles["Default"]
     assert style.fontsize == 72
-    # The band under the 810 px picture is 270 px; two 72 px lines are centred in it.
-    assert style.marginv == 63
+    # The band under the 810 px picture is 270 px; three 72 px lines fit with padding.
+    assert style.marginv == 27
     assert style.marginl == captions.margin_px(1080)
     assert style.marginr == captions.margin_px(1080) + 480
     # The credit stays on the picture: its bottom edge is 16 px above the picture's bottom.
@@ -801,7 +801,7 @@ def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
     ass = quality.caption_events(tmp_path / "captions.ass")
     srt = quality.caption_events(tmp_path / "captions.srt")
     assert ass and ass == srt
-    if repeats == 2:
+    if repeats == 2 and aspect != "16:9":
         assert len(ass) >= 2
     from clipforge.caption_breaks import NO_LINE_START
 

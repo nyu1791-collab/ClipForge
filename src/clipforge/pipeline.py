@@ -81,7 +81,9 @@ def _auto_layout_window(source, start, end, events, anchor, keep):
     return auto_layout.plan(source, start, end, events, keep=keep, anchor=anchor)
 
 
-def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
+def chat_layout(
+    source, clip, transcript, settings, crop_anchor="auto", speaker_turns=None
+):
     """Crop position and caption lifts for a chat render with fit fill.
 
     crop_anchor "auto" takes auto_layout's choice; left, center and right fix the crop and only
@@ -95,7 +97,12 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
     try:
         events = [
             (clip.start + start, clip.start + end)
-            for start, end in caption_spans(transcript, clip, settings)
+            for start, end in caption_spans(
+                transcript,
+                clip,
+                settings,
+                **({"speaker_turns": speaker_turns} if speaker_turns else {}),
+            )
         ]
         if crop_anchor == "auto":
             plan = _auto_layout_plan(source, clip.start, clip.end, events, keep)
@@ -130,7 +137,7 @@ def chat_layout(source, clip, transcript, settings, crop_anchor="auto"):
         }
 
 
-def standard_layout(source, clip, transcript, settings):
+def standard_layout(source, clip, transcript, settings, speaker_turns=None):
     """Caption lifts for a 16:9 render without the chat column, from the source picture.
 
     The window is the whole picture, or the centred crop of a source wider than 16:9 when framing
@@ -157,7 +164,12 @@ def standard_layout(source, clip, transcript, settings):
             )
         events = [
             (clip.start + start, clip.start + end)
-            for start, end in caption_spans(transcript, clip, settings)
+            for start, end in caption_spans(
+                transcript,
+                clip,
+                settings,
+                **({"speaker_turns": speaker_turns} if speaker_turns else {}),
+            )
         ]
         plan = _auto_layout_window(
             source, clip.start, clip.end, events, "center", share
@@ -187,7 +199,9 @@ def _with_floor(layout, count, floor):
     return {**layout, "lifts": auto_layout.apply_floor(lifts, floor), "floor": floor}
 
 
-def landscape_layout(source, clip, transcript, settings, crop_anchor, caption_floor):
+def landscape_layout(
+    source, clip, transcript, settings, crop_anchor, caption_floor, speaker_turns=None
+):
     """The caption layout of a 16:9 render, or None when the render has none.
 
     With the chat panel's fill fit the layout is chat_layout's (crop and lifts); the other chat fits
@@ -206,14 +220,34 @@ def landscape_layout(source, clip, transcript, settings, crop_anchor, caption_fl
                     "caption_floor needs the chat fill fit or no chat panel"
                 )
             return None
-        layout = chat_layout(source, clip, transcript, settings, crop_anchor)
+        layout = chat_layout(
+            source,
+            clip,
+            transcript,
+            settings,
+            crop_anchor,
+            **({"speaker_turns": speaker_turns} if speaker_turns else {}),
+        )
     elif settings.caption_lift or caption_floor is not None:
-        layout = standard_layout(source, clip, transcript, settings)
+        layout = standard_layout(
+            source,
+            clip,
+            transcript,
+            settings,
+            **({"speaker_turns": speaker_turns} if speaker_turns else {}),
+        )
     else:
         return None
     if caption_floor is None:
         return layout
-    count = len(caption_spans(transcript, clip, settings))
+    count = len(
+        caption_spans(
+            transcript,
+            clip,
+            settings,
+            **({"speaker_turns": speaker_turns} if speaker_turns else {}),
+        )
+    )
     return _with_floor(layout, count, caption_floor)
 
 
@@ -320,6 +354,7 @@ def render_clip(
     chat=None,
     crop_anchor="auto",
     caption_floor=None,
+    speaker_turns=None,
 ):
     """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel.
 
@@ -329,6 +364,13 @@ def render_clip(
     again, so chat may be None for it.
     """
     name = f"clip-{index:03}"
+    if speaker_turns:
+        from .speaker_captions import validate_turns
+
+        speaker_turns = validate_turns(speaker_turns, clip.end - clip.start)
+        # Keep old receipt keys when no annotations exist. Changing a speaker annotation
+        # must never reuse video burned with another color or another caption boundary.
+        key = fingerprint({"job": key, "speaker_turns": speaker_turns})
     target = root / name
     if crop_anchor not in CROP_ANCHORS:
         raise PipelineError("crop_anchor must be auto, left, center or right")
@@ -378,7 +420,13 @@ def render_clip(
     # The layout (chat crop and lifts, or caption lifts) is planned before the render key, so a
     # different plan is a different render.
     layout = landscape_layout(
-        source, clip, transcript, settings, crop_anchor, caption_floor
+        source,
+        clip,
+        transcript,
+        settings,
+        crop_anchor,
+        caption_floor,
+        **({"speaker_turns": speaker_turns} if speaker_turns else {}),
     )
     chat_inputs = _chat_inputs(chat) if settings.chat_panel else None
     layout_inputs = _layout_inputs(layout)
@@ -399,6 +447,7 @@ def render_clip(
                 directory,
                 settings,
                 lifts=layout["lifts"] if layout else None,
+                **({"speaker_turns": speaker_turns} if speaker_turns else {}),
             ),
         )
         info = timed(

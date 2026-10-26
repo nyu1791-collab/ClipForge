@@ -33,6 +33,10 @@ def main():
         choices=["nyu1791-collab/ClipForge", "nyu1791-collab/ai-model-workers"],
         default="nyu1791-collab/ClipForge",
     )
+    ap.add_argument("--workflow-ref", default="fix/pr18-verified-transfer")
+    ap.add_argument("--editorial-release", default="")
+    ap.add_argument("--continue-missing", action="store_true")
+    ap.add_argument("--render-only", action="store_true")
     ap.add_argument("--analysis-run")
     ap.add_argument("--analysis-request")
     ap.add_argument("--clips", type=int, choices=range(5, 11))
@@ -44,6 +48,22 @@ def main():
     )
     ap.add_argument("--timeout", type=int, default=7200)
     args = ap.parse_args()
+    if args.workflow_ref not in {"main", "fix/pr18-verified-transfer"}:
+        ap.error("workflow-ref must use a configured public execution branch")
+    if args.editorial_release and not re.fullmatch(
+        r"clipforge-kick-editorial-(?:replay-)?[0-9]+", args.editorial_release
+    ):
+        ap.error("invalid saved editorial release")
+    if args.continue_missing and not args.editorial_release:
+        ap.error("continue-missing requires editorial-release")
+    if args.render_only and not (
+        args.editorial_release and args.analysis_run and args.analysis_request
+    ):
+        ap.error(
+            "render-only requires editorial-release and the saved run/request pair"
+        )
+    if args.repository != "nyu1791-collab/ClipForge":
+        ap.error("new audio-understanding production runs from ClipForge")
     if not re.fullmatch("[a-f0-9]{40}", args.source_ref):
         ap.error("source-ref must be an exact commit SHA")
     if bool(args.analysis_run) != bool(args.analysis_request):
@@ -108,11 +128,7 @@ def main():
         }
         state["stages"].append(stage)
         save()
-        ref = (
-            "main"
-            if args.repository.endswith("/ClipForge")
-            else "fix/pr18-verified-transfer"
-        )
+        ref = args.workflow_ref
         gh(
             "api",
             "--method",
@@ -181,52 +197,26 @@ def main():
         )
 
     try:
-        if args.analysis_run:
-            run, request = dispatch(
-                "clipforge-stages.yml",
-                {
-                    "audio_stage": "previews",
-                    "worker": "cpu",
-                    "previous_run_id": args.analysis_run,
-                    "previous_request_id": args.analysis_request,
-                    "config_file": args.config_file,
-                },
-            )
-            name = "clipforge-result-" + request
-        else:
-            run, request = dispatch(
-                "clipforge.yml",
-                {
-                    "audio_url": url,
-                    "auto_previews": True,
-                    "settings_json": json.dumps(settings),
-                },
-            )
-            name = "clipforge-previews-" + request
-        metadata = read_transfer(run, name)
-        manifest = metadata["stage_manifest"]
-        if canonical(manifest["source_url"]) != url:
-            raise RuntimeError("Saved analysis belongs to a different source URL")
-        selection = manifest["automatic_selection"]
-        if len(selection["clips"]) != args.clips:
-            raise RuntimeError("Gemini selection count differs; no extra generation")
-        (args.output / "gemini-selection.json").write_text(
-            json.dumps(selection, ensure_ascii=False, indent=2)
-        )
         final_run, final_request = dispatch(
             "clipforge-stages.yml",
             {
-                "audio_stage": "render",
-                "worker": "colab-auto",
-                "previous_run_id": run,
-                "previous_request_id": request,
-                "review_json": json.dumps(selection, ensure_ascii=False),
+                "audio_stage": "render" if args.render_only else "understanding",
+                "worker": "colab-auto" if args.render_only else "cpu",
+                "previous_run_id": args.analysis_run or "",
+                "previous_request_id": args.analysis_request or "",
+                "source_url": url,
                 "config_file": args.config_file,
+                "editorial_release": args.editorial_release,
+                "continue_missing": args.continue_missing,
+                "auto_render": not args.render_only,
             },
         )
         state["render_run_id"] = final_run
         state["render_request_id"] = final_request
         save()
+        metadata = read_transfer(final_run, "clipforge-result-" + final_request)
+        if canonical(metadata["stage_manifest"]["source_url"]) != url:
+            raise RuntimeError("Rendered output belongs to another source URL")
         download(final_run, "clipforge-result-" + final_request, args.output / "clips")
         state["render_complete"] = True
         save()

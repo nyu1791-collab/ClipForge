@@ -324,6 +324,51 @@ def execute(
                     },
                 )
             elif mode == "render" and review_file is not None:
+                saved_review = json.loads(review_file.read_text())
+                if saved_review.get("selection_basis") in {
+                    "saved_video_analysis",
+                    "saved_asr_audio_review",
+                }:
+                    if saved_review.get("source_url") != url:
+                        raise PipelineError(
+                            "Saved video analysis belongs to another source"
+                        )
+                    # Keep ASR and its clock; use the already selected video topics.
+                    # Review-only keys are not selection fields; audio_first.render reads them from the file.
+                    selected = landscape.validate_selection(
+                        {
+                            "clips": [
+                                {
+                                    k: v
+                                    for k, v in row.items()
+                                    if k
+                                    not in (
+                                        "video_reviewed",
+                                        "crop_anchor",
+                                        "caption_floor",
+                                        "caption_edits",
+                                        "speaker_turns",
+                                    )
+                                }
+                                for row in saved_review["clips"]
+                            ]
+                        },
+                        settings,
+                        analysis[0]["duration"],
+                    )
+                    analysis[0]["topics"] = [
+                        {"id": clip.candidate_id, "start": clip.start, "end": clip.end}
+                        for clip in selected
+                    ]
+                    write_json(
+                        output / "previews.json",
+                        {
+                            "mode": "transcript",
+                            "analysis_key": analysis[0]["analysis_key"],
+                            "previews": [],
+                            "video_review_performed": False,
+                        },
+                    )
                 audio_first.render(
                     vod,
                     output,

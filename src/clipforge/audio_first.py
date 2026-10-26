@@ -16,6 +16,7 @@ from . import landscape, media, pipeline, topics
 from .kick_media import RANGE_FORMAT
 from .media_sources import canonical
 from .models import Transcript
+from .speaker_captions import validate_turns
 from .storage import (
     TIME_TOLERANCE,
     PipelineError,
@@ -392,6 +393,8 @@ def reviewed_clips(value, analysis, preview, settings):
     crop_anchors(value)
     caption_floors(value)
     caption_edits(value)
+    for row in value["clips"]:
+        validate_turns(row.get("speaker_turns", []), row["end"] - row["start"])
     cleaned = {
         "clips": [
             {
@@ -403,6 +406,7 @@ def reviewed_clips(value, analysis, preview, settings):
                     "crop_anchor",
                     "caption_floor",
                     "caption_edits",
+                    "speaker_turns",
                 )
             }
             for row in value["clips"]
@@ -608,6 +612,12 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
                     )
             if floors[index - 1] is not None:
                 chat_options["caption_floor"] = floors[index - 1]
+            if value["clips"][index - 1].get("speaker_turns"):
+                # Turns already use the clip-relative output clock. Source remux offsets
+                # apply only to the local transcript/video, never to these annotations.
+                chat_options["speaker_turns"] = value["clips"][index - 1][
+                    "speaker_turns"
+                ]
             row = pipeline.timed(
                 clip_timings,
                 "render",

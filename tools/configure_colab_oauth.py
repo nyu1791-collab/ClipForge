@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Register an already-authorized Google user with private Actions; never print tokens."""
+"""Register an already-authorized Google user with ClipForge Actions; never print tokens."""
 
 import argparse
 import json
@@ -7,7 +7,6 @@ import subprocess
 import sys
 
 from colab_actions import EXPECTED_ACCOUNT, ControlError, authenticated_client
-from colab_bundle import REPOSITORY
 
 
 def main():
@@ -16,6 +15,11 @@ def main():
         "--login",
         action="store_true",
         help="Run the one-time human Google consent flow first",
+    )
+    parser.add_argument(
+        "--repository",
+        choices=["nyu1791-collab/ClipForge", "nyu1791-collab/ai-model-workers"],
+        default="nyu1791-collab/ClipForge",
     )
     args = parser.parse_args()
     if args.login:
@@ -65,7 +69,7 @@ def main():
     if owner.stdout.strip() != "nyu1791-collab":
         raise ControlError("Use the authenticated GitHub repository owner connection")
     result = subprocess.run(
-        ["gh", "secret", "set", "COLAB_ADC_JSON", "--repo", REPOSITORY],
+        ["gh", "secret", "set", "COLAB_ADC_JSON", "--repo", args.repository],
         input=json.dumps(info),
         text=True,
         capture_output=True,
@@ -73,7 +77,7 @@ def main():
     )
     if result.returncode:
         raise ControlError(
-            "Private Actions secret registration failed; credential values were not displayed"
+            "Actions secret registration failed; credential values were not displayed"
         )
     print(
         "COLAB_ADC_JSON registered for the verified account. No runtime was allocated."

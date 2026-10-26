@@ -11,7 +11,7 @@
   },
   "jobs": {
     "audio-stage": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'cpu'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'cpu' && inputs.audio_stage != 'understanding'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 90,
       "env": {
@@ -160,7 +160,7 @@
       }
     },
     "colab-render": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'colab-auto'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'colab-auto' && inputs.audio_stage != 'understanding'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 100,
       "env": {
@@ -176,7 +176,8 @@
         "PYTHONUNBUFFERED": "1",
         "CLIPFORGE_PUBLIC_CACHE": "off",
         "RESULT_STORE": "${{ inputs.result_store }}",
-        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers",
+        "CLIPFORGE_AUDIO_REVIEW_RELEASE": "${{ inputs.editorial_release }}"
       },
       "steps": [
         {
@@ -197,8 +198,16 @@
           "timeout-minutes": 1
         },
         {
+          "name": "Load saved selected-only subtitles for render-only continuation",
+          "if": "inputs.editorial_release != ''",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "[[ \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
+        },
+        {
           "name": "Validate the clip render request",
-          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=60000\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
+          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=(pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json').read_text() if os.environ.get('CLIPFORGE_AUDIO_REVIEW_RELEASE') else os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=4*1024**2\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
         },
         {
           "uses": "actions/checkout@v4",
@@ -274,6 +283,251 @@
           "run": "echo \"::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG.\"\n{\n  echo '### Temporary private transfer remains'\n  echo \"The release \\`$INPUT_TAG\\` could not be confirmed deleted. Delete it with \\`tools/submit_job.py --cleanup-tag $INPUT_TAG\\`.\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
         }
       ]
+    },
+    "audio-understanding": {
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.audio_stage == 'understanding'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 55,
+      "env": {
+        "PYTHONPATH": "src",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
+      },
+      "steps": [
+        {
+          "name": "Require private storage access",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Dedicated private storage credential is missing.\"; exit 1; }"
+        },
+        {
+          "name": "Require the configured public Vertex execution branch",
+          "env": {
+            "CLIPFORGE_RUN_REF": "${{ github.ref }}"
+          },
+          "run": "[[ \"$CLIPFORGE_RUN_REF\" == refs/heads/fix/pr18-verified-transfer ]] || { echo \"Use the configured Vertex execution branch.\"; exit 1; }"
+        },
+        {
+          "name": "Validate pinned source and optional preserved audio identity",
+          "env": {
+            "SOURCE_REF": "${{ inputs.source_ref }}",
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "AUDIO_RUN": "${{ inputs.previous_run_id }}",
+            "AUDIO_REQUEST": "${{ inputs.previous_request_id }}"
+          },
+          "run": "[[ \"$SOURCE_REF\" =~ ^[a-f0-9]{40}$ ]]\nif [ -n \"$AUDIO_RUN\" ]; then [[ \"$AUDIO_RUN\" =~ ^[0-9]{1,20}$ ]] && [[ \"$AUDIO_REQUEST\" =~ ^[a-f0-9]{32}$ ]]; else test -z \"$AUDIO_REQUEST\"; fi"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "with": {
+            "version": "0.12.23"
+          }
+        },
+        {
+          "uses": "FedericoCarboni/setup-ffmpeg@36c6454b5a2348e7794ba2d82a21506605921e3d"
+        },
+        {
+          "name": "Install lightweight editing dependencies",
+          "timeout-minutes": 6,
+          "run": "uv sync --locked --no-dev --extra media-fetch"
+        },
+        {
+          "name": "Reuse original audio or acquire audio only; no ASR",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "ANALYSIS_RUN": "${{ inputs.analysis_run_id }}",
+            "ANALYSIS_REQUEST": "${{ inputs.analysis_request_id }}",
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "AUDIO_RUN": "${{ inputs.previous_run_id }}",
+            "AUDIO_REQUEST": "${{ inputs.previous_request_id }}"
+          },
+          "run": "if [ -n \"$AUDIO_RUN\" ]; then\n .venv/bin/python -m clipforge.release_transfer download \"$AUDIO_RUN\" \"clipforge-result-$AUDIO_REQUEST\" \"$RUNNER_TEMP/analysis\"\n .venv/bin/python - <<'PYCODE'\nimport json,os,pathlib\np=pathlib.Path(os.environ['RUNNER_TEMP'])/'analysis'\nassert json.loads((p/'manifest.json').read_text())['source_url']==os.environ['SOURCE_URL']\nassert (p/'audio.m4a').is_file()\nPYCODE\nelse\n .venv/bin/python -m clipforge.audio_understanding acquire --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/analysis\"\nfi"
+        },
+        {
+          "name": "Connect the designated Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "token_format": "access_token",
+            "access_token_lifetime": "3600s",
+            "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
+            "create_credentials_file": false,
+            "export_environment_variables": false
+          }
+        },
+        {
+          "name": "Restore saved editorial responses without resubmitting them",
+          "if": "inputs.editorial_release != ''",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}"
+          },
+          "run": "[[ \"$EDITORIAL_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/saved-editorial\"\ngh release download \"$EDITORIAL_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern '*.json' --dir \"$RUNNER_TEMP/saved-editorial\"\n"
+        },
+        {
+          "name": "3.8 audio topics then selected-only transcription; 3.5 terminology research",
+          "timeout-minutes": 45,
+          "env": {
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}",
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}",
+            "CONTINUE_MISSING": "${{ inputs.continue_missing }}",
+            "CONFIG_FILE": "${{ inputs.config_file }}"
+          },
+          "run": "[[ \"$CONFIG_FILE\" =~ ^config\\.[a-z0-9-]+\\.example\\.json$ ]] || exit 1\nextra=()\nif [ -n \"$EDITORIAL_RELEASE\" ]; then extra+=(--resume-from \"$RUNNER_TEMP/saved-editorial\"); fi\nif [ \"$CONTINUE_MISSING\" = true ]; then test -n \"$EDITORIAL_RELEASE\"; extra+=(--continue-missing); fi\n.venv/bin/python -m clipforge.audio_understanding plan --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/editorial\" --config \"$CONFIG_FILE\" \"${extra[@]}\"\n"
+        },
+        {
+          "name": "Save transcripts review and timing privately",
+          "if": "always()",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi"
+        }
+      ],
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      }
+    },
+    "selected-audio-render": {
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.audio_stage == 'understanding' && inputs.auto_render",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 100,
+      "env": {
+        "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+        "REQUEST_ID": "${{ inputs.request_id }}",
+        "INPUT_TAG": "${{ inputs.input_tag }}",
+        "AUDIO_STAGE": "render",
+        "PREVIOUS_RUN": "${{ inputs.previous_run_id }}",
+        "PREVIOUS_REQUEST": "${{ inputs.previous_request_id }}",
+        "CLIP_INDEX": "${{ inputs.clip_index }}",
+        "REVIEW_JSON": "${{ inputs.review_json }}",
+        "CONFIG_FILE": "${{ inputs.config_file }}",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_PUBLIC_CACHE": "off",
+        "RESULT_STORE": "${{ inputs.result_store }}",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers",
+        "CLIPFORGE_AUDIO_REVIEW_RELEASE": "clipforge-kick-editorial-${{ github.run_id }}"
+      },
+      "steps": [
+        {
+          "name": "Require private storage credentials before processing",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "STORE_MODE": "${{ inputs.result_store }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+        },
+        {
+          "name": "Select a compatible production source",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
+          },
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/01a3951037fa44bea8ec31a3813063c5cec4c830...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
+          "timeout-minutes": 1
+        },
+        {
+          "name": "Load completed selected-only subtitles for GPU rendering",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "mkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
+        },
+        {
+          "name": "Validate the clip render request",
+          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=(pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json').read_text()\nassert text and len(text.encode())<=4*1024**2\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "path": "clipforge-source",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "with": {
+            "version": "0.12.23",
+            "enable-cache": true,
+            "cache-dependency-glob": "clipforge-source/tools/colab-control-requirements.txt"
+          }
+        },
+        {
+          "name": "Install the locked Google Colab control SDK",
+          "id": "control",
+          "run": "uv venv \"$RUNNER_TEMP/colab-control\" --python 3.12\nuv pip install --python \"$RUNNER_TEMP/colab-control/bin/python\" --require-hashes \\\n  -r clipforge-source/tools/colab-control-requirements.txt\n"
+        },
+        {
+          "name": "Create the private transfer release for this clip",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "gh release create \"$INPUT_TAG\" --repo \"$CLIPFORGE_STORAGE_REPO\" --target main \\\n  --title \"$INPUT_TAG\" --latest=false \\\n  --notes 'Temporary private ClipForge clip transfer. Deleted after collection.'\n",
+          "if": "inputs.result_store != 'release'"
+        },
+        {
+          "name": "Allocate the cheapest runtime the account grants",
+          "env": {
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
+          },
+          "run": "REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  clipforge-source/tools/colab_actions.py start --mode audio-stage\n"
+        },
+        {
+          "name": "Render on Colab and publish final private outputs",
+          "env": {
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py run\n"
+        },
+        {
+          "name": "Release and verify removal of the runtime",
+          "if": "always() && steps.control.outcome == 'success'",
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py stop\n"
+        },
+        {
+          "name": "Delete the private transfer release",
+          "id": "input-cleanup",
+          "timeout-minutes": 10,
+          "if": "inputs.result_store != 'release' && always()",
+          "continue-on-error": true,
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "if ! [[ $INPUT_TAG =~ ^clipforge-input-[a-f0-9]{32}$ ]]; then\n  echo 'Unexpected temporary input tag; nothing was deleted.' >&2\n  exit 1\nfi\nif [ \"$(gh api \"repos/$CLIPFORGE_STORAGE_REPO\" --jq .private)\" != true ]; then\n  echo 'The worker repository must remain private; nothing was deleted.' >&2\n  exit 1\nfi\nif gh release view \"$INPUT_TAG\" --repo \"$CLIPFORGE_STORAGE_REPO\" >/dev/null 2>&1; then\n  gh release delete \"$INPUT_TAG\" --repo \"$CLIPFORGE_STORAGE_REPO\" --yes --cleanup-tag\n  echo 'Temporary private transfer release deleted.'\nelse\n  echo 'No temporary private transfer release remains.'\nfi\n"
+        },
+        {
+          "name": "Report a transfer release that could not be deleted",
+          "timeout-minutes": 5,
+          "if": "always() && inputs.result_store != 'release' && steps.input-cleanup.outcome != 'success'",
+          "run": "echo \"::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG.\"\n{\n  echo '### Temporary private transfer remains'\n  echo \"The release \\`$INPUT_TAG\\` could not be confirmed deleted. Delete it with \\`tools/submit_job.py --cleanup-tag $INPUT_TAG\\`.\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
+        }
+      ],
+      "needs": [
+        "audio-understanding"
+      ]
     }
   },
   "on": {
@@ -296,17 +550,20 @@
           "options": [
             "previews",
             "render",
-            "merge"
+            "merge",
+            "understanding"
           ],
           "required": true
         },
         "previous_run_id": {
           "type": "string",
-          "required": true
+          "required": false,
+          "default": ""
         },
         "previous_request_id": {
           "type": "string",
-          "required": true
+          "required": false,
+          "default": ""
         },
         "review_json": {
           "type": "string",
@@ -344,6 +601,24 @@
             "release"
           ],
           "default": "release"
+        },
+        "source_url": {
+          "type": "string",
+          "default": "",
+          "description": "Source URL for audio understanding; no full-source ASR"
+        },
+        "editorial_release": {
+          "type": "string",
+          "default": "",
+          "description": "Private saved responses to reuse before generating never-submitted phases"
+        },
+        "continue_missing": {
+          "type": "boolean",
+          "default": false
+        },
+        "auto_render": {
+          "type": "boolean",
+          "default": false
         }
       }
     }
