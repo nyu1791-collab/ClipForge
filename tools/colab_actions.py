@@ -80,8 +80,28 @@ def runtime_from_state(record):
     )
 
 
-def checked_execute(runtime, code, timeout):
-    outputs = runtime.execute_code(code, allow_stdin=False, timeout=timeout)
+def checked_execute(runtime, code, timeout, report_bootstrap=False):
+    def report(output):
+        # Only emit known progress markers and exception class names, never worker text.
+        markers = {
+            "CLIPFORGE_BOOTSTRAP_CLONE",
+            "CLIPFORGE_BOOTSTRAP_CHECKOUT",
+            "CLIPFORGE_BOOTSTRAP_WORKER",
+            "CLIPFORGE_BOOTSTRAP_DONE",
+        }
+        if output.get("output_type") == "stream":
+            for line in str(output.get("text", "")).splitlines():
+                if line.strip() in markers:
+                    print(line.strip(), flush=True)
+                elif re.fullmatch(r"CLIPFORGE_DIAG_[A-Za-z0-9_]{1,100}", line.strip()):
+                    print(line.strip(), flush=True)
+        elif output.get("output_type") == "error":
+            name = output.get("ename", "")
+            if isinstance(name, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,60}", name):
+                print("Colab kernel error type: " + name, flush=True)
+
+    kwargs = {"output_hook": report} if report_bootstrap else {}
+    outputs = runtime.execute_code(code, allow_stdin=False, timeout=timeout, **kwargs)
     if any(item.get("output_type") == "error" for item in outputs):
         raise ControlError("Colab code failed; no generation was retried")
     return outputs
@@ -431,12 +451,16 @@ import json, pathlib, runpy, subprocess, sys
 def _clipforge_bootstrap():
     payload_path = pathlib.Path({REMOTE_PAYLOAD_PATH!r})
     try:
+        print('CLIPFORGE_BOOTSTRAP_CLONE', flush=True)
         subprocess.run(['git','clone','--no-checkout','--filter=blob:none',{SOURCE_REPO!r},'/content/ClipForge'],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print('CLIPFORGE_BOOTSTRAP_CHECKOUT', flush=True)
         subprocess.run(['git','-C','/content/ClipForge','checkout','--detach',{source!r}],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         sys.path.insert(0, '/content/ClipForge/tools')
+        print('CLIPFORGE_BOOTSTRAP_WORKER', flush=True)
         runpy.run_path('/content/ClipForge/tools/colab_remote_job.py', run_name='__main__')
+        print('CLIPFORGE_BOOTSTRAP_DONE', flush=True)
     finally:
         payload_path.unlink(missing_ok=True)
 _clipforge_bootstrap()
@@ -447,9 +471,10 @@ del _clipforge_bootstrap
                 flush=True,
             )
             try:
-                checked_execute(runtime, bootstrap, 5100)
+                checked_execute(runtime, bootstrap, 5100, report_bootstrap=True)
             except Exception as error:
                 execution_error = error
+                print("Colab execution failed: " + type(error).__name__, flush=True)
                 try:
                     checked_execute(
                         runtime,
@@ -475,7 +500,11 @@ del _clipforge_bootstrap
             release_error = error
         try:
             self.collect(record, output, execution_error is not None, token)
-        except Exception:
+        except Exception as error:
+            detail = str(error)
+            if not re.fullmatch(r"RESULT_[A-Z_]+(?: \(HTTP [0-9]{3}\))?", detail):
+                detail = type(error).__name__
+            print("Colab result collection failed: " + detail, flush=True)
             if execution_error is not None:
                 raise execution_error from None
             raise

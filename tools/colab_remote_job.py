@@ -106,6 +106,7 @@ def publish_result(bundles, payload, output, report, timings):
                 )
     except Exception as error:
         report["result_error_type"] = type(error).__name__
+        print("CLIPFORGE_DIAG_PUBLISH_" + type(error).__name__, flush=True)
         return False
     return True
 
@@ -562,6 +563,13 @@ def main():
     except Exception as error:
         failed = True
         report["error_type"] = type(error).__name__
+        print(
+            "CLIPFORGE_DIAG_STAGE_"
+            + str(report.get("stage", "unknown")).replace("-", "_")
+            + "_"
+            + type(error).__name__,
+            flush=True,
+        )
     finally:
         if not publish_result(bundles, payload, output, report, timings):
             failed = True
