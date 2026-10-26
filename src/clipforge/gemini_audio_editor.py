@@ -195,7 +195,7 @@ def run(args):
     if statefile.exists():
         raise PipelineError("Audio editing already attempted; inspect saved results, no retry")
     token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
-    if not token:
+    if not token and not args.resume_from:
         raise PipelineError("Vertex identity is not connected")
     manifest = json.loads((args.analysis / "manifest.json").read_text())
     cache = json.loads((args.analysis / "asr-receipt.json").read_text())
@@ -221,11 +221,29 @@ def run(args):
     record["review_mode"] = "asr_first_sparse_corrections" if args.asr_first else "full_transcription"
     started = time.monotonic()
 
+    saved_receipt = None
+    if args.resume_from:
+        if not args.asr_first:
+            raise PipelineError("Saved response replay requires ASR-first mode")
+        saved_receipt = json.loads((args.resume_from / "audio-editor-receipt.json").read_text())
+        previous = saved_receipt.get("requests", [])
+        if saved_receipt.get("source_url") != manifest["source_url"] or len(previous) != 2 or any(r.get("finish_reason") != "STOP" or r.get("model") != "gemini-3.8-flash" or r.get("thinking_level") != "MEDIUM" for r in previous):
+            raise PipelineError("Saved responses are incompatible")
+        record.update(new_generation_requests=0, reused_saved_responses=True)
+
     def save():
         record["elapsed_sec"] = round(time.monotonic() - started, 3)
         write_json(statefile, record)
 
     def generate(model, thinking, phase, parts, schema, max_tokens):
+        if saved_receipt is not None:
+            original = next(r for r in saved_receipt["requests"] if r["phase"] == phase)
+            record["requests"].append(dict(original, reused_saved_response=True, status="response_received"))
+            record["generation_requests"] += 1
+            value = json.loads((args.resume_from / (phase + ".json")).read_text())
+            write_json(out / (phase + ".json"), value)
+            save()
+            return value
         body = {
             "contents": [{"role": "user", "parts": parts}],
             "generationConfig": {
@@ -463,10 +481,11 @@ def run(args):
 
         write_json(out / "review-slots.json", {"slots": slots, "fast_segment_ids": fast_ids})
         combined_audio = out / "selected-clips-combined.ogg"
-        prepare_selected_audio(
-            args.analysis / "audio.m4a", selection["clips"], combined_audio, gap_seconds=1
-        )
-        record["timings"]["selected_audio_prepare_and_merge_sec"] = round(time.monotonic() - tick, 3)
+        if saved_receipt is None:
+            prepare_selected_audio(args.analysis / "audio.m4a", selection["clips"], combined_audio, gap_seconds=1)
+            record["timings"]["selected_audio_prepare_and_merge_sec"] = round(time.monotonic() - tick, 3)
+        else:
+            record["selected_audio_reused"] = True
         record["selected_audio_prepare_mode"] = "single_ffmpeg_pass_from_preserved_source"
         record["selected_audio_layout"] = audio_layout
         record["fast_segment_count"] = len(fast_ids)
@@ -496,11 +515,11 @@ def run(args):
                 "audio_access, segments[{segment_id,text}], reviewed_fast_segment_ids, "
                 "uncertain_segment_ids, notes。指定IDを省略せず、前置きやコードフェンスは付けません。"
             )
-        record["selected_audio_preflight"] = inspect_audio_input(combined_audio, cursor)
+        record["selected_audio_preflight"] = saved_receipt["selected_audio_preflight"] if saved_receipt is not None else inspect_audio_input(combined_audio, cursor)
         save()
         careful = generate("gemini-3.8-flash", "MEDIUM", "careful-clip-transcript", [
             {"text": prompt + "\n音声配置:" + json.dumps(audio_layout, ensure_ascii=False)},
-            audio_part(combined_audio),
+            *([] if saved_receipt is not None else [audio_part(combined_audio)]),
         ], {
             "type": "OBJECT", "required": ["audio_access", "segments", "reviewed_fast_segment_ids", "uncertain_segment_ids", "notes"], "properties": {
                 "audio_access": {"type": "STRING", "enum": ["heard", "unavailable"]},
@@ -510,6 +529,9 @@ def run(args):
                 "notes": {"type": "ARRAY", "items": {"type": "STRING"}},
             },
         }, 65536)
+        record["audio_access_raw"] = careful.get("audio_access")
+        if str(careful.get("audio_access", "")).strip().casefold() in {"heard", "audio available", "audio_available"}:
+            careful["audio_access"] = "heard"
         rows = careful.get("segments", [])
         ids = [row["segment_id"] for row in rows]
         diagnostics = {
@@ -579,6 +601,7 @@ def main():
     parser.add_argument("--analysis", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path("config.landscape-long.example.json"))
+    parser.add_argument("--resume-from", type=Path, help="Replay saved responses without API calls or audio conversion")
     parser.add_argument("--asr-first", action="store_true", help="Reuse saved ASR; run selection and sparse audio corrections only")
     args = parser.parse_args()
     try:
