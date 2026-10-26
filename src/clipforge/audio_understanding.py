@@ -62,6 +62,10 @@ class Client:
         write_json(self.output / "audio-editor-receipt.json", self.record)
 
     def generate(self, phase, prompt, audio=None, research=False):
+        print(
+            json.dumps({"phase": phase, "status": "checking_saved_response"}),
+            flush=True,
+        )
         if self.resume:
             saved = json.loads((self.resume / "audio-editor-receipt.json").read_text())
             entries = [
@@ -76,10 +80,12 @@ class Client:
                 self.record["requests"].append({**entries[0], "reused": True})
                 write_json(self.output / (phase + ".json"), value)
                 self.save()
+                print(json.dumps({"phase": phase, "status": "reused"}), flush=True)
                 return value, entries[0].get("grounding", {})
             attempted = any(r["phase"] == phase for r in saved["requests"])
             if attempted or not self.continue_missing:
                 raise PipelineError("No complete saved response for " + phase)
+        print(json.dumps({"phase": phase, "status": "new_request"}), flush=True)
         token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
         if not token:
             raise PipelineError("Designated Vertex identity is not connected")
@@ -306,7 +312,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         for index, start in enumerate(range(0, math.ceil(duration), WINDOW_SECONDS)):
             length = min(WINDOW_SECONDS, duration - start)
             path = output / f"overview-{index}.ogg"
-            if not resume or continue_missing:
+            if not resume or (
+                continue_missing and not (resume / f"topics-{index}.json").exists()
+            ):
                 encode_audio(audio, path, start, length, "12k")
             value, _ = client.generate(
                 f"topics-{index}",
