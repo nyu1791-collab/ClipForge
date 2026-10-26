@@ -79,3 +79,7 @@ Actionsの`editorial_release`に保存済み応答の非公開Releaseタグを�
 ## URLからの通常入口
 
 `tools/produce_with_gemini.py URL --source-ref 40桁SHA --output /private/新規出力先`も新方式へ接続した。既定workflow-refは認証済みのfix/pr18-verified-transfer。全文ASRのworkflowを投入せず、understanding→選択字幕→GPU描画→回収を同じRunで待つ。保存済み元音声は--analysis-run/--analysis-request、保存済み応答は--editorial-release/--continue-missingで明示する。既存production-state.jsonのある出力先へ再投入しない。Drive納品は既存の--deliver-drive指定時に実行する。
+
+## 最新指示：制作を止める検査・監査を省略
+
+字幕IDの完全一致、モデルのcompleteフラグ、推定時刻の重複・範囲外による停止を廃止。追加のalignment-N/alignment-tail-N呼び出しも通常工程から外す。保存済みの時刻結果があれば再利用し、IDが欠けても元の字幕本文を保持する。時刻は描画できる範囲へ整形するが、音声への正確な同期を検査済みとは記録しない。

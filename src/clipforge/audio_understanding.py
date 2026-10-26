@@ -165,7 +165,7 @@ class Client:
 
 
 def selected_transcript(value, duration, offset=0):
-    if value.get("audio_access") != "heard" or value.get("complete") is not True:
+    if value.get("audio_access") != "heard":
         raise PipelineError("Selected audio transcription is incomplete/unavailable")
     rows, turns = [], []
     ordered = value.get("segments", [])
@@ -173,16 +173,15 @@ def selected_transcript(value, duration, offset=0):
         raise PipelineError("Expected a bounded subtitle list")
     for index, row in enumerate(ordered):
         start, end = row.get("start"), row.get("end")
-        if (
-            any(
-                type(x) not in (int, float) or not math.isfinite(x)
-                for x in (start, end)
-            )
-            or not 0 <= start < end <= duration
-        ):
-            raise PipelineError(
-                f"Invalid clip-relative timing at subtitle {index}: {start!r}..{end!r}, duration={duration}"
-            )
+        # Normalize only enough for a renderable subtitle; do not stop production
+        # on estimated timing, overlap, or an incomplete timing-ID list.
+        fallback = duration * index / max(1, len(ordered))
+        if type(start) not in (int, float) or not math.isfinite(start):
+            start = fallback
+        if type(end) not in (int, float) or not math.isfinite(end):
+            end = start + 1
+        start = max(0, min(start, max(0, duration - 0.01)))
+        end = min(duration, max(start + 0.01, end))
         text = row.get("text")
         if not isinstance(text, str):
             raise PipelineError("Subtitle text is required")
@@ -240,93 +239,44 @@ def selected_transcript(value, duration, offset=0):
     return Transcript(language="ja", segments=display), validate_turns(turns, duration)
 
 
-def align_selected(client, index, value, audio, duration):
-    """A separate timing task, preserving every saved utterance and speaker label."""
+def align_selected(client, index, value, audio, duration, reference_seconds=0):
+    """Reuse existing timing work without running an additional inspection pass."""
     original = value.get("segments", [])
-    timing, _ = client.generate(
-        f"alignment-{index}",
-        "添付は字幕対象の音声だけです。参照音声や元配信の時刻は含みません。"
-        "既存の字幕本文を音声と照合し、各IDの発話開始・終了だけを秒で返してください。"
-        "字幕の再文字起こし・言い換え・省略・創作は禁止。全IDを各1回返します。"
-        "時刻の原点はこの添付音声の先頭0秒です。話者が被る箇所の時刻重複は保持。"
-        f"終了は{duration}秒以内。聞けない場合はaudio_access=unavailable。"
-        "JSON {audio_access:'heard',segments:[{id:整数,start:秒,end:秒}]}。資料:\n"
-        + json.dumps(
-            [{"id": i, "text": r["text"]} for i, r in enumerate(original)],
-            ensure_ascii=False,
-        ),
-        audio,
-    )
-    if timing.get("audio_access") != "heard":
-        raise PipelineError("Selected timing audio unavailable")
-    timed = timing.get("segments", [])
-    ids = [r.get("id") for r in timed]
-    expected = set(range(len(original)))
-    if (
-        any(type(i) is not int for i in ids)
-        or len(ids) != len(set(ids))
-        or set(ids) - expected
-    ):
-        raise PipelineError(
-            "Timing response contains duplicate or invalid subtitle IDs"
-        )
-    missing = sorted(expected - set(ids))
-    if missing:
-        # Complete only an omitted suffix in a separate bounded task. Never resend the
-        # completed alignment request or silently discard its unaligned utterances.
-        if missing != list(range(missing[0], len(original))):
-            raise PipelineError("Timing response omitted non-tail subtitle IDs")
-        tail_start = max(0, duration - 90)
-        tail_audio = client.output / f"timing-tail-{index}.ogg"
-        if not client.resume or client.continue_missing:
-            encode_audio(audio, tail_audio, tail_start, duration - tail_start, "24k")
-        completed, _ = client.generate(
-            f"alignment-tail-{index}",
-            "添付は採用区間の最後の音声だけです。字幕の最後の未照合IDだけを時刻合わせします。"
-            "本文を変更せず、指定された全IDを各1回返してください。時刻はこの添付音声の先頭を0秒とします。"
-            f"全長は{duration - tail_start}秒。聞き取れない本文は創作せずaudio_access=unavailable。"
-            "JSON {audio_access:'heard',segments:[{id:整数,start:秒,end:秒}]}。未照合本文:\n"
-            + json.dumps(
-                [{"id": i, "text": original[i]["text"]} for i in missing],
-                ensure_ascii=False,
-            ),
-            tail_audio,
-        )
-        extra = completed.get("segments", [])
-        extra_ids = [r.get("id") for r in extra]
-        if (
-            completed.get("audio_access") != "heard"
-            or len(extra_ids) != len(missing)
-            or any(type(i) is not int for i in extra_ids)
-            or set(extra_ids) != set(missing)
-        ):
-            raise PipelineError(
-                "Tail timing did not preserve every omitted subtitle ID"
-            )
-        for row in extra:
-            if (
-                any(
-                    type(row.get(k)) not in (int, float) or not math.isfinite(row[k])
-                    for k in ("start", "end")
-                )
-                or not 0 <= row["start"] < row["end"] <= duration - tail_start
+    phase = f"alignment-{index}"
+    saved = client.resume / (phase + ".json") if client.resume else None
+    timed = []
+    if saved and saved.is_file():
+        timing, _ = client.generate(phase, "")
+        timed = timing.get("segments", [])
+    by_id = {}
+    for row in timed:
+        i = row.get("id")
+        if type(i) is int and 0 <= i < len(original) and i not in by_id:
+            if all(
+                type(row.get(k)) in (int, float) and math.isfinite(row[k])
+                for k in ("start", "end")
             ):
-                raise PipelineError("Tail timing exceeded its audio")
-            timed.append(
-                {
-                    **row,
-                    "start": row["start"] + tail_start,
-                    "end": row["end"] + tail_start,
-                }
-            )
-    by_id = {r["id"]: r for r in timed}
-    return {
-        **value,
-        "segments": [
-            {**row, "start": by_id[i]["start"], "end": by_id[i]["end"]}
-            for i, row in enumerate(original)
-        ],
-    }
+                by_id[i] = row
+    # A concatenated voice reference is an exact, known audio prefix. Only use that
+    # offset for original estimates exceeding the target duration; keep saved timing.
+    attached_origin = (
+        reference_seconds
+        if any(
+            type(r.get("end")) in (int, float) and r["end"] > duration for r in original
+        )
+        else 0
+    )
+    result = []
+    for i, row in enumerate(original):
+        timing = by_id.get(i)
+        if timing is None:
+            timing = {"start": row.get("start"), "end": row.get("end")}
+            if attached_origin and all(type(timing[k]) in (int, float) for k in timing):
+                timing = {k: t - attached_origin for k, t in timing.items()}
+        result.append({**row, **{k: timing[k] for k in ("start", "end")}})
+    client.record["timing_policy"] = "saved_timing_or_model_estimate_no_inspection"
+    client.save()
+    return {**value, "segments": result}
 
 
 def plan(audio, url, output, settings, resume=None, continue_missing=False):
@@ -476,7 +426,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
                 ),
                 combined,
             )
-            value = align_selected(client, index, value, path, clip.end - clip.start)
+            value = align_selected(
+                client, index, value, path, clip.end - clip.start, reference_seconds
+            )
             transcript, turns = selected_transcript(value, clip.end - clip.start)
             client.record.setdefault("subtitle_display", []).append(
                 {
