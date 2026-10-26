@@ -30,7 +30,7 @@ jobs:
       PYTHONPATH: src
       PARENT_RELEASE: ${{ inputs.parent_release }}
       FAILED_PHASE: ${{ inputs.failed_phase }}
-      DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/gemini-diagnostic
+      DIAGNOSTIC_OUTPUT: gemini-diagnostic
       DIAGNOSTIC_ID: ${{ inputs.request_id }}
     steps:
       - name: Require the designated branch and a single attempt
