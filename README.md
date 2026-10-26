@@ -13,11 +13,11 @@
 | 1 | 元音声を取得、保存済みなら再利用 | yt-dlp・ffmpeg | Actions runner |
 | 2 | 音声から話題と採用区間を決める | Gemini 3.8 Flash | Actions runner |
 | 3 | 採用音声を切り出し、用語表記を調べる | ffmpeg・Gemini 3.5 Flash | Actions runner |
-| 4 | 採用区間だけ字幕化し、本文を保持して時刻を整形 | Gemini 3.8 Flash | Actions runner |
+| 4 | 採用区間だけを60秒単位で字幕化し、本文と区間時刻を結合 | Gemini 3.8 Flash | Actions runner |
 | 5 | 選択字幕を焼き込み、360pで描画 | FFmpeg ASS・NVENC | Colab GPU |
 | 6 | 完成動画と工程記録を回収 | 非公開Release | 制御側 |
 
-既定5本、各5〜15分。字幕の要約・言い換え・文字数圧縮はせず、無意味な言い淀みだけを除きます。字幕時刻はGemini推定です。完了済み応答は再利用し、失敗時の自動再送や全文ASRへの復帰は行いません。
+既定5本、各5〜15分。話題分けと字幕のルールは `src/clipforge/prompts/` に置き、実際のGemini入力へ読み込みます。字幕の要約・言い換え・文字数圧縮はせず、無意味な言い淀みだけを除きます。字幕時刻はGemini推定です。完了済み応答は同じルールで作られた場合だけ再利用し、失敗時の自動再送や全文ASRへの復帰は行いません。
 
 ## 使い方
 
