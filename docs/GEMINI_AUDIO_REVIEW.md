@@ -75,3 +75,7 @@ Pillowとlibassのフォントサイズの定義の差を補正して幅を測�
 字幕本文と時刻を分け、区間音声だけと既存本文IDを使う`alignment-N`で発話時刻を照合する。本文は変更しない。参照音声の長さや元配信の開始秒との混同を防ぎ、時刻はなおGemini推定として記録する。発言が重なる表示枠は本文を両方保持して区間を統合し、話者色を通常色に戻す。原本応答は変更しない。
 
 Actionsの`editorial_release`に保存済み応答の非公開Releaseタグを指定し、`continue_missing=true`で部分再開、`auto_render=true`で完了後にColab描画まで接続する。`config_file`は話題選定と描画の両方に適用する。
+
+## URLからの通常入口
+
+`tools/produce_with_gemini.py URL --source-ref 40桁SHA --output /private/新規出力先`も新方式へ接続した。既定workflow-refは認証済みのfix/pr18-verified-transfer。全文ASRのworkflowを投入せず、understanding→選択字幕→GPU描画→回収を同じRunで待つ。保存済み元音声は--analysis-run/--analysis-request、保存済み応答は--editorial-release/--continue-missingで明示する。既存production-state.jsonのある出力先へ再投入しない。Drive納品は既存の--deliver-drive指定時に実行する。
