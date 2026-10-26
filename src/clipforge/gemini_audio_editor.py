@@ -2,6 +2,7 @@
 
 import argparse
 import base64
+from collections import Counter
 import json
 import os
 import subprocess
@@ -460,6 +461,7 @@ def run(args):
                 if cps >= 7:
                     fast_ids.append(sid)
 
+        write_json(out / "review-slots.json", {"slots": slots, "fast_segment_ids": fast_ids})
         combined_audio = out / "selected-clips-combined.ogg"
         prepare_selected_audio(
             args.analysis / "audio.m4a", selection["clips"], combined_audio, gap_seconds=1
@@ -510,8 +512,19 @@ def run(args):
         }, 65536)
         rows = careful.get("segments", [])
         ids = [row["segment_id"] for row in rows]
-        if careful.get("audio_access") != "heard" or len(ids) != len(set(ids)) or not set(ids) <= set(slots):
-            raise PipelineError("Audio review contains unavailable audio, duplicate or unknown segment IDs")
+        diagnostics = {
+            "audio_access": careful.get("audio_access"),
+            "correction_rows": len(ids),
+            "duplicate_segment_ids": sorted(sid for sid, count in Counter(ids).items() if count > 1),
+            "unknown_segment_ids": sorted(set(ids) - set(slots)),
+            "missing_fast_segment_ids": sorted(set(fast_ids) - set(careful.get("reviewed_fast_segment_ids", []))),
+            "reviewed_clip_ids": careful.get("reviewed_clip_ids", []),
+        }
+        write_json(out / "audio-review-validation.json", diagnostics)
+        if careful.get("audio_access") != "heard" or diagnostics["duplicate_segment_ids"] or diagnostics["unknown_segment_ids"]:
+            record["requests"][-1]["status"] = "failed_validation"
+            record["review_validation"] = diagnostics
+            raise PipelineError("Audio review validation failed: " + json.dumps(diagnostics, ensure_ascii=False))
         if args.asr_first:
             if set(careful.get("reviewed_clip_ids", [])) != set(range(1, len(selection["clips"]) + 1)):
                 raise PipelineError("Audio review did not confirm every selected clip")
