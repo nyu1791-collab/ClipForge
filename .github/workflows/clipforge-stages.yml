@@ -177,7 +177,8 @@
         "CLIPFORGE_PUBLIC_CACHE": "off",
         "RESULT_STORE": "${{ inputs.result_store }}",
         "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers",
-        "CLIPFORGE_AUDIO_REVIEW_RELEASE": "${{ inputs.editorial_release }}"
+        "CLIPFORGE_AUDIO_REVIEW_RELEASE": "${{ inputs.editorial_release }}",
+        "CLIPFORGE_RESUME_RENDER": "${{ inputs.resume_render }}"
       },
       "steps": [
         {
@@ -619,6 +620,11 @@
         "auto_render": {
           "type": "boolean",
           "default": false
+        },
+        "resume_render": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reuse completed clips from previous_run_id/previous_request_id without re-encoding"
         }
       }
     }
