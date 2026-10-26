@@ -252,6 +252,7 @@ def attempt(
     free=True,
     stall=STALL_SECONDS,
     errors=None,
+    heartbeat_seconds=60,
 ):
     """Run OpenCode once. False only when no event arrived within the stall limit."""
     process = subprocess.Popen(
@@ -274,6 +275,16 @@ def attempt(
         )
         relay.start()
     emit("OpenCode task started; waiting for its first event")
+    last_event = [time.monotonic()]
+    finished = threading.Event()
+
+    def beat():
+        # Shows that the run is alive while the model is working silently.
+        while not finished.wait(heartbeat_seconds):
+            quiet = int(time.monotonic() - last_event[0])
+            emit(f"still running; {quiet} s since the last event")
+
+    threading.Thread(target=beat, daemon=True).start()
 
     def watch():
         limit = timeout if stall is None else min(stall, timeout)
@@ -289,6 +300,7 @@ def attempt(
     try:
         for line in process.stdout:
             answered.set()
+            last_event[0] = time.monotonic()
             out.write(line)
             try:
                 event = json.loads(line)
@@ -337,6 +349,7 @@ def attempt(
         return True
     finally:
         answered.set()
+        finished.set()
         timer.cancel()
         if relay is not None:
             relay.join(timeout=10)
