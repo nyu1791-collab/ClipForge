@@ -9,14 +9,20 @@ clipforge_record_timing() {
     'BEGIN { printf "%s\t%.3f\n", name, finished - started }' >> "$clipforge_timings"
 }
 source tools/colab_cache_env.sh
-# OS tools / Node and Python wheels have independent prerequisites.
+# OS tools and Python wheels have independent prerequisites. YouTube's yt-dlp
+# transport can require Node; skip its setup only for known non-YouTube inputs.
 (
   os_deps_started=$(date +%s.%N)
   bash tools/colab_os_deps.sh
   clipforge_record_timing os_deps "$os_deps_started"
-  node_started=$(date +%s.%N)
-  bash tools/ensure_node.sh
-  clipforge_record_timing node "$node_started"
+  clipforge_source_url=${CLIPFORGE_SOURCE_URL:-}
+  case "${clipforge_source_url,,}" in
+    ''|*youtube.com/*|*youtu.be/*|*youtube-nocookie.com/*)
+      node_started=$(date +%s.%N)
+      bash tools/ensure_node.sh
+      clipforge_record_timing node "$node_started"
+      ;;
+  esac
 ) &
 clipforge_os_pid=$!
 trap 'wait "$clipforge_os_pid" || true' EXIT

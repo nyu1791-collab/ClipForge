@@ -268,6 +268,9 @@ def recognise_part(bundles, payload, output, report, timings):
         report["stage"] = "private-input"
         with timed(timings, "input"):
             request, audio = download_part(bundles, payload, WORK / "input")
+        selected_only = request["asr_part"].get("kind") == "selected_topics"
+        if selected_only:
+            report["asr_scope"] = "selected_topics"
         report["stage"] = "prefetch"
         with timed(timings, "prefetch_wait"):
             if prefetch.wait(timeout=1800):
@@ -294,7 +297,10 @@ def recognise_part(bundles, payload, output, report, timings):
                     timeout=3600,
                 )
             except RuntimeError:
-                report["log_tail"] = log_tail(WORK / "recognise.log")
+                # The recognition log may contain private speech. Preserve only
+                # the failure type for selected audio, not a public log excerpt.
+                if not selected_only:
+                    report["log_tail"] = log_tail(WORK / "recognise.log")
                 raise
     finally:
         if prefetch.poll() is None:
@@ -333,6 +339,7 @@ def render_stage(payload, output, report, timings, environment):
         **environment,
         "CLIPFORGE_RENDER_CONFIG": stage.get("config_file")
         or "config.landscape.example.json",
+        "CLIPFORGE_SOURCE_URL": json.loads(stage["review"]).get("source_url", ""),
     }
     with timed(timings, "setup"):
         try:

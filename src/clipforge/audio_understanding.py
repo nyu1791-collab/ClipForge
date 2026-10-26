@@ -1,4 +1,4 @@
-"""Audio topic planning and selected-only Gemini transcription, without full-source ASR."""
+"""Audio topic planning, selected-only GPU ASR and Gemini text cleanup."""
 
 import argparse
 import hashlib
@@ -6,12 +6,13 @@ import json
 import math
 import os
 import shutil
+import subprocess
 from pathlib import Path
 import time
 import urllib.error
 import urllib.request
 
-from . import audio_first, pipeline
+from . import asr, audio_first, pipeline
 from .caption_emotions import annotation
 from .gemini_audio_editor import (
     PROJECT,
@@ -24,7 +25,6 @@ from .gemini_audio_editor import (
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript, Segment, SelectedClip
 from .sound_effects import prepare_cues
-from .subtitle_finishing import merge_boundaries, snap_to_energy
 from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
@@ -33,12 +33,12 @@ from .terminology import RESEARCH_INSTRUCTIONS, grounded_terms
 WINDOW_SECONDS = 5400
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 EDITORIAL_RULES_FILE = PROMPT_DIR / "gemini_editorial_rulebook_ja.md"
-SUBTITLE_POLICY = "meaning_preserving_compact_v1"
+SUBTITLE_POLICY = "meaning_preserving_cleanup_v1"
+RENDER_SUBTITLE_POLICIES = {SUBTITLE_POLICY, "meaning_preserving_compact_v1"}
 EDITORIAL_RENDER_VERSION = "editorial-render-v3"
 TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
-TRANSCRIPTION_CHUNK_SECONDS = 60
-TRANSCRIPTION_CONTEXT_SECONDS = 1.5
+TRANSCRIPTION_UNIT = "selected_topic"
 
 
 def rules_file_for_phase(phase):
@@ -53,12 +53,14 @@ class Client:
     def __init__(self, output, resume=None, continue_missing=False):
         self.output, self.resume = output, resume
         self.continue_missing = continue_missing
+        self._vertex_token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
+        self._vertex_token_at = time.monotonic()
         self.record = {
             "status": "running",
             "requests": [],
             "new_generation_requests": 0,
             "full_source_asr": False,
-            "timestamp_source": "gemini_estimated",
+            "timestamp_source": "gpu_asr",
             "timings": {},
             "started_at": time.time(),
         }
@@ -66,6 +68,33 @@ class Client:
 
     def save(self):
         write_json(self.output / "audio-editor-receipt.json", self.record)
+
+    def vertex_token(self):
+        """Refresh the same OIDC identity after a long selected-audio GPU job."""
+        if time.monotonic() - self._vertex_token_at < 2700:
+            if self._vertex_token:
+                return self._vertex_token
+            raise PipelineError("Designated Vertex identity is not connected")
+        control_python = os.environ.get("CLIPFORGE_COLAB_CONTROL_PYTHON", "")
+        if not control_python or not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            raise PipelineError("Vertex identity needs reconnection after the GPU job")
+        code = (
+            "import google.auth; "
+            "from google.auth.transport.requests import Request; "
+            "c,_=google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform']); "
+            "c.refresh(Request()); print(c.token)"
+        )
+        try:
+            refreshed = subprocess.run(
+                [control_python, "-c", code], capture_output=True, text=True, timeout=90
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise PipelineError("Designated Vertex identity refresh failed") from None
+        if refreshed.returncode or not refreshed.stdout.strip():
+            raise PipelineError("Designated Vertex identity refresh failed")
+        self._vertex_token = refreshed.stdout.strip()
+        self._vertex_token_at = time.monotonic()
+        return self._vertex_token
 
     def generate(self, phase, prompt, audio=None, research=False):
         rule_file = rules_file_for_phase(phase)
@@ -107,6 +136,7 @@ class Client:
         # A changed ruleset or stage request gets a new response key. This lets
         # --continue-missing generate with the new instructions without colliding
         # with an already completed response from an older prompt.
+        phase_base = phase
         phase = f"{phase}-{prompt_sha256[:10]}"
         print(
             json.dumps({"phase": phase, "status": "checking_saved_response"}),
@@ -136,13 +166,72 @@ class Client:
                 self.save()
                 print(json.dumps({"phase": phase, "status": "reused"}), flush=True)
                 return value, entries[0].get("grounding", {})
-            attempted = any(r["phase"] == phase for r in saved["requests"])
+            if phase_base.startswith("topics-"):
+                # A subtitle-rule edit must not resend an already completed topic
+                # selection. Reuse it when the topic instructions and actual user
+                # request still match; retain the original prompt and its hashes.
+                topic_source = next(
+                    (
+                        source
+                        for source in rule_sources
+                        if source["file"].endswith("gemini_topics_ja.md")
+                    ),
+                    None,
+                )
+                previous = []
+                for row in saved["requests"]:
+                    if (
+                        not row.get("phase", "").startswith(phase_base + "-")
+                        or row.get("finish_reason") != "STOP"
+                    ):
+                        continue
+                    if topic_source not in row.get("prompt_rules_sources", []):
+                        continue
+                    name = row.get("prompt_file", "")
+                    if not name or Path(name).name != name:
+                        continue
+                    prompt_path = self.resume / name
+                    if not prompt_path.is_file():
+                        continue
+                    prior_prompt = prompt_path.read_text(encoding="utf-8")
+                    if (
+                        prior_prompt.partition("【Gemini user content】\n")[2]
+                        == user_prompt
+                    ):
+                        previous.append((row, prior_prompt))
+                if len(previous) == 1:
+                    row, prior_prompt = previous[0]
+                    previous_phase = row["phase"]
+                    value = json.loads(
+                        (self.resume / (previous_phase + ".json")).read_text()
+                    )
+                    self.record["requests"].append(
+                        {**row, "reused": True, "prior_rules_preserved": True}
+                    )
+                    write_json(self.output / (previous_phase + ".json"), value)
+                    (self.output / row["prompt_file"]).write_text(
+                        prior_prompt, encoding="utf-8"
+                    )
+                    self.save()
+                    print(
+                        json.dumps(
+                            {"phase": previous_phase, "status": "reused_prior_topic"}
+                        ),
+                        flush=True,
+                    )
+                    return value, row.get("grounding", {})
+            attempted = any(
+                r["phase"] == phase
+                or (
+                    phase_base.startswith("topics-")
+                    and r["phase"].startswith(phase_base + "-")
+                )
+                for r in saved["requests"]
+            )
             if attempted or not self.continue_missing:
                 raise PipelineError("No complete saved response for " + phase)
         print(json.dumps({"phase": phase, "status": "new_request"}), flush=True)
-        token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
-        if not token:
-            raise PipelineError("Designated Vertex identity is not connected")
+        token = self.vertex_token()
         model = "gemini-3.5-flash" if research else "gemini-3.8-flash"
         prompt_path = self.output / (phase + ".prompt.txt")
         prompt_path.write_text(complete_prompt, encoding="utf-8")
@@ -249,12 +338,15 @@ class Client:
 
 
 def selected_transcript(value, duration, offset=0):
-    if value.get("audio_access") != "heard":
-        raise PipelineError("Selected audio transcription is incomplete/unavailable")
+    if (
+        value.get("transcript_access") != "available"
+        and value.get("audio_access") != "heard"
+    ):
+        raise PipelineError("Selected transcript is unavailable")
     rows, turns = [], []
     ordered = value.get("segments", [])
-    if not isinstance(ordered, list) or len(ordered) > 10000:
-        raise PipelineError("Expected a bounded subtitle list")
+    if not isinstance(ordered, list):
+        raise PipelineError("Expected a subtitle list")
     for index, row in enumerate(ordered):
         start, end = row.get("start"), row.get("end")
         # Normalize only enough for a renderable subtitle; do not stop production
@@ -293,7 +385,7 @@ def selected_transcript(value, duration, offset=0):
             }
         )
     if not rows:
-        raise PipelineError("No usable selected subtitles")
+        return Transcript(language="ja", segments=[]), []
     # Keep both utterances when speakers talk over one another. Preserve the raw
     # response separately; overlapping display groups use neutral color and the union
     # of their original spans, without pretending to realign the audio.
@@ -328,185 +420,198 @@ def selected_transcript(value, duration, offset=0):
     return Transcript(language="ja", segments=display), validate_turns(turns, duration)
 
 
-def transcription_windows(duration):
-    """Short target windows with nearby context; each utterance belongs to one core."""
-    windows = []
-    core_start = 0.0
-    while core_start < duration:
-        core_end = min(duration, core_start + TRANSCRIPTION_CHUNK_SECONDS)
-        input_start = max(0.0, core_start - TRANSCRIPTION_CONTEXT_SECONDS)
-        input_end = min(duration, core_end + TRANSCRIPTION_CONTEXT_SECONDS)
-        windows.append(
-            {
-                "core_start": core_start,
-                "core_end": core_end,
-                "input_start": input_start,
-                "input_duration": input_end - input_start,
-                "core_start_local": core_start - input_start,
-                "core_end_local": core_end - input_start,
-            }
-        )
-        core_start = core_end
-    return windows
-
-
-def transcribe_selected_clip(
-    client, output, audio_path, clip_index, clip, glossary, registry
+def selected_gpu_transcripts(
+    audio, clips, settings, output, resume, continue_missing, audio_sha256
 ):
-    """Transcribe only a chosen clip, in short timestamp-local audio pieces."""
-    duration = clip.end - clip.start
-    segments, sound_effects = [], []
-    for part_index, window in enumerate(transcription_windows(duration), 1):
-        chunk_path = output / f"transcript-audio-{clip_index}-{part_index:03}.ogg"
-        if not chunk_path.is_file():
-            encode_audio(
-                audio_path,
-                chunk_path,
-                window["input_start"],
-                window["input_duration"],
-                "24k",
-            )
-        audio_parts = [
-            ("字幕対象音声（このパートだけを意味を保って短文化）", chunk_path)
-        ]
-        audio_parts.extend(
-            (
-                f"話者参照音声 {speaker['speaker_id']}（識別だけに使用）",
-                output / speaker["file"],
-            )
-            for speaker in registry
-        )
-        request = {
-            "subtitle_policy": SUBTITLE_POLICY,
-            "task": "必読ルールブックに従い、原音の意味と口調に近い短い字幕と、必要な効果音指示を同じ応答で作る。",
-            "topic_context": {"title": clip.title, "reason": clip.reason},
-            "target_audio_duration": window["input_duration"],
-            "target_time_range_to_transcribe": {
-                "start_in_target_audio": window["core_start_local"],
-                "end_in_target_audio": window["core_end_local"],
-            },
-            "time_range_on_selected_clip": {
-                "start": window["core_start"],
-                "end": window["core_end"],
-            },
-            "voice_registry": [
-                {"speaker_id": entry["speaker_id"]} for entry in registry
-            ],
-            "glossary": glossary,
-            "required_output_shape": {
-                "audio_access": "heard",
-                "complete": True,
-                "segments": [
-                    {
-                        "start": "字幕対象音声パート内の秒数",
-                        "end": "字幕対象音声パート内の秒数",
-                        "text": "元発言の意味・口調・確かさを保つ、読みやすく短文化した表示字幕",
-                        "speaker_id": "speaker_1〜speaker_6 または unknown",
-                        "confidence": "0〜1",
-                        "emotion": "neutral / surprise / joy / frustration / sadness / curiosity",
-                        "emotion_level": "0=通常、1=控えめ、2=明確な感情の山だけ強め",
-                        "emotion_confidence": "音声に基づく演出判断の確信度0〜1。不確かならneutral",
-                    }
-                ],
-                "sound_effects": [
-                    {
-                        "at": "字幕対象音声パート内の秒数",
-                        "kind": "soft_pop / light_chime / transition_tick",
-                        "reason": "実際の発言に基づく採用理由。不要なら空配列",
-                    }
-                ],
-            },
-        }
-        value, _ = client.generate(
-            f"transcript-{clip_index}-{part_index:03}",
-            json.dumps(request, ensure_ascii=False),
-            audio_parts,
-        )
-        if value.get("audio_access") != "heard":
-            raise PipelineError(
-                "Selected audio transcription is incomplete/unavailable"
-            )
-        for cue in prepare_cues(
-            value.get("sound_effects", []), window["input_duration"]
-        ):
-            if window["core_start_local"] <= cue["at"] < window["core_end_local"]:
-                sound_effects.append(
-                    {**cue, "at": round(cue["at"] + window["input_start"], 3)}
-                )
-        rows = value.get("segments", [])
-        if not isinstance(rows, list):
-            rows = []
-        window_segments = []
-        for row_index, row in enumerate(rows):
-            if not isinstance(row, dict):
-                continue
-            start, end = row.get("start"), row.get("end")
-            fallback_width = max(
-                0.01, window["core_end_local"] - window["core_start_local"]
-            )
-            fallback = window["core_start_local"] + fallback_width * row_index / max(
-                1, len(rows)
-            )
-            if type(start) not in (int, float) or not math.isfinite(start):
-                start = fallback
-            if type(end) not in (int, float) or not math.isfinite(end):
-                end = start + 1.5
-            # Keep context candidates until adjacent-window duplicates are reconciled.
-            start = max(0.0, min(start, window["input_duration"] - 0.01))
-            end = min(window["input_duration"], max(start + 0.01, end))
-            text = row.get("text")
-            if not isinstance(text, str) or not text.strip():
-                continue
-            mapped = {
-                **row,
-                "_window": part_index - 1,
-                "_owned": window["core_start_local"]
-                <= start
-                < window["core_end_local"],
-                "start": round(start + window["input_start"], 3),
-                "end": round(end + window["input_start"], 3),
-            }
-            segments.append(mapped)
-            window_segments.append(mapped)
+    """Reuse a completed selected-only GPU result or run the existing Colab ASR worker once."""
+    intervals = [{"start": clip.start, "end": clip.end} for clip in clips]
+    identity = {
+        "source_audio_sha256": audio_sha256,
+        "intervals": intervals,
+        "recognizer": asr.MODEL,
+        "language": settings.language or "ja",
+        "selected_input_version": 1,
+    }
+    key = fingerprint(identity)
+    plan_file = output / "selected-gpu-asr-plan.json"
+    write_json(plan_file, {**identity, "input_key": key, "clips": intervals})
+    result_file = output / "selected-gpu-asr.json"
+    saved_file = resume / result_file.name if resume else None
+    if saved_file and saved_file.is_file():
+        result = json.loads(saved_file.read_text())
+        if result.get("input_key") == key and result.get("status") == "complete":
+            write_json(result_file, result)
+            return result, True
 
-        # Keep speaker references separate from the timestamped audio part. The next
-        # Gemini call can identify a returning voice without adding seconds to its clock.
-        known = {entry["speaker_id"] for entry in registry}
-        for row in window_segments:
-            speaker, confidence = row.get("speaker_id"), row.get("confidence", 0)
-            if (
-                speaker not in SPEAKER_COLORS
-                or speaker in known
-                or type(confidence) not in (int, float)
-                or not math.isfinite(confidence)
-                or confidence < 0.8
-            ):
-                continue
-            sample_start = max(0.0, min(row["start"], duration - 0.01))
-            sample_duration = min(4.0, duration - sample_start)
-            if sample_duration < 0.5:
-                continue
-            name = f"voice-{speaker}.ogg"
-            reference_path = output / name
-            if not reference_path.is_file():
-                encode_audio(
-                    audio_path, reference_path, sample_start, sample_duration, "24k"
-                )
-            registry.append(
-                {"speaker_id": speaker, "file": name, "duration": sample_duration}
-            )
-            known.add(speaker)
-
-    segments, boundary_notes = merge_boundaries(
-        segments, TRANSCRIPTION_CHUNK_SECONDS, TRANSCRIPTION_CONTEXT_SECONDS
+    control_python = os.environ.get("CLIPFORGE_COLAB_CONTROL_PYTHON", "")
+    if not control_python or not Path(control_python).is_file():
+        raise PipelineError("Selected GPU ASR requires the configured Colab controller")
+    helper = Path(__file__).resolve().parents[2] / "tools" / "selected_gpu_asr.py"
+    saved_state = resume / "selected-gpu-asr-state.json" if resume else None
+    state = (
+        json.loads(saved_state.read_text())
+        if saved_state and saved_state.is_file()
+        else {}
     )
-    segments, timing_notes = snap_to_energy(segments, audio_path, duration)
+    if state.get("input_key") == key and state.get("status") in {
+        "gpu_requested_or_unknown",
+        "complete",
+    }:
+        # Only retrieve the existing result; a missing response never starts another GPU job.
+        # Preserve the original identity even if this read-only recovery also fails.
+        write_json(output / "selected-gpu-asr-state.json", state)
+        arguments = ["--recover", str(saved_state), "--output", str(output)]
+        reused = True
+    else:
+        if resume and not continue_missing:
+            raise PipelineError(
+                "No saved GPU transcript; continue-missing was not requested"
+            )
+        if (
+            state.get("input_key") == key
+            and state.get("status") == "staging_or_unknown"
+        ):
+            raise PipelineError(
+                "Selected GPU input staging is uncertain; inspect saved state"
+            )
+        arguments = [
+            "--source",
+            str(audio),
+            "--plan",
+            str(plan_file),
+            "--output",
+            str(output),
+        ]
+        reused = False
+    completed = subprocess.run([control_python, str(helper), *arguments], check=False)
+    if completed.returncode or not result_file.is_file():
+        raise PipelineError(
+            "Selected GPU ASR did not complete; saved state was retained"
+        )
+    result = json.loads(result_file.read_text())
+    if result.get("status") != "complete" or result.get("input_key") != key:
+        raise PipelineError("Selected GPU transcript belongs to a different input")
+    return result, reused
+
+
+def clean_selected_clip(client, raw, clip_index, clip, glossary):
+    """Send GPU text once for cleanup and keep GPU timing for every returned phrase."""
+    duration = clip.end - clip.start
+    source = raw.get("segments", [])
+    if not isinstance(source, list):
+        raise PipelineError("Selected GPU transcript is unavailable")
+    if not source:
+        return {
+            "transcript_access": "available",
+            "segments": [],
+            "sound_effects": [],
+            "finishing": {"status": "no_speech_recognized", "model_requests": 0},
+        }
+    numbered = [
+        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"]}
+        for index, row in enumerate(source, 1)
+    ]
+    request = {
+        "subtitle_policy": SUBTITLE_POLICY,
+        "task": "以下は採用した話題をGPUで文字起こしした本文と発言時刻。音声の書き起こしは行わず、全文を前後の文脈で理解して要約せず整文する。曖昧な語は原文を保持し、入力にない内容や話者・感情を推測しない。長い無音をまたがない。字幕の開始・終了は指定された元IDからコードが引き継ぐ。",
+        "topic_context": {"title": clip.title, "reason": clip.reason},
+        "glossary": glossary,
+        "source_segments": numbered,
+        "required_output_shape": {
+            "segments": [
+                {
+                    "source_ids": [1],
+                    "text": "整文後の字幕。省くのが明白な無意味なフィラーだけなら空文字",
+                    "omit_filler": False,
+                }
+            ],
+            "sound_effects": [
+                {
+                    "at": "元の字幕時刻に基づく秒数",
+                    "kind": "soft_pop / light_chime / transition_tick",
+                    "reason": "入力文に根拠がある理由",
+                }
+            ],
+        },
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。必要な情報・元の発言順と時刻を保持し、削除は意味のない言い淀みだけ。音声根拠がないため話者色・感情の推測はしない。",
+    }
+    value, _ = client.generate(
+        f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False)
+    )
+
+    # Use only contiguous input references; all unreferenced or ambiguous input is kept.
+    # This is a preservation fallback, not an extra model call or quality gate.
+    replacements, consumed = {}, set()
+    candidates = value.get("segments", [])
+    if not isinstance(candidates, list):
+        candidates = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict) or not isinstance(
+            candidate.get("source_ids"), list
+        ):
+            continue
+        raw_ids = candidate["source_ids"]
+        if any(
+            not (type(i) is int or (isinstance(i, str) and i.isascii() and i.isdigit()))
+            for i in raw_ids
+        ):
+            continue
+        try:
+            ids = [int(i) for i in raw_ids]
+        except ValueError:
+            continue
+        if not ids or ids[0] < 1 or ids[-1] > len(source):
+            continue
+        if ids != list(range(ids[0], ids[-1] + 1)):
+            continue
+        if any(i in consumed for i in ids):
+            continue
+        spans = [source[i - 1] for i in ids]
+        if any(b["start"] - a["end"] > 1.5 for a, b in zip(spans, spans[1:])):
+            continue
+        text = candidate.get("text")
+        if not isinstance(text, str) or (
+            not text.strip() and candidate.get("omit_filler") is not True
+        ):
+            continue
+        consumed.update(ids)
+        replacements[ids[0]] = (
+            {
+                "start": spans[0]["start"],
+                "end": spans[-1]["end"],
+                "text": text,
+                "speaker_id": "unknown",
+                "confidence": 0,
+                "emotion": "neutral",
+                "emotion_level": 0,
+                "emotion_confidence": 0,
+            }
+            if text.strip()
+            else None
+        )
+    segments = []
+    for index, row in enumerate(source, 1):
+        if index in replacements:
+            if replacements[index] is not None:
+                segments.append(replacements[index])
+        elif index not in consumed:
+            segments.append(
+                {
+                    "start": row["start"],
+                    "end": row["end"],
+                    "text": row["text"],
+                    "speaker_id": "unknown",
+                    "confidence": 0,
+                    "emotion": "neutral",
+                    "emotion_level": 0,
+                    "emotion_confidence": 0,
+                }
+            )
     return {
-        "audio_access": "heard",
-        "complete": True,
+        "transcript_access": "available",
         "segments": segments,
-        "sound_effects": prepare_cues(sound_effects, duration),
-        "finishing": {"boundary_merge": boundary_notes, "timing_snap": timing_notes},
+        "sound_effects": prepare_cues(value.get("sound_effects", []), duration),
+        "finishing": {"status": "gpu_timestamps_preserved", "model_requests": 1},
     }
 
 
@@ -641,29 +746,42 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
         )
-        selection, transcripts, registry = [], [], []
+        gpu_result, gpu_reused = selected_gpu_transcripts(
+            audio,
+            chosen,
+            settings,
+            output,
+            resume,
+            continue_missing,
+            identity["audio_sha256"],
+        )
+        gpu_clips = gpu_result.get("clips")
+        if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
+            raise PipelineError(
+                "Selected GPU transcripts do not match the chosen topics"
+            )
+        client.record["selected_gpu_asr"] = {
+            "recognizer": gpu_result.get("recognizer"),
+            "gpu_request_id": gpu_result.get("gpu_request_id"),
+            "reused": gpu_reused,
+            "selected_topics": len(gpu_clips),
+            "full_source_asr": False,
+        }
+        client.save()
+        selection, transcripts = [], []
         for index, clip in enumerate(chosen, 1):
-            path = output / f"selected-{index}.ogg"
-            if not path.is_file():
-                encode_audio(audio, path, clip.start, clip.end - clip.start, "24k")
-            value = transcribe_selected_clip(
-                client,
-                output,
-                path,
-                index,
-                clip,
-                glossary,
-                registry,
+            value = clean_selected_clip(
+                client, gpu_clips[index - 1], index, clip, glossary
             )
             transcript, turns = selected_transcript(value, clip.end - clip.start)
             client.record.setdefault("subtitle_display", []).append(
                 {
                     "clip": index,
-                    "source_segments": len(value["segments"]),
+                    "source_segments": len(gpu_clips[index - 1].get("segments", [])),
                     "display_segments": len(transcript.segments),
                     "overlap_policy": "union_display_neutral_color_preserve_text",
-                    "transcription_window_seconds": TRANSCRIPTION_CHUNK_SECONDS,
-                    "transcription_context_seconds": TRANSCRIPTION_CONTEXT_SECONDS,
+                    "transcription_unit": TRANSCRIPTION_UNIT,
+                    "editing_requests": value["finishing"]["model_requests"],
                     "finishing": value["finishing"],
                 }
             )
@@ -679,10 +797,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         write_json(
             output / "selected-transcripts.json",
             {
-                "timestamp_source": "gemini_estimated",
+                "timestamp_source": "gpu_asr",
                 "subtitle_policy": SUBTITLE_POLICY,
-                "transcription_window_seconds": TRANSCRIPTION_CHUNK_SECONDS,
-                "transcription_context_seconds": TRANSCRIPTION_CONTEXT_SECONDS,
+                "transcription_unit": TRANSCRIPTION_UNIT,
                 "clips": transcripts,
             },
         )
@@ -698,7 +815,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
-            timestamp_method="selected_audio_60_second_windows",
+            timestamp_method="gpu_asr_source_segments",
             subtitle_policy=SUBTITLE_POLICY,
             sound_effects_status="planned_not_rendered",
         )
@@ -720,7 +837,7 @@ def render(review, transcripts_file, output, settings):
     settings = settings.model_copy(update={"video_encoder": "h264_nvenc"})
     value = json.loads(review.read_text())
     data = json.loads(transcripts_file.read_text())
-    if data.get("subtitle_policy") == SUBTITLE_POLICY:
+    if data.get("subtitle_policy") in RENDER_SUBTITLE_POLICIES:
         # Edited text has no word alignment; show the phrase as a whole and preserve it.
         settings = settings.model_copy(
             update={
@@ -847,7 +964,7 @@ def render(review, transcripts_file, output, settings):
                 "editorial_render_version": EDITORIAL_RENDER_VERSION,
                 "source_url": value["source_url"],
                 "full_source_asr": False,
-                "timestamp_source": "gemini_estimated",
+                "timestamp_source": data.get("timestamp_source", "gemini_estimated"),
                 "full_video_quality_audit": "not_run",
             },
         )
@@ -872,8 +989,14 @@ def main():
     )
     parser.add_argument("--review", type=Path)
     parser.add_argument("--transcripts", type=Path)
+    parser.add_argument(
+        "--clips", type=int, help="Advisory target count for topic selection"
+    )
     args = parser.parse_args()
-    settings = Settings.model_validate_json(args.config.read_text())
+    config = json.loads(args.config.read_text())
+    if args.clips is not None:
+        config["clips"] = args.clips
+    settings = Settings.model_validate(config)
     if args.mode == "acquire":
         args.output.mkdir(parents=True, exist_ok=True, mode=0o700)
         vod = open_source(
