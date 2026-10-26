@@ -35,6 +35,9 @@ Issues = "https://github.com/nyu1791-collab/ClipForge/issues"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+clipforge = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
