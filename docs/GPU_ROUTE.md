@@ -22,7 +22,7 @@
 
 通常描画は `submit_audio_stage.py --stage render --clips N --config-file config.landscape.example.json --source-ref FULL_SHA --previous-run RUN --previous-request ID --review-file /private/approved.json`。`--clips N`は採用本数と一致させる。workflow refと制作ソースの40桁SHAは区別する。
 
-制作設定の`quality_gate`は`off`。過去の依頼JSONを読むため`strict`と`report`もパースできるが、制作経路では品質監査を呼び出さない。新しい成果物に`quality.json`を生成しない。描画記録のqualityは`status=not_run`、`passed=null`とする。過去の成果物に含まれる検査記録は過去の実行結果として読み取れる。
+制作設定の`quality_gate`は`off`。過去の依頼JSONを読むため`strict`と`report`も受理して`off`へ正規化する。制作経路では品質監査を呼び出さず、旧検査APIも再走査や測定を行わない。新しい成果物に`quality.json`を生成しない。描画記録のqualityは`status=not_run`、`passed=null`とする。過去の成果物に含まれる検査記録は過去の実行結果として読み取れる。
 
 音声の通常補正は描画内の1パスloudnormとリミッター。完成AACの再測定・補正・再検査は行わない。
 

@@ -438,10 +438,6 @@ def shifted_transcript(transcript, start, end, offset=0.0):
     for segment in transcript.segments:
         if segment.start >= end or segment.end <= start:
             continue
-        if any(w.start < start < w.end or w.start < end < w.end for w in segment.words):
-            raise PipelineError(
-                "selected interval cuts through an ASR word; adjust review boundaries"
-            )
         words = [
             dict(
                 start=max(w.start, start) - start + offset,
@@ -451,8 +447,6 @@ def shifted_transcript(transcript, start, end, offset=0.0):
             for w in segment.words
             if w.end > start and w.start < end
         ]
-        if not segment.words and (segment.start < start or segment.end > end):
-            raise PipelineError("wordless speech cannot be trimmed inside a segment")
         text = "".join(w["text"] for w in words) if segment.words else segment.text
         segments.append(
             dict(

@@ -1,11 +1,9 @@
 """Topic segmentation from speech timing and lexical cohesion (no model download).
 
 Boundaries are gaps between utterances where the pause is long or the words on
-both sides share little vocabulary. Topics are then limited to a minimum and
-maximum length, so each one can yield its own clip candidates.
+both sides share little vocabulary. Duration targets never force a merge or split.
 """
 
-import math
 from itertools import pairwise
 
 CONTEXT_CHARS = 200
@@ -79,47 +77,6 @@ def split(transcript, duration, min_seconds=300.0, max_seconds=900.0):
 
     def points():
         return [0.0, *sorted(cuts), duration]
-
-    # A topic shorter than the minimum gives up its weaker neighbouring boundary.
-    while True:
-        bounds = points()
-        short = next(
-            (i for i, (a, b) in enumerate(pairwise(bounds)) if b - a < min_seconds),
-            None,
-        )
-        if short is None:
-            break
-        neighbours = []
-        if short > 0:
-            neighbours.append(bounds[short])
-        if short + 1 < len(bounds) - 1:
-            neighbours.append(bounds[short + 1])
-        if not neighbours:
-            break
-        del cuts[min(neighbours, key=cuts.__getitem__)]
-
-    # An overlong topic is split at the strongest gap inside it, or evenly if it has none.
-    while True:
-        bounds = points()
-        long = next(
-            (i for i, (a, b) in enumerate(pairwise(bounds)) if b - a > max_seconds),
-            None,
-        )
-        if long is None:
-            break
-        a, b = bounds[long], bounds[long + 1]
-        inside = [
-            (strength, t)
-            for t, strength, _ in gaps
-            if a + min_seconds <= t <= b - min_seconds
-        ]
-        if inside:
-            strength, t = max(inside)
-            cuts[t] = strength
-        else:
-            pieces = math.ceil((b - a) / max_seconds)
-            for k in range(1, pieces):
-                cuts[a + (b - a) * k / pieces] = 0.0
 
     bounds = sorted({round(p, 3) for p in points()})
     return [(a, b) for a, b in pairwise(bounds) if b - a > 0.05]
