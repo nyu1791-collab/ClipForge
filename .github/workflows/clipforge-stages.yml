@@ -11,7 +11,7 @@
   },
   "jobs": {
     "audio-stage": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'cpu'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'cpu' && inputs.audio_stage != 'understanding'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 90,
       "env": {
@@ -160,7 +160,7 @@
       }
     },
     "colab-render": {
-      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'colab-auto'",
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.worker == 'colab-auto' && inputs.audio_stage != 'understanding'",
       "runs-on": "ubuntu-24.04",
       "timeout-minutes": 100,
       "env": {
@@ -274,6 +274,112 @@
           "run": "echo \"::warning title=Temporary private transfer remains::$INPUT_TAG may still hold private data. Delete it with tools/submit_job.py --cleanup-tag $INPUT_TAG.\"\n{\n  echo '### Temporary private transfer remains'\n  echo \"The release \\`$INPUT_TAG\\` could not be confirmed deleted. Delete it with \\`tools/submit_job.py --cleanup-tag $INPUT_TAG\\`.\"\n} >> \"$GITHUB_STEP_SUMMARY\"\n"
         }
       ]
+    },
+    "audio-understanding": {
+      "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.audio_stage == 'understanding'",
+      "runs-on": "ubuntu-24.04",
+      "timeout-minutes": 55,
+      "env": {
+        "PYTHONPATH": "src",
+        "PYTHONUNBUFFERED": "1",
+        "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
+      },
+      "steps": [
+        {
+          "name": "Require private storage access",
+          "env": {
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Dedicated private storage credential is missing.\"; exit 1; }"
+        },
+        {
+          "name": "Require the configured public Vertex execution branch",
+          "env": {
+            "CLIPFORGE_RUN_REF": "${{ github.ref }}"
+          },
+          "run": "[[ \"$CLIPFORGE_RUN_REF\" == refs/heads/fix/pr18-verified-transfer ]] || { echo \"Use the configured Vertex execution branch.\"; exit 1; }"
+        },
+        {
+          "name": "Validate pinned source and optional preserved audio identity",
+          "env": {
+            "SOURCE_REF": "${{ inputs.source_ref }}",
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "AUDIO_RUN": "${{ inputs.previous_run_id }}",
+            "AUDIO_REQUEST": "${{ inputs.previous_request_id }}"
+          },
+          "run": "[[ \"$SOURCE_REF\" =~ ^[a-f0-9]{40}$ ]]\nif [ -n \"$AUDIO_RUN\" ]; then [[ \"$AUDIO_RUN\" =~ ^[0-9]{1,20}$ ]] && [[ \"$AUDIO_REQUEST\" =~ ^[a-f0-9]{32}$ ]]; else test -z \"$AUDIO_REQUEST\"; fi"
+        },
+        {
+          "uses": "actions/checkout@v4",
+          "with": {
+            "repository": "nyu1791-collab/ClipForge",
+            "ref": "${{ inputs.source_ref }}",
+            "persist-credentials": false
+          }
+        },
+        {
+          "uses": "astral-sh/setup-uv@v6",
+          "with": {
+            "version": "0.12.23"
+          }
+        },
+        {
+          "uses": "FedericoCarboni/setup-ffmpeg@36c6454b5a2348e7794ba2d82a21506605921e3d"
+        },
+        {
+          "name": "Install lightweight editing dependencies",
+          "timeout-minutes": 6,
+          "run": "uv sync --locked --no-dev --extra media-fetch"
+        },
+        {
+          "name": "Reuse original audio or acquire audio only; no ASR",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "ANALYSIS_RUN": "${{ inputs.analysis_run_id }}",
+            "ANALYSIS_REQUEST": "${{ inputs.analysis_request_id }}",
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "AUDIO_RUN": "${{ inputs.previous_run_id }}",
+            "AUDIO_REQUEST": "${{ inputs.previous_request_id }}"
+          },
+          "run": "if [ -n \"$AUDIO_RUN\" ]; then\n .venv/bin/python -m clipforge.release_transfer download \"$AUDIO_RUN\" \"clipforge-result-$AUDIO_REQUEST\" \"$RUNNER_TEMP/analysis\"\n .venv/bin/python - <<'PYCODE'\nimport json,os,pathlib\np=pathlib.Path(os.environ['RUNNER_TEMP'])/'analysis'\nassert json.loads((p/'manifest.json').read_text())['source_url']==os.environ['SOURCE_URL']\nassert (p/'audio.m4a').is_file()\nPYCODE\nelse\n .venv/bin/python -m clipforge.audio_understanding acquire --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/analysis\"\nfi"
+        },
+        {
+          "name": "Connect the designated Vertex identity",
+          "id": "vertex",
+          "uses": "google-github-actions/auth@v3",
+          "with": {
+            "workload_identity_provider": "projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github",
+            "service_account": "clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com",
+            "token_format": "access_token",
+            "access_token_lifetime": "3600s",
+            "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
+            "create_credentials_file": false,
+            "export_environment_variables": false
+          }
+        },
+        {
+          "name": "3.8 audio topics then selected-only transcription; 3.5 terminology research",
+          "timeout-minutes": 45,
+          "env": {
+            "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}",
+            "SOURCE_URL": "${{ inputs.source_url }}"
+          },
+          "run": ".venv/bin/python -m clipforge.audio_understanding plan --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/editorial\" --config config.landscape-long.example.json"
+        },
+        {
+          "name": "Save transcripts review and timing privately",
+          "if": "always()",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi"
+        }
+      ],
+      "permissions": {
+        "contents": "read",
+        "actions": "read",
+        "id-token": "write"
+      }
     }
   },
   "on": {
@@ -296,7 +402,8 @@
           "options": [
             "previews",
             "render",
-            "merge"
+            "merge",
+            "understanding"
           ],
           "required": true
         },
@@ -344,6 +451,11 @@
             "release"
           ],
           "default": "release"
+        },
+        "source_url": {
+          "type": "string",
+          "default": "",
+          "description": "Source URL for audio understanding; no full-source ASR"
         }
       }
     }
