@@ -149,8 +149,10 @@ def snap_to_energy(rows, path, duration):
             ]
             a = min(near_start, key=lambda t: abs(t - start)) if near_start else start
             b = min(near_end, key=lambda t: abs(t - end)) if near_end else end
-            if index and start >= rows[index - 1]["end"] and a < rows[index - 1]["end"]:
-                a = start
+            if index and start >= rows[index - 1]["end"]:
+                # The preceding end may also have moved. Preserve existing overlaps,
+                # but do not introduce a new one between originally separate phrases.
+                a = max(a, changed[-1]["end"])
             if (
                 index + 1 < len(rows)
                 and end <= rows[index + 1]["start"]

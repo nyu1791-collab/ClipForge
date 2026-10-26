@@ -781,10 +781,13 @@ def render(review, transcripts_file, output, settings):
                     json.loads(saved_path.read_text()) if saved_path.is_file() else {}
                 )
                 if saved.get("editorial_input_sha256") == clip_key:
-                    if not pipeline.valid_receipt(completed, saved, saved.get("key")):
-                        raise PipelineError("Saved clip media is missing or changed")
                     rows.append(
-                        {"directory": f"clips/clip-{index:03}", **saved, "reused": True}
+                        {
+                            **pipeline._existing_clip(
+                                completed, f"clip-{index:03}", saved, saved.get("key")
+                            ),
+                            "reused": True,
+                        }
                     )
                     continue
                 # This is the new job's copied render, never the source release.

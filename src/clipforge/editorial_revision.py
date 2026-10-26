@@ -116,6 +116,12 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
             if type(sid) is not int or not 1 <= sid <= len(data["segments"]):
                 raise PipelineError("Revision subtitle does not exist")
             segment = data["segments"][sid - 1]
+            if any(
+                field in change and change[field] != segment.get(field)
+                for field in ("text", "start", "end")
+            ):
+                # Old word tokens would otherwise override the explicitly edited phrase.
+                segment["words"] = []
             segment.update({k: v for k, v in change.items() if k != "segment"})
             if any(k.startswith("emotion") for k in change):
                 segment.update(annotation(segment))

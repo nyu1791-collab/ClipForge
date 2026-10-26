@@ -46,7 +46,7 @@ OPTIONAL_FILES = {
 
 
 def valid_receipt(target, saved, render_key):
-    """True when the receipt belongs to this job and every file it lists is unchanged."""
+    """Match retained render files; a missing reference JPEG never blocks video reuse."""
     if not isinstance(saved, dict) or saved.get("key") != render_key:
         return False
     hashes = saved.get("sha256")
@@ -57,6 +57,7 @@ def valid_receipt(target, saved, render_key):
     return all(
         (target / name).is_file() and digest(target / name) == expected
         for name, expected in hashes.items()
+        if name != "contact-sheet.jpg" or (target / name).exists()
     )
 
 
@@ -344,7 +345,10 @@ def _existing_clip(target, name, saved, render_key):
     """The stored result of a rendered clip; refused when its receipt or files no longer match."""
     if not valid_receipt(target, saved, render_key):
         raise PipelineError("existing clip differs from the saved render receipt")
-    return {"directory": "clips/" + name, **saved}
+    row = {"directory": "clips/" + name, **saved}
+    if not (target / "contact-sheet.jpg").is_file():
+        row["visual_reference"] = {"status": "not_available_on_reuse"}
+    return row
 
 
 def render_clip(
@@ -493,7 +497,10 @@ def render_clip(
                 )
             except (OSError, ValueError, ImportError):
                 # Optional reference images must never reject an already rendered video.
-                (directory / "contact-sheet.jpg").unlink(missing_ok=True)
+                try:
+                    (directory / "contact-sheet.jpg").unlink(missing_ok=True)
+                except OSError:
+                    pass  # Reference cleanup must not discard completed video either.
                 visual_reference = {"status": "not_created_helper_unavailable"}
         report = {"status": "not_run", "passed": None, "verification_scope": "none"}
         names = sorted(
