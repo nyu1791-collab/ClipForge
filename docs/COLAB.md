@@ -53,3 +53,14 @@ uv pip install --python /tmp/clipforge-colab-control/bin/python --require-hashes
 3. 運用者が `Complete private Colab Google authorization` の `mode=finish` を実行。
 
 メールアドレスと必要スコープを確認して `COLAB_ADC_JSON` を登録し、一時コードと検証情報を削除します。コードやトークンをチャット・workflow入力・Git・Artifactsへ貼りません。新しいURLを発行した場合、前のURLのコードは使えません。期限切れなら新しい認証が必要です。
+
+### ClipForgeへ登録後、保存済み字幕から描画だけ再開
+
+```bash
+uv run --no-sync python tools/produce_with_gemini.py SOURCE_URL \
+  --source-ref PRODUCTION_COMMIT_SHA --workflow-ref fix/pr18-verified-transfer \
+  --render-only --editorial-release clipforge-kick-editorial-RUN_ID \
+  --analysis-run RUN_ID --analysis-request REQUEST_ID --output /private/NEW_RENDER
+```
+
+`--render-only`はGeminiやASRを呼ばず、完成済み字幕の非公開Releaseを使います。本人による初回認証は、Python環境へ`tools/colab-control-requirements.txt`を導入した上で`python tools/configure_colab_oauth.py --login`を実行します。登録先はClipForgeです。既存の正規ADCを使える端末なら`--login`なしでも登録できます。
