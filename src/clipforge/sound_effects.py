@@ -9,7 +9,7 @@ RECIPES = {
     "light_chime": (0.32, "(sin(2*PI*880*t)+0.4*sin(2*PI*1320*t))/1.4"),
     "transition_tick": (0.10, "sin(2*PI*680*t)"),
 }
-RECIPE_VERSION = "clipforge-tones-v1"
+RECIPE_VERSION = "clipforge-tones-v2-ducked"
 
 
 def prepare_cues(rows, duration):
@@ -45,7 +45,7 @@ def prepare_cues(rows, duration):
 
 def mix_graph(cues, duration, rate):
     """Mix synthesized accents into [voice], producing [accented] on the clip clock."""
-    graph, labels = [], []
+    graph, labels = ["[voice]asplit=2[voiceout][voicekey]"], []
     for index, cue in enumerate(cues):
         length, tone = RECIPES[cue["kind"]]
         length = min(length, duration - cue["at"])
@@ -57,8 +57,12 @@ def mix_graph(cues, duration, rate):
         )
         labels.append(f"[{label}]")
     graph.append(
-        "[voice]"
-        + "".join(labels)
-        + f"amix=inputs={len(cues) + 1}:duration=first:dropout_transition=0:normalize=0[accented]"
+        "".join(labels) + f"amix=inputs={len(cues)}:duration=longest:normalize=0[sebus]"
+    )
+    graph.append(
+        "[sebus][voicekey]sidechaincompress=threshold=0.03:ratio=8:attack=5:release=120[ducked]"
+    )
+    graph.append(
+        "[voiceout][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[accented]"
     )
     return ";".join(graph)

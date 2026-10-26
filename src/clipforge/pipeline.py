@@ -38,7 +38,11 @@ def record_failure(output, error, current_stage):
 
 
 REQUIRED_FILES = {"video.mp4", "captions.ass", "captions.srt"}
-OPTIONAL_FILES = {"chat.ass", "quality.json"}  # chat or a legacy quality report
+OPTIONAL_FILES = {
+    "chat.ass",
+    "quality.json",
+    "contact-sheet.jpg",
+}  # Optional presentation files and legacy reports.
 
 
 def valid_receipt(target, saved, render_key):
@@ -473,6 +477,24 @@ def render_clip(
                 **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
             ),
         )
+        visual_reference = {"status": "not_requested"}
+        if settings.visual_reference_sheet:
+            try:
+                from .visual_reference import make_sheet
+
+                visual_reference = timed(
+                    timings,
+                    "visual_reference",
+                    lambda: make_sheet(
+                        directory,
+                        caption.get("visual_reference_samples", []),
+                        info["duration"],
+                    ),
+                )
+            except (OSError, ValueError, ImportError):
+                # Optional reference images must never reject an already rendered video.
+                (directory / "contact-sheet.jpg").unlink(missing_ok=True)
+                visual_reference = {"status": "not_created_helper_unavailable"}
         report = {"status": "not_run", "passed": None, "verification_scope": "none"}
         names = sorted(
             REQUIRED_FILES | {n for n in OPTIONAL_FILES if (directory / n).is_file()}
@@ -484,6 +506,7 @@ def render_clip(
             "media": info,
             "captions": caption,
             "quality": report,
+            "visual_reference": visual_reference,
             "sha256": {n: digest(directory / n) for n in names},
             # The inputs the key was built from; a rerun rebuilds the key from them.
             "render_inputs": {"chat": chat_inputs, "layout": layout_inputs},
@@ -493,7 +516,8 @@ def render_clip(
         if sound_effects:
             saved["sound_effects"] = {
                 "status": (
-                    "synthesized_and_mixed" if info["audio"]
+                    "synthesized_and_mixed"
+                    if info["audio"]
                     else "not_applied_no_source_audio"
                 ),
                 "recipe": RECIPE_VERSION,

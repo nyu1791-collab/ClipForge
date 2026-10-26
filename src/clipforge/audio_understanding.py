@@ -23,6 +23,7 @@ from .gemini_audio_editor import (
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript, Segment, SelectedClip
 from .sound_effects import prepare_cues
+from .subtitle_finishing import merge_boundaries, snap_to_energy
 from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
@@ -32,7 +33,7 @@ WINDOW_SECONDS = 5400
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 EDITORIAL_RULES_FILE = PROMPT_DIR / "gemini_editorial_rulebook_ja.md"
 SUBTITLE_POLICY = "meaning_preserving_compact_v1"
-EDITORIAL_RENDER_VERSION = "editorial-render-v2"
+EDITORIAL_RENDER_VERSION = "editorial-render-v3"
 TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
 TRANSCRIPTION_CHUNK_SECONDS = 60
@@ -441,10 +442,7 @@ def transcribe_selected_clip(
                 start = fallback
             if type(end) not in (int, float) or not math.isfinite(end):
                 end = start + 1.5
-            # Context at each edge lets Gemini hear a whole phrase. Only the phrase's
-            # starting point decides which window owns it, so the overlap is not repeated.
-            if start < window["core_start_local"] or start >= window["core_end_local"]:
-                continue
+            # Keep context candidates until adjacent-window duplicates are reconciled.
             start = max(0.0, min(start, window["input_duration"] - 0.01))
             end = min(window["input_duration"], max(start + 0.01, end))
             text = row.get("text")
@@ -452,6 +450,10 @@ def transcribe_selected_clip(
                 continue
             mapped = {
                 **row,
+                "_window": part_index - 1,
+                "_owned": window["core_start_local"]
+                <= start
+                < window["core_end_local"],
                 "start": round(start + window["input_start"], 3),
                 "end": round(end + window["input_start"], 3),
             }
@@ -486,11 +488,16 @@ def transcribe_selected_clip(
             )
             known.add(speaker)
 
+    segments, boundary_notes = merge_boundaries(
+        segments, TRANSCRIPTION_CHUNK_SECONDS, TRANSCRIPTION_CONTEXT_SECONDS
+    )
+    segments, timing_notes = snap_to_energy(segments, audio_path, duration)
     return {
         "audio_access": "heard",
         "complete": True,
         "segments": segments,
         "sound_effects": prepare_cues(sound_effects, duration),
+        "finishing": {"boundary_merge": boundary_notes, "timing_snap": timing_notes},
     }
 
 
@@ -541,11 +548,32 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             if value.get("audio_access") != "heard":
                 raise PipelineError("Overview audio unavailable")
             for row in value.get("topics", []):
-                clip = SelectedClip.model_validate(
-                    {**row, "candidate_id": f"topic-{len(topics)}"}
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    begin, finish = float(row["start"]), float(row["end"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not math.isfinite(begin) or not math.isfinite(finish):
+                    continue
+                begin, finish = max(0, min(length, begin)), max(0, min(length, finish))
+                if finish <= begin:
+                    continue
+                confidence = row.get("confidence", 0.5)
+                if (
+                    type(confidence) not in (int, float)
+                    or not math.isfinite(confidence)
+                    or not 0 <= confidence <= 1
+                ):
+                    confidence = 0.5
+                clip = SelectedClip(
+                    start=begin,
+                    end=finish,
+                    candidate_id=f"topic-{len(topics)}",
+                    title=str(row.get("title") or "話題"),
+                    reason=str(row.get("reason") or "音声から選定"),
+                    confidence=confidence,
                 )
-                if clip.end > length:
-                    raise PipelineError("Topic exceeds overview window")
                 topics.append(
                     clip.model_copy(
                         update={"start": clip.start + start, "end": clip.end + start}
@@ -562,6 +590,21 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             return sorted(selected, key=lambda c: c.start)
 
         chosen = choose_topics()
+        margins = []
+        padded = []
+        for clip in chosen:
+            start, end = max(0, clip.start - 0.3), min(duration, clip.end + 0.5)
+            margins.append(
+                {
+                    "topic_start": clip.start,
+                    "topic_end": clip.end,
+                    "render_start": start,
+                    "render_end": end,
+                }
+            )
+            padded.append(clip.model_copy(update={"start": start, "end": end}))
+        chosen = padded
+        client.record["clip_safety_margins"] = margins
         if not chosen:
             raise PipelineError("No usable topic intervals were returned")
         client.record["topic_selection"] = {
@@ -612,6 +655,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
                     "overlap_policy": "union_display_neutral_color_preserve_text",
                     "transcription_window_seconds": TRANSCRIPTION_CHUNK_SECONDS,
                     "transcription_context_seconds": TRANSCRIPTION_CONTEXT_SECONDS,
+                    "finishing": value["finishing"],
                 }
             )
             client.save()
@@ -664,9 +708,7 @@ def render(review, transcripts_file, output, settings):
         raise PipelineError(
             "Audio-understanding route currently requires chat_panel=false"
         )
-    settings = settings.model_copy(
-        update={"video_encoder": "h264_nvenc", "height": 360}
-    )
+    settings = settings.model_copy(update={"video_encoder": "h264_nvenc"})
     value = json.loads(review.read_text())
     data = json.loads(transcripts_file.read_text())
     if data.get("subtitle_policy") == SUBTITLE_POLICY:

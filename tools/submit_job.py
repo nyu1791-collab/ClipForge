@@ -39,6 +39,7 @@ SETTINGS_FIELDS = {
     "caption",
     "caption_preserve_text",
     "caption_emotions",
+    "visual_reference_sheet",
     "caption_scale",
     "caption_lift",
     "font",
@@ -350,9 +351,7 @@ def verify_download(directory, receipt, request):
     ):
         raise RuntimeError("result manifest does not match the input")
     rendered = manifest.get("rendered", [])
-    if not 1 <= len(rendered) <= request["settings"].get("clips", 3) or len(
-        rendered
-    ) != returned.get("rendered_clips"):
+    if not rendered or len(rendered) != returned.get("rendered_clips"):
         raise RuntimeError("result clip count mismatch")
     seen = set()
     for clip in rendered:
@@ -361,7 +360,9 @@ def verify_download(directory, receipt, request):
             raise RuntimeError("unexpected output directory")
         seen.add(relative)
         checksums = clip.get("sha256", {})
-        if set(checksums) != {"video.mp4", "captions.ass", "captions.srt"}:
+        required = {"video.mp4", "captions.ass", "captions.srt"}
+        optional = {"chat.ass", "quality.json", "contact-sheet.jpg"}
+        if not required <= set(checksums) <= required | optional:
             raise RuntimeError("missing output checksums")
         for name, checksum in checksums.items():
             target = directory / relative / name

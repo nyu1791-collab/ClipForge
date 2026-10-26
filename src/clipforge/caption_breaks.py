@@ -70,6 +70,9 @@ def _lexical_spans(text):
         cursor = end
     protected = list(spans)
     for index, word in enumerate(words):
+        if index and getattr(word.feature, "pos1", "") == "助詞":
+            # Keep a real particle with its preceding word; do not ban every character が/で etc.
+            protected.append((spans[index - 1][0], spans[index][1]))
         if (
             0 < index < len(words) - 1
             and word.surface == "の"

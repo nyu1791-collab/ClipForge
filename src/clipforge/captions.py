@@ -457,7 +457,7 @@ def spoken_length(text):
 
 
 def hold_for_reading(
-    spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0, lead_ms=0
+    spans, texts, limit, cps=TARGET_CAPTION_CPS, floor_ms=0, lead_ms=0, max_tail_ms=None
 ):
     """Extend captions read faster than the target into the silence after them.
 
@@ -468,6 +468,8 @@ def hold_for_reading(
     """
     for index, (span, text) in enumerate(zip(spans, texts)):
         ceiling = spans[index + 1][0] if index + 1 < len(spans) else max(limit, span[1])
+        if max_tail_ms is not None:
+            ceiling = min(ceiling, limit, span[1] + max_tail_ms)
         reading = math.ceil(spoken_length(text) * 1000 / cps)
         wanted = span[0] + max(reading, floor_ms)
         # ASS keeps centiseconds and SRT milliseconds, so a held end is rounded up to a whole
@@ -606,12 +608,17 @@ def _caption_groups(
         settings.horizontal_target_cps if landscape else TARGET_CAPTION_CPS,
         floor_ms=round(
             (
-                settings.horizontal_min_caption_seconds
-                if landscape
-                else MIN_CAPTION_SECONDS
+                0.8
+                if settings.caption_preserve_text
+                else (
+                    settings.horizontal_min_caption_seconds
+                    if landscape
+                    else MIN_CAPTION_SECONDS
+                )
             )
             * 1000
         ),
+        max_tail_ms=1500 if settings.caption_preserve_text else None,
     )
     return groups, spans, plain_lines, cleanup, approximate
 
@@ -811,4 +818,25 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
         if settings.caption_emotions
         else None,
         "asr_cleanup": cleanup,
+        "display_targets": {
+            "minimum_seconds": 0.8 if settings.caption_preserve_text else None,
+            "max_silence_tail_seconds": 1.5 if settings.caption_preserve_text else None,
+            "enforced_as_quality_gate": False,
+        },
+        "visual_reference_samples": visual_reference_samples(subtitles),
     }
+
+
+def visual_reference_samples(subtitles):
+    """Pick existing caption events for a small, optional manual reference sheet."""
+    events = [event for event in subtitles if event.style not in {"Heading", "Credit"}]
+    selected = []
+    for predicate in (
+        lambda e: "__" not in e.style,
+        lambda e: e.style.endswith("_2"),
+        lambda e: True,
+    ):
+        event = next((e for e in events if predicate(e) and e not in selected), None)
+        if event is not None:
+            selected.append(event)
+    return [{"at": (e.start + e.end) / 2000, "style": e.style} for e in selected]
