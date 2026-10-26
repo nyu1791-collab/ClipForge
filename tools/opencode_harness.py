@@ -223,6 +223,24 @@ def redacted_tail(path, limit=2000):
     return SECRET_PATTERN.sub("[REDACTED]", text)
 
 
+def emit(message):
+    # This repository's step log is public, so every progress line is redacted and short.
+    print(SECRET_PATTERN.sub("[REDACTED]", message)[:300], file=sys.stderr, flush=True)
+
+
+def tool_input(part):
+    state = part.get("state") or {}
+    return json.dumps(state.get("input", {}), ensure_ascii=False)[:120]
+
+
+def relay_stderr(pipe, log):
+    # Guard and server messages go to the private stderr log and to the step log.
+    for line in pipe:
+        log.write(line)
+        log.flush()
+        emit("guard: " + line.rstrip())
+
+
 def attempt(
     command,
     environment,
@@ -239,7 +257,7 @@ def attempt(
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
-        stderr=errors if errors is not None else subprocess.DEVNULL,
+        stderr=subprocess.PIPE if errors is not None else subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
         encoding="utf-8",
         errors="replace",
@@ -249,6 +267,13 @@ def attempt(
     )
     answered = threading.Event()
     stalled = threading.Event()
+    relay = None
+    if errors is not None:
+        relay = threading.Thread(
+            target=relay_stderr, args=(process.stderr, errors), daemon=True
+        )
+        relay.start()
+    emit("OpenCode task started; waiting for its first event")
 
     def watch():
         limit = timeout if stall is None else min(stall, timeout)
@@ -270,17 +295,24 @@ def attempt(
             except ValueError:
                 continue
             part = event.get("part") or {}
-            if event.get("type") == "text" and part.get("text"):
+            kind = event.get("type")
+            if kind == "text" and part.get("text"):
                 texts.append(part["text"])
-            elif event.get("type") == "retry_stopped":
+                emit(f"text received: {len(part['text'])} characters")
+            elif kind == "retry_stopped":
                 result["error"] = event["reason"]
+                emit(f"stopped: {event['reason']}")
                 return True
-            elif event.get("type") == "tool_use":
+            elif kind == "tool_use":
                 result["tool_calls"] += 1
-            elif event.get("type") == "step_finish":
+                emit(f"tool {part.get('tool', '?')} {tool_input(part)}")
+            elif kind == "step_finish":
                 result["steps"] += 1
                 result["tokens"] += (part.get("tokens") or {}).get("total", 0)
                 result["cost"] = result.get("cost", 0) + (part.get("cost") or 0)
+                emit(
+                    f"step {result['steps']} finished; tokens so far {result['tokens']}"
+                )
                 if free and part.get("cost", 0):
                     result["error"] = (
                         "non-zero cost reported; stopped (free model only)"
@@ -306,6 +338,8 @@ def attempt(
     finally:
         answered.set()
         timer.cancel()
+        if relay is not None:
+            relay.join(timeout=10)
         if process.poll() is None:
             kill_task(process)
             process.wait()
@@ -443,7 +477,11 @@ def _run_task(task, mode, base, timeout, model, name, directory):
             prompt,
         ]
     stderr_log = directory / "stderr.log"
-    with slot(model), log.open("w") as out, stderr_log.open("w") as errors:
+    with (
+        slot(model),
+        log.open("w") as out,
+        stderr_log.open("w", encoding="utf-8") as errors,
+    ):
         # Space may have been consumed by another run while this one waited for a slot.
         check_disk_space(directory)
         # One harness start per task; an unanswered start is not retried.

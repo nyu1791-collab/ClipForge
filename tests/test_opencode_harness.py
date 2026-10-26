@@ -244,6 +244,21 @@ def test_stderr_tail_hides_credential_like_text(harness, tmp_path):
     assert tail.count("[REDACTED]") == 2
 
 
+def test_progress_lines_hide_credentials_and_stay_short(harness, capsys):
+    harness.emit("guard: Authorization: Bearer synthetic-token " + "x" * 400)
+
+    printed = capsys.readouterr().err.strip()
+    assert "synthetic-token" not in printed
+    assert "[REDACTED]" in printed
+    assert len(printed) <= 300
+
+
+def test_tool_input_summary_is_short(harness):
+    part = {"tool": "read", "state": {"input": {"path": "x" * 500}}}
+
+    assert len(harness.tool_input(part)) <= 120
+
+
 def test_report_keeps_every_text_part(harness, task, monkeypatch):
     def attempt(
         command, environment, workdir, out, timeout, result, texts, free, **options
