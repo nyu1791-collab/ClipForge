@@ -531,7 +531,11 @@ def _caption_groups(
 ):
     """Caption groups, their (start, end) in ms on the output timeline, and cleanup info."""
     duration = clip.end - clip.start
-    segments, cleanup = clean_segments(transcript.segments)
+    if settings.caption_preserve_text:
+        segments = transcript.segments
+        cleanup = {"status": "not_run", "reason": "preserve_gemini_edited_subtitles"}
+    else:
+        segments, cleanup = clean_segments(transcript.segments)
     caption_transcript = transcript.model_copy(update={"segments": segments})
     tokens, approximate = collect_tokens(caption_transcript, clip)
     tokens, split = split_long(tokens, measure, line_px)

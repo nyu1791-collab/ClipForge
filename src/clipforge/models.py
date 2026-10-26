@@ -78,6 +78,8 @@ class Settings(Record):
     # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
+    # Gemini's edited subtitles must not pass through legacy ASR text deletion.
+    caption_preserve_text: bool = False
     # Scales the caption font: 1.0 is 4.8 percent of the frame height.
     caption_scale: float = Field(default=1.0, ge=0.8, le=2.0)
     # Landscape only (aspect 16:9; ignored for 9:16). A caption is lifted above a busy static band

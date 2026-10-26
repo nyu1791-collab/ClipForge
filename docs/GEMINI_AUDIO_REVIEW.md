@@ -1,13 +1,13 @@
-> 字幕の文体ルールは `src/clipforge/prompts/gemini_subtitles_ja.md`、話題分けのルールは `src/clipforge/prompts/gemini_topics_ja.md` に置き、Gemini への実リクエスト本文へ読み込ませます。
+> 共通の必読本文は [編集ルールブック](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。話題・字幕の工程別ルールと一緒に各Gemini 3.8リクエストのsystemInstructionへ読み込む。
 
 # 現在の通常経路：音声理解 → 採用区間だけ文字起こし
 
 2026-10-26の追加指示により、全文の3.5文字起こしと全文GPU ASRを通常経路から外す。以下が旧ASR先行経路に優先する。
 
 1. runnerで音声だけを取得するか、保存済み元音声を再利用する。ASRファイルは要求しない。
-2. 3.8 Flash / MEDIUM が `src/clipforge/prompts/gemini_topics_ja.md` を読み、完結する話題の区間・見出し・理由を返す。全文テキストは生成しない。入力上限のため90分ごとの音声窓に分け、窓の端で話題が途切れる候補は除く。
-3. 重複しない5本（各300〜900秒）を採用。3.5 Flash / MINIMAL は話題の資料から固有名詞の表記を出典付きで調べる。全文文字起こしは担当しない。
-4. 選んだ音声だけを60秒ごとの小区間に分け、前後1.5秒を文脈用に重ねて3.8 Flash / MEDIUMへ渡す。`src/clipforge/prompts/gemini_subtitles_ja.md` のルールを実リクエストへ含め、要約・言い換えをせず、意味のないフィラーだけを除く。意味のある相槌・驚き・否定・数字・条件・結論は残す。
+2. 3.8 Flash / MEDIUM が共通の必読 `src/clipforge/prompts/gemini_editorial_rulebook_ja.md` と `src/clipforge/prompts/gemini_topics_ja.md` を読み、完結する話題の区間・見出し・理由を返す。全文テキストは生成しない。入力上限のため90分ごとの音声窓に分け、窓の端で話題が途切れる候補は除く。
+3. 自然な話題を採用。本数5本・各300〜900秒は目安で、未達でも続行。3.5 Flash / MINIMAL は話題の資料から固有名詞の表記を出典付きで調べる。全文文字起こしは担当しない。
+4. 選んだ音声だけを60秒ごとの小区間に分け、前後1.5秒を文脈用に重ねて3.8 Flash / MEDIUMへ渡す。共通ルールブックと `src/clipforge/prompts/gemini_subtitles_ja.md` を実リクエストのsystemInstructionへ含め、意味・口調を保つ短文化と自然な言い換えを行う。否定・数字・条件・伝聞や推測の度合い・オチは残す。必要な効果音指示も同じ応答で受け取る。
 5. 各小区間の字幕時刻は、その小区間の音声パート先頭を0秒として返させ、コードで切り抜き内の時刻へ移す。前後の文脈音声は各区間へ付けますが、話者参照音声は別パートで渡すため、時刻に足されません。単語単位の時刻とは扱いません。
 6. プロンプト本文を `transcript-*.prompt.txt` として出力へ保存し、使用ファイル名・SHA-256を `audio-editor-receipt.json` に記録する。規則ファイルが変わった場合は、その規則で生成していない古い回答を同じ回答として再利用しません。
 7. Colab GPU/NVENCが選択区間だけ360pで取得し、従来のASS字幕位置・サイズで描画する。字幕の画面座標はGeminiに決めさせず、描画設定で固定する。GPU ASRは実行しません。
@@ -114,3 +114,7 @@ Actionsの`editorial_release`に保存済み応答の非公開Releaseタグを�
 strict/report設定はoffへ正規化する。旧quality.check_clip/inspect_output/recordも検査・再走査・測定・検査ファイル作成を行わない互換入口とし、未実施を合格扱いしない。現在の通常制作経路に検査呼び出しを追加しない。明示的に起動する開発用Quality workflowは制作経路から呼ばれておらず、今回実行していない。
 
 今回の変更でテスト、モデル呼び出し、完成映像の再検査、制作の再投入は行っていない。最新成功Run 40326850563の固定ソースはe3f9226で、今回の変更を本番実行した結果ではない。
+
+### 最新：意味を保つ編集字幕と効果音
+
+新規制作では[共通編集ルールブック](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)を必読にする。旧「要約・言い換え禁止」は上書きされる。必読経路・保存記録・音の合成の詳細は[GEMINI_EDITORIAL_RULEBOOK.md](GEMINI_EDITORIAL_RULEBOOK.md)を参照。上の旧ASR経路は保存済み結果の復旧資料であり、新しい短文化をその旧経路へ迂回させない。

@@ -1,0 +1,31 @@
+# Gemini 3.8の必読編集ルールと適用経路
+
+新規制作のルール本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。工程別の字幕契約は [gemini_subtitles_ja.md](../src/clipforge/prompts/gemini_subtitles_ja.md)。意味・口調・確かさを保つ短文化、固有名詞と不明箇所の扱い、良い例/避ける例、時刻、話者、控えめな効果音を定義する。逐語全文を表示する旧方針を更新した。
+
+## 必読は実リクエストへの注入
+
+`audio_understanding.Client.generate` は各Gemini 3.8呼び出しで共通本文と工程別本文を読み、その連結をVertexの `systemInstruction.parts[].text` へ入れる。話題選定時も共通本文を読み、字幕工程と担当範囲を区別する。3.5の表記調査には字幕生成を担当させない。欠落・空ファイルはデプロイ不備として報告し、ルールなしで別の制作を始めない。「読みました」というモデルの自己申告や読了検査は追加しない。
+
+`*.prompt.txt` は実際に送るsystemInstructionとユーザー依頼文を保存する。`audio-editor-receipt.json` の `prompt_rules_sources` は各ルールのパスとSHA-256、`prompt_rules_sha256` は連結本文、`prompt_sha256` は実依頼文全体のハッシュ。工程キーにも実依頼文ハッシュが入るので、ルール更新前の応答を新ルールの成果として再利用しない。モデルによる内容遵守をハッシュだけで保証するものではない。
+
+## 字幕から描画まで
+
+採用区間の60秒＋前後1.5秒の文脈という音声窓は維持する。`segments[].text` は読みやすい編集字幕。時刻は要約文字数から作らず、元発言の始まりと終わりのGemini推定値を使う。音声自体を短縮しない。
+
+新規の `selected-transcripts.json` と `final-selection.json` に `subtitle_policy=meaning_preserving_compact_v1` を保存する。描画側はこの字幕方針で `caption=plain`、`caption_preserve_text=true` を使い、話者色と横幅のあるレイアウトを維持する。発言と文字が一対一にならない編集字幕へカラオケの単語追跡を付けない。旧ASRの反復/定型句/圧縮率による文字削除は、この編集字幕では呼ばない。行組み・時刻の表示範囲への整形は維持する。
+
+## 効果音の実経路
+
+同じ字幕応答の `sound_effects` で `at`・`kind`・`reason` を受け取る。追加のモデル要求はない。音声パート内の秒数をクリップ内の秒数へ変換し、担当窓に属する指示だけを `final-selection.json` のクリップ行へ保存する。提案段階のreceiptは `sound_effects_status=planned_not_rendered`。
+
+`pipeline.render_clip` → `media.render` → `sound_effects.mix_graph` で、固定レシピのsoft_pop/light_chime/transition_tickをFFmpegの正弦波から合成する。外部音源・商用音源のコピー・別の生成APIを使わない。会話の既存1パス音量処理の後へ、波形ピーク0.025（約−32 dBFS）の短音を足し、既存リミッターを通す。音量はモデルに決めさせない。聞こえ方や商用品質を未試聴で保証しない。
+
+未知の音・不正/区間外の時刻・末尾に収まらない音・30秒未満の密集は適用せず続行する。効果音はゼロでも成立し、最低数を設けない。原音に音声がない場合は勝手に効果音だけの音声へ差し替えず、未適用を記録する。`render.json` に適用指示・レシピ版・合成ミックスの状態を残し、描画キーにも指示とレシピ版を含める。
+
+深刻な事故・怪我・死・災害や未確認の非難を茶化す音を提案しないルールを同じsystemInstructionに含める。内容を別モデルへ再送して査読する工程は設けない。
+
+## 運用
+
+目標本数・尺・短縮率・効果音数・品質点は停止条件にしない。検査・監査・音量再測定・不合格再生成は追加しない。素材・認証・媒体破損・保存先の取り違えは実行エラーとして区別する。
+
+今回テスト・モデル呼び出し・音や映像の生成/試聴・制作再投入は行っていない。実装とルール登録の段階で、次回の通常制作から適用する。既存の成功Run 40326850563をこのルールの実行結果とは扱わない。

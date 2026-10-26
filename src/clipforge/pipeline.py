@@ -355,6 +355,7 @@ def render_clip(
     crop_anchor="auto",
     caption_floor=None,
     speaker_turns=None,
+    sound_effects=None,
 ):
     """Render one clip. chat is {"ass", "messages", "reason", "error"} with the chat panel.
 
@@ -363,6 +364,13 @@ def render_clip(
     saved in render.json is returned as stored: its chat and layout are not fetched or planned
     again, so chat may be None for it.
     """
+    from .sound_effects import RECIPE_VERSION, prepare_cues
+
+    sound_effects = prepare_cues(sound_effects, clip.end - clip.start)
+    if sound_effects:
+        key = fingerprint(
+            {"job": key, "sound_effects": sound_effects, "sfx_recipe": RECIPE_VERSION}
+        )
     name = f"clip-{index:03}"
     if speaker_turns:
         from .speaker_captions import validate_turns
@@ -459,6 +467,7 @@ def render_clip(
                 clip,
                 settings,
                 ass=directory / "captions.ass",
+                **({"sound_effects": sound_effects} if sound_effects else {}),
                 **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
                 # Only the chat fill crops by position; standard layouts keep the framing setting.
                 **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
@@ -481,6 +490,17 @@ def render_clip(
             # Seconds per stage; not part of the render key or the hashed files.
             "timings": timings,
         }
+        if sound_effects:
+            saved["sound_effects"] = {
+                "status": (
+                    "synthesized_and_mixed" if info["audio"]
+                    else "not_applied_no_source_audio"
+                ),
+                "recipe": RECIPE_VERSION,
+                "peak_amplitude": 0.025,
+                "cues": sound_effects,
+                "post_render_audit": "not_run",
+            }
         if settings.chat_panel:
             # Diagnostics: an unavailable chat leaves the column empty and records why.
             saved["chat"] = {
