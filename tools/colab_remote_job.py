@@ -367,6 +367,7 @@ def render_stage(payload, output, report, timings, environment):
             raise RuntimeError("Invalid configuration file")
         arguments += ["--config", stage["config_file"]]
     stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
+    direct_audio = False
     if payload.get("audio_review_release"):
         tag = payload["audio_review_release"]
         if not re.fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
@@ -397,6 +398,32 @@ def render_stage(payload, output, report, timings, environment):
             stage["review"]
         ):
             raise RuntimeError("Render selection differs from the saved audio review")
+        selection = json.loads(stage["review"])
+        if selection.get("selection_basis") == "audio_understanding":
+            if stage.get("clip_index"):
+                raise RuntimeError(
+                    "Audio-understanding rendering requires the complete selected batch"
+                )
+            direct_audio = True
+            bundles.download_asset(
+                assets["selected-transcripts.json"],
+                records / "selected-transcripts.json",
+                8 * 1024**2,
+            )
+            arguments = [
+                str(ROOT / ".venv/bin/python"),
+                "-m",
+                "clipforge.audio_understanding",
+                "render",
+                "--review",
+                str(records / "final-selection.json"),
+                "--transcripts",
+                str(records / "selected-transcripts.json"),
+                "--output",
+                str(output),
+                "--config",
+                setup_environment["CLIPFORGE_RENDER_CONFIG"],
+            ]
     if payload.get("youtube_cookies_b64"):
         stage_env["YOUTUBE_COOKIES_B64"] = payload["youtube_cookies_b64"]
     invocation = 'source tools/colab_cache_env.sh && exec "$@"'
@@ -412,6 +439,21 @@ def render_stage(payload, output, report, timings, environment):
         if error is not None:
             report["worker_error"] = error
         raise
+    if direct_audio:
+        (output / "request-receipt.json").write_text(
+            json.dumps(
+                {
+                    "request_id": payload["request_id"],
+                    "source_ref": payload["source_ref"],
+                    "workflow_run": payload["workflow_run"],
+                    "status": "complete",
+                    "audio_stage": "render",
+                    "selection_basis": "audio_understanding",
+                    "rendered_clips": len(selection["clips"]),
+                    "sha256": {"manifest.json": digest(output / "manifest.json")},
+                }
+            )
+        )
     return json.loads((output / "manifest.json").read_text())["status"]
 
 

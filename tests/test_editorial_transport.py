@@ -37,7 +37,8 @@ def test_only_valid_private_review_tags_allow_larger_subtitle_metadata(
 
 
 @pytest.mark.parametrize(
-    "fault", [None, "different_selection", "incomplete", "invalid_tag"]
+    "fault",
+    [None, "different_selection", "incomplete", "invalid_tag", "audio_understanding"],
 )
 def test_gpu_stage_requires_the_completed_private_selection_to_match(
     tmp_path, monkeypatch, transport, fault
@@ -49,6 +50,8 @@ def test_gpu_stage_requires_the_completed_private_selection_to_match(
     output = tmp_path / "out"
     output.mkdir()
     expected = {"clips": [{"speaker_turns": []}]}
+    if fault == "audio_understanding":
+        expected["selection_basis"] = "audio_understanding"
     calls = []
 
     class Bundles:
@@ -58,6 +61,7 @@ def test_gpu_stage_requires_the_completed_private_selection_to_match(
                 "assets": [
                     {"name": "audio-editor-receipt.json"},
                     {"name": "final-selection.json"},
+                    {"name": "selected-transcripts.json"},
                 ]
             }
 
@@ -80,6 +84,7 @@ def test_gpu_stage_requires_the_completed_private_selection_to_match(
         "github_token": "synthetic",
         "request_id": "a" * 32,
         "source_ref": "b" * 40,
+        "workflow_run": "123",
         "audio_review_release": "../invalid"
         if fault == "invalid_tag"
         else "clipforge-kick-editorial-replay-123",
@@ -89,7 +94,7 @@ def test_gpu_stage_requires_the_completed_private_selection_to_match(
             "review": json.dumps(expected),
         },
     }
-    if fault:
+    if fault and fault != "audio_understanding":
         with pytest.raises(RuntimeError):
             remote.render_stage(payload, output, {}, {}, {})
         assert "render" not in calls
@@ -98,3 +103,7 @@ def test_gpu_stage_requires_the_completed_private_selection_to_match(
     else:
         assert remote.render_stage(payload, output, {}, {}, {}) == "complete"
         assert calls == ["setup", "release", "render"]
+
+        if fault == "audio_understanding":
+            receipt = json.loads((output / "request-receipt.json").read_text())
+            assert receipt["selection_basis"] == "audio_understanding"
