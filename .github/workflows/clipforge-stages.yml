@@ -345,6 +345,7 @@
           "name": "Reuse original audio or acquire audio only; no ASR",
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
             "ANALYSIS_RUN": "${{ inputs.analysis_run_id }}",
             "ANALYSIS_REQUEST": "${{ inputs.analysis_request_id }}",
             "SOURCE_URL": "${{ inputs.source_url }}",

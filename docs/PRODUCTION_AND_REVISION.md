@@ -24,6 +24,8 @@ flowchart TD
 
 接続済みなら `python tools/produce_with_gemini.py URL --output NEW_PRIVATE_DIR` で通常制作を開始できる。`--source-ref` 省略時は既定の専用実行ブランチのSHAを一度だけ取得して固定し、production-stateへ記録する。VertexはActionsのOIDC、Colabは登録済み専用資格情報をそのまま使う。設定確認のためのテスト・監査・試験的なモデル要求やGPU確保は挟まない。
 
+YouTubeの新規音声取得とGPU上の採用映像取得は、同じ既存の `YOUTUBE_COOKIES_B64` Secretを利用する。値をログ・公開入力・成果物へ出さない。未設定時にログインなしで取得できることは保証しない。YouTubeがログイン確認を要求した場合は認証接続の問題として記録し、別アカウント・別経路への切り替えや自動再投入は行わない。
+
 | やりたいこと | 入口 | 戻らない工程 |
 |---|---|---|
 | 新しい配信から制作 | `tools/produce_with_gemini.py URL --source-ref SHA --output PRIVATE_DIR` | 全編ASR・全文GPU文字起こしへ戻らない |
