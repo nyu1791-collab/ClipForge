@@ -454,6 +454,9 @@ def shifted_transcript(transcript, start, end, offset=0.0):
                 end=min(segment.end, end) - start + offset,
                 text=text,
                 words=words,
+                emotion=segment.emotion,
+                emotion_level=segment.emotion_level,
+                emotion_confidence=segment.emotion_confidence,
             )
         )
     return Transcript(language=transcript.language, segments=segments)

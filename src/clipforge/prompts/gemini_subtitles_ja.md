@@ -20,8 +20,10 @@
   "audio_access": "heard",
   "complete": true,
   "segments": [
-    {"start": 0.0, "end": 4.2, "text": "昨日行ったけど、大雨で入れなかったんだよね", "speaker_id": "speaker_1", "confidence": 0.96}
+    {"start": 0.0, "end": 4.2, "text": "昨日行ったけど、大雨で入れなかったんだよね", "speaker_id": "speaker_1", "confidence": 0.96, "emotion": "neutral", "emotion_level": 0, "emotion_confidence": 0}
   ],
   "sound_effects": []
 }
 ```
+
+各segmentにemotion/ emotion_level/ emotion_confidenceも付けます。通常はneutral/0、声から変化が明確な箇所だけ共通ルールブックの感情演出を選びます。文字内容から内心を決めつけず、深刻な内容を派手に演出しません。フォント名・ピクセル・色コードは返しません。

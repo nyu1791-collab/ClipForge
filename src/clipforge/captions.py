@@ -6,7 +6,7 @@ import unicodedata
 
 import pysubs2
 
-from . import fonts
+from . import caption_emotions, fonts
 from .asr_cleanup import clean_segments
 from .caption_breaks import (
     NO_LINE_START,
@@ -194,7 +194,7 @@ def space_after_marks(tokens):
     return spaced
 
 
-def collect_tokens(transcript, clip):
+def collect_tokens(transcript, clip, preserve_boundaries=False):
     """Word tokens (start, end, text), clipped and offset to the selected interval."""
     tokens, approximate = [], 0
     japanese = transcript.language == "ja"
@@ -204,6 +204,7 @@ def collect_tokens(transcript, clip):
         source = segment.words or [
             Word(start=segment.start, end=segment.end, text=segment.text or " ")
         ]
+        batch = []
         for word in source:
             text = normalize_terms(safe(word.text))
             if japanese:
@@ -213,9 +214,11 @@ def collect_tokens(transcript, clip):
             a, b = max(clip.start, word.start), min(clip.end, word.end)
             if b <= a:
                 continue
-            tokens.append((a - clip.start, b - clip.start, text))
+            batch.append((a - clip.start, b - clip.start, text))
+        tokens.extend(join_phrases(batch) if preserve_boundaries else batch)
     tokens.sort(key=lambda token: (token[0], token[1]))
-    tokens = join_phrases(tokens)
+    if not preserve_boundaries:
+        tokens = join_phrases(tokens)
     if japanese:
         tokens = space_after_marks(tokens)
     return tokens, approximate
@@ -523,6 +526,20 @@ def _caption_layout(settings):
         line_px = min(
             line_px, round(measure.width("あ" * settings.caption_line_chars()))
         )
+    if settings.caption_emotions:
+        _, emotion_measures = caption_emotions.measurements(settings, font_size)
+        base_measure = measure
+
+        class EmotionMeasure:
+            def width(self, text):
+                return max(
+                    [
+                        base_measure.width(text),
+                        *(m.width(text) for m in emotion_measures),
+                    ]
+                )
+
+        measure = EmotionMeasure()
     return font_size, font_path, measure, line_px, landscape
 
 
@@ -537,17 +554,27 @@ def _caption_groups(
     else:
         segments, cleanup = clean_segments(transcript.segments)
     caption_transcript = transcript.model_copy(update={"segments": segments})
-    tokens, approximate = collect_tokens(caption_transcript, clip)
+    tokens, approximate = collect_tokens(
+        caption_transcript, clip, settings.caption_emotions
+    )
     tokens, split = split_long(tokens, measure, line_px)
     approximate += split
     turns = validate_turns(speaker_turns or [], duration)
-    runs, previous_speaker = [], None
+    runs, previous_direction = [], None
     for token in tokens:
         speaker = speaker_for_token(token[0], token[1], turns)
-        if not runs or speaker != previous_speaker:
+        mood = (
+            caption_emotions.for_span(
+                token[0], token[1], caption_transcript, clip.start
+            )
+            if settings.caption_emotions
+            else ("neutral", 0)
+        )
+        direction = (speaker, mood)
+        if not runs or direction != previous_direction:
             runs.append([])
         runs[-1].append(token)
-        previous_speaker = speaker
+        previous_direction = direction
     options = (
         dict(
             max_lines=settings.horizontal_max_lines,
@@ -673,6 +700,11 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
             **speaker_base,
         )
 
+    if settings.caption_emotions:
+        caption_emotions.add_styles(
+            subtitles, settings, ["Default", "Sequential", *SPEAKER_COLORS]
+        )
+
     heading_text = None
     title = getattr(clip, "title", None)
     if settings.heading and title:
@@ -726,6 +758,12 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
     for items, (start, end), margin in zip(groups, spans, margins):
         speaker = speaker_for_token(items[0][0], items[0][1], speaker_turns or [])
         event_style = speaker or style
+        if settings.caption_emotions:
+            mood, level = caption_emotions.for_span(
+                items[0][0], items[-1][1], transcript, clip.start
+            )
+            if mood != "neutral":
+                event_style = f"{event_style}__{mood}_{level}"
         text = group_text(items, measure, line_px, settings.caption)
         if placed:
             # Bottom centre (\an2); the event's own MarginV sets how high the caption sits.
@@ -762,6 +800,15 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
         "approximate_tokens": approximate,
         "missing_glyphs": missing,
         "caption_mode": settings.caption,
-        "speaker_colored_events": sum(e.style in SPEAKER_COLORS for e in subtitles),
+        "speaker_colored_events": sum(
+            e.style.split("__")[0] in SPEAKER_COLORS for e in subtitles
+        ),
+        "emotion_events": sum("__" in e.style for e in subtitles),
+        "emotion_style_version": caption_emotions.STYLE_VERSION
+        if settings.caption_emotions
+        else None,
+        "emotion_serif_font": caption_emotions.optional_serif(settings.font)[0]
+        if settings.caption_emotions
+        else None,
         "asr_cleanup": cleanup,
     }

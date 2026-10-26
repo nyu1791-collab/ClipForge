@@ -371,7 +371,10 @@ def render_stage(payload, output, report, timings, environment):
     direct_audio = False
     if payload.get("audio_review_release"):
         tag = payload["audio_review_release"]
-        if not re.fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
+        if not re.fullmatch(
+            r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|revision-[a-f0-9]{32})",
+            tag,
+        ):
             raise RuntimeError("Invalid audio review release")
         bundles = ReleaseBundles(payload["github_token"])
         release = bundles.json_request(
@@ -442,6 +445,9 @@ def render_stage(payload, output, report, timings, environment):
                 "previous-render-download",
                 timeout=1800,
             )
+        prior_manifest = json.loads((previous / "manifest.json").read_text())
+        if prior_manifest.get("source_url") != selection.get("source_url"):
+            raise RuntimeError("Previous render belongs to another source URL")
         if (previous / "clips").is_dir():
             shutil.copytree(previous / "clips", output / "clips", dirs_exist_ok=True)
     if payload.get("youtube_cookies_b64"):

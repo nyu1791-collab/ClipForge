@@ -1,3 +1,5 @@
+> 通常制作・修正・再開・回収の入口は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。
+
 > 共通の必読本文は [編集ルールブック](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。話題・字幕の工程別ルールと一緒に各Gemini 3.8リクエストのsystemInstructionへ読み込む。
 
 # 現在の通常経路：音声理解 → 採用区間だけ文字起こし

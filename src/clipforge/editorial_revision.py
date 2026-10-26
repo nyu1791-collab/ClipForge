@@ -1,0 +1,200 @@
+"""Version saved editorial data without sending audio or subtitles to a model."""
+
+import argparse
+from copy import deepcopy
+import json
+from pathlib import Path
+import re
+import subprocess
+import uuid
+
+from .caption_emotions import annotation
+from .models import Transcript
+from .speaker_captions import validate_turns
+from .sound_effects import prepare_cues
+from .storage import PipelineError, digest, write_json
+
+PRIVATE_REPO = "nyu1791-collab/ai-model-workers"
+EDITORIAL_TAG_PATTERN = (
+    r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|revision-[a-f0-9]{32})"
+)
+ASSETS = (
+    "audio-editor-receipt.json",
+    "final-selection.json",
+    "selected-transcripts.json",
+)
+
+
+def gh(*args):
+    result = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=600)
+    if result.returncode:
+        raise PipelineError(
+            "Private editorial revision operation failed; no resubmission"
+        )
+    return result.stdout
+
+
+def create_revision(parent_tag, patch_file, output, *, publish=False):
+    """Apply explicit edits to a new private directory; originals and model receipts remain."""
+    if not re.fullmatch(EDITORIAL_TAG_PATTERN, parent_tag):
+        raise PipelineError("Invalid parent editorial release")
+    patch_file, output = Path(patch_file), Path(output)
+    patch = json.loads(patch_file.read_text())
+    # A mistake in target IDs is an input error, not an editorial quality gate.
+    if set(patch) - {"reason", "clips"} or not isinstance(patch.get("clips"), list):
+        raise PipelineError(
+            "Revision requires reason and clips; source replacement is not supported"
+        )
+    if output.exists():
+        raise PipelineError(
+            "Revision output already exists; use its saved state instead of resubmitting"
+        )
+    private = json.loads(gh("repo", "view", PRIVATE_REPO, "--json", "isPrivate"))
+    if private.get("isPrivate") is not True:
+        raise PipelineError("Editorial storage must be private")
+    output.mkdir(parents=True, mode=0o700)
+    parent = output / "parent"
+    parent.mkdir(mode=0o700)
+    for name in ASSETS:
+        gh(
+            "release",
+            "download",
+            parent_tag,
+            "--repo",
+            PRIVATE_REPO,
+            "--pattern",
+            name,
+            "--dir",
+            str(parent),
+        )
+    receipt = json.loads((parent / ASSETS[0]).read_text())
+    selection = json.loads((parent / ASSETS[1]).read_text())
+    transcripts = json.loads((parent / ASSETS[2]).read_text())
+    if (
+        receipt.get("status") != "complete"
+        or selection.get("selection_basis") != "audio_understanding"
+    ):
+        raise PipelineError(
+            "A completed audio-understanding editorial bundle is required"
+        )
+    if len(selection["clips"]) != len(transcripts["clips"]):
+        raise PipelineError("Saved editorial clip mapping is missing")
+    changed = set()
+    for row in patch["clips"]:
+        if not isinstance(row, dict) or set(row) - {
+            "clip",
+            "title",
+            "segments",
+            "sound_effects",
+            "speaker_turns",
+        }:
+            raise PipelineError("Unsupported revision fields")
+        index = row.get("clip")
+        if type(index) is not int or not 1 <= index <= len(selection["clips"]):
+            raise PipelineError("Revision clip does not exist")
+        clip = selection["clips"][index - 1]
+        data = transcripts["clips"][index - 1]
+        before = deepcopy((clip, data))
+        if "title" in row:
+            if not isinstance(row["title"], str):
+                raise PipelineError("Revision title must be text")
+            clip["title"] = row["title"].strip() or "話題"
+        if not isinstance(row.get("segments", []), list):
+            raise PipelineError("Revision segments must be a list")
+        for change in row.get("segments", []):
+            if not isinstance(change, dict) or set(change) - {
+                "segment",
+                "text",
+                "start",
+                "end",
+                "emotion",
+                "emotion_level",
+                "emotion_confidence",
+            }:
+                raise PipelineError("Unsupported subtitle revision fields")
+            sid = change.get("segment")
+            if type(sid) is not int or not 1 <= sid <= len(data["segments"]):
+                raise PipelineError("Revision subtitle does not exist")
+            segment = data["segments"][sid - 1]
+            segment.update({k: v for k, v in change.items() if k != "segment"})
+            if any(k.startswith("emotion") for k in change):
+                segment.update(annotation(segment))
+        # Preserve clip identity and real data structure; no text length or quality threshold.
+        transcripts["clips"][index - 1] = Transcript.model_validate(data).model_dump()
+        if "speaker_turns" in row:
+            clip["speaker_turns"] = validate_turns(
+                row["speaker_turns"], clip["end"] - clip["start"]
+            )
+        if "sound_effects" in row:
+            clip["sound_effects"] = prepare_cues(
+                row["sound_effects"], clip["end"] - clip["start"]
+            )
+        if before != (clip, transcripts["clips"][index - 1]):
+            changed.add(index)
+    tag = "clipforge-kick-editorial-revision-" + uuid.uuid4().hex
+    revision = {
+        "release": tag,
+        "parent_release": parent_tag,
+        "parent_sha256": {name: digest(parent / name) for name in ASSETS},
+        "patch_sha256": digest(patch_file),
+        "changed_clips": sorted(changed),
+        "reason": str(patch.get("reason") or "Explicit editorial correction"),
+        "model_requests": 0,
+    }
+    selection["editorial_revision"] = revision
+    # Keep the original generator/model/rulebook records; label manual changes separately.
+    receipt["editorial_revision"] = revision
+    write_json(output / ASSETS[0], receipt)
+    write_json(output / ASSETS[1], selection)
+    write_json(output / ASSETS[2], transcripts)
+    write_json(output / "revision-patch.json", patch)
+    state = {**revision, "status": "prepared", "source_url": selection["source_url"]}
+    write_json(output / "revision-state.json", state)
+    return publish_revision(output) if publish else state
+
+
+def publish_revision(output):
+    """Publish a prepared version once. Unknown publication state is never retried here."""
+    output = Path(output)
+    state_path = output / "revision-state.json"
+    state = json.loads(state_path.read_text())
+    if state.get("status") != "prepared":
+        raise PipelineError(
+            "Revision publication already attempted; inspect its release"
+        )
+    state["status"] = "publishing_or_unknown"
+    write_json(state_path, state)
+    gh(
+        "release",
+        "create",
+        state["release"],
+        *(str(output / name) for name in (*ASSETS, "revision-patch.json")),
+        "--repo",
+        PRIVATE_REPO,
+        "--latest=false",
+        "--notes",
+        "Private editorial revision; original model responses preserved; no model requests.",
+    )
+    state["status"] = "published"
+    write_json(state_path, state)
+    return state
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--parent-release", required=True)
+    parser.add_argument("--patch", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--publish", action="store_true")
+    args = parser.parse_args()
+    print(
+        json.dumps(
+            create_revision(
+                args.parent_release, args.patch, args.output, publish=args.publish
+            )
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()

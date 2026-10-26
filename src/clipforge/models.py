@@ -37,6 +37,9 @@ class Word(Span):
 class Segment(Span):
     text: str = Field(max_length=16000)
     words: list[Word] = Field(default_factory=list)
+    emotion: str = "neutral"
+    emotion_level: int = Field(default=0, ge=0, le=2)
+    emotion_confidence: float = Field(default=0, ge=0, le=1)
 
 
 class Transcript(Record):
@@ -80,6 +83,7 @@ class Settings(Record):
     caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
     # Gemini's edited subtitles must not pass through legacy ASR text deletion.
     caption_preserve_text: bool = False
+    caption_emotions: bool = False
     # Scales the caption font: 1.0 is 4.8 percent of the frame height.
     caption_scale: float = Field(default=1.0, ge=0.8, le=2.0)
     # Landscape only (aspect 16:9; ignored for 9:16). A caption is lifted above a busy static band
