@@ -37,7 +37,7 @@
     "task": {
       "if": "github.repository == 'nyu1791-collab/ClipForge'",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 25,
+      "timeout-minutes": 35,
       "steps": [
         {
           "name": "Require private storage credentials before processing",
@@ -94,7 +94,7 @@
             "CLIPFORGE_AGENT_STATE": "${{ runner.temp }}/opencode-state",
             "TASK_MODE": "${{ inputs.mode }}"
           },
-          "run": "python3 tools/opencode_harness.py --mode \"$TASK_MODE\" --model vertex --task \"$RUNNER_TEMP/opencode-task.md\" --parallel 1 --timeout 900"
+          "run": "python3 tools/opencode_harness.py --mode \"$TASK_MODE\" --model vertex --task \"$RUNNER_TEMP/opencode-task.md\" --parallel 1 --timeout 1800"
         },
         {
           "name": "Save the task report privately",
