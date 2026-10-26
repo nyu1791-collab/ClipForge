@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -424,6 +425,25 @@ def render_stage(payload, output, report, timings, environment):
                 "--config",
                 setup_environment["CLIPFORGE_RENDER_CONFIG"],
             ]
+    if direct_audio and payload.get("resume_render"):
+        previous = WORK / "previous-render"
+        with timed(timings, "previous_render_transfer"):
+            command(
+                [
+                    str(ROOT / ".venv/bin/python"),
+                    "-m",
+                    "clipforge.release_transfer",
+                    "download",
+                    stage["previous_run"],
+                    "clipforge-result-" + stage["previous_request"],
+                    str(previous),
+                ],
+                stage_env,
+                "previous-render-download",
+                timeout=1800,
+            )
+        if (previous / "clips").is_dir():
+            shutil.copytree(previous / "clips", output / "clips", dirs_exist_ok=True)
     if payload.get("youtube_cookies_b64"):
         stage_env["YOUTUBE_COOKIES_B64"] = payload["youtube_cookies_b64"]
     invocation = 'source tools/colab_cache_env.sh && exec "$@"'
