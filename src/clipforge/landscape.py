@@ -62,13 +62,19 @@ def safe_quality_summary(report):
     }
 
 
-def validate_selection(value, settings, duration):
+def validate_selection(value, settings, duration, *, advisory_targets=False):
     clips = [SelectedClip.model_validate(row) for row in value["clips"]]
-    if not 5 <= len(clips) <= 10 or len(clips) != settings.clips:
-        raise PipelineError(
-            "landscape delivery needs exactly the requested 5 to 10 clips"
-        )
-    validate_picks(clips, duration, settings)
+    if advisory_targets:
+        if not clips:
+            raise PipelineError("no clips to render")
+        # Counts and target lengths guide editorial selection; they do not
+        # reject usable audio-understanding output.
+        if any(clip.start < 0 or clip.end <= clip.start or clip.end > duration + 0.1 for clip in clips):
+            raise PipelineError("selected interval is outside the source video")
+    else:
+        if not 5 <= len(clips) <= 10 or len(clips) != settings.clips:
+            raise PipelineError("landscape delivery needs exactly the requested 5 to 10 clips")
+        validate_picks(clips, duration, settings)
     if any(not clip.title.strip() for clip in clips):
         raise PipelineError("each landscape clip needs a topic title")
     ordered = sorted(clips, key=lambda clip: clip.start)

@@ -490,28 +490,29 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
                 )
                 if clip.end > length:
                     raise PipelineError("Topic exceeds overview window")
-                if (
-                    settings.min_seconds
-                    <= clip.end - clip.start
-                    <= settings.max_seconds
-                ):
-                    topics.append(
-                        clip.model_copy(
-                            update={
-                                "start": clip.start + start,
-                                "end": clip.end + start,
-                            }
-                        )
+                topics.append(
+                    clip.model_copy(
+                        update={"start": clip.start + start, "end": clip.end + start}
                     )
-        chosen = []
-        for clip in sorted(topics, key=lambda c: (-c.confidence, c.start)):
-            if all(clip.end <= c.start or clip.start >= c.end for c in chosen):
-                chosen.append(clip)
-            if len(chosen) == settings.clips:
-                break
-        if len(chosen) != settings.clips:
-            raise PipelineError("Not enough complete long topics; no automatic retry")
-        chosen.sort(key=lambda c: c.start)
+                )
+
+        def choose_topics():
+            selected = []
+            for clip in sorted(topics, key=lambda c: (-c.confidence, c.start)):
+                if all(clip.end <= c.start or clip.start >= c.end for c in selected):
+                    selected.append(clip)
+                if len(selected) == settings.clips:
+                    break
+            return sorted(selected, key=lambda c: c.start)
+
+        chosen = choose_topics()
+        if not chosen:
+            raise PipelineError("No usable topic intervals were returned")
+        client.record["topic_selection"] = {
+            "requested_clips": settings.clips,
+            "selected_clips": len(chosen),
+        }
+        client.save()
         corpus = "\n".join(c.title + " " + c.reason for c in chosen)
         research, grounding = client.generate(
             "terminology",
@@ -602,6 +603,7 @@ def render(review, transcripts_file, output, settings):
         },
         settings,
         max(c["end"] for c in value["clips"]),
+        advisory_targets=True,
     )
     if value.get("selection_basis") != "audio_understanding" or len(
         data["clips"]
