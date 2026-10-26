@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 import time
+import urllib.error
 import urllib.request
 
 from . import audio_first, pipeline
@@ -231,6 +232,14 @@ class Client:
             write_json(self.output / (phase + ".json"), value)
             row["status"] = "received"
             return value, row["grounding"]
+        except urllib.error.HTTPError as error:
+            from .http_diagnostics import capture_http_error
+
+            row["status"] = "failed"
+            row.update(
+                capture_http_error(error, self.output / (phase + ".http-error.json"))
+            )
+            raise
         except Exception:
             row["status"] = "failed"
             raise
