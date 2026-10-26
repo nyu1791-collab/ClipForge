@@ -15,6 +15,8 @@ def harness(tmp_path, monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "STATE", tmp_path / "state")
     monkeypatch.setattr(module, "ROOT", tmp_path)
+    # Tests never launch OpenCode, so the binary only has to be named, not installed.
+    monkeypatch.setenv("CLIPFORGE_OPENCODE_BIN", "/synthetic/opencode")
     monkeypatch.setattr(module, "slot", lambda model: nullcontext())
     monkeypatch.setattr(
         module.shutil,
@@ -49,7 +51,9 @@ def test_run_removes_home_and_keeps_reports(
     monkeypatch.setenv("CLIPFORGE_OPENAI_PROFILE", str(profile))
     monkeypatch.setattr(harness, "openai_profile", lambda: profile)
 
-    def attempt(command, environment, workdir, out, timeout, result, texts, free):
+    def attempt(
+        command, environment, workdir, out, timeout, result, texts, free, **options
+    ):
         home = Path(environment["HOME"])
         assert home.is_dir()
         cache = home / ".cache" / "opencode"
@@ -79,6 +83,7 @@ def test_run_removes_home_and_keeps_reports(
         "report.md",
         "result.json",
         "opencode.json",
+        "stderr.log",
     }
     assert (directory / "report.md").read_text() == "Synthetic report."
     assert (directory / "events.jsonl").read_text() == '{"type":"synthetic"}\n'
@@ -91,7 +96,7 @@ def test_run_removes_home_and_keeps_reports(
 def test_run_removes_home_when_interrupted(harness, task, monkeypatch, error):
     homes = []
 
-    def attempt(command, environment, *args):
+    def attempt(command, environment, *args, **options):
         home = Path(environment["HOME"])
         assert home.is_dir()
         homes.append(home)
@@ -130,7 +135,9 @@ def test_run_keeps_write_worktree(harness, task, tmp_path, monkeypatch):
         harness.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
     )
 
-    def attempt(command, environment, workdir, out, timeout, result, texts, free):
+    def attempt(
+        command, environment, workdir, out, timeout, result, texts, free, **options
+    ):
         assert workdir == worktree
         result["status"] = "complete"
         texts.append("Synthetic report.")
@@ -193,3 +200,44 @@ def test_low_disk_space_prevents_launch(harness, task, monkeypatch, after_slot):
         assert not (directories[0] / "home").exists()
     else:
         assert directories == []
+
+
+def test_vertex_waits_longer_and_an_empty_report_says_why(
+    harness, task, tmp_path, monkeypatch
+):
+    credential = tmp_path / "synthetic-credential.json"
+    credential.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credential))
+    seen = {}
+
+    def attempt(
+        command, environment, workdir, out, timeout, result, texts, free, **options
+    ):
+        seen.update(options)
+        result["error"] = "stalled before the first event"
+        return False
+
+    monkeypatch.setattr(harness, "attempt", attempt)
+    result = harness.run_task(task, "read", "HEAD", 30, "vertex")
+
+    assert seen["stall"] == 300
+    assert seen["errors"] is not None
+    directory = Path(result["report"]).parent
+    assert (directory / "stderr.log").is_file()
+    report = (directory / "report.md").read_text(encoding="utf-8")
+    assert report.startswith("No model report. status=failed")
+    assert "stalled before the first event" in report
+    assert "stderr_tail" not in result
+
+
+def test_stderr_tail_hides_credential_like_text(harness, tmp_path):
+    log = tmp_path / "stderr.log"
+    log.write_text(
+        'Authorization: Bearer synthetic-token\n{"private_key": "synthetic"}\n',
+        encoding="utf-8",
+    )
+    tail = harness.redacted_tail(log)
+
+    assert "synthetic-token" not in tail
+    assert '"synthetic"' not in tail
+    assert tail.count("[REDACTED]") == 2

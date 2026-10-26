@@ -10,6 +10,11 @@ import time
 import urllib.request
 
 
+def note(message):
+    # Progress goes to stderr, which the harness keeps privately; stdout carries events only.
+    print(f"opencode_vertex_guard: {message}", file=sys.stderr, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary")
@@ -25,16 +30,17 @@ def main():
         [args.binary, "serve", "--hostname", "127.0.0.1", "--port", str(port)],
         cwd=args.dir,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
     )
     client = None
     stopped = threading.Event()
     reason = []
+    seen = []
     stream = None
 
     def stop(message):
         if not stopped.is_set():
             reason.append(message)
+            note(message)
             stopped.set()
             print(json.dumps({"type": "retry_stopped", "reason": message}), flush=True)
             if client is not None and client.poll() is None:
@@ -49,6 +55,9 @@ def main():
                     continue
                 event = json.loads(raw[6:])
                 event = event.get("payload", event)
+                if not seen:
+                    seen.append(event.get("type"))
+                    note(f"first server event: {seen[0]}")
                 if event.get("type") == "session.status":
                     status = event.get("properties", {}).get("status", {})
                     if status.get("type") == "retry":
@@ -74,9 +83,11 @@ def main():
         if stream is None:
             stop("OpenCode server did not start; no model request sent")
             return 1
+        note("server event stream connected")
         threading.Thread(target=watch, daemon=True).start()
         if stopped.is_set():
             return 1
+        note("starting run")
         client = subprocess.Popen(
             [
                 args.binary,
@@ -96,6 +107,7 @@ def main():
         if stopped.is_set():
             client.kill()
         code = client.wait()
+        note(f"run exited with code {code}")
         return 1 if reason else code
     finally:
         stopped.set()

@@ -11,6 +11,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -28,6 +29,7 @@ MODELS = {
         "free": False,
         "slots": 1,
         "attempts": 1,
+        "stall_seconds": 300,
     },
     "deepseek": {"id": MODEL, "provider": "opencode", "free": True},
     "sol": {
@@ -42,7 +44,12 @@ MODELS = {
 DEFAULT_MODEL = {"write": "vertex", "read": "vertex"}
 # Seven simultaneous starts left four silent on 2026-10-22; two or three answered normally.
 MAX_RUNNING = 3
+# No first event within this many seconds is a stall. On 2026-10-26 a Vertex task printed
+# nothing for 120 s and its stderr was discarded, so the cause could not be told apart.
 STALL_SECONDS = 120
+SECRET_PATTERN = re.compile(
+    r'(?i)bearer\s+\S+|ya29\.[\w.-]+|"private_key"\s*:\s*"[^"]*"'
+)
 MIN_FREE_BYTES = 3 * 1024**3
 ROOT = Path(__file__).resolve().parents[1]
 STATE = (
@@ -191,12 +198,29 @@ def kill_task(process):
             pass
 
 
-def attempt(command, environment, workdir, out, timeout, result, texts, free=True):
-    """Run OpenCode once. False only when it never produced an event within STALL_SECONDS."""
+def redacted_tail(path, limit=2000):
+    """Last part of a private stderr log, with anything credential-like removed."""
+    text = path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    return SECRET_PATTERN.sub("[REDACTED]", text)
+
+
+def attempt(
+    command,
+    environment,
+    workdir,
+    out,
+    timeout,
+    result,
+    texts,
+    free=True,
+    stall=STALL_SECONDS,
+    errors=None,
+):
+    """Run OpenCode once. False only when no event arrived within the stall limit."""
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=errors if errors is not None else subprocess.DEVNULL,
         stdin=subprocess.DEVNULL,
         text=True,
         env=environment,
@@ -207,7 +231,7 @@ def attempt(command, environment, workdir, out, timeout, result, texts, free=Tru
     stalled = threading.Event()
 
     def watch():
-        if not answered.wait(min(STALL_SECONDS, timeout)):
+        if not answered.wait(min(stall, timeout)):
             stalled.set()
             kill_task(process)
 
@@ -392,7 +416,8 @@ def _run_task(task, mode, base, timeout, model, name, directory):
             str(workdir),
             prompt,
         ]
-    with slot(model), log.open("w") as out:
+    stderr_log = directory / "stderr.log"
+    with slot(model), log.open("w") as out, stderr_log.open("w") as errors:
         # Space may have been consumed by another run while this one waited for a slot.
         check_disk_space(directory)
         # One harness start per task; an unanswered start is not retried.
@@ -404,12 +429,31 @@ def _run_task(task, mode, base, timeout, model, name, directory):
                 break
             free = MODELS[model]["free"]
             if attempt(
-                command, environment, workdir, out, remaining, result, texts, free
+                command,
+                environment,
+                workdir,
+                out,
+                remaining,
+                result,
+                texts,
+                free,
+                stall=MODELS[model].get("stall_seconds", STALL_SECONDS),
+                errors=errors,
             ):
                 break
     result["seconds"] = round(time.monotonic() - started, 1)
+    if stderr_log.stat().st_size:
+        result["stderr_tail"] = redacted_tail(stderr_log)
     report = directory / "report.md"
-    report.write_text(texts[-1] if texts else "", encoding="utf-8")
+    if texts:
+        report_text = texts[-1]
+    else:
+        # An empty file cannot be uploaded as a release asset, so the report says why.
+        reason = result.get("error", "none")
+        report_text = f"No model report. status={result['status']} error={reason}\n"
+        if "stderr_tail" in result:
+            report_text += f"stderr, redacted tail:\n{result['stderr_tail']}\n"
+    report.write_text(report_text, encoding="utf-8")
     result["report"] = str(report)
     if mode == "write":
         diff = subprocess.run(
