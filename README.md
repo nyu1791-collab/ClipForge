@@ -13,7 +13,7 @@
 | 1 | 元音声を取得、保存済みなら再利用 | yt-dlp・ffmpeg | Actions runner |
 | 2 | 音声から話題と採用区間を決める | Gemini 3.8 Flash | Actions runner |
 | 3 | 採用音声を切り出し、用語表記を調べる | ffmpeg・Gemini 3.5 Flash | Actions runner |
-| 4 | 採用区間だけ字幕化し、本文を保持して時刻を照合 | Gemini 3.8 Flash | Actions runner |
+| 4 | 採用区間だけ字幕化し、本文を保持して時刻を整形 | Gemini 3.8 Flash | Actions runner |
 | 5 | 選択字幕を焼き込み、360pで描画 | FFmpeg ASS・NVENC | Colab GPU |
 | 6 | 完成動画と工程記録を回収 | 非公開Release | 制御側 |
 
