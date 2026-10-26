@@ -1,6 +1,8 @@
 # Gemini 3.8の必読編集ルールと適用経路
 
-新規制作のルール本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。工程別の字幕契約は [gemini_subtitles_ja.md](../src/clipforge/prompts/gemini_subtitles_ja.md)。意味・口調・確かさを保つ短文化、固有名詞と不明箇所の扱い、良い例/避ける例、時刻、話者、控えめな効果音を定義する。逐語全文を表示する旧方針を更新した。
+> 字幕表現の最新指示は [要約しない整文の引き継ぎ](HANDOFF_SEIBUN_2026-10-26.md)。本文の旧「短文化・自然な言い換え」の許可は上書きされる。GPU文字起こしと3.8整文の役割も同文書を参照。
+
+新規制作のルール本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。工程別の字幕契約は [gemini_subtitles_ja.md](../src/clipforge/prompts/gemini_subtitles_ja.md)。要約せず意味・口調・確かさを保つ整文、固有名詞と不明箇所の扱い、良い例/避ける例、時刻、話者、控えめな効果音を定義する。逐語全文を表示する旧方針を更新した。
 
 通常制作と修正の共通案内は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。見出し・感情・字幕・効果音の修正から同じ描画へ進む。
 
@@ -12,9 +14,9 @@
 
 ## 字幕から描画まで
 
-採用区間の60秒＋前後1.5秒の文脈という音声窓は維持する。`segments[].text` は読みやすい編集字幕。時刻は要約文字数から作らず、元発言の始まりと終わりのGemini推定値を使う。音声自体を短縮しない。
+採用話題だけをGPUで文字起こしし、本文と発話時刻を3.8へ話題ごと1回渡す。60秒窓への細分化はしない。`segments[].text` は要約しない整文字幕。時刻はGPU ASRの元発話区間を引き継ぐ。音声自体を短縮しない。
 
-新規の `selected-transcripts.json` と `final-selection.json` に `subtitle_policy=meaning_preserving_compact_v1` を保存する。描画側はこの字幕方針で `caption=plain`、`caption_preserve_text=true` を使い、話者色と横幅のあるレイアウトを維持する。発言と文字が一対一にならない編集字幕へカラオケの単語追跡を付けない。旧ASRの反復/定型句/圧縮率による文字削除は、この編集字幕では呼ばない。行組み・時刻の表示範囲への整形は維持する。
+新規の `selected-transcripts.json` と `final-selection.json` に `subtitle_policy=meaning_preserving_cleanup_v1` を保存する。旧meaning_preserving_compact_v1も保存済みデータの描画互換性のため受け入れる。描画側はこの字幕方針で `caption=plain`、`caption_preserve_text=true` を使い、話者色と横幅のあるレイアウトを維持する。発言と文字が一対一にならない編集字幕へカラオケの単語追跡を付けない。旧ASRの反復/定型句/圧縮率による文字削除は、この編集字幕では呼ばない。行組み・時刻の表示範囲への整形は維持する。
 
 ## 効果音の実経路
 
@@ -42,4 +44,4 @@
 
 ## 仕上げ目標の追加
 
-[FINISHING_TARGETS.md](FINISHING_TARGETS.md)を参照。既定の文字キャンバスは720p、素材は最大360pを維持する。境界重複整理・任意の採用音声エネルギー補助はモデル応答後に一度だけ行い、修正済み時刻へ重ねない。補助未適用でも制作を止めない。低音量SEは声に応じてSE側だけを抑える。最大3場面の参考画像は合否検査ではなく任意の修正資料で、作成できなくても動画を保存する。
+[FINISHING_TARGETS.md](FINISHING_TARGETS.md)を参照。既定の文字キャンバスは720p、素材は最大360pを維持する。GPU文字起こしの発話時刻を使い、整文済み時刻への追加補助や再測定はしない。低音量SEは声に応じてSE側だけを抑える。最大3場面の参考画像は合否検査ではなく任意の修正資料で、作成できなくても動画を保存する。

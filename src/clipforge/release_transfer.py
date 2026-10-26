@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from urllib.parse import quote
 import zipfile
 
 from .github_cli import run
@@ -163,18 +164,16 @@ def tag_for(run_id, name):
 
 
 def release(tag):
-    # Only an explicit 404 means absence; auth/network errors must stop the transfer.
-    data = json.loads(gh("api", "repos/" + REPO + "/releases?per_page=100"))
-    for page in range(1, 1001):
-        for item in data:
-            if item["tag_name"] == tag:
-                return item
-        if len(data) < 100:
-            return None
-        data = json.loads(
-            gh("api", f"repos/{REPO}/releases?per_page=100&page={page + 1}")
+    # Resolve the saved tag directly instead of walking every historical Release.
+    # Only an explicit 404 means absence; auth/network errors are not absence.
+    try:
+        return json.loads(
+            gh("api", f"repos/{REPO}/releases/tags/{quote(tag, safe='')}")
         )
-    fail("RESULT_STRUCTURE_INVALID")
+    except TransferError as error:
+        if str(error).endswith("(HTTP 404)"):
+            return None
+        raise
 
 
 def download(run_id, name, destination, expected=None, *, record=None):

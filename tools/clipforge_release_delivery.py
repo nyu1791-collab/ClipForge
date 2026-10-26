@@ -12,7 +12,12 @@ import zipfile
 import uuid
 import subprocess
 
-from clipforge.release_transfer import download, read_transfer, validate_identity
+from clipforge.release_transfer import (
+    download,
+    member,
+    read_transfer,
+    validate_identity,
+)
 from clipforge_drive_delivery import request
 
 
@@ -169,6 +174,29 @@ def deliver():
     if transfer.get("source_ref") != source:
         raise RuntimeError("Render source identity differs")
     auth = authorize_target()
+    transfer_started = time.monotonic()
+    print("DELIVERY_STAGE=fetch_outputs", flush=True)
+    download(run_id, name, root)
+    release_download_sec = time.monotonic() - transfer_started
+    receipt = validate_identity(root, run_id, name, source, audit_hashes=False)
+    manifest = json.loads((root / "manifest.json").read_text())
+    if receipt.get("status") != "complete" or manifest.get("status") != "complete":
+        raise RuntimeError("Render is incomplete")
+    clips, clip_hashes = [], {}
+    # The manifest names the actual outputs for both current clips/ and legacy
+    # delivery/clips/ layouts. Do not gate delivery on the requested clip count.
+    for row in manifest.get("rendered", []):
+        relative = member(row["directory"]).as_posix() + "/video.mp4"
+        clip = root / relative
+        expected = receipt["sha256"].get(relative) or row.get("sha256", {}).get(
+            "video.mp4"
+        )
+        if not clip.is_file() or clip.is_symlink() or not expected:
+            raise RuntimeError("DRIVE_RENDERED_CLIP_MISSING")
+        clips.append(clip)
+        clip_hashes[relative] = expected
+    if not clips:
+        raise RuntimeError("DRIVE_NO_RENDERED_CLIPS")
     print("DELIVERY_STAGE=create_folder", flush=True)
     with request(
         "https://www.googleapis.com/drive/v3/files?fields=id,webViewLink",
@@ -180,21 +208,6 @@ def deliver():
         headers=auth,
     ) as response:
         folder = json.load(response)
-    transfer_started = time.monotonic()
-    print("DELIVERY_STAGE=fetch_outputs", flush=True)
-    download(run_id, name, root)
-    release_download_sec = time.monotonic() - transfer_started
-    receipt = validate_identity(root, run_id, name, source, audit_hashes=False)
-    manifest = json.loads((root / "manifest.json").read_text())
-    if receipt.get("status") != "complete" or manifest.get("status") != "complete":
-        raise RuntimeError("Render is incomplete")
-    clips = sorted(root.glob("delivery/clips/clip-*/video.mp4"))
-    if not 5 <= len(clips) <= 10:
-        raise RuntimeError("Five to ten rendered clips are required")
-    for clip in clips:
-        relative = clip.relative_to(root).as_posix()
-        if relative not in receipt["sha256"]:
-            raise RuntimeError("Clip is not receipted")
     records = root.parent / "ClipForge-records.zip"
     with zipfile.ZipFile(records, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(root.rglob("*")):
@@ -211,7 +224,7 @@ def deliver():
     for path, filename in outputs:
         file_started = time.monotonic()
         expected = (
-            receipt.get("sha256", {}).get(path.relative_to(root).as_posix())
+            clip_hashes.get(path.relative_to(root).as_posix())
             if path.is_relative_to(root)
             else None
         )

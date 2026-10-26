@@ -6,31 +6,40 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import time
 import uuid
 
 from clipforge.editorial_revision import EDITORIAL_TAG_PATTERN, create_revision
 from clipforge.actions_monitor import MonitoringPending, wait_for_stage
+from clipforge.github_cli import run as github_run
 from clipforge.media_sources import canonical
-from clipforge.release_transfer import download, read_transfer
+from clipforge.release_transfer import download, read_transfer, validate_identity
+from clipforge.storage import write_json
 
 
 def gh(*args, body=None):
-    p = subprocess.run(
-        ["gh", *args], input=body, text=True, capture_output=True, timeout=120
+    return github_run(
+        *args,
+        body=body,
+        message="GitHub operation failed; reconnect to the saved request, no resubmission",
+        include_http_status=True,
     )
-    if p.returncode:
-        raise RuntimeError(
-            "GitHub operation failed; inspect the saved request, no resubmission"
-        )
-    return p.stdout
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("url")
-    ap.add_argument("--output", type=Path, required=True)
+    ap.add_argument("url", nargs="?")
+    ap.add_argument("--output", type=Path)
+    ap.add_argument(
+        "--connections",
+        action="store_true",
+        help="Show connection registration and setup links; no model or GPU work",
+    )
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="Reconnect using production-state.json; no URL or run ID required",
+    )
     ap.add_argument(
         "--resume-existing-run",
         type=int,
@@ -45,7 +54,7 @@ def main():
         choices=["nyu1791-collab/ClipForge", "nyu1791-collab/ai-model-workers"],
         default="nyu1791-collab/ClipForge",
     )
-    ap.add_argument("--workflow-ref", default="fix/pr18-verified-transfer")
+    ap.add_argument("--workflow-ref", default="main")
     ap.add_argument("--editorial-release", default="")
     ap.add_argument("--continue-missing", action="store_true")
     ap.add_argument("--render-only", action="store_true")
@@ -75,12 +84,23 @@ def main():
     )
     ap.add_argument("--timeout", type=int, default=7200)
     args = ap.parse_args()
+    if args.connections:
+        from clipforge.connections import describe_connections
+
+        print(
+            json.dumps(
+                describe_connections(args.repository), ensure_ascii=False, indent=2
+            )
+        )
+        return
+    if args.output is None:
+        ap.error("output is required for production or resume")
     resumed = None
-    if args.resume_existing_run is not None:
-        if args.resume_existing_run <= 0:
+    if args.resume or args.resume_existing_run is not None:
+        if args.resume_existing_run is not None and args.resume_existing_run <= 0:
             ap.error("resume-existing-run requires a positive run ID")
         resumed = json.loads((args.output / "production-state.json").read_text())
-        if canonical(resumed["source_url"]) != canonical(args.url):
+        if args.url and canonical(resumed["source_url"]) != canonical(args.url):
             ap.error("saved production belongs to another source URL")
         if args.source_ref and args.source_ref != resumed["source_ref"]:
             ap.error("saved production uses another source commit")
@@ -89,13 +109,29 @@ def main():
             or args.continue_missing
             or args.deliver_drive
             or args.render_profile
+            or args.render_only
+            or args.editorial_release
+            or args.reuse_render
+            or args.analysis_run
+            or args.analysis_request
+            or args.clips is not None
         ):
             ap.error(
                 "resume-existing-run only observes and collects the saved production"
             )
+        args.url = resumed["source_url"]
         args.source_ref = resumed["source_ref"]
         args.repository = resumed["repository"]
         args.config_file = resumed["config_file"]
+        args.workflow_ref = resumed.get("workflow_ref", args.workflow_ref)
+        args.clips = resumed.get("target_clips", 5)
+        args.deliver_drive = resumed.get("deliver_drive", False) or any(
+            s["workflow"] == "clipforge-drive-delivery.yml" for s in resumed["stages"]
+        )
+    if not args.url:
+        ap.error(
+            "a source URL is required for a new production; use --resume to reconnect"
+        )
     if args.render_profile:
         args.config_file = {
             "preview": "config.landscape-long-preview.example.json",
@@ -148,11 +184,17 @@ def main():
         ap.error("invalid saved analysis identity")
     if not re.fullmatch(r"config\.[a-z0-9-]+\.example\.json", args.config_file):
         ap.error("config-file must name a committed production config")
-    settings = json.loads(
-        (Path(__file__).resolve().parents[1] / args.config_file).read_text()
+    settings = (
+        {"height": resumed.get("render_height")}
+        if resumed is not None
+        else json.loads(
+            (Path(__file__).resolve().parents[1] / args.config_file).read_text()
+        )
     )
     requested_count = args.clips if args.clips is not None else settings.get("clips", 5)
     args.clips = requested_count
+    if not 1 <= args.clips <= 10:
+        ap.error("clips must be a target between 1 and 10; actual output may be fewer")
     os.umask(0o077)
     url = canonical(args.url)
     args.output.mkdir(parents=True, exist_ok=True)
@@ -168,10 +210,12 @@ def main():
             "source_url": url,
             "source_ref": args.source_ref,
             "repository": args.repository,
+            "workflow_ref": args.workflow_ref,
             "config_file": args.config_file,
             "render_height": settings.get("height"),
             "source_height_limit": 360,
             "target_clips": args.clips,
+            "deliver_drive": args.deliver_drive,
             "started_at": time.time(),
             "stages": [],
         }
@@ -179,7 +223,7 @@ def main():
     deadline = time.monotonic() + args.timeout
 
     def save():
-        statefile.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+        write_json(statefile, state)
 
     def dispatch(workflow, inputs, delivery=False):
         identity = uuid.uuid4().hex
@@ -258,6 +302,7 @@ def main():
                 "continue_missing": args.continue_missing,
                 "auto_render": not args.render_only,
                 "resume_render": args.reuse_render,
+                "target_clips": str(args.clips),
             },
         )
         return final_run, final_request
@@ -270,21 +315,47 @@ def main():
         if canonical(metadata["stage_manifest"]["source_url"]) != url:
             raise RuntimeError("Rendered output belongs to another source URL")
         if not state.get("render_complete"):
-            download(
-                final_run, "clipforge-result-" + final_request, args.output / "clips"
-            )
+            local = args.output / "clips"
+            if local.exists():
+                # Collection may have finished immediately before the local connection
+                # disappeared. Reconnect by identity, without rescanning the videos.
+                validate_identity(
+                    local,
+                    final_run,
+                    "clipforge-result-" + final_request,
+                    args.source_ref,
+                    audit_hashes=False,
+                )
+            else:
+                download(final_run, "clipforge-result-" + final_request, local)
         state["render_complete"] = True
         save()
-        if args.deliver_drive:
-            drive_run, _ = dispatch(
-                "clipforge-drive-delivery.yml",
-                {
-                    "mode": "upload-release",
-                    "render_run": final_run,
-                    "render_request": final_request,
-                },
-                delivery=True,
-            )
+        if args.deliver_drive and state.get("drive_status") != "uploaded":
+            deliveries = [
+                s
+                for s in state["stages"]
+                if s["workflow"] == "clipforge-drive-delivery.yml"
+            ]
+            if deliveries:
+                delivery = deliveries[-1]
+                drive_run, _ = wait_for_stage(
+                    delivery,
+                    args.repository,
+                    delivery["expected_title"],
+                    deadline,
+                    gh,
+                    save,
+                )
+            else:
+                drive_run, _ = dispatch(
+                    "clipforge-drive-delivery.yml",
+                    {
+                        "mode": "upload-release",
+                        "render_run": final_run,
+                        "render_request": final_request,
+                    },
+                    delivery=True,
+                )
             state["drive_run_id"] = drive_run
             state["drive_status"] = "uploaded"
         state.update(
@@ -314,19 +385,29 @@ def main():
             if len(stages) != 1:
                 raise RuntimeError("A single saved production stage is required")
             stage = stages[0]
-            if stage.get("run_id") not in (None, args.resume_existing_run):
+            if args.resume_existing_run is not None and stage.get("run_id") not in (
+                None,
+                args.resume_existing_run,
+            ):
                 raise RuntimeError("Saved stage belongs to another run")
-            stage["run_id"] = args.resume_existing_run
+            if args.resume_existing_run is not None:
+                stage["run_id"] = args.resume_existing_run
             state["status"] = "observing_existing_run"
             save()
-            final_run, final_request = wait_for_stage(
-                stage,
-                args.repository,
-                "ClipForge " + stage["request_id"],
-                deadline,
-                gh,
-                save,
-            )
+            if state.get("render_complete"):
+                final_run, final_request = (
+                    state["render_run_id"],
+                    state["render_request_id"],
+                )
+            else:
+                final_run, final_request = wait_for_stage(
+                    stage,
+                    args.repository,
+                    "ClipForge " + stage["request_id"],
+                    deadline,
+                    gh,
+                    save,
+                )
         else:
             final_run, final_request = start_production()
         collect(final_run, final_request)

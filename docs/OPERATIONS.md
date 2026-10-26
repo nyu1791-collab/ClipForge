@@ -1,5 +1,14 @@
 # 回収・再開・後始末・権限
 
+現行の接続・制作・再接続は [QUICK_START.md](QUICK_START.md)、修正/完成クリップ再利用/納品だけの操作は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。通常入口は `tools/produce_with_gemini.py`。切断後は `--resume --output DIR` で保存済み依頼へ戻る。
+
+実行先は公開ClipForge、制作データは非公開ai-model-workersのReleaseに保存する。公開Artifactへ媒体を出さず、回収時の全量品質監査・映像再走査・音量再測定は行わない。素材/依頼/保存先の同一性は維持する。
+
+以下は旧ASR・候補プレビュー成果物を明示的に復旧するための記録。現行の通常制作へ重ねない。
+
+## 旧経路の運用記録
+
+
 ## リポジトリと権限
 
 公開 ClipForge はコードの保存先。動画・音声・文字起こし・成果物は非公開 worker（`nyu1791-collab/ai-model-workers`）で扱う。workflow の原本は `deploy/` にあり、worker の `.github/workflows/` に置く（`clipforge.yml`・`clipforge-stages.yml`・`colab-usage.yml`）。公開側の `Quality` は検査とテスト、`Build package` は wheel の作成だけで、動画は扱わない。

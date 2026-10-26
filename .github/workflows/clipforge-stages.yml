@@ -41,12 +41,11 @@
           "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
         },
         {
-          "name": "Select a compatible production source",
+          "name": "Use the pinned production source",
           "env": {
-            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/01a3951037fa44bea8ec31a3813063c5cec4c830...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\n",
           "timeout-minutes": 1
         },
         {
@@ -182,20 +181,20 @@
       },
       "steps": [
         {
-          "name": "Require private storage credentials before processing",
+          "name": "Require storage and GPU connections before downloading",
           "env": {
             "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
-            "STORE_MODE": "${{ inputs.result_store }}"
+            "STORE_MODE": "${{ inputs.result_store }}",
+            "COLAB_CONNECTION": "${{ secrets.COLAB_ADC_JSON }}"
           },
-          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi\ntest -n \"$COLAB_CONNECTION\" || { echo \"Register COLAB_ADC_JSON using tools/configure_colab_oauth.py before rendering.\"; exit 1; }"
         },
         {
-          "name": "Select a compatible production source",
+          "name": "Use the pinned production source",
           "env": {
-            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/01a3951037fa44bea8ec31a3813063c5cec4c830...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\n",
           "timeout-minutes": 1
         },
         {
@@ -288,7 +287,7 @@
     "audio-understanding": {
       "if": "github.repository == 'nyu1791-collab/ClipForge' && inputs.audio_stage == 'understanding'",
       "runs-on": "ubuntu-24.04",
-      "timeout-minutes": 55,
+      "timeout-minutes": 150,
       "env": {
         "PYTHONPATH": "src",
         "PYTHONUNBUFFERED": "1",
@@ -296,18 +295,22 @@
       },
       "steps": [
         {
-          "name": "Require private storage access",
+          "name": "Require the connections used by this production",
           "env": {
-            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+            "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "VERTEX_PROJECT_NUMBER": "${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}",
+            "COLAB_CONNECTION": "${{ secrets.COLAB_ADC_JSON }}",
+            "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}",
+            "CONTINUE_MISSING": "${{ inputs.continue_missing }}"
           },
-          "run": "test -n \"$STORE_TOKEN\" || { echo \"Dedicated private storage credential is missing.\"; exit 1; }"
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -z \"$EDITORIAL_RELEASE\" ] || [ \"$CONTINUE_MISSING\" = true ]; then\n test -n \"$VERTEX_PROJECT_NUMBER\" || { echo \"Register CLIPFORGE_VERTEX_PROJECT_NUMBER; see docs/QUICK_START.md.\"; exit 1; }\nfi\nif [ -z \"$EDITORIAL_RELEASE\" ]; then\n test -n \"$COLAB_CONNECTION\" || { echo \"Register COLAB_ADC_JSON using tools/configure_colab_oauth.py for selected-topic GPU ASR.\"; exit 1; }\nfi"
         },
         {
           "name": "Require the configured public Vertex execution branch",
           "env": {
             "CLIPFORGE_RUN_REF": "${{ github.ref }}"
           },
-          "run": "[[ \"$CLIPFORGE_RUN_REF\" == refs/heads/fix/pr18-verified-transfer ]] || { echo \"Use the configured Vertex execution branch.\"; exit 1; }"
+          "run": "[[ \"$CLIPFORGE_RUN_REF\" == refs/heads/main || \"$CLIPFORGE_RUN_REF\" == refs/heads/fix/pr18-verified-transfer ]] || { echo \"Use main or fix/pr18-verified-transfer for the configured Vertex connection.\"; exit 1; }"
         },
         {
           "name": "Validate pinned source and optional preserved audio identity",
@@ -328,9 +331,17 @@
           }
         },
         {
+          "uses": "actions/setup-python@v5",
+          "with": {
+            "python-version": "3.12"
+          }
+        },
+        {
           "uses": "astral-sh/setup-uv@v6",
           "with": {
-            "version": "0.12.23"
+            "version": "0.12.23",
+            "enable-cache": true,
+            "cache-dependency-glob": "uv.lock"
           }
         },
         {
@@ -340,6 +351,19 @@
           "name": "Install lightweight editing dependencies",
           "timeout-minutes": 6,
           "run": "uv sync --locked --no-dev --extra media-fetch"
+        },
+        {
+          "name": "Install the locked Colab control SDK for selected GPU ASR",
+          "id": "asr-control",
+          "run": "uv venv \"$RUNNER_TEMP/colab-control\" --python 3.12\nuv pip install --python \"$RUNNER_TEMP/colab-control/bin/python\" --require-hashes -r tools/colab-control-requirements.txt\n"
+        },
+        {
+          "name": "Prepare Node for YouTube acquisition",
+          "uses": "actions/setup-node@v4",
+          "if": "contains(inputs.source_url, 'youtube.com/') || contains(inputs.source_url, 'youtu.be/')",
+          "with": {
+            "node-version": "22"
+          }
         },
         {
           "name": "Reuse original audio or acquire audio only; no ASR",
@@ -364,9 +388,10 @@
             "token_format": "access_token",
             "access_token_lifetime": "3600s",
             "access_token_scopes": "https://www.googleapis.com/auth/cloud-platform",
-            "create_credentials_file": false,
-            "export_environment_variables": false
-          }
+            "create_credentials_file": true,
+            "export_environment_variables": true
+          },
+          "if": "inputs.editorial_release == '' || inputs.continue_missing"
         },
         {
           "name": "Restore saved editorial responses without resubmitting them",
@@ -375,19 +400,32 @@
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}"
           },
-          "run": "[[ \"$EDITORIAL_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/saved-editorial\"\ngh release download \"$EDITORIAL_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern '*.json' --dir \"$RUNNER_TEMP/saved-editorial\"\n"
+          "run": "[[ \"$EDITORIAL_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/saved-editorial\"\ngh release download \"$EDITORIAL_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern '*.json' --pattern '*.prompt.txt' --dir \"$RUNNER_TEMP/saved-editorial\"\n"
         },
         {
-          "name": "3.8 audio topics then selected-only transcription; 3.5 terminology research",
-          "timeout-minutes": 45,
+          "name": "Select topics, recognise selected audio on GPU, clean each topic once",
+          "timeout-minutes": 100,
           "env": {
             "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}",
             "SOURCE_URL": "${{ inputs.source_url }}",
             "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}",
             "CONTINUE_MISSING": "${{ inputs.continue_missing }}",
-            "CONFIG_FILE": "${{ inputs.config_file }}"
+            "CONFIG_FILE": "${{ inputs.config_file }}",
+            "TARGET_CLIPS": "${{ inputs.target_clips }}",
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
+            "REQUEST_ID": "${{ inputs.request_id }}",
+            "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+            "CLIPFORGE_COLAB_CONTROL_PYTHON": "${{ runner.temp }}/colab-control/bin/python"
           },
-          "run": "[[ \"$CONFIG_FILE\" =~ ^config\\.[a-z0-9-]+\\.example\\.json$ ]] || exit 1\nextra=()\nif [ -n \"$EDITORIAL_RELEASE\" ]; then extra+=(--resume-from \"$RUNNER_TEMP/saved-editorial\"); fi\nif [ \"$CONTINUE_MISSING\" = true ]; then test -n \"$EDITORIAL_RELEASE\"; extra+=(--continue-missing); fi\n.venv/bin/python -m clipforge.audio_understanding plan --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/editorial\" --config \"$CONFIG_FILE\" \"${extra[@]}\"\n"
+          "run": "[[ \"$CONFIG_FILE\" =~ ^config\\.[a-z0-9-]+\\.example\\.json$ ]] || exit 1\nextra=()\nif [ -n \"$TARGET_CLIPS\" ]; then [[ \"$TARGET_CLIPS\" =~ ^([1-9]|10)$ ]] || exit 1; extra+=(--clips \"$TARGET_CLIPS\"); fi\nif [ -n \"$EDITORIAL_RELEASE\" ]; then extra+=(--resume-from \"$RUNNER_TEMP/saved-editorial\"); fi\nif [ \"$CONTINUE_MISSING\" = true ]; then test -n \"$EDITORIAL_RELEASE\"; extra+=(--continue-missing); fi\n.venv/bin/python -m clipforge.audio_understanding plan --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/editorial\" --config \"$CONFIG_FILE\" \"${extra[@]}\"\n"
+        },
+        {
+          "name": "Release any owned selected-audio GPU",
+          "id": "asr-stop",
+          "if": "always() && steps.asr-control.outcome == 'success'",
+          "timeout-minutes": 5,
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/selected_gpu_asr.py --stop --output \"$RUNNER_TEMP/editorial\"\n"
         },
         {
           "name": "Save transcripts review and timing privately",
@@ -395,7 +433,24 @@
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi"
+          "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi",
+          "id": "save-editorial"
+        },
+        {
+          "name": "Remove saved selected-audio input release",
+          "id": "asr-input-cleanup",
+          "if": "always() && steps.save-editorial.outcome == 'success' && steps.asr-stop.outcome == 'success'",
+          "continue-on-error": true,
+          "timeout-minutes": 5,
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/selected_gpu_asr.py --cleanup-input --output \"$RUNNER_TEMP/editorial\"\n"
+        },
+        {
+          "name": "Report a retained temporary selected-audio input",
+          "if": "always() && steps.asr-input-cleanup.outcome == 'failure'",
+          "run": "echo \"::warning::Selected-audio input could not be deleted. The private saved ASR state identifies it.\"\n"
         }
       ],
       "permissions": {
@@ -426,20 +481,20 @@
       },
       "steps": [
         {
-          "name": "Require private storage credentials before processing",
+          "name": "Require storage and GPU connections before downloading",
           "env": {
             "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
-            "STORE_MODE": "${{ inputs.result_store }}"
+            "STORE_MODE": "${{ inputs.result_store }}",
+            "COLAB_CONNECTION": "${{ secrets.COLAB_ADC_JSON }}"
           },
-          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi"
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -n \"$STORE_MODE\" ] && [ \"$STORE_MODE\" != release ]; then echo \"Public execution supports private Release storage only.\"; exit 1; fi\ntest -n \"$COLAB_CONNECTION\" || { echo \"Register COLAB_ADC_JSON using tools/configure_colab_oauth.py before rendering.\"; exit 1; }"
         },
         {
-          "name": "Select a compatible production source",
+          "name": "Use the pinned production source",
           "env": {
-            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "REQUESTED_SOURCE": "${{ inputs.source_ref }}"
           },
-          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\nrelation=$(gh api \"repos/nyu1791-collab/ClipForge/compare/01a3951037fa44bea8ec31a3813063c5cec4c830...$REQUESTED_SOURCE\" --jq .status)\n[[ \"$relation\" == ahead || \"$relation\" == identical ]] || { echo \"This workflow requires the public-Actions source or a descendant.\"; exit 1; }\n",
+          "run": "[[ \"$REQUESTED_SOURCE\" =~ ^[a-f0-9]{40}$ ]] || exit 1\n",
           "timeout-minutes": 1
         },
         {
@@ -626,6 +681,11 @@
           "type": "boolean",
           "default": false,
           "description": "Reuse completed clips from previous_run_id/previous_request_id without re-encoding"
+        },
+        "target_clips": {
+          "description": "Advisory topic count; blank uses the committed config",
+          "type": "string",
+          "default": ""
         }
       }
     }
