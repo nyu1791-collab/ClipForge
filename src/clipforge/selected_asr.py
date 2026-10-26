@@ -87,7 +87,19 @@ def inherit_edits(transcript, response):
         indices = [ids[n] for n in names]
         if indices != list(range(indices[0], indices[-1] + 1)):
             continue
-        if used.intersection(indices) or not edit["text"].strip():
+        if used.intersection(indices):
+            continue
+        if edit.get("omit") is True:
+            if edit["text"] != "" or not all(
+                len(clean := re.sub(r"[\s、。]", "", source[i]["text"])) <= 12
+                and re.fullmatch(
+                    r"(?:え[ー〜～]+|え[ー〜～]*っ?と[ー〜～]*|ええと[ー〜～]*|あの[ー〜～]+)",
+                    clean,
+                )
+                for i in indices
+            ):
+                continue
+        elif not edit["text"].strip():
             continue
         groups[indices[0]] = (indices, edit["text"])
         used.update(indices)
@@ -98,6 +110,9 @@ def inherit_edits(transcript, response):
             index += 1
             continue
         indices, text = groups[index]
+        if text == "":
+            index = indices[-1] + 1
+            continue
         rows.append(
             {
                 "start": source[indices[0]]["start"],
@@ -145,6 +160,8 @@ def edit(transcript_file, mapping_file, output, parent_release):
                 {
                     "id": f"s{i:06}",
                     "text": segment.text,
+                    "start": segment.start,
+                    "end": segment.end,
                     "duration": round(segment.end - segment.start, 3),
                 }
                 for i, segment in enumerate(source.segments)
@@ -161,8 +178,12 @@ def edit(transcript_file, mapping_file, output, parent_release):
                     "要約で誤字や不明箇所を隠さない。音声は添付していない。"
                     "人物や声質、声の感情、効果音を新たに推定しない。"
                     "自然な発言のまとまりを優先し5〜10秒程度を目安にするが、"
-                    "固定長で無理に分割しない。隣接する元IDをまとめてよい。"
+                    "固定長で無理に分割しない。元ASRのstart/endは間の長さを見る資料で、"
+                    "長い無音や別の発言をまたいで無理にまとめない。隣接する元IDだけをまとめてよい。"
                     "返すのはsegments:[{source_ids:[元ID,...],text:整文}]のみ。"
+                    "単独の短い『えー』『えっと』『あのー』等が文脈上も無意味な場合だけ、"
+                    "source_idsとtext:''とomit:trueを明示して除去を提案してよい。"
+                    "『うん』『いや』『ああ』『うーん』や驚き・疑問の反応は削除しない。"
                     "start/endや新しい時刻を生成しない。返さなかった元IDは原文を残す。"
                 ),
                 "topic": {
