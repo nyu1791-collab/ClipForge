@@ -847,7 +847,7 @@ def render(review, transcripts_file, output, settings):
                 "editorial_render_version": EDITORIAL_RENDER_VERSION,
                 "source_url": value["source_url"],
                 "full_source_asr": False,
-                "timestamp_source": "gemini_estimated",
+                "timestamp_source": data.get("timestamp_source", "gemini_estimated"),
                 "full_video_quality_audit": "not_run",
             },
         )
