@@ -44,7 +44,7 @@ OpenCode CLIは`opencode-ai@1.19.4`。Vertexモデル名は`google-vertex/gemini
 
 ```bash
 GOOGLE_APPLICATION_CREDENTIALS=/path/to/temporary-oidc-credentials.json \
-python tools/opencode_harness.py --mode read --model vertex --task /path/to/task.md
+python tools/opencode_harness.py --task /path/to/task.md
 ```
 
 ActionsでOpenCodeを実行する場合は、Google認証Actionの`create_credentials_file: true`が出す一時ファイルを使う。固定の秘密鍵を配布しない。モデルSDKが資格情報を読むためのパスとして使い、内容をモデルやログへ出さない。
@@ -56,7 +56,7 @@ OpenCodeの実行定義はClipForgeの`clipforge-opencode.yml`へ統合する。
 ```bash
 gh workflow run clipforge-opencode.yml --repo nyu1791-collab/ClipForge \
   --ref fix/pr18-verified-transfer -f source_ref=FULL_SOURCE_SHA \
-  -f mode=read -f task='実行したい具体的な作業をここに書く'
+  -f task='実行したい具体的な作業をここに書く'
 ```
 
 このチャット自体のモデルを変更する設定ではない。通常動画制作にOpenCodeコーディングタスクを勝手に追加しない。

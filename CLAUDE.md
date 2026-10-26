@@ -9,7 +9,7 @@
 
 ## 役割分担
 - 主担当が自分で読み、実装し、テストと ruff を通してから取り込む。サブエージェントや OpenCode には、利用者が明示して頼んだときだけ任せる（2026-10-24 の利用者の指示）。
-- 任せるときは `tools/opencode_harness.py`（`--mode write` / `--mode read`、既定 Sol、同時3体まで）を使う。Sol は `CLIPFORGE_OPENAI_PROFILE` の1プロファイルだけを使い、別アカウントへ切り替えない。無料の DeepSeek は `--model deepseek` で明示したときだけ。ハーネスを通さずに OpenCode を起動せず、費用ガードを外さない。ハーネスが使えない環境では Haiku 5.5（effort high）を使い、Opus のサブエージェントは起動しない。
+- 任せるときは `tools/opencode_harness.py --task FILE` を使う。読み取り専用で、Vertex の Gemini 3.8 Flash を1タスク1回だけ呼ぶ（書き込み・別モデルは持たない）。ハーネスを通さずに OpenCode を起動せず、再送の停止など費用ガードを外さない。ハーネスが使えない環境では Haiku 5.5（effort high）を使い、Opus のサブエージェントは起動しない。
 - 任せた報告は主張として扱い、差分を自分で読む。指示には作業ディレクトリの絶対パスと基点SHA、編集の有無、担当範囲、テストの実行方法、push しないこと、報告形式を入れる。
 
 ## 読み方と出力（トークン節約）

@@ -1,4 +1,3 @@
-from contextlib import nullcontext
 import fnmatch
 import importlib.util
 import json
@@ -16,14 +15,16 @@ def harness(tmp_path, monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "STATE", tmp_path / "state")
     monkeypatch.setattr(module, "ROOT", tmp_path)
-    # Tests never launch OpenCode, so the binary only has to be named, not installed.
-    monkeypatch.setenv("CLIPFORGE_OPENCODE_BIN", "/synthetic/opencode")
-    monkeypatch.setattr(module, "slot", lambda model: nullcontext())
     monkeypatch.setattr(
         module.shutil,
         "disk_usage",
         lambda path: SimpleNamespace(free=module.MIN_FREE_BYTES),
     )
+    # Tests never launch OpenCode, so the binary and credential only have to be named.
+    credential = tmp_path / "synthetic-credential.json"
+    credential.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credential))
+    monkeypatch.setenv("CLIPFORGE_OPENCODE_BIN", "/synthetic/opencode")
 
     def unexpected_process(*args, **kwargs):
         pytest.fail("tests must not launch subprocesses")
@@ -40,42 +41,22 @@ def task(tmp_path):
     return path
 
 
-@pytest.mark.parametrize("status", ["complete", "failed", "timeout"])
-@pytest.mark.parametrize("model", ["deepseek", "sol"])
-def test_run_removes_home_and_keeps_reports(
-    harness, task, tmp_path, monkeypatch, status, model
-):
-    profile = tmp_path / "synthetic-profile"
-    profile.mkdir()
-    marker = profile / "keep.txt"
-    marker.write_text("synthetic profile data", encoding="utf-8")
-    monkeypatch.setenv("CLIPFORGE_OPENAI_PROFILE", str(profile))
-    monkeypatch.setattr(harness, "openai_profile", lambda: profile)
-
-    def attempt(
-        command, environment, workdir, out, timeout, result, texts, free, **options
-    ):
+@pytest.mark.parametrize("status", ["complete", "failed"])
+def test_run_removes_home_and_keeps_reports(harness, task, monkeypatch, status):
+    def attempt(command, environment, workdir, out, timeout, result, texts, **options):
         home = Path(environment["HOME"])
         assert home.is_dir()
         cache = home / ".cache" / "opencode"
         cache.mkdir(parents=True)
         (cache / "synthetic-cache").write_bytes(b"synthetic data")
-        if model == "sol":
-            assert environment["XDG_DATA_HOME"] == str(profile)
-            # Removing HOME must not follow nested links into the user's profile.
-            (home / "profile-link").symlink_to(profile, target_is_directory=True)
-        else:
-            assert Path(environment["XDG_DATA_HOME"]).is_relative_to(home)
         out.write('{"type":"synthetic"}\n')
         texts.append("Synthetic report.")
-        if status == "complete":
-            result["status"] = "complete"
-        else:
-            result["error"] = "timeout" if status == "timeout" else "opencode exited 1"
-        return True
+        result["status"] = status
+        if status != "complete":
+            result["error"] = "opencode exited 1"
 
     monkeypatch.setattr(harness, "attempt", attempt)
-    result = harness.run_task(task, "read", "HEAD", 30, model)
+    result = harness.run_task(task)
 
     directory = Path(result["report"]).parent
     assert not (directory / "home").exists()
@@ -89,8 +70,7 @@ def test_run_removes_home_and_keeps_reports(
     assert (directory / "report.md").read_text() == "Synthetic report."
     assert (directory / "events.jsonl").read_text() == '{"type":"synthetic"}\n'
     assert json.loads((directory / "result.json").read_text()) == result
-    assert result["status"] == ("complete" if status == "complete" else "failed")
-    assert marker.read_text() == "synthetic profile data"
+    assert result["status"] == status
 
 
 @pytest.mark.parametrize("error", [OSError("synthetic failure"), KeyboardInterrupt()])
@@ -105,7 +85,7 @@ def test_run_removes_home_when_interrupted(harness, task, monkeypatch, error):
 
     monkeypatch.setattr(harness, "attempt", attempt)
     with pytest.raises(type(error)):
-        harness.run_task(task, "read", "HEAD", 30)
+        harness.run_task(task)
 
     assert len(homes) == 1
     assert not homes[0].exists()
@@ -113,42 +93,14 @@ def test_run_removes_home_when_interrupted(harness, task, monkeypatch, error):
     assert (homes[0].parent / "events.jsonl").is_file()
 
 
-def test_run_removes_home_on_setup_failure(harness, task, monkeypatch):
-    def profile_error():
-        raise SystemExit("synthetic profile unavailable")
-
-    monkeypatch.setattr(harness, "openai_profile", profile_error)
-    with pytest.raises(SystemExit, match="synthetic profile unavailable"):
-        harness.run_task(task, "read", "HEAD", 30, "sol")
-
-    directory = next((harness.STATE / "runs").iterdir())
-    assert not (directory / "home").exists()
-    assert (directory / "opencode.json").is_file()
-
-
-def test_run_keeps_write_worktree(harness, task, tmp_path, monkeypatch):
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    changed = worktree / "synthetic-change.txt"
-    changed.write_text("synthetic diff", encoding="utf-8")
-    monkeypatch.setattr(harness, "worktree", lambda base, name: worktree)
+def test_missing_credential_refuses_before_any_request(harness, task, monkeypatch):
+    monkeypatch.delenv("GOOGLE_APPLICATION_CREDENTIALS")
     monkeypatch.setattr(
-        harness.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout="")
+        harness, "attempt", lambda *args, **options: pytest.fail("must not launch")
     )
 
-    def attempt(
-        command, environment, workdir, out, timeout, result, texts, free, **options
-    ):
-        assert workdir == worktree
-        result["status"] = "complete"
-        texts.append("Synthetic report.")
-        return True
-
-    monkeypatch.setattr(harness, "attempt", attempt)
-    result = harness.run_task(task, "write", "HEAD", 30)
-
-    assert not (Path(result["report"]).parent / "home").exists()
-    assert changed.read_text() == "synthetic diff"
+    with pytest.raises(RuntimeError, match="Vertex ADC is not connected"):
+        harness.run_task(task)
 
 
 @pytest.mark.parametrize("link_target", ["profile", "run"])
@@ -160,7 +112,7 @@ def test_cleanup_warns_and_preserves_success_when_home_resolves_outside_run_or_t
     marker = profile / "keep.txt"
     marker.write_text("synthetic profile data", encoding="utf-8")
 
-    def run(task, mode, base, timeout, model, name, directory):
+    def run(task, timeout, directory):
         target = profile if link_target == "profile" else directory
         (directory / "home").symlink_to(target, target_is_directory=True)
         result = {"status": "complete", "report": "synthetic report"}
@@ -168,7 +120,7 @@ def test_cleanup_warns_and_preserves_success_when_home_resolves_outside_run_or_t
         return result
 
     monkeypatch.setattr(harness, "_run_task", run)
-    result = harness.run_task(task, "read", "HEAD", 30)
+    result = harness.run_task(task)
 
     assert marker.read_text() == "synthetic profile data"
     directory = next((harness.STATE / "runs").iterdir())
@@ -180,32 +132,37 @@ def test_cleanup_warns_and_preserves_success_when_home_resolves_outside_run_or_t
 
 
 def test_low_disk_space_only_warns(harness, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(harness.shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
+    monkeypatch.setattr(
+        harness.shutil, "disk_usage", lambda path: SimpleNamespace(free=1)
+    )
 
     harness.check_disk_space(tmp_path)
 
     assert "low disk space" in capsys.readouterr().err
 
 
-def test_vertex_has_no_first_event_limit_and_an_empty_report_says_why(
-    harness, task, tmp_path, monkeypatch
-):
-    credential = tmp_path / "synthetic-credential.json"
-    credential.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(credential))
-    seen = {}
-
-    def attempt(
-        command, environment, workdir, out, timeout, result, texts, free, **options
-    ):
-        seen.update(options)
-        result["error"] = "stalled before the first event"
-        return False
+def test_report_keeps_every_text_part(harness, task, monkeypatch):
+    def attempt(command, environment, workdir, out, timeout, result, texts, **options):
+        texts.extend(["First part.", "Final part."])
+        result["status"] = "complete"
 
     monkeypatch.setattr(harness, "attempt", attempt)
-    result = harness.run_task(task, "read", "HEAD", 30, "vertex")
+    result = harness.run_task(task)
 
-    assert seen["stall"] is None
+    report = Path(result["report"]).read_text(encoding="utf-8")
+    assert report == "First part.\n\nFinal part."
+
+
+def test_empty_report_says_why(harness, task, monkeypatch):
+    seen = {}
+
+    def attempt(command, environment, workdir, out, timeout, result, texts, **options):
+        seen.update(options)
+        result["error"] = "stalled before the first event"
+
+    monkeypatch.setattr(harness, "attempt", attempt)
+    result = harness.run_task(task)
+
     assert seen["errors"] is not None
     directory = Path(result["report"]).parent
     assert (directory / "stderr.log").is_file()
@@ -243,21 +200,6 @@ def test_tool_input_summary_is_short(harness):
     assert len(harness.tool_input(part)) <= 120
 
 
-def test_report_keeps_every_text_part(harness, task, monkeypatch):
-    def attempt(
-        command, environment, workdir, out, timeout, result, texts, free, **options
-    ):
-        texts.extend(["First part.", "Final part."])
-        result["status"] = "complete"
-        return True
-
-    monkeypatch.setattr(harness, "attempt", attempt)
-    result = harness.run_task(task, "read", "HEAD", 30)
-
-    report = Path(result["report"]).read_text(encoding="utf-8")
-    assert report == "First part.\n\nFinal part."
-
-
 @pytest.mark.parametrize(
     ("command", "verdict"),
     [
@@ -276,7 +218,7 @@ def test_report_keeps_every_text_part(harness, task, monkeypatch):
     ],
 )
 def test_read_bash_rules_block_writes_and_credential_paths(harness, command, verdict):
-    rules = harness.config("read", "vertex")["permission"]["bash"]
+    rules = harness.config()["permission"]["bash"]
     # Later rules win, in the order the config lists them.
     decided = "deny"
     for pattern, action in rules.items():
