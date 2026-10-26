@@ -19,8 +19,6 @@ from .storage import PipelineError, process, write_json
 PROJECT = "project-fdadb4dd-cb77-4270-9cd"
 MAX_INLINE_AUDIO_BYTES = 15 * 1024**2
 MAX_REQUEST_BYTES = 20 * 1024**2
-MAX_RESPONSE_BYTES = 64 * 1024**2
-MAX_SSE_LINE_BYTES = 16 * 1024**2
 MAX_OUTPUT_TOKENS = 65536
 REQUEST_TIMEOUT_SECONDS = 1800
 
@@ -155,15 +153,11 @@ def collect_sse_response(response, path, item, save):
     try:
         with path.open("x", encoding="utf-8") as stream_file:
             while True:
-                line = response.readline(MAX_SSE_LINE_BYTES + 1)
+                line = response.readline()
                 if not line:
                     consume(event_data)
                     break
                 total_bytes += len(line)
-                if len(line) > MAX_SSE_LINE_BYTES:
-                    raise PipelineError("Gemini SSE line exceeded the bounded size")
-                if total_bytes > MAX_RESPONSE_BYTES:
-                    raise PipelineError("Gemini streaming response exceeded the bounded size")
                 stream_file.write(line.decode("utf-8", errors="replace"))
                 if line in (b"\n", b"\r\n"):
                     consume(event_data)
@@ -286,9 +280,7 @@ def run(args):
                     )
                     item.update(stream_bytes=response_bytes, stream_events=event_count)
                 else:
-                    raw_response = response.read(MAX_RESPONSE_BYTES + 1)
-                    if len(raw_response) > MAX_RESPONSE_BYTES:
-                        raise PipelineError("Gemini response exceeded the bounded size")
+                    raw_response = response.read()
                     item["response_bytes"] = len(raw_response)
                     response_object = json.loads(raw_response)
                     write_json(out / (phase + ".api-response.json"), response_object)
@@ -302,10 +294,23 @@ def run(args):
             item.update(usage=result.get("usageMetadata", {}), model_version=result.get("modelVersion"))
             candidate = result["candidates"][0]
             item["finish_reason"] = candidate.get("finishReason")
-            if item["finish_reason"] != "STOP":
-                raise PipelineError("Gemini response did not finish with STOP; raw response was preserved")
             raw_path = out / (phase + ".raw.txt")
             raw_path.write_text(response_text, encoding="utf-8")
+            item["raw_text_file"] = raw_path.name
+            item["response_characters"] = len(response_text)
+            if len(response_text) <= 2000:
+                item["short_response_text"] = response_text
+            if item["finish_reason"] == "MAX_TOKENS":
+                item["incomplete_reason"] = "provider_output_token_limit"
+                record["resume_required"] = True
+                record["resume_phase"] = phase
+                save()
+                raise PipelineError(
+                    "Provider output limit reached; partial text preserved; "
+                    "the configured model requires multiple requests for longer output"
+                )
+            if item["finish_reason"] != "STOP":
+                raise PipelineError("Gemini response did not finish with STOP; raw response was preserved")
             if phase == "whole-audio-transcript":
                 if response_text.lstrip().startswith("AUDIO_ACCESS_UNAVAILABLE"):
                     value = {
