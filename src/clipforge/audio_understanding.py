@@ -44,8 +44,9 @@ TRANSCRIPTION_RULES = (
 
 
 class Client:
-    def __init__(self, output, resume=None):
+    def __init__(self, output, resume=None, continue_missing=False):
         self.output, self.resume = output, resume
+        self.continue_missing = continue_missing
         self.record = {
             "status": "running",
             "requests": [],
@@ -68,13 +69,17 @@ class Client:
                 for r in saved["requests"]
                 if r["phase"] == phase and r.get("finish_reason") == "STOP"
             ]
-            if len(entries) != 1:
+            if entries:
+                if len(entries) != 1:
+                    raise PipelineError("Ambiguous saved response for " + phase)
+                value = json.loads((self.resume / (phase + ".json")).read_text())
+                self.record["requests"].append({**entries[0], "reused": True})
+                write_json(self.output / (phase + ".json"), value)
+                self.save()
+                return value, entries[0].get("grounding", {})
+            attempted = any(r["phase"] == phase for r in saved["requests"])
+            if attempted or not self.continue_missing:
                 raise PipelineError("No complete saved response for " + phase)
-            value = json.loads((self.resume / (phase + ".json")).read_text())
-            self.record["requests"].append({**entries[0], "reused": True})
-            write_json(self.output / (phase + ".json"), value)
-            self.save()
-            return value, entries[0].get("grounding", {})
         token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
         if not token:
             raise PipelineError("Designated Vertex identity is not connected")
@@ -156,8 +161,11 @@ class Client:
 def selected_transcript(value, duration, offset=0):
     if value.get("audio_access") != "heard" or value.get("complete") is not True:
         raise PipelineError("Selected audio transcription is incomplete/unavailable")
-    rows, turns, previous = [], [], 0.0
-    for row in value.get("segments", []):
+    rows, turns = [], []
+    ordered = value.get("segments", [])
+    if not isinstance(ordered, list) or len(ordered) > 10000:
+        raise PipelineError("Expected a bounded subtitle list")
+    for index, row in enumerate(ordered):
         start, end = row.get("start"), row.get("end")
         if (
             any(
@@ -165,13 +173,13 @@ def selected_transcript(value, duration, offset=0):
                 for x in (start, end)
             )
             or not 0 <= start < end <= duration
-            or start < previous
         ):
-            raise PipelineError("Invalid/overlapping clip-relative subtitle timing")
+            raise PipelineError(
+                f"Invalid clip-relative timing at subtitle {index}: {start!r}..{end!r}, duration={duration}"
+            )
         text = row.get("text")
         if not isinstance(text, str):
             raise PipelineError("Subtitle text is required")
-        previous = end
         if not text.strip():
             continue
         rows.append(Segment(start=start + offset, end=end + offset, text=text))
@@ -193,10 +201,79 @@ def selected_transcript(value, duration, offset=0):
         )
     if not rows:
         raise PipelineError("No usable selected subtitles")
-    return Transcript(language="ja", segments=rows), validate_turns(turns, duration)
+    # Keep both utterances when speakers talk over one another. Preserve the raw
+    # response separately; overlapping display groups use neutral color and the union
+    # of their original spans, without pretending to realign the audio.
+    groups = []
+    for row in sorted(rows, key=lambda r: (r.start, r.end)):
+        if groups and row.start < groups[-1][-1].end:
+            groups[-1].append(row)
+            groups[-1].sort(key=lambda r: r.end)
+        else:
+            groups.append([row])
+    display = []
+    for members in groups:
+        members.sort(key=lambda r: (r.start, r.end))
+        display.append(
+            Segment(
+                start=min(r.start for r in members),
+                end=max(r.end for r in members),
+                text="\n".join(r.text for r in members),
+            )
+        )
+        if len(members) > 1:
+            # Mark the complete display group uncertain so colors cannot imply one voice.
+            turns.append(
+                {
+                    "start": display[-1].start - offset,
+                    "end": display[-1].end - offset,
+                    "speaker_id": None,
+                    "confidence": 0,
+                }
+            )
+    return Transcript(language="ja", segments=display), validate_turns(turns, duration)
 
 
-def plan(audio, url, output, settings, resume=None):
+def align_selected(client, index, value, audio, duration):
+    """A separate timing task, preserving every saved utterance and speaker label."""
+    original = value.get("segments", [])
+    timing, _ = client.generate(
+        f"alignment-{index}",
+        "添付は字幕対象の音声だけです。参照音声や元配信の時刻は含みません。"
+        "既存の字幕本文を音声と照合し、各IDの発話開始・終了だけを秒で返してください。"
+        "字幕の再文字起こし・言い換え・省略・創作は禁止。全IDを各1回返します。"
+        "時刻の原点はこの添付音声の先頭0秒です。話者が被る箇所の時刻重複は保持。"
+        f"終了は{duration}秒以内。聞けない場合はaudio_access=unavailable。"
+        "JSON {audio_access:'heard',segments:[{id:整数,start:秒,end:秒}]}。資料:\n"
+        + json.dumps(
+            [{"id": i, "text": r["text"]} for i, r in enumerate(original)],
+            ensure_ascii=False,
+        ),
+        audio,
+    )
+    if timing.get("audio_access") != "heard":
+        raise PipelineError("Selected timing audio unavailable")
+    timed = timing.get("segments", [])
+    ids = [r.get("id") for r in timed]
+    if (
+        len(ids) != len(original)
+        or any(type(i) is not int for i in ids)
+        or set(ids) != set(range(len(original)))
+    ):
+        raise PipelineError(
+            "Timing response must preserve every subtitle ID exactly once"
+        )
+    by_id = {r["id"]: r for r in timed}
+    return {
+        **value,
+        "segments": [
+            {**row, "start": by_id[i]["start"], "end": by_id[i]["end"]}
+            for i, row in enumerate(original)
+        ],
+    }
+
+
+def plan(audio, url, output, settings, resume=None, continue_missing=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     if (output / "audio-editor-receipt.json").exists():
@@ -217,7 +294,7 @@ def plan(audio, url, output, settings, resume=None):
             raise PipelineError(
                 "Saved audio responses belong to another input/configuration"
             )
-    client = Client(output, resume)
+    client = Client(output, resume, continue_missing)
     client.record.update(
         source_url=url,
         duration=duration,
@@ -229,7 +306,7 @@ def plan(audio, url, output, settings, resume=None):
         for index, start in enumerate(range(0, math.ceil(duration), WINDOW_SECONDS)):
             length = min(WINDOW_SECONDS, duration - start)
             path = output / f"overview-{index}.ogg"
-            if not resume:
+            if not resume or continue_missing:
                 encode_audio(audio, path, start, length, "12k")
             value, _ = client.generate(
                 f"topics-{index}",
@@ -282,13 +359,13 @@ def plan(audio, url, output, settings, resume=None):
         selection, transcripts, registry = [], [], []
         for index, clip in enumerate(chosen, 1):
             path = output / f"selected-{index}.ogg"
-            if not resume:
+            if not resume or continue_missing:
                 encode_audio(audio, path, clip.start, clip.end - clip.start, "24k")
             # One focused call per selected topic. Voice references grow only to six short
             # snippets and travel in the same inline audio file as the selected topic.
             reference_seconds = sum(r["duration"] + 0.5 for r in registry)
             combined = output / f"focused-{index}.ogg"
-            if not resume:
+            if not resume or continue_missing:
                 if registry:
                     inputs, filters, labels = [], [], []
                     for n, r in enumerate(registry):
@@ -331,7 +408,7 @@ def plan(audio, url, output, settings, resume=None):
                 + "\n"
                 + json.dumps(
                     {
-                        "topic": clip.model_dump(),
+                        "topic": {"title": clip.title, "reason": clip.reason},
                         "target_audio_start": reference_seconds,
                         "target_duration": clip.end - clip.start,
                         "voice_registry": registry,
@@ -341,13 +418,23 @@ def plan(audio, url, output, settings, resume=None):
                 ),
                 combined,
             )
+            value = align_selected(client, index, value, path, clip.end - clip.start)
             transcript, turns = selected_transcript(value, clip.end - clip.start)
+            client.record.setdefault("subtitle_display", []).append(
+                {
+                    "clip": index,
+                    "source_segments": len(value["segments"]),
+                    "display_segments": len(transcript.segments),
+                    "overlap_policy": "union_display_neutral_color_preserve_text",
+                }
+            )
+            client.save()
             for turn in turns:
                 speaker = turn["speaker_id"]
                 if speaker and speaker not in {r["speaker_id"] for r in registry}:
                     length = min(4, turn["end"] - turn["start"])
                     name = f"voice-{speaker}.ogg"
-                    if not resume:
+                    if not resume or continue_missing:
                         encode_audio(
                             audio,
                             output / name,
@@ -478,6 +565,11 @@ def main():
         "--config", type=Path, default=Path("config.landscape-long.example.json")
     )
     parser.add_argument("--resume-from", type=Path)
+    parser.add_argument(
+        "--continue-missing",
+        action="store_true",
+        help="Reuse saved responses; generate only phases never submitted",
+    )
     parser.add_argument("--review", type=Path)
     parser.add_argument("--transcripts", type=Path)
     args = parser.parse_args()
@@ -495,7 +587,14 @@ def main():
         finally:
             vod.close()
     elif args.mode == "plan":
-        plan(args.audio, args.url, args.output, settings, args.resume_from)
+        plan(
+            args.audio,
+            args.url,
+            args.output,
+            settings,
+            args.resume_from,
+            args.continue_missing,
+        )
     else:
         render(args.review, args.transcripts, args.output, settings)
 
