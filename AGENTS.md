@@ -14,11 +14,11 @@
 
 ## 現行の制作経路
 
-URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUMで音声から話題・見出し選定 → 採用音声を仮切り出し → 3.5 Flash/MINIMALで根拠付き表記調査1回 → Colab GPUのParakeetで採用部分だけ文字起こし → 3.8がGPUの文字起こし本文を採用話題ごとに1回整文し、必要な効果音を提案 → Colab GPU/NVENCで最大360p素材・標準720p文字キャンバス描画 → 非公開Release保存・回収 → 指定時だけDrive納品。
+URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUMで音声から話題・見出し選定 → 採用音声を仮切り出し → 3.5 Flash/MINIMALで根拠付き表記調査1回 → Colab GPUのParakeetで採用部分だけ文字起こし → 3.5 Flash/MEDIUMがGPUの文字起こし本文を採用話題ごとに1回整文し、必要な効果音を提案 → Colab GPU/NVENCで最大360p素材・標準720p文字キャンバス描画 → 非公開Release保存・回収 → 指定時だけDrive納品。
 
 - 字幕要求を60秒ごとに分割しない。新規モデル要求数は全体把握の音声窓数＋表記調査1回＋採用話題数。1話題1回と一文要約は別で、字幕segmentは発話に沿って複数作る。
 - 全文GPU ASR・3.5の全文文字起こし・保存ASR必須の候補計画・追加の時刻照合・OpenCode/査読モデルへ自動で戻さない。旧ASR経路は過去結果の明示的な復旧専用。
-- GPUによる文字起こしは採用区間だけを対象とする。3.8の整文工程へ音声を送らず、GPUから受け取った文字列と発話時刻だけを渡す。GPU処理の内部分割は計算用であり、3.8の字幕要求を60秒ごとに分けない。
+- GPUによる文字起こしは採用区間だけを対象とする。3.5の整文工程へ音声を送らず、GPUから受け取った文字列と発話時刻だけを渡す。GPU処理の内部分割は計算用であり、3.5の字幕要求を60秒ごとに分けない。
 - YouTube/Twitch/Kick/直接HTTPSを維持する。元媒体と出力先は分離し、元媒体を上書きしない。制御VMで重いASRや描画を行わない。
 - 保存済み応答/音声/完成クリップを再利用する。送信済み・成否不明のモデル要求やworkflow dispatchを自動再送しない。状態取得の一時障害は読み取りだけを再試行する。
 - `--resume --output DIR` は保存した依頼IDから既存制作/納品の監視・回収へ戻る。新規投入しない。回収・納品だけの依頼を音声理解や描画へ戻さない。
@@ -44,7 +44,7 @@ URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUMで音声か�
 
 ## 接続と保存
 
-- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、3.8 Flash/MEDIUMと補助3.5 Flash/MINIMAL。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
+- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定に3.8 Flash/MEDIUM、整文に3.5 Flash/MEDIUM、用語調査に3.5 Flash/MINIMAL。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
 - 公開ClipForgeはコードとActions、非公開`nyu1791-collab/ai-model-workers`は制作データのRelease保存庫。公開Artifactsに音声/動画/字幕/モデル応答を出さない。配布用`deploy/audio-stages.yml`は公開Actions定義と揃える。
 - APIキー/OAuth/Cookie/私有媒体をGit/ログ/チャットへ出さない。Secretsは名前だけ扱う。接続一覧の閲覧不可はunknownとし、未登録や制作不能と断定しない。
 - Colabは既存の専用エンドユーザー資格情報を再利用する。Drive専用資格情報をVertexサービスアカウントで代用しない。Driveの所有者は許可済みの`n.yu1791@gmail.com`または`n.yu17919191@gmail.com`と照合する。

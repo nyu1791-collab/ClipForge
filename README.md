@@ -16,7 +16,7 @@
 | 2 | 音声から話題と採用区間を決める | Gemini 3.8 Flash | Actions runner |
 | 3 | 採用音声を切り出し、用語表記を調べる | ffmpeg・Gemini 3.5 Flash | Actions runner |
 | 4 | 採用部分だけを文字起こし、話題内の発言時刻を記録 | Parakeet | Colab GPU |
-| 5 | GPU文字起こしを話題ごと1回、要約せず整文 | Gemini 3.8 Flash | Actions runner |
+| 5 | GPU文字起こしを話題ごと1回、要約せず整文 | Gemini 3.5 Flash/MEDIUM | Actions runner |
 | 6 | 最大360p素材を標準720pキャンバスへ拡大して字幕描画 | FFmpeg ASS・NVENC | Colab GPU |
 | 7 | 完成動画と工程記録を回収 | 非公開Release | 制御側 |
 
