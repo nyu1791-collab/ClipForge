@@ -8,14 +8,15 @@
 - 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。
 - 開発環境の準備: `bash tools/dev_setup.sh`／説明: `docs/DEVELOPMENT.md`。
 
-## 流れ（唯一の経路）
-Kick / YouTube / Twitch / 直接 HTTPS の URL → runner で音声取得（`tools/acquire_audio_url.py`）→ runner で静かな位置で最大4分割 → Colab GPU（L4・T4）で Parakeet → runner で結合・話題分け → 同じ run で候補映像と未承認の下書き → 承認 → 1台のColab GPU/NVENCで一括描画・統合検査 → `--collect`で回収（個別修正のpartは`merge --local`）。音声だけの URL は解析まで。
-- 手順: `docs/GPU_ROUTE.md`（現行の統合手順）／段階の詳細と承認ファイル: `docs/AUDIO_FIRST.md`／文字起こし: `docs/ASR.md`
-- 投入と回収: `tools/submit_job.py`（解析）・`tools/submit_audio_stage.py`（描画・結合）・`tools/run_timings.py RUN_ID`（計測）
-- 文字起こし: runner 側 `tools/split_asr_job.py`・`src/clipforge/asr_split.py`、Colab 側 `src/clipforge/asr.py`
-- Colab 制御: `tools/colab_actions.py`（割り当て・解放）・`tools/colab_remote_job.py`（Colab 上のジョブ）・`tools/colab_bundle.py`（結果の受け渡し）・`tools/colab_setup.sh`（描画の環境）
-- 非公開 worker の workflow 原本: `deploy/*.yml`。一致の確認: `tools/check_worker_workflows.py`
-- YouTube の WARP・Cookie: `src/clipforge/youtube_transport.py`・`youtube_auth.py`、`docs/YOUTUBE_TRANSPORT.md`
+## 現在の通常経路
+
+URL → 音声取得・再利用 → 3.8が音声から話題区分 → 採用区間を切り出し → 3.5が用語表記調査 → 3.8が区間字幕・本文を保持した時刻照合 → Colab GPU/NVENCの360p描画 → 非公開回収。
+
+- 正本: `docs/GEMINI_AUDIO_REVIEW.md`。引き継ぎ: `docs/HANDOFF_2026-10-26.md`。
+- 通常入口: `tools/produce_with_gemini.py`。実装: `src/clipforge/audio_understanding.py`。
+- Actions: `.github/workflows/clipforge-stages.yml`のunderstandingとselected-audio-render。
+- Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
+- 旧全編ASRの手順は復旧用に維持。新規制作に適用しない。
 
 ## src/clipforge
 - 時刻・設定の型: `models.py`／保存・ハッシュ: `storage.py`

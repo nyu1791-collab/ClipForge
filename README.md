@@ -1,4 +1,4 @@
-> 公開ClipForgeへのActions定義の統合は完了し、認証の移行が残っています。移行設定と未完了事項は[PUBLIC_ACTIONS.md](docs/PUBLIC_ACTIONS.md)を参照してください。動画・ASRの保存庫は非公開を維持します。
+> 最新の制作経路と再開方法は[音声経路の手順](docs/GEMINI_AUDIO_REVIEW.md)を参照してください。動画・音声・字幕・モデル応答は非公開で保存します。
 
 # ClipForge
 
@@ -10,29 +10,29 @@
 
 | 段 | 処理 | 使うもの | 実行場所 |
 | --- | --- | --- | --- |
-| 1 | 配信の音声を取得する（Kick・YouTube・Twitch・直接 HTTPS） | yt-dlp・ffmpeg（YouTube は任意で WARP） | Actions runner |
-| 2 | 全編を最大4台で文字起こしする | NVIDIA Parakeet（`nvidia/parakeet-tdt_ctc-0.6b-ja`） | Colab GPU（L4・T4） |
-| 3 | 5分以上の話題にまとめ、保存済みASRから採用候補を作る | 規則で区間をまとめ、Vertex Geminiで選ぶ | Actions runner |
-| 4 | 5本以上の採用区間と見出しをJSONへ保存する | Geminiの選定結果 | Actions runner |
-| 5 | 採用した区間だけ取得し、字幕を焼き込んで描画する | ffmpeg・BudouX・fugashi | Colab GPU/NVENC |
-| 6 | 完成クリップと記録を回収・非公開納品する | — | 制御VM |
+| 1 | 元音声を取得、保存済みなら再利用 | yt-dlp・ffmpeg | Actions runner |
+| 2 | 音声から話題と採用区間を決める | Gemini 3.8 Flash | Actions runner |
+| 3 | 採用音声を切り出し、用語表記を調べる | ffmpeg・Gemini 3.5 Flash | Actions runner |
+| 4 | 採用区間だけ字幕化し、本文を保持して時刻を照合 | Gemini 3.8 Flash | Actions runner |
+| 5 | 選択字幕を焼き込み、360pで描画 | FFmpeg ASS・NVENC | Colab GPU |
+| 6 | 完成動画と工程記録を回収 | 非公開Release | 制御側 |
 
-既定は5本、1本5〜15分です。品質監査・承認待ち・失敗時の自動再実行は行いません。文字起こしは1回だけで、その結果を話題分けと字幕の両方に使います。話題選定では保存済みASRをVertex AIの`gemini-3.8-flash`へ送り、時間と使用量を記録します。初回接続は[Vertex設定](docs/VERTEX_GEMINI.md)を参照してください。
+既定5本、各5〜15分。字幕の要約・言い換え・文字数圧縮はせず、無意味な言い淀みだけを除きます。字幕時刻はGemini推定です。完了済み応答は再利用し、失敗時の自動再送や全文ASRへの復帰は行いません。
 
 ## 使い方
 
 手順の全体は [docs/GPU_ROUTE.md](docs/GPU_ROUTE.md) です。最初の Google 認証は [docs/COLAB.md](docs/COLAB.md)。
 
 ```bash
-uv sync --locked --extra media-fetch --extra chat
-uv run --no-sync python tools/submit_job.py \
-  --audio-analysis-url 'https://kick.com/CHANNEL/videos/VOD_ID' \
+uv sync --locked --extra media-fetch
+uv run --no-sync python tools/produce_with_gemini.py \
+  'https://kick.com/CHANNEL/videos/VOD_ID' \
+  --source-ref PRODUCTION_COMMIT_SHA \
   --workflow-ref fix/pr18-verified-transfer \
-  --ref REVIEWED_COMMIT_SHA --config config.landscape-long.example.json \
-  --auto-previews --wait --output /private/NAME-previews
+  --output /private/NAME-production
 ```
 
-**あなたが権利を持つ配信・ファイルの URL** を指定してください。MP3・M4A など音声だけの入力は `--auto-previews` を外し、解析までにします。
+`PRODUCTION_COMMIT_SHA`は新方式を含む40桁SHA。音声を理解して字幕を生成し、GPU描画・回収まで待ちます。`--deliver-drive`を付けた場合は既存の専用資格情報で納品します。過去の失敗を再開する際は[保存済み応答の再利用手順](docs/GEMINI_AUDIO_REVIEW.md)を先に確認してください。
 
 ## 文書
 
