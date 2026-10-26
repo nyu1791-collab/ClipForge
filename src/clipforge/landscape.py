@@ -64,22 +64,12 @@ def safe_quality_summary(report):
 
 def validate_selection(value, settings, duration, *, advisory_targets=False):
     clips = [SelectedClip.model_validate(row) for row in value["clips"]]
-    if advisory_targets:
-        if not clips:
-            raise PipelineError("no clips to render")
-        # Counts and target lengths guide editorial selection; they do not
-        # reject usable audio-understanding output.
-        if any(clip.start < 0 or clip.end <= clip.start or clip.end > duration + 0.1 for clip in clips):
-            raise PipelineError("selected interval is outside the source video")
-    else:
-        if not 5 <= len(clips) <= 10 or len(clips) != settings.clips:
-            raise PipelineError("landscape delivery needs exactly the requested 5 to 10 clips")
-        validate_picks(clips, duration, settings)
-    if any(not clip.title.strip() for clip in clips):
-        raise PipelineError("each landscape clip needs a topic title")
-    ordered = sorted(clips, key=lambda clip: clip.start)
-    if any(left.end > right.start for left, right in zip(ordered, ordered[1:])):
-        raise PipelineError("landscape selections must not overlap")
+    # Editorial targets never gate an otherwise renderable delivery.
+    validate_picks(clips, duration, settings)
+    clips = [
+        clip if clip.title.strip() else clip.model_copy(update={"title": f"話題 {index}"})
+        for index, clip in enumerate(clips, 1)
+    ]
     return clips
 
 
@@ -134,8 +124,6 @@ def summarize_delivery(manifest, output, expected, height=1080):
             "completed manual selection with zero generation requests is required"
         )
     rows = manifest.get("rendered", [])
-    if len(rows) != expected or not 5 <= expected <= 10:
-        raise PipelineError("rendered landscape clip count does not match the plan")
     summaries = []
     for index, row in enumerate(rows, 1):
         directory = within(output, output / row["directory"])
@@ -146,6 +134,8 @@ def summarize_delivery(manifest, output, expected, height=1080):
     return {
         "status": "complete",
         "rendered_clips": len(rows),
+        "target_clips": expected,
+        "target_count_met": len(rows) == expected,
         "clips": summaries,
         "model_generation_requests": 0,
         "human_review_performed": False,

@@ -511,6 +511,13 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record["topic_selection"] = {
             "requested_clips": settings.clips,
             "selected_clips": len(chosen),
+            "count_target_met": len(chosen) == settings.clips,
+            "duration_target_seconds": [settings.min_seconds, settings.max_seconds],
+            "outside_duration_target": [
+                {"start": clip.start, "end": clip.end, "seconds": clip.end - clip.start}
+                for clip in chosen
+                if not settings.min_seconds <= clip.end - clip.start <= settings.max_seconds
+            ],
         }
         client.save()
         corpus = "\n".join(c.title + " " + c.reason for c in chosen)

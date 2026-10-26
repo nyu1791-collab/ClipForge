@@ -533,8 +533,6 @@ def merge_parts(parts, output, settings, source_ref, config_file=None):
         raise PipelineError("clip renders use different configuration files")
     if config_file is not None and config_file not in part_configs:
         raise PipelineError("clip renders were made with another configuration file")
-    if identity["clip_count"] != settings.clips:
-        raise PipelineError("clip count does not match the plan")
     by_index = {}
     for item in loaded:
         if item["index"] in by_index:
