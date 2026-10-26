@@ -62,9 +62,15 @@ READ_BASH = [
     "git log*",
     "git show*",
     "git status*",
+    "git grep*",
     "grep *",
     "rg *",
     "ls*",
+    "find *",
+    "cat *",
+    "head *",
+    "tail *",
+    "sed -n *",
     "wc *",
 ]
 WRITE_BASH = READ_BASH + [
@@ -83,6 +89,10 @@ DENIED_BASH = [
     "*--fix*",
     "*--output*",
     "*>*",
+    "*-exec*",
+    "*-delete*",
+    "sed -i*",
+    "*tee *",
     "git commit*",
     "git push*",
     "git fetch*",
@@ -100,11 +110,10 @@ DENIED_BASH = [
 ]
 
 RULES = """You are a subagent working for a lead engineer. Rules:
-- Answer in Japanese. Be concise: conclusion first, then evidence as file:line.
-- Stay inside this repository. Never read or print credentials, tokens, .env files or auth files.
-- Never quote real speech, transcripts or private media content; use synthetic examples.
+- Answer in Japanese: the conclusion first, then the evidence as file:line.
+- Stay inside this repository. Never print credentials, tokens, .env or auth files.
+- Never quote real speech, transcripts or private media; use synthetic examples.
 - {mode_rule}
-- Final message format: ## 結論, ## 根拠 (file:line), ## 変更/提案 (minimal diff), ## 未確認.
 
 Task:
 """

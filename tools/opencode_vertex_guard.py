@@ -73,7 +73,7 @@ def main():
 
     try:
         # Wait for the local server only. No model request exists before the client starts.
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 120
         while time.monotonic() < deadline and server.poll() is None:
             try:
                 stream = local.open(url + "/event", timeout=180)
