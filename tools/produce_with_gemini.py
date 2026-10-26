@@ -28,7 +28,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("url")
     ap.add_argument("--output", type=Path, required=True)
-    ap.add_argument("--source-ref", required=True)
+    ap.add_argument(
+        "--source-ref",
+        help="Pin this commit; omitted resolves the execution branch once before dispatch",
+    )
     ap.add_argument(
         "--repository",
         choices=["nyu1791-collab/ClipForge", "nyu1791-collab/ai-model-workers"],
@@ -98,6 +101,13 @@ def main():
         )
     if args.repository != "nyu1791-collab/ClipForge":
         ap.error("new audio-understanding production runs from ClipForge")
+    if not args.source_ref:
+        args.source_ref = gh(
+            "api",
+            f"repos/{args.repository}/commits/{args.workflow_ref}",
+            "--jq",
+            ".sha",
+        ).strip()
     if not re.fullmatch("[a-f0-9]{40}", args.source_ref):
         ap.error("source-ref must be an exact commit SHA")
     if bool(args.analysis_run) != bool(args.analysis_request):

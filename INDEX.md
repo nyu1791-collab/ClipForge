@@ -1,6 +1,6 @@
 # ClipForge 要約マップ
 
-再開時はまずこのファイルだけを読む。本文はタスクに必要なファイルだけ、`grep -n` で位置を決めて `sed -n` で範囲を読む。
+再開時はまずこのファイルだけを読む。本文はタスクに必要なファイルだけ、`rg -n` で位置を決めて `sed -n` で範囲を読む。テスト・監査は通常制作の前提にしない。
 
 ## 構成
 - Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`、lint は `ruff`。
@@ -10,9 +10,9 @@
 
 ## 現在の通常経路
 
-URL → 音声取得・再利用 → 3.8が音声から話題区分 → 採用区間を切り出し → 3.5が用語表記調査 → 3.8が区間字幕・本文を保持した時刻照合 → Colab GPU/NVENCの360p描画 → 非公開回収。
+URL → 音声取得・再利用 → 3.8が話題・見出し選定 → 採用区間を切り出し → 3.5が用語表記調査 → 3.8が60秒窓で短文化字幕・感情・SE → 任意の字幕後処理 → Colab GPU/NVENCで最大360p素材・標準720pキャンバス描画 → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
 
-- 正本: `docs/GEMINI_AUDIO_REVIEW.md`。引き継ぎ: `docs/HANDOFF_2026-10-26.md`。
+- 入口・接続・再開: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。引き継ぎ: `docs/HANDOFF_FINISHING_2026-10-26.md`。
 - 通常入口: `tools/produce_with_gemini.py`。実装: `src/clipforge/audio_understanding.py`。
 - Actions: `.github/workflows/clipforge-stages.yml`のunderstandingとselected-audio-render。
 - Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
