@@ -1,5 +1,6 @@
-"""One paid Gemini request using fictional Japanese caption text only."""
+"""One paid Gemini request using fictional caption text and supplied Ogg audio."""
 
+import argparse
 import json
 from pathlib import Path
 import tempfile
@@ -36,6 +37,9 @@ SOURCE = [
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Send one example cleanup request with an Ogg audio file")
+    parser.add_argument("audio", type=Path, help="Ogg/Opus audio corresponding to the example's 23-second timeline")
+    args = parser.parse_args()
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="clipforge-synthetic-") as directory:
         client = Client(Path(directory))
@@ -48,7 +52,7 @@ def main():
             confidence=1.0,
         )
         try:
-            displayed = clean_selected_clip(client, {"segments": SOURCE}, 1, clip, [])
+            displayed = clean_selected_clip(client, {"segments": SOURCE}, 1, clip, [], args.audio)
         except Exception as error:
             report = {
                 "status": "failed",

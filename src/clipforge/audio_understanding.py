@@ -1,4 +1,4 @@
-"""Audio topic planning, selected-only GPU ASR and Gemini text cleanup."""
+"""Audio topic planning, selected-only GPU ASR and audio-grounded cleanup."""
 
 import argparse
 import hashlib
@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 import time
 import urllib.error
@@ -120,7 +121,7 @@ class Client:
         self._vertex_token_at = time.monotonic()
         return self._vertex_token
 
-    def generate(self, phase, prompt, audio=None, research=False):
+    def generate(self, phase, prompt, audio=None, research=False, audio_source_key=None):
         rule_file = rules_file_for_phase(phase)
         # All director calls receive the common book, plus their stage rules.
         # A missing/empty book is a deployment error, never a silent prompt fallback.
@@ -147,6 +148,10 @@ class Client:
             f"音声パート{index}: {label}（{Path(audio_path).name}）"
             for index, (label, audio_path) in enumerate(audio_items, 1)
         )
+        audio_identity = [
+            {"label": label, "sha256": digest(Path(path)), "bytes": Path(path).stat().st_size}
+            for label, path in audio_items
+        ]
         user_prompt = "\n\n".join(part for part in (prompt, audio_manifest) if part)
         complete_prompt = "\n\n".join(
             part
@@ -171,7 +176,7 @@ class Client:
         # response must not be reported as a 3.5 result even for the same text.
         phase_hash = (
             hashlib.sha256(
-                f"{prompt_sha256}:{model}:{thinking_level}".encode()
+                f"{prompt_sha256}:{model}:{thinking_level}:{audio_source_key or json.dumps(audio_identity, sort_keys=True, ensure_ascii=False)}".encode()
             ).hexdigest()
             if phase_base.startswith("transcript-")
             else prompt_sha256
@@ -319,6 +324,8 @@ class Client:
         row.update(
             prompt_file=prompt_path.name,
             prompt_sha256=prompt_sha256,
+            audio_inputs=audio_identity,
+            audio_source_key=audio_source_key,
         )
         with self._lock:
             self.record["requests"].append(row)
@@ -575,8 +582,8 @@ def selected_gpu_transcripts(
     return result, reused
 
 
-def clean_selected_clip(client, raw, clip_index, clip, glossary):
-    """Send GPU text once for cleanup and keep GPU timing for every returned phrase."""
+def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, audio_source_key=None):
+    """Use the selected audio and GPU text, retaining the GPU's time spans."""
     duration = clip.end - clip.start
     source = raw.get("segments", [])
     if not isinstance(source, list):
@@ -594,16 +601,19 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
     ]
     request = {
         "subtitle_policy": SUBTITLE_POLICY,
-        "task": "以下は採用した話題をGPUで文字起こしした本文と発言時刻。音声の書き起こしは行わず、全文を前後の文脈で理解して要約せず整文する。曖昧な語は原文を保持し、入力にない内容や話者・感情を推測しない。長い無音をまたがない。字幕の開始・終了は指定された元IDからコードが引き継ぐ。",
+        "task": "添付音声はこの採用区間の先頭を0秒とする。GPU文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
         "topic_context": {"title": clip.title, "reason": clip.reason},
         "glossary": glossary,
         "source_segments": numbered,
         "required_output_shape": {
+            "audio_access": "heard または unavailable",
             "segments": [
                 {
                     "source_ids": [1],
                     "text": "整文後の字幕。省くのが明白な無意味なフィラーだけなら空文字",
                     "omit_filler": False,
+                    "speaker_id": "speaker_1 から speaker_6、または unknown",
+                    "confidence": "声に基づく話者判定の確信度0から1",
                 }
             ],
             "sound_effects": [
@@ -614,10 +624,11 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
                 }
             ],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。必要な情報・元の発言順と時刻を保持し、削除は意味のない言い淀みだけ。音声根拠がないため話者色・感情の推測はしない。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、短くて区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
     }
     value, _ = client.generate(
-        f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False)
+        f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
+        audio=audio_path, audio_source_key=audio_source_key,
     )
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
@@ -655,14 +666,24 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
             not text.strip() and candidate.get("omit_filler") is not True
         ):
             continue
+        speaker = candidate.get("speaker_id")
+        confidence = candidate.get("confidence")
+        certain = (
+            value.get("audio_access") == "heard"
+            and isinstance(speaker, str)
+            and speaker in SPEAKER_COLORS
+            and type(confidence) in (int, float)
+            and math.isfinite(confidence)
+            and 0.8 <= confidence <= 1
+        )
         consumed.update(ids)
         replacements[ids[0]] = (
             {
                 "start": spans[0]["start"],
                 "end": spans[-1]["end"],
                 "text": text,
-                "speaker_id": "unknown",
-                "confidence": 0,
+                "speaker_id": speaker if certain else "unknown",
+                "confidence": confidence if certain else 0,
                 "emotion": "neutral",
                 "emotion_level": 0,
                 "emotion_confidence": 0,
@@ -692,7 +713,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
         "transcript_access": "available",
         "segments": segments,
         "sound_effects": prepare_cues(value.get("sound_effects", []), duration),
-        "finishing": {"status": "gpu_timestamps_preserved", "model_requests": 1},
+        "finishing": {"status": "gpu_timestamps_preserved", "model_requests": 1, "audio_access": value.get("audio_access", "unavailable")},
     }
 
 
@@ -948,7 +969,16 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
 
                 def cleanup_one(index, raw):
                     clip = chosen[index - 1]
-                    value = clean_selected_clip(client, raw, index, clip, glossary)
+                    with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
+                        selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
+                        encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
+                        audio_source_key = fingerprint({
+                            "source_audio_sha256": identity["audio_sha256"],
+                            "start": clip.start,
+                            "end": clip.end,
+                            "encoding": "ogg-opus-16000hz-mono-24k-voip-v1",
+                        })
+                        value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, audio_source_key)
                     if renderer is not None:
                         transcript, turns = selected_transcript(
                             value, clip.end - clip.start
