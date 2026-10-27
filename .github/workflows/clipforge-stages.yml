@@ -403,7 +403,7 @@
           "run": "[[ \"$EDITORIAL_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/saved-editorial\"\ngh release download \"$EDITORIAL_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern '*.json' --pattern '*.prompt.txt' --dir \"$RUNNER_TEMP/saved-editorial\"\n"
         },
         {
-          "name": "Select topics, recognise selected audio on GPU, clean each topic once",
+          "name": "Process selected topics with overlapping GPU ASR, cleanup and render",
           "timeout-minutes": 100,
           "env": {
             "CLIPFORGE_VERTEX_ACCESS_TOKEN": "${{ steps.vertex.outputs.access_token }}",
@@ -416,9 +416,12 @@
             "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
             "REQUEST_ID": "${{ inputs.request_id }}",
             "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
-            "CLIPFORGE_COLAB_CONTROL_PYTHON": "${{ runner.temp }}/colab-control/bin/python"
+            "CLIPFORGE_COLAB_CONTROL_PYTHON": "${{ runner.temp }}/colab-control/bin/python",
+            "CLIPFORGE_STREAMING_RENDER": "${{ inputs.auto_render && inputs.result_store == 'release' }}",
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}"
           },
-          "run": "[[ \"$CONFIG_FILE\" =~ ^config\\.[a-z0-9-]+\\.example\\.json$ ]] || exit 1\nextra=()\nif [ -n \"$TARGET_CLIPS\" ]; then [[ \"$TARGET_CLIPS\" =~ ^([1-9]|10)$ ]] || exit 1; extra+=(--clips \"$TARGET_CLIPS\"); fi\nif [ -n \"$EDITORIAL_RELEASE\" ]; then extra+=(--resume-from \"$RUNNER_TEMP/saved-editorial\"); fi\nif [ \"$CONTINUE_MISSING\" = true ]; then test -n \"$EDITORIAL_RELEASE\"; extra+=(--continue-missing); fi\n.venv/bin/python -m clipforge.audio_understanding plan --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/editorial\" --config \"$CONFIG_FILE\" \"${extra[@]}\"\n"
+          "run": "[[ \"$CONFIG_FILE\" =~ ^config\\.[a-z0-9-]+\\.example\\.json$ ]] || exit 1\nextra=()\nif [ -n \"$TARGET_CLIPS\" ]; then [[ \"$TARGET_CLIPS\" =~ ^([1-9]|10)$ ]] || exit 1; extra+=(--clips \"$TARGET_CLIPS\"); fi\nif [ -n \"$EDITORIAL_RELEASE\" ]; then extra+=(--resume-from \"$RUNNER_TEMP/saved-editorial\"); fi\nif [ \"$CONTINUE_MISSING\" = true ]; then test -n \"$EDITORIAL_RELEASE\"; extra+=(--continue-missing); fi\n.venv/bin/python -m clipforge.audio_understanding plan --audio \"$RUNNER_TEMP/analysis/audio.m4a\" --url \"$SOURCE_URL\" --output \"$RUNNER_TEMP/editorial\" --config \"$CONFIG_FILE\" \"${extra[@]}\"\n",
+          "id": "process"
         },
         {
           "name": "Release any owned selected-audio GPU",
@@ -428,6 +431,12 @@
           "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/selected_gpu_asr.py --stop --output \"$RUNNER_TEMP/editorial\"\n"
         },
         {
+          "name": "Release any owned streaming render GPUs",
+          "if": "always() && steps.asr-control.outcome == 'success'",
+          "timeout-minutes": 5,
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/parallel_selected_render.py --stop\n"
+        },
+        {
           "name": "Save transcripts review and timing privately",
           "if": "always()",
           "env": {
@@ -435,6 +444,19 @@
           },
           "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi",
           "id": "save-editorial"
+        },
+        {
+          "name": "Preserve completed clips for explicit render-only reuse",
+          "if": "always() && inputs.auto_render && inputs.result_store == 'release' && steps.process.outcome != 'success' && steps.save-editorial.outcome == 'success'",
+          "continue-on-error": true,
+          "timeout-minutes": 15,
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
+            "CLIPFORGE_SOURCE_REF": "${{ inputs.source_ref }}",
+            "REQUEST_ID": "${{ inputs.request_id }}",
+            "RESULT_STORE": "release"
+          },
+          "run": "if [ -f \"$RUNNER_TEMP/editorial/final-selection.json\" ] && [ -f \"$RUNNER_TEMP/editorial/selected-transcripts.json\" ] && [ -f \"$RUNNER_TEMP/editorial/audio-editor-receipt.json\" ]; then\n  mkdir -p \"$RUNNER_TEMP/editorial-render\"\n  cp \"$RUNNER_TEMP/editorial/final-selection.json\" \"$RUNNER_TEMP/editorial/selected-transcripts.json\" \"$RUNNER_TEMP/editorial/audio-editor-receipt.json\" \"$RUNNER_TEMP/editorial-render/\"\n  REVIEW_FILE=\"$RUNNER_TEMP/editorial/final-selection.json\" \"$RUNNER_TEMP/colab-control/bin/python\" tools/parallel_selected_render.py --collect-partial\nelse\n  echo \"Editing did not finish; individual completed clips remain available for collection.\"\nfi\n"
         },
         {
           "name": "Remove saved selected-audio input release",
@@ -502,7 +524,7 @@
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "mkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
+          "run": "mkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --pattern selected-transcripts.json --pattern audio-editor-receipt.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
         },
         {
           "name": "Validate the clip render request",
@@ -545,24 +567,19 @@
           "if": "inputs.result_store != 'release'"
         },
         {
-          "name": "Allocate the cheapest runtime the account grants",
+          "name": "Collect saved streaming clips and publish private output",
           "env": {
-            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
-          },
-          "run": "REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  clipforge-source/tools/colab_actions.py start --mode audio-stage\n"
-        },
-        {
-          "name": "Render on Colab and publish final private outputs",
-          "env": {
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
             "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py run\n"
+          "run": "if [ \"$RESULT_STORE\" = release ]; then\n  REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/parallel_selected_render.py --collect-only\nelse\n  REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/parallel_selected_render.py\nfi\n"
         },
         {
-          "name": "Release and verify removal of the runtime",
+          "name": "Release and verify every owned parallel runtime",
           "if": "always() && steps.control.outcome == 'success'",
-          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py stop\n"
+          "timeout-minutes": 5,
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/parallel_selected_render.py --stop\n"
         },
         {
           "name": "Delete the private transfer release",

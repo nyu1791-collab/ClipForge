@@ -11,6 +11,8 @@ from pathlib import Path
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from threading import RLock
 
 from . import asr, audio_first, pipeline
 from .caption_emotions import annotation
@@ -49,10 +51,27 @@ def rules_file_for_phase(phase):
     return None
 
 
+class LockedRequest(dict):
+    """Serialize request-row updates with receipt snapshots across workers."""
+
+    def __init__(self, lock, value):
+        self._lock = lock
+        super().__init__(value)
+
+    def update(self, *args, **kwargs):
+        with self._lock:
+            return super().update(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            return super().__setitem__(key, value)
+
+
 class Client:
     def __init__(self, output, resume=None, continue_missing=False):
         self.output, self.resume = output, resume
         self.continue_missing = continue_missing
+        self._lock = RLock()
         self._vertex_token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
         self._vertex_token_at = time.monotonic()
         self.record = {
@@ -67,10 +86,15 @@ class Client:
         self.save()
 
     def save(self):
-        write_json(self.output / "audio-editor-receipt.json", self.record)
+        with self._lock:
+            write_json(self.output / "audio-editor-receipt.json", self.record)
 
     def vertex_token(self):
         """Refresh the same OIDC identity after a long selected-audio GPU job."""
+        with self._lock:
+            return self._vertex_token_locked()
+
+    def _vertex_token_locked(self):
         if time.monotonic() - self._vertex_token_at < 2700:
             if self._vertex_token:
                 return self._vertex_token
@@ -164,6 +188,7 @@ class Client:
                 for r in saved["requests"]
                 if r["phase"] == phase
                 and r.get("finish_reason") == "STOP"
+                and r.get("status") == "received"
                 and (
                     r.get("prompt_sha256") == prompt_sha256
                     or (not rule_files and not r.get("prompt_sha256"))
@@ -173,7 +198,8 @@ class Client:
                 if len(entries) != 1:
                     raise PipelineError("Ambiguous saved response for " + phase)
                 value = json.loads((self.resume / (phase + ".json")).read_text())
-                self.record["requests"].append({**entries[0], "reused": True})
+                with self._lock:
+                    self.record["requests"].append({**entries[0], "reused": True})
                 write_json(self.output / (phase + ".json"), value)
                 (self.output / (phase + ".prompt.txt")).write_text(
                     complete_prompt, encoding="utf-8"
@@ -198,6 +224,7 @@ class Client:
                     if (
                         not row.get("phase", "").startswith(phase_base + "-")
                         or row.get("finish_reason") != "STOP"
+                        or row.get("status") != "received"
                     ):
                         continue
                     if topic_source not in row.get("prompt_rules_sources", []):
@@ -220,9 +247,10 @@ class Client:
                     value = json.loads(
                         (self.resume / (previous_phase + ".json")).read_text()
                     )
-                    self.record["requests"].append(
-                        {**row, "reused": True, "prior_rules_preserved": True}
-                    )
+                    with self._lock:
+                        self.record["requests"].append(
+                            {**row, "reused": True, "prior_rules_preserved": True}
+                        )
                     write_json(self.output / (previous_phase + ".json"), value)
                     (self.output / row["prompt_file"]).write_text(
                         prior_prompt, encoding="utf-8"
@@ -270,13 +298,16 @@ class Client:
         data = json.dumps(body, ensure_ascii=False).encode()
         if len(data) > MAX_REQUEST_BYTES:
             raise PipelineError("Bounded Gemini input exceeded")
-        row = {
-            "phase": phase,
-            "model": model,
-            "thinking_level": thinking_level,
-            "status": "submitted",
-            "started_at": time.time(),
-        }
+        row = LockedRequest(
+            self._lock,
+            {
+                "phase": phase,
+                "model": model,
+                "thinking_level": thinking_level,
+                "status": "submitted",
+                "started_at": time.time(),
+            },
+        )
         if rule_files:
             row.update(
                 prompt_rules_file=" + ".join(source["file"] for source in rule_sources),
@@ -289,9 +320,10 @@ class Client:
             prompt_file=prompt_path.name,
             prompt_sha256=prompt_sha256,
         )
-        self.record["requests"].append(row)
-        self.record["new_generation_requests"] += 1
-        self.save()
+        with self._lock:
+            self.record["requests"].append(row)
+            self.record["new_generation_requests"] += 1
+            self.save()
         tick = time.monotonic()
         try:
             endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/{model}:"
@@ -434,7 +466,7 @@ def selected_transcript(value, duration, offset=0):
 
 
 def selected_gpu_transcripts(
-    audio, clips, settings, output, resume, continue_missing, audio_sha256
+    audio, clips, settings, output, resume, continue_missing, audio_sha256, on_clip=None
 ):
     """Reuse a completed selected-only GPU result or run the existing Colab ASR worker once."""
     intervals = [{"start": clip.start, "end": clip.end} for clip in clips]
@@ -466,6 +498,13 @@ def selected_gpu_transcripts(
         if saved_state and saved_state.is_file()
         else {}
     )
+    if (
+        state.get("input_key") == key
+        and state.get("status") == "gpu_requests_or_unknown"
+    ):
+        raise PipelineError(
+            "Parallel selected GPU requests were already attempted; inspect saved part states before recovery"
+        )
     if state.get("input_key") == key and state.get("status") in {
         "gpu_requested_or_unknown",
         "complete",
@@ -496,8 +535,37 @@ def selected_gpu_transcripts(
             str(output),
         ]
         reused = False
-    completed = subprocess.run([control_python, str(helper), *arguments], check=False)
-    if completed.returncode or not result_file.is_file():
+    process = subprocess.Popen([control_python, str(helper), *arguments])
+    seen = set()
+    callback_error = None
+    while True:
+        if on_clip is not None and callback_error is None:
+            for path in sorted(output.glob("selected-gpu-clip-*.json")):
+                try:
+                    item = json.loads(path.read_text())
+                    index = item.get("clip_index")
+                    if (
+                        item.get("status") != "complete"
+                        or item.get("input_key") != key
+                        or type(index) is not int
+                        or not 1 <= index <= len(clips)
+                        or not isinstance(item.get("transcript"), dict)
+                    ):
+                        raise PipelineError("Selected GPU clip identity differs")
+                    if index not in seen:
+                        on_clip(index, item["transcript"])
+                        seen.add(index)
+                except Exception as error:
+                    callback_error = error
+                    break
+        try:
+            returncode = process.wait(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    if callback_error is not None:
+        raise callback_error
+    if returncode or not result_file.is_file():
         raise PipelineError(
             "Selected GPU ASR did not complete; saved state was retained"
         )
@@ -628,6 +696,52 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
     }
 
 
+def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
+    """Persist complete editing data before waiting for render completion."""
+    selection, transcripts = [], []
+    for index, (clip, value) in enumerate(zip(chosen, values), 1):
+        transcript, turns = selected_transcript(value, clip.end - clip.start)
+        client.record.setdefault("subtitle_display", []).append(
+            {
+                "clip": index,
+                "source_segments": len(gpu_clips[index - 1].get("segments", [])),
+                "display_segments": len(transcript.segments),
+                "overlap_policy": "union_display_neutral_color_preserve_text",
+                "transcription_unit": TRANSCRIPTION_UNIT,
+                "editing_requests": value["finishing"]["model_requests"],
+                "finishing": value["finishing"],
+            }
+        )
+        selection.append(
+            {
+                **clip.model_dump(),
+                "speaker_turns": turns,
+                "sound_effects": value["sound_effects"],
+            }
+        )
+        transcripts.append(transcript.model_dump())
+    write_json(
+        output / "selected-transcripts.json",
+        {
+            "timestamp_source": "gpu_asr",
+            "subtitle_policy": SUBTITLE_POLICY,
+            "transcription_unit": TRANSCRIPTION_UNIT,
+            "clips": transcripts,
+        },
+    )
+    write_json(
+        output / "final-selection.json",
+        {
+            "selection_basis": "audio_understanding",
+            "subtitle_policy": SUBTITLE_POLICY,
+            "source_url": url,
+            "clips": selection,
+        },
+    )
+    client.record["editing_status"] = "complete"
+    client.save()
+
+
 def plan(audio, url, output, settings, resume=None, continue_missing=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -656,13 +770,30 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         settings=settings.model_dump(),
         input_identity=identity,
     )
+    overview_pool = ThreadPoolExecutor(max_workers=2)
     try:
         topics = []
-        for index, start in enumerate(range(0, math.ceil(duration), WINDOW_SECONDS)):
-            length = min(WINDOW_SECONDS, duration - start)
+        starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
+
+        def prepare_overview(index, start):
             path = output / f"overview-{index}.ogg"
+            started = time.monotonic()
+            length = min(WINDOW_SECONDS, duration - start)
             if not path.is_file():
                 encode_audio(audio, path, start, length, "12k")
+            return path, round(time.monotonic() - started, 3)
+
+        overviews = {
+            index: overview_pool.submit(prepare_overview, index, start)
+            for index, start in enumerate(starts)
+        }
+        for index, start in enumerate(starts):
+            length = min(WINDOW_SECONDS, duration - start)
+            path, prepare_seconds = overviews[index].result()
+            client.record["timings"].setdefault(
+                "overview_preparation_seconds", []
+            ).append(prepare_seconds)
+            client.save()
             value, _ = client.generate(
                 f"topics-{index}",
                 "今回の全体把握用音声窓について話題区間だけを返します。"
@@ -759,72 +890,101 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
         )
-        gpu_result, gpu_reused = selected_gpu_transcripts(
-            audio,
-            chosen,
-            settings,
-            output,
-            resume,
-            continue_missing,
-            identity["audio_sha256"],
-        )
-        gpu_clips = gpu_result.get("clips")
-        if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
-            raise PipelineError(
-                "Selected GPU transcripts do not match the chosen topics"
-            )
-        client.record["selected_gpu_asr"] = {
-            "recognizer": gpu_result.get("recognizer"),
-            "gpu_request_id": gpu_result.get("gpu_request_id"),
-            "reused": gpu_reused,
-            "selected_topics": len(gpu_clips),
-            "full_source_asr": False,
-        }
-        client.save()
-        selection, transcripts = [], []
-        for index, clip in enumerate(chosen, 1):
-            value = clean_selected_clip(
-                client, gpu_clips[index - 1], index, clip, glossary
-            )
-            transcript, turns = selected_transcript(value, clip.end - clip.start)
-            client.record.setdefault("subtitle_display", []).append(
-                {
-                    "clip": index,
-                    "source_segments": len(gpu_clips[index - 1].get("segments", [])),
-                    "display_segments": len(transcript.segments),
-                    "overlap_policy": "union_display_neutral_color_preserve_text",
-                    "transcription_unit": TRANSCRIPTION_UNIT,
-                    "editing_requests": value["finishing"]["model_requests"],
-                    "finishing": value["finishing"],
+        # A completed ASR clip releases its GPU before notifying this process.
+        # The next queued clip can then acquire that GPU while cleanup begins.
+        streaming = os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true"
+        renderer = None
+        if streaming:
+            from .streaming_render import StreamingRenderer
+
+            renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"])
+        cleanup_futures = {}
+        subtitle_started = time.monotonic()
+        client.vertex_token()
+        try:
+            with ThreadPoolExecutor(max_workers=len(chosen)) as cleanup_pool:
+
+                def cleanup_one(index, raw):
+                    clip = chosen[index - 1]
+                    value = clean_selected_clip(client, raw, index, clip, glossary)
+                    if renderer is not None:
+                        transcript, turns = selected_transcript(
+                            value, clip.end - clip.start
+                        )
+                        renderer.enqueue(
+                            index,
+                            {
+                                "transcript": transcript.model_dump(),
+                                "turns": turns,
+                                "sound_effects": value["sound_effects"],
+                            },
+                        )
+                    return value
+
+                def on_clip(index, raw):
+                    if index not in cleanup_futures:
+                        cleanup_futures[index] = cleanup_pool.submit(
+                            cleanup_one, index, raw
+                        )
+
+                gpu_result, gpu_reused = selected_gpu_transcripts(
+                    audio,
+                    chosen,
+                    settings,
+                    output,
+                    resume,
+                    continue_missing,
+                    identity["audio_sha256"],
+                    on_clip=on_clip,
+                )
+                gpu_clips = gpu_result.get("clips")
+                if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
+                    raise PipelineError(
+                        "Selected GPU transcripts do not match the chosen topics"
+                    )
+                for index, raw in enumerate(gpu_clips, 1):
+                    on_clip(index, raw)
+                values = [
+                    cleanup_futures[index].result()
+                    for index in range(1, len(chosen) + 1)
+                ]
+                with client._lock:
+                    subtitle_rows = [
+                        row
+                        for row in client.record["requests"]
+                        if row.get("phase", "").startswith("transcript-")
+                        and not row.get("reused")
+                    ]
+                    if subtitle_rows and all(
+                        row.get("finished_at") for row in subtitle_rows
+                    ):
+                        client.record["timings"]["subtitle_request_wall_seconds"] = (
+                            round(
+                                max(row["finished_at"] for row in subtitle_rows)
+                                - min(row["started_at"] for row in subtitle_rows),
+                                3,
+                            )
+                        )
+                client.record["selected_gpu_asr"] = {
+                    "recognizer": gpu_result.get("recognizer"),
+                    "gpu_request_id": gpu_result.get("gpu_request_id"),
+                    "gpu_parts": gpu_result.get("gpu_parts", 1),
+                    "reused": gpu_reused,
+                    "selected_topics": len(gpu_clips),
+                    "full_source_asr": False,
                 }
-            )
-            client.save()
-            selection.append(
-                {
-                    **clip.model_dump(),
-                    "speaker_turns": turns,
-                    "sound_effects": value["sound_effects"],
-                }
-            )
-            transcripts.append(transcript.model_dump())
-        write_json(
-            output / "selected-transcripts.json",
-            {
-                "timestamp_source": "gpu_asr",
-                "subtitle_policy": SUBTITLE_POLICY,
-                "transcription_unit": TRANSCRIPTION_UNIT,
-                "clips": transcripts,
-            },
-        )
-        write_json(
-            output / "final-selection.json",
-            {
-                "selection_basis": "audio_understanding",
-                "subtitle_policy": SUBTITLE_POLICY,
-                "source_url": url,
-                "clips": selection,
-            },
-        )
+                save_selected_outputs(output, url, chosen, gpu_clips, values, client)
+                if renderer is not None:
+                    renderer.finish()
+        finally:
+            try:
+                if renderer is not None:
+                    renderer.close()
+            finally:
+                client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
+                    time.monotonic() - subtitle_started, 3
+                )
+                client.save()
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
@@ -836,11 +996,12 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record["status"] = "failed"
         raise
     finally:
+        overview_pool.shutdown(wait=True, cancel_futures=True)
         client.record["finished_at"] = time.time()
         client.save()
 
 
-def render(review, transcripts_file, output, settings):
+def render(review, transcripts_file, output, settings, clip_index=None):
     from .landscape import validate_selection
 
     if settings.chat_panel:
@@ -878,6 +1039,8 @@ def render(review, transcripts_file, output, settings):
         data["clips"]
     ) != len(clips):
         raise PipelineError("Mismatched selected transcripts")
+    if clip_index is not None and not 1 <= clip_index <= len(clips):
+        raise PipelineError("Requested clip is outside the saved selection")
     output.mkdir(parents=True, exist_ok=True)
     (output / "clips").mkdir(exist_ok=True)
     ranges = output.parent / "audio-understanding-source-ranges"
@@ -890,6 +1053,8 @@ def render(review, transcripts_file, output, settings):
     rows = []
     try:
         for index, (clip, raw) in enumerate(zip(clips, data["clips"]), 1):
+            if clip_index is not None and index != clip_index:
+                continue
             clip_settings = settings.model_copy(
                 update={
                     "caption_emotions": settings.caption_emotions
@@ -967,7 +1132,7 @@ def render(review, transcripts_file, output, settings):
         write_json(
             output / "manifest.json",
             {
-                "status": "complete",
+                "status": "clip_rendered" if clip_index is not None else "complete",
                 "rendered": rows,
                 "reused_clips": sum(row.get("reused") is True for row in rows),
                 "newly_rendered_clips": sum(
@@ -1002,6 +1167,7 @@ def main():
     )
     parser.add_argument("--review", type=Path)
     parser.add_argument("--transcripts", type=Path)
+    parser.add_argument("--clip-index", type=int)
     parser.add_argument(
         "--clips", type=int, help="Advisory target count for topic selection"
     )
@@ -1033,7 +1199,9 @@ def main():
         )
     else:
         try:
-            render(args.review, args.transcripts, args.output, settings)
+            render(
+                args.review, args.transcripts, args.output, settings, args.clip_index
+            )
         except Exception as error:
             pipeline.record_failure(args.output, error, "render")
             message = (
