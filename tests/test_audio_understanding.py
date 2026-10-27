@@ -5,6 +5,7 @@ import urllib.error
 import pytest
 
 from clipforge import audio_understanding as route, storage
+from clipforge import transcribe_pipeline
 from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
@@ -66,11 +67,8 @@ def planned(tmp_path, monkeypatch):
             "sound_effects": [],
         }, {}
 
-    def selected_gpu(
-        audio, clips, settings, output, resume, missing, sha, on_clip=None
-    ):
-        parts = [
-            {
+    def selected_transcribe(client, audio, clip, index, sha):
+        return {
                 "segments": [
                     {
                         "start": 0.5,
@@ -79,20 +77,15 @@ def planned(tmp_path, monkeypatch):
                     }
                 ]
             }
-            for _ in clips
-        ]
-        for index, part in enumerate(parts, 1):
-            on_clip(index, part)
-        return {"clips": parts, "recognizer": "synthetic_parakeet"}, False
 
     monkeypatch.setattr(route.Client, "generate", generate)
-    monkeypatch.setattr(route, "selected_gpu_transcripts", selected_gpu)
+    monkeypatch.setattr(transcribe_pipeline, "transcribe_clip", selected_transcribe)
     output = tmp_path / "review"
     route.plan(audio, URL, output, Settings(aspect="16:9", height=360))
     return output, audio, calls
 
 
-def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
+def test_audio_plan_uses_only_selected_transcribe_results(planned):
     output, audio, calls = planned
     assert calls[0][0] == "topics-0" and calls[1][0] == "terminology"
     assert sorted(p for p, _, _, _, _ in calls if p.startswith("transcript-")) == [
@@ -112,7 +105,7 @@ def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
     receipt = json.loads((output / "audio-editor-receipt.json").read_text())
     assert receipt["status"] == "complete" and receipt["full_source_asr"] is False
     selected = json.loads((output / "selected-transcripts.json").read_text())
-    assert len(selected["clips"]) == 5 and selected["timestamp_source"] == "gpu_asr"
+    assert len(selected["clips"]) == 5 and selected["timestamp_source"] == "gemini_transcribe"
     assert all("ああ、そうか" in c["segments"][0]["text"] for c in selected["clips"])
     assert not (output / "focused-2.ogg").exists()
 

@@ -50,11 +50,19 @@ def word_segments(response, offset, duration):
             start = max(0, min(duration, start + offset))
             end = max(0, min(duration, end + offset))
             if end <= start:
-                if rows:
+                if rows and rows[-1].get("source_speaker") == transcription.get(
+                    "speakerLabel"
+                ):
                     rows[-1]["text"] += text
                 else:
                     untimed.append(text)
                 continue
-            rows.append({"start": start, "end": end, "text": text,
-                         "source_speaker": transcription.get("speakerLabel")})
+            rows.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": text,
+                    "source_speaker": transcription.get("speakerLabel"),
+                }
+            )
     return rows, untimed
