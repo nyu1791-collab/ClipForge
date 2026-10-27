@@ -1,6 +1,7 @@
 """Observe an existing Actions request without retrying dispatch or model work."""
 
 import json
+import re
 import subprocess
 import time
 
@@ -55,10 +56,24 @@ def wait_for_stage(stage, repository, expected_title, deadline, gh, save):
             )
         except (RuntimeError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
             # Only reads are retried. Keep the last known remote state intact.
+            denied = re.search(r"\bHTTP (401|403|429)\b", str(error))
+            if denied:
+                status = int(denied[1])
+                stage["monitor_status"] = (
+                    "rate_limited" if status == 429 else "access_denied"
+                )
+                stage["monitor_http_status"] = status
+                stage["monitor_error_type"] = type(error).__name__
+                save()
+                raise MonitoringPending(
+                    f"Monitoring paused after GitHub HTTP {status}; no resubmission"
+                ) from None
             stage["monitor_status"] = "temporarily_unavailable"
             stage["monitor_error_type"] = type(error).__name__
             result = None
         else:
+            stage.pop("monitor_http_status", None)
+            stage.pop("monitor_error_type", None)
             stage["monitor_status"] = (
                 "observing" if result else "awaiting_request_identity"
             )

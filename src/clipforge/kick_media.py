@@ -129,6 +129,18 @@ def _metadata_reason(error):
     return "invalid_metadata"
 
 
+def _metadata_failure(api_reason, page_reason):
+    failure = PipelineError(
+        "Kick VOD identity/metadata failed (api="
+        + api_reason
+        + "; page="
+        + page_reason
+        + ")"
+    )
+    failure.reasons = {"api": api_reason, "page": page_reason}
+    return failure
+
+
 class VideoMetadata(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -283,21 +295,19 @@ class KickVOD:
                 found = self._api_video()
             except PipelineError as api_error:
                 api_reason = _metadata_reason(api_error)
+                # A missing metadata endpoint can use the public VOD page.
+                # Do not turn refusals, rate limits, transport failures or
+                # contradictory identities into another retrieval attempt.
+                if api_reason != "http_404":
+                    raise _metadata_failure(api_reason, "not_attempted") from None
                 try:
                     found = self._page_video()
                     if found is None:
                         raise PipelineError("VOD identity missing or ambiguous")
                 except (PipelineError, UnicodeError, ValueError) as page_error:
-                    reasons = {"api": api_reason, "page": _metadata_reason(page_error)}
-                    failure = PipelineError(
-                        "Kick VOD identity/metadata failed (api="
-                        + reasons["api"]
-                        + "; page="
-                        + reasons["page"]
-                        + ")"
-                    )
-                    failure.reasons = reasons
-                    raise failure from None
+                    raise _metadata_failure(
+                        api_reason, _metadata_reason(page_error)
+                    ) from None
             if found is None:
                 raise PipelineError("VOD identity missing or ambiguous")
             self.metadata, self.master = found
@@ -405,26 +415,15 @@ class KickVOD:
         return self._fetch(self.session, url, limit, lock=self._session_lock)
 
     def _fetch(self, session, url, limit, *, segment=False, lock=None):
-        # These are idempotent media reads, not model submissions or workflow
-        # dispatches. Retry one transient failure, without trying another account.
-        last_status = "unavailable"
-        for attempt in range(1, 3):
-            try:
-                return self._fetch_once(session, url, limit, segment=segment, lock=lock)
-            except HTTPFailure as error:
-                last_status = error.status
-                if error.status != 429 and not 500 <= error.status <= 504:
-                    break
-                delay = retry_after(error.headers or {}, 5)
-            except self._transport_errors:
-                delay = 5
-            # Do not retry earlier than a server's requested delay, and do not
-            # keep the production waiting for an arbitrarily long cooldown.
-            if attempt == 2 or delay > 15:
-                break
-            time.sleep(delay)
+        # The production policy forbids automatically retrying media retrieval.
+        try:
+            return self._fetch_once(session, url, limit, segment=segment, lock=lock)
+        except HTTPFailure as error:
+            last_status = error.status
+        except self._transport_errors:
+            last_status = "unavailable"
         raise PipelineError(
-            f"Kick media HTTP {last_status}; failed after {attempt} attempts"
+            f"Kick media HTTP {last_status}; failed after 1 attempts"
         ) from None
 
     def _fetch_once(self, session, url, limit, *, segment, lock):

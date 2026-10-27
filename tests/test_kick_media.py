@@ -431,7 +431,7 @@ def test_api_identifies_vod_without_page_metadata(tmp_path, fake_kick):
         value.close()
 
 
-def test_page_metadata_is_used_when_api_fails(tmp_path, fake_kick):
+def test_page_metadata_is_used_when_api_endpoint_is_missing(tmp_path, fake_kick):
     data, calls = fake_kick
     data[URL] = json_ld()
     value = km.KickVOD(URL, tmp_path / "cache")
@@ -453,11 +453,13 @@ def test_page_metadata_is_used_when_api_fails(tmp_path, fake_kick):
     ],
 )
 def test_api_identity_mismatch_fails_closed(tmp_path, fake_kick, slug, source):
-    data, _ = fake_kick
-    data[URL] = NO_VIDEO_METADATA
+    data, calls = fake_kick
+    # A plausible public page must never hide contradictory API metadata.
+    data[URL] = json_ld()
     data[API] = json.dumps(api_payload(slug=slug, source=source))
     with pytest.raises(PipelineError, match="identity"):
         km.KickVOD(URL, tmp_path / "cache")
+    assert calls == [API]
 
 
 def test_api_slug_match_ignores_channel_case(tmp_path, fake_kick):
@@ -485,7 +487,7 @@ def test_page_url_match_ignores_channel_case(tmp_path, fake_kick):
 
 def test_failed_api_and_page_keep_both_safe_reason_codes(vod, tmp_path, monkeypatch):
     def api(self):
-        raise PipelineError("Kick media HTTP 403; failed after 1 attempts")
+        raise PipelineError("Kick media HTTP 404; failed after 1 attempts")
 
     def page(self):
         raise PipelineError(
@@ -496,9 +498,43 @@ def test_failed_api_and_page_keep_both_safe_reason_codes(vod, tmp_path, monkeypa
     monkeypatch.setattr(km.KickVOD, "_page_video", page)
     with pytest.raises(PipelineError) as failure:
         km.KickVOD(URL, tmp_path / "failed")
-    assert failure.value.reasons == {"api": "http_403", "page": "http_502"}
-    assert "api=http_403" in str(failure.value)
+    assert failure.value.reasons == {"api": "http_404", "page": "http_502"}
+    assert "api=http_404" in str(failure.value)
     assert "page=http_502" in str(failure.value)
+    assert "HIDDEN" not in str(failure.value)
+    assert "https://" not in str(failure.value)
+
+
+@pytest.mark.parametrize(
+    "detail,reason",
+    [
+        ("HTTP 401", "http_401"),
+        ("HTTP 403", "http_403"),
+        ("HTTP 429", "http_429"),
+        ("HTTP 500", "http_500"),
+        ("HTTP 503", "http_503"),
+        ("HTTP unavailable", "connection_error"),
+        ("VOD identity missing or ambiguous", "invalid_metadata"),
+    ],
+)
+def test_failed_api_does_not_switch_to_page_retrieval(
+    tmp_path, fake_kick, monkeypatch, detail, reason
+):
+    _, calls = fake_kick
+
+    def api(self):
+        raise PipelineError(detail + " https://private.example?secret=HIDDEN")
+
+    monkeypatch.setattr(km.KickVOD, "_api_video", api)
+    monkeypatch.setattr(
+        km.KickVOD,
+        "_page_video",
+        lambda self: pytest.fail("a failed API must not start another retrieval"),
+    )
+    with pytest.raises(PipelineError) as failure:
+        km.KickVOD(URL, tmp_path / "failed")
+    assert failure.value.reasons == {"api": reason, "page": "not_attempted"}
+    assert calls == []
     assert "HIDDEN" not in str(failure.value)
     assert "https://" not in str(failure.value)
 

@@ -370,34 +370,24 @@ def test_http_errors_close_response_and_do_not_retry(make_vod, status):
 
 
 @pytest.mark.parametrize("status", [429, 500, 501, 502, 503, 504])
-def test_transient_http_retries_are_bounded_and_release_budget(
+def test_transient_http_failure_is_not_retried_and_releases_budget(
     make_vod, monkeypatch, status
 ):
     value, state = make_vod(count=1, max_bytes=1024)
     state.statuses[0] = status
     sleeps = []
-
-    def sleep(seconds):
-        assert value.used == value._reserved == 0
-        assert value._lock.acquire(blocking=False)
-        value._lock.release()
-        sleeps.append(seconds)
-
-    monkeypatch.setattr(km.time, "sleep", sleep)
-    attempts = 2
-    with pytest.raises(
-        PipelineError, match=f"HTTP {status}; failed after {attempts} attempts"
-    ):
+    monkeypatch.setattr(km.time, "sleep", sleeps.append)
+    with pytest.raises(PipelineError, match=f"HTTP {status}; failed after 1 attempts"):
         value.segment(ROOT + "0.ts")
-    assert sleeps == [5]
-    assert state.calls == state.finished == [0] * attempts
+    assert sleeps == []
+    assert state.calls == state.finished == [0]
     assert value.used == value._reserved == 0
     assert not list(value.cache.iterdir())
 
 
 @pytest.mark.parametrize("failure", [ConnectionError, TimeoutError])
 @pytest.mark.parametrize("during_body", [False, True])
-def test_transport_retry_settles_each_attempt_and_charges_only_completed_body(
+def test_transport_failure_is_not_retried_and_releases_budget(
     make_vod, monkeypatch, failure, during_body
 ):
     value, state = make_vod(count=1, max_bytes=1024)
@@ -408,164 +398,64 @@ def test_transport_retry_settles_each_attempt_and_charges_only_completed_body(
 
     def get(url, **options):
         calls.append(url)
-        if len(calls) == 1:
-            if not during_body:
-                raise failure("synthetic connection failure")
-            response = original(url, **options)
+        if not during_body:
+            raise failure("synthetic connection failure")
+        response = original(url, **options)
 
-            def chunks():
-                yield b"Gpartial"
-                raise failure("synthetic connection failure")
+        def chunks():
+            yield b"Gpartial"
+            raise failure("synthetic connection failure")
 
-            response.iter_content = chunks
-            return response
-        return original(url, **options)
-
-    def sleep(seconds):
-        assert value.used == value._reserved == 0
-        sleeps.append(seconds)
+        response.iter_content = chunks
+        return response
 
     monkeypatch.setattr(session, "get", get)
-    monkeypatch.setattr(km.time, "sleep", sleep)
+    monkeypatch.setattr(km.time, "sleep", sleeps.append)
     try:
-        assert value.segment(ROOT + "0.ts").read_bytes() == b"G\x00"
+        with pytest.raises(
+            PipelineError, match="HTTP unavailable; failed after 1 attempts"
+        ):
+            value.segment(ROOT + "0.ts")
     finally:
         session.close()
-    assert len(calls) == 2
-    assert sleeps == [5]
+    assert len(calls) == 1 and sleeps == []
+    assert value.used == value._reserved == 0
+    assert not list(value.cache.iterdir())
+
+
+def test_failed_read_leaves_budget_and_session_available_for_a_different_read(make_vod):
+    value, state = make_vod(count=2, max_bytes=1024)
+    state.statuses[0] = 503
+    with pytest.raises(PipelineError, match="HTTP 503"):
+        value.segment(ROOT + "0.ts")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        assert pool.submit(value.segment, ROOT + "1.ts").result(timeout=5).is_file()
+        assert pool.submit(value.fetch, ROOT + "master.m3u8", 1024).result(timeout=5)
+    assert state.calls == [0, 1]
     assert value.used == 2 and value._reserved == 0
 
 
-def test_retry_wait_allows_another_thread_to_use_session_and_budget(
-    make_vod, monkeypatch
-):
-    value, state = make_vod(count=2, max_bytes=1024)
-    state.statuses[0] = 503
-
-    def sleep(seconds):
-        assert seconds == 5
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            assert pool.submit(value.segment, ROOT + "1.ts").result(timeout=5).is_file()
-            assert pool.submit(value.fetch, ROOT + "master.m3u8", 1024).result(
-                timeout=5
-            )
-        state.statuses[0] = 200
-
-    monkeypatch.setattr(km.time, "sleep", sleep)
-    assert value.segment(ROOT + "0.ts").is_file()
-    assert value.used == 4 and value._reserved == 0
-
-
-def test_retry_reserves_only_remaining_budget_after_other_download(
-    make_vod, monkeypatch
-):
-    value, state = make_vod(count=2, max_bytes=1024)
-    state.statuses[0] = [503, 200]
-    state.download = lambda index: b"G" + b"x" * (1021 if index else 1)
-
-    def sleep(seconds):
-        assert value._reserved == 0
-        assert value.segment(ROOT + "1.ts").stat().st_size == 1022
-
-    monkeypatch.setattr(km.time, "sleep", sleep)
-    assert value.segment(ROOT + "0.ts").stat().st_size == 2
-    assert value.used == 1024 and value._reserved == 0
-
-
-def test_403_is_not_retried_even_when_other_responses_would_follow(
-    make_vod, monkeypatch
-):
-    value, state = make_vod(count=1)
-    state.statuses[0] = [403, 503, 403]
-    sleeps = []
-    monkeypatch.setattr(km.time, "sleep", sleeps.append)
-    with pytest.raises(PipelineError, match="HTTP 403; failed after 1 attempts"):
-        value.segment(ROOT + "0.ts")
-    assert sleeps == []
-    assert value.used == value._reserved == 0
-
-
-@pytest.mark.parametrize(
-    "header,expected", [("2", 2), ("15", 15), ("-1", 0), ("invalid", 5), ("nan", 5)]
-)
+@pytest.mark.parametrize("header", [None, "2", "120", "invalid"])
 @pytest.mark.parametrize("status", [429, 503])
-def test_retry_after_controls_wait(make_vod, monkeypatch, header, expected, status):
+def test_retry_after_never_triggers_media_resubmission(
+    make_vod, monkeypatch, header, status
+):
     value, _ = make_vod(count=1)
     calls, sleeps, closed = [], [], []
 
     def get(url, **options):
         calls.append(url)
         return SimpleNamespace(
-            status_code=status if len(calls) == 1 else 200,
-            headers={"Retry-After": header},
-            iter_content=lambda: [b"synthetic"],
+            status_code=status,
+            headers={} if header is None else {"Retry-After": header},
             close=lambda: closed.append(True),
         )
 
     monkeypatch.setattr(value.session, "get", get)
     monkeypatch.setattr(km.time, "sleep", sleeps.append)
-    assert value.fetch(ROOT + "synthetic?private=synthetic", 1024) == b"synthetic"
-    assert sleeps == [expected] and len(closed) == 2
-
-
-@pytest.mark.parametrize("status", [429, 503])
-def test_long_retry_after_is_not_ignored_or_waited_out(make_vod, monkeypatch, status):
-    value, _ = make_vod(count=1)
-    calls, sleeps = [], []
-
-    def get(url, **options):
-        calls.append(url)
-        return SimpleNamespace(
-            status_code=status, headers={"Retry-After": "120"}, close=lambda: None
-        )
-
-    monkeypatch.setattr(value.session, "get", get)
-    monkeypatch.setattr(km.time, "sleep", sleeps.append)
     with pytest.raises(PipelineError, match=f"HTTP {status}; failed after 1 attempts"):
-        value.fetch(ROOT + "synthetic", 1024)
-    assert len(calls) == 1 and sleeps == []
-
-
-def test_transient_error_with_missing_headers_can_recover(make_vod, monkeypatch):
-    value, _ = make_vod(count=1)
-    calls, sleeps = [], []
-
-    def get(url, **options):
-        calls.append(url)
-        return SimpleNamespace(
-            status_code=503 if len(calls) == 1 else 200,
-            headers=None,
-            iter_content=lambda: [b"synthetic"],
-            close=lambda: None,
-        )
-
-    monkeypatch.setattr(value.session, "get", get)
-    monkeypatch.setattr(km.time, "sleep", sleeps.append)
-    assert value.fetch(ROOT + "synthetic", 1024) == b"synthetic"
-    assert len(calls) == 2 and sleeps == [5]
-
-
-def test_metadata_retry_wait_does_not_hold_shared_session_lock(make_vod, monkeypatch):
-    value, _ = make_vod(count=1)
-    calls = []
-
-    def get(url, **options):
-        calls.append(url)
-        return SimpleNamespace(
-            status_code=503 if len(calls) == 1 else 200,
-            headers={},
-            iter_content=lambda: [b"synthetic"],
-            close=lambda: None,
-        )
-
-    def sleep(seconds):
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            assert pool.submit(value.fetch, ROOT + "other", 1024).result(timeout=5)
-
-    monkeypatch.setattr(value.session, "get", get)
-    monkeypatch.setattr(km.time, "sleep", sleep)
-    assert value.fetch(ROOT + "synthetic", 1024) == b"synthetic"
-    assert len(calls) == 3
+        value.fetch(ROOT + "synthetic?private=synthetic", 1024)
+    assert len(calls) == len(closed) == 1 and sleeps == []
 
 
 def test_retry_after_accepts_http_date(monkeypatch):
@@ -573,7 +463,7 @@ def test_retry_after_accepts_http_date(monkeypatch):
     assert km.retry_after({"Retry-After": "Thu, 01 Jan 1970 00:00:30 GMT"}, 5) == 30
 
 
-def test_retry_failure_keeps_last_status_without_url_or_exception_detail(
+def test_http_failure_keeps_status_without_url_or_exception_detail(
     make_vod, monkeypatch
 ):
     value, _ = make_vod(count=1)
@@ -581,18 +471,16 @@ def test_retry_failure_keeps_last_status_without_url_or_exception_detail(
 
     def get(url, **options):
         calls.append(url)
-        if len(calls) > 1:
-            raise TimeoutError(url)
         return SimpleNamespace(status_code=503, headers={}, close=lambda: None)
 
     monkeypatch.setattr(value.session, "get", get)
-    monkeypatch.setattr(km.time, "sleep", lambda seconds: None)
     with pytest.raises(PipelineError) as caught:
         value.fetch(ROOT + "synthetic?private=synthetic", 1024)
-    assert str(caught.value) == "Kick media HTTP 503; failed after 2 attempts"
+    assert str(caught.value) == "Kick media HTTP 503; failed after 1 attempts"
+    assert len(calls) == 1
 
 
-def test_transport_exhaustion_reports_no_http_response(make_vod, monkeypatch):
+def test_transport_failure_reports_no_http_response_or_url(make_vod, monkeypatch):
     value, _ = make_vod(count=1)
     calls, sleeps = [], []
 
@@ -604,8 +492,8 @@ def test_transport_exhaustion_reports_no_http_response(make_vod, monkeypatch):
     monkeypatch.setattr(km.time, "sleep", sleeps.append)
     with pytest.raises(PipelineError) as caught:
         value.fetch(ROOT + "synthetic?private=synthetic", 1024)
-    assert str(caught.value) == "Kick media HTTP unavailable; failed after 2 attempts"
-    assert len(calls) == 2 and sleeps == [5]
+    assert str(caught.value) == "Kick media HTTP unavailable; failed after 1 attempts"
+    assert len(calls) == 1 and sleeps == []
 
 
 def test_invalid_transport_stream_is_rejected_and_charged(make_vod):
