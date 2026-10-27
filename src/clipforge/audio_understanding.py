@@ -1395,7 +1395,13 @@ def main():
         finally:
             vod.close()
     elif args.mode == "plan":
-        if args.config.name == "config.landscape-trial-finish.example.json":
+        if args.config.name == "config.landscape-low-evaluation.example.json":
+            if not args.continue_missing:
+                raise PipelineError("Saved trial evaluation requires continue-missing")
+            from .low_evaluation import run as run_low_evaluation
+
+            run_low_evaluation(args.url, args.output, args.resume_from)
+        elif args.config.name == "config.landscape-trial-finish.example.json":
             if not args.continue_missing:
                 raise PipelineError("Finishing the transcription trial requires continue-missing")
             from .finish_transcribe_trial import finish_trial
