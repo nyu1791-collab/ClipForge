@@ -35,7 +35,7 @@ def shard_editorial_tag(parent, indices):
 
 
 class StreamingRenderer:
-    """Queue ready clips on the next free GPU; coalesce up to two per runtime."""
+    """Queue each ready clip on the next free GPU, shared with selected ASR."""
 
     def __init__(self, output, url, clips, settings):
         self.output = output
@@ -53,6 +53,7 @@ class StreamingRenderer:
         self.lock = threading.Lock()
         self.stop_monitor = threading.Event()
         self.reported = set()
+        self.enqueue_times = {}
         self.queue = queue.Queue()
         self.errors = []
         self.stopping = False
@@ -157,6 +158,8 @@ class StreamingRenderer:
             self.stop_monitor.wait(10)
 
     def enqueue(self, index, value):
+        with self.lock:
+            self.enqueue_times[index] = time.monotonic()
         self.queue.put((index, value))
 
     def _consume(self, worker_index):
@@ -172,16 +175,9 @@ class StreamingRenderer:
             started = time.monotonic()
             try:
                 with gpu_slot("render", control_state) as lease:
-                    try:
-                        other = self.queue.get(timeout=0.5)
-                    except queue.Empty:
-                        other = None
-                    else:
-                        if other is None:
-                            self.queue.task_done()
-                            self.queue.put(None)
-                        else:
-                            items.append(other)
+                    now = time.monotonic()
+                    with self.lock:
+                        queued = self.enqueue_times.pop(item[0], started)
                     print(
                         json.dumps(
                             {
@@ -189,11 +185,27 @@ class StreamingRenderer:
                                 "clips": [index for index, _ in items],
                                 "gpu_slot": lease.slot_index + 1,
                                 "status": "starting",
+                                "queue_wait_seconds": round(started - queued, 2),
+                                "gpu_slot_wait_seconds": round(now - started, 2),
                             }
                         ),
                         flush=True,
                     )
                     self.render(worker_index, dict(items), control_state, lease)
+                    print(
+                        json.dumps(
+                            {
+                                "stage": "render",
+                                "clips": [item[0]],
+                                "gpu_slot": lease.slot_index + 1,
+                                "status": "finished",
+                                "slot_elapsed_seconds": round(
+                                    time.monotonic() - now, 2
+                                ),
+                            }
+                        ),
+                        flush=True,
+                    )
             except Exception as error:
                 with self.lock:
                     self.errors.append(type(error).__name__)

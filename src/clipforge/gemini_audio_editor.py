@@ -140,7 +140,13 @@ def prepare_selected_audio(source, clips, target, gap_seconds=1):
     process(cmd, timeout=900, stage="gemini-audio-input-and-merge")
 
 
-def encode_audio(source, target, start, duration, bitrate):
+def encode_audio(source, target, start, duration, bitrate, *, speech_fast=False):
+    # Overview windows contain speech and are large enough that libopus's default
+    # highest-complexity encoder can dominate the critical path. The same bitrate,
+    # sample rate and container are retained; this is not a stream-copy of AAC into Ogg.
+    opus_options = (
+        ["-application", "voip", "-compression_level", "3"] if speech_fast else []
+    )
     process(
         [
             "ffmpeg",
@@ -163,6 +169,7 @@ def encode_audio(source, target, start, duration, bitrate):
             "libopus",
             "-b:a",
             bitrate,
+            *opus_options,
             target,
         ],
         timeout=900,

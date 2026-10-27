@@ -7,6 +7,8 @@ from pathlib import Path
 import subprocess
 import uuid
 
+from .private_diagnostics import sanitized_tail
+
 
 # Interval ends may exceed a probed duration by millisecond rounding; accept up to this many seconds.
 TIME_TOLERANCE = 0.01
@@ -73,13 +75,34 @@ def failure_fields(error):
 
 def process(command, timeout=180, stage=None, cwd=None):
     timed_out = False
+    timeout_stderr = None
     try:
         result = subprocess.run(
             [str(c) for c in command], capture_output=True, timeout=timeout, cwd=cwd
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
         # Handled outside the except block: TimeoutExpired carries the full command line.
         timed_out = True
+        timeout_stderr = error.stderr
+    diagnostic_dir = os.environ.get("CLIPFORGE_PRIVATE_DIAGNOSTIC_DIR")
+    stderr = timeout_stderr if timed_out else result.stderr
+    if diagnostic_dir and stderr:
+        # This path is set only for a Colab render, inside its private result
+        # bundle. Public Actions logs continue to contain only stable error codes.
+        try:
+            write_json(
+                Path(diagnostic_dir) / ("command-" + uuid.uuid4().hex + ".json"),
+                {
+                    "stage": stage,
+                    "executable": Path(str(command[0])).name,
+                    "timed_out": timed_out,
+                    "returncode": None if timed_out else result.returncode,
+                    "stderr_tail": sanitized_tail(stderr),
+                },
+            )
+        except OSError:
+            # Preserve the original error even if diagnostics cannot be saved.
+            pass
     if timed_out:
         raise command_error(command, stage, timed_out=True)
     if result.returncode:
