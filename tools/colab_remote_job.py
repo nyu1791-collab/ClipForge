@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
@@ -26,6 +27,19 @@ from colab_bundle import ReleaseBundles, digest
 ROOT = Path("/content/ClipForge")
 WORK = Path("/content/clipforge-job")
 MAX_PART_BYTES = 2 * 1024**3
+sys.path.insert(0, str(ROOT / "src"))
+from clipforge.private_diagnostics import sanitized_tail  # noqa: E402
+
+
+def save_diagnostic(path, record):
+    """Write only to the private result, and never mask the original failure."""
+    try:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        path.chmod(0o600)
+    except OSError:
+        pass
 
 
 @contextmanager
@@ -113,19 +127,45 @@ def publish_result(bundles, payload, output, report, timings):
 
 
 def command(arguments, environment, name, timeout=4800):
-    result = subprocess.run(
-        arguments,
-        cwd=ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    diagnostic_dir = environment.get("CLIPFORGE_PRIVATE_DIAGNOSTIC_DIR")
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        if diagnostic_dir:
+            save_diagnostic(
+                Path(diagnostic_dir) / (name + "-process.json"),
+                {
+                    "command": name,
+                    "timed_out": True,
+                    "stderr_tail": sanitized_tail(
+                        error.stderr, environment=environment
+                    ),
+                },
+            )
+        raise RuntimeError(name + " timed out") from None
     path = WORK / (name + ".log")
     path.write_text(result.stdout + result.stderr)
     path.chmod(0o600)
     if result.returncode:
-        raise RuntimeError(name + " failed")
+        if diagnostic_dir:
+            save_diagnostic(
+                Path(diagnostic_dir) / (name + "-process.json"),
+                {
+                    "command": name,
+                    "returncode": result.returncode,
+                    "stderr_tail": sanitized_tail(
+                        result.stderr, environment=environment
+                    ),
+                },
+            )
+        raise RuntimeError(name + " failed (exit " + str(result.returncode) + ")")
     return result.stdout
 
 
@@ -376,11 +416,25 @@ def render_shard(payload, output, report, stage_env, records, selection, config)
             str(index),
         ]
         invocation = 'source tools/colab_cache_env.sh && exec "$@"'
-        command(
-            ["bash", "-c", invocation, "clipforge-stage", *arguments],
-            stage_env,
-            "render-clip-" + str(index),
-        )
+        diagnostics = output / "diagnostics" / ("clip-%03d" % index)
+        render_env = {**stage_env, "CLIPFORGE_PRIVATE_DIAGNOSTIC_DIR": str(diagnostics)}
+        try:
+            command(
+                ["bash", "-c", invocation, "clipforge-stage", *arguments],
+                render_env,
+                "render-clip-" + str(index),
+            )
+        except Exception as error:
+            save_diagnostic(
+                diagnostics / "exception.json",
+                {
+                    "error_type": type(error).__name__,
+                    "traceback_tail": sanitized_tail(
+                        traceback.format_exc(), environment=render_env
+                    ),
+                },
+            )
+            raise
         shutil.copytree(records, part / "audio-review")
         (part / "request-receipt.json").write_text(
             json.dumps(
@@ -478,6 +532,7 @@ def render_stage(payload, output, report, timings, environment):
     stage = payload["stage"]
     setup_environment = {
         **environment,
+        "CLIPFORGE_PRIVATE_DIAGNOSTIC_DIR": str(output / "diagnostics" / "setup"),
         "CLIPFORGE_RENDER_CONFIG": stage.get("config_file")
         or "config.landscape.example.json",
         "CLIPFORGE_SOURCE_URL": json.loads(stage["review"]).get("source_url", ""),
@@ -515,7 +570,11 @@ def render_stage(payload, output, report, timings, environment):
         if not re.fullmatch(r"config\.[a-z0-9-]+\.example\.json", stage["config_file"]):
             raise RuntimeError("Invalid configuration file")
         arguments += ["--config", stage["config_file"]]
-    stage_env = {**environment, "GH_TOKEN": payload["github_token"]}
+    stage_env = {
+        **environment,
+        "GH_TOKEN": payload["github_token"],
+        "CLIPFORGE_PRIVATE_DIAGNOSTIC_DIR": str(output / "diagnostics" / "render"),
+    }
     direct_audio = False
     if payload.get("audio_review_release"):
         tag = payload["audio_review_release"]
@@ -721,6 +780,28 @@ def main():
     except Exception as error:
         failed = True
         report["error_type"] = type(error).__name__
+        private_environment = {
+            **environment,
+            "GH_TOKEN": payload.get("github_token", ""),
+            "YOUTUBE_COOKIES_B64": payload.get("youtube_cookies_b64", ""),
+        }
+        save_diagnostic(
+            output / "diagnostics" / "worker-exception.json",
+            {
+                "stage": report.get("stage"),
+                "error_type": type(error).__name__,
+                "traceback_tail": sanitized_tail(
+                    traceback.format_exc(), environment=private_environment
+                ),
+            },
+        )
+        print(
+            "CLIPFORGE_DIAG_STAGE_"
+            + str(report.get("stage", "unknown")).replace("-", "_")
+            + "_"
+            + type(error).__name__,
+            flush=True,
+        )
     finally:
         if not publish_result(bundles, payload, output, report, timings):
             failed = True

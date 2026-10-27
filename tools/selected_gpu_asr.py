@@ -354,7 +354,16 @@ def run(source, plan_file, output):
         if not pending:
             pending = str(register_pending(plan["input_key"]))
         try:
+            slot_wait_started = time.monotonic()
             with gpu_slot("asr", work / "control", pending=pending) as lease:
+                state.update(
+                    gpu_slot=lease.slot_index + 1,
+                    gpu_slot_acquired_at=time.time(),
+                    gpu_slot_wait_seconds=round(
+                        time.monotonic() - slot_wait_started, 3
+                    ),
+                )
+                write_json(state_path, state)
                 try:
                     print(
                         json.dumps(
@@ -374,6 +383,8 @@ def run(source, plan_file, output):
                     if controller.state_path.exists():
                         controller.stop()
                     lease.confirm_release()
+                    state["gpu_slot_released_at"] = time.time()
+                    write_json(state_path, state)
         finally:
             Path(pending).unlink(missing_ok=True)
         raw = json.loads((work / "result/transcript.json").read_text())

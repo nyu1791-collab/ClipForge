@@ -1047,6 +1047,9 @@ class AllocationWaitTests(unittest.TestCase):
     ):
         from colab_cli.client import TooManyAssignmentsError
 
+        # Waiting is opt-in; exercise the production setting instead of relying
+        # on the zero-wait default used by other control operations.
+        os.environ["CLIPFORGE_ALLOCATION_WAIT_SECONDS"] = "600"
         for mode in ("asr", "audio-stage"):
             with self.subTest(mode=mode):
                 pool = control.colab_pool(mode)

@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from threading import RLock
+from threading import Event, RLock
 
 from . import asr, audio_first, pipeline
 from .caption_emotions import annotation
@@ -771,6 +771,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         input_identity=identity,
     )
     overview_pool = ThreadPoolExecutor(max_workers=2)
+    topic_pool = None
     try:
         topics = []
         starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
@@ -778,31 +779,66 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         def prepare_overview(index, start):
             path = output / f"overview-{index}.ogg"
             started = time.monotonic()
+            started_at = time.time()
             length = min(WINDOW_SECONDS, duration - start)
             if not path.is_file():
-                encode_audio(audio, path, start, length, "12k")
-            return path, round(time.monotonic() - started, 3)
+                encode_audio(audio, path, start, length, "12k", speech_fast=True)
+            return path, {
+                "index": index,
+                "source_start_seconds": start,
+                "source_duration_seconds": length,
+                "started_at": started_at,
+                "finished_at": time.time(),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+            }
 
         overviews = {
             index: overview_pool.submit(prepare_overview, index, start)
             for index, start in enumerate(starts)
         }
+        # Each audio window is independent. Start its request as soon as that
+        # window is ready rather than waiting for previous model responses.
+        # The limit is bounded and does not create extra windows or retries.
+        cancelled = Event()
+
+        def request_overview(index, start):
+            length = min(WINDOW_SECONDS, duration - start)
+            try:
+                path, preparation = overviews[index].result()
+                if cancelled.is_set():
+                    raise PipelineError("Another overview request failed")
+                value, _ = client.generate(
+                    f"topics-{index}",
+                    "今回の全体把握用音声窓について話題区間だけを返します。"
+                    f"この窓は元配信の{start}秒から{start + length}秒で、添付音声の長さは{length}秒です。"
+                    f"採用候補の長さの目安は{settings.min_seconds}〜{settings.max_seconds}秒ですが、短くても長くても自然な話題の区切りを優先してください。"
+                    "JSON {audio_access:'heard',topics:[{start:秒,end:秒,title,reason,confidence:0から1}]}。"
+                    "start/endは添付した今回の音声窓の先頭を0秒とする秒数です。",
+                    path,
+                )
+                if value.get("audio_access") != "heard":
+                    raise PipelineError("Overview audio unavailable")
+                return value, preparation
+            except Exception:
+                cancelled.set()
+                raise
+
+        topic_pool = ThreadPoolExecutor(max_workers=min(3, len(starts)))
+        topic_futures = {
+            index: topic_pool.submit(request_overview, index, start)
+            for index, start in enumerate(starts)
+        }
         for index, start in enumerate(starts):
             length = min(WINDOW_SECONDS, duration - start)
-            path, prepare_seconds = overviews[index].result()
-            client.record["timings"].setdefault(
-                "overview_preparation_seconds", []
-            ).append(prepare_seconds)
-            client.save()
-            value, _ = client.generate(
-                f"topics-{index}",
-                "今回の全体把握用音声窓について話題区間だけを返します。"
-                f"この窓は元配信の{start}秒から{start + length}秒で、添付音声の長さは{length}秒です。"
-                f"採用候補の長さの目安は{settings.min_seconds}〜{settings.max_seconds}秒ですが、短くても長くても自然な話題の区切りを優先してください。"
-                "JSON {audio_access:'heard',topics:[{start:秒,end:秒,title,reason,confidence:0から1}]}。"
-                "start/endは添付した今回の音声窓の先頭を0秒とする秒数です。",
-                path,
-            )
+            value, preparation = topic_futures[index].result()
+            with client._lock:
+                client.record["timings"].setdefault(
+                    "overview_preparation_seconds", []
+                ).append(preparation["elapsed_seconds"])
+                client.record["timings"].setdefault("overview_windows", []).append(
+                    preparation
+                )
+                client.save()
             if value.get("audio_access") != "heard":
                 raise PipelineError("Overview audio unavailable")
             for row in value.get("topics", []):
@@ -996,6 +1032,8 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record["status"] = "failed"
         raise
     finally:
+        if topic_pool is not None:
+            topic_pool.shutdown(wait=True, cancel_futures=True)
         overview_pool.shutdown(wait=True, cancel_futures=True)
         client.record["finished_at"] = time.time()
         client.save()
