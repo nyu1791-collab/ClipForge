@@ -134,6 +134,8 @@ class Client:
         rule_parts, rule_sources = [], []
         for path in rule_files:
             text = path.read_text(encoding="utf-8").strip()
+            if phase.startswith("transcript-") and self.record.get("timestamp_source") == "gemini_transcribe":
+                text = text.replace("GPU文字起こし", "音声文字起こし").replace("GPUの文字起こし", "音声文字起こし").replace("GPU時刻", "文字起こし時刻").replace("GPUが文字起こし", "Transcribeが文字起こし")
             if not text:
                 raise PipelineError("Required Gemini rulebook is empty: " + path.name)
             rule_parts.append(text)
@@ -625,7 +627,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
     ]
     request = {
         "subtitle_policy": SUBTITLE_POLICY,
-        "task": "添付音声はこの採用区間の先頭を0秒とする。GPU文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
+        "task": "添付音声はこの採用区間の先頭を0秒とする。文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
         "topic_context": {"title": clip.title, "reason": clip.reason},
         "glossary": glossary,
         "source_segments": numbered,
@@ -1445,7 +1447,13 @@ def main():
         finally:
             vod.close()
     elif args.mode == "plan":
-        if args.config.name == "config.landscape-reprocess.example.json":
+        if args.config.name == "config.landscape-trial-finish.example.json":
+            if not args.continue_missing:
+                raise PipelineError("Finishing the transcription trial requires continue-missing")
+            from .finish_transcribe_trial import finish_trial
+
+            finish_trial(args.url, args.output, settings, args.resume_from)
+        elif args.config.name == "config.landscape-reprocess.example.json":
             if not args.continue_missing:
                 raise PipelineError("Selected-topic reprocessing must be explicitly requested")
             reprocess_saved(args.audio, args.url, args.output, settings, args.resume_from)

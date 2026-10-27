@@ -37,11 +37,12 @@ def shard_editorial_tag(parent, indices):
 class StreamingRenderer:
     """Queue each ready clip on the next free GPU, shared with selected ASR."""
 
-    def __init__(self, output, url, clips, settings):
+    def __init__(self, output, url, clips, settings, timestamp_source="gpu_asr"):
         self.output = output
         self.url = url
         self.clips = clips
         self.settings = settings
+        self.timestamp_source = timestamp_source
         self.parent = os.environ["REQUEST_ID"]
         self.source_ref = os.environ["CLIPFORGE_SOURCE_REF"]
         self.run_id = os.environ["GITHUB_RUN_ID"]
@@ -308,7 +309,7 @@ class StreamingRenderer:
             "clips": selection,
         }
         transcript_data = {
-            "timestamp_source": "gpu_asr",
+            "timestamp_source": self.timestamp_source,
             "subtitle_policy": "meaning_preserving_cleanup_v1",
             "transcription_unit": "selected_topic",
             "clips": transcripts,
