@@ -636,6 +636,8 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
         audio=audio_path, audio_source_key=audio_source_key,
     )
+    if value.get("audio_access") != "heard":
+        raise PipelineError("Selected audio was not available to Gemini; not retried")
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.

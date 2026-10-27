@@ -37,8 +37,8 @@ def planned(tmp_path, monkeypatch):
     )
     calls = []
 
-    def generate(self, phase, prompt, audio=None, research=False):
-        calls.append((phase, prompt, research, audio))
+    def generate(self, phase, prompt, audio=None, research=False, audio_source_key=None):
+        calls.append((phase, prompt, research, audio.read_bytes() if audio else None, audio_source_key))
         if phase.startswith("topics"):
             return {
                 "audio_access": "heard",
@@ -56,6 +56,7 @@ def planned(tmp_path, monkeypatch):
         if research:
             return {"terms": []}, {}
         return {
+            "audio_access": "heard",
             "segments": [
                 {
                     "source_ids": [1],
@@ -94,17 +95,17 @@ def planned(tmp_path, monkeypatch):
 def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
     output, audio, calls = planned
     assert calls[0][0] == "topics-0" and calls[1][0] == "terminology"
-    assert sorted(p for p, _, _, _ in calls if p.startswith("transcript-")) == [
+    assert sorted(p for p, _, _, _, _ in calls if p.startswith("transcript-")) == [
         f"transcript-{i}" for i in range(1, 6)
     ]
     assert all(
         "話題区間だけを返します" in prompt
-        for p, prompt, _, _ in calls
+        for p, prompt, _, _, _ in calls
         if p.startswith("topics")
     )
     assert all(
-        "要約せず整文する" in prompt and attached is None
-        for p, prompt, _, attached in calls
+        "要約せず整文" in prompt and attached == b"synthetic opus" and audio_key
+        for p, prompt, _, attached, audio_key in calls
         if p.startswith("transcript")
     )
     assert not (audio.parent / "asr-receipt.json").exists()
