@@ -538,7 +538,9 @@ def selected_gpu_transcripts(
     process = subprocess.Popen([control_python, str(helper), *arguments])
     seen = set()
     callback_error = None
-    while True:
+
+    def notify_ready_clips():
+        nonlocal callback_error
         if on_clip is not None and callback_error is None:
             for path in sorted(output.glob("selected-gpu-clip-*.json")):
                 try:
@@ -558,11 +560,17 @@ def selected_gpu_transcripts(
                 except Exception as error:
                     callback_error = error
                     break
+
+    while True:
+        notify_ready_clips()
         try:
             returncode = process.wait(timeout=0.5)
             break
         except subprocess.TimeoutExpired:
             continue
+    # The worker can publish its last successful part between the preceding
+    # scan and process exit. Drain once more, even if another part failed.
+    notify_ready_clips()
     if callback_error is not None:
         raise callback_error
     if returncode or not result_file.is_file():
