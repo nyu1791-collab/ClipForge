@@ -1042,7 +1042,7 @@ def reprocess_saved(audio, url, output, settings, resume):
         client.save()
 
 
-def plan(audio, url, output, settings, resume=None, continue_missing=False):
+def plan(audio, url, output, settings, resume=None, continue_missing=False, transcribe_trial=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     if (output / "audio-editor-receipt.json").exists():
@@ -1207,6 +1207,12 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record["clip_safety_margins"] = margins
         if not chosen:
             raise PipelineError("No usable topic intervals were returned")
+        if transcribe_trial:
+            from .transcribe_trial import transcribe_topic
+
+            transcribe_topic(audio, chosen[0], output, client)
+            client.record.update(status="complete", timestamp_method="transcribe_word_offsets")
+            return
         client.record["topic_selection"] = {
             "requested_clips": settings.clips,
             "selected_clips": len(chosen),
@@ -1444,7 +1450,8 @@ def main():
                 raise PipelineError("Selected-topic reprocessing must be explicitly requested")
             reprocess_saved(args.audio, args.url, args.output, settings, args.resume_from)
         else:
-            plan(args.audio, args.url, args.output, settings, args.resume_from, args.continue_missing)
+            plan(args.audio, args.url, args.output, settings, args.resume_from, args.continue_missing,
+                 transcribe_trial=args.config.name == "config.landscape-transcribe-trial.example.json")
     else:
         try:
             render(
