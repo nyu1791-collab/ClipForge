@@ -634,9 +634,16 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             "segments": [
                 {
                     "source_ids": [1],
-                    "text": "整文後の字幕。省くのが明白な無意味なフィラーだけなら空文字",
+                    "text": "元の発言を保持した整文後の字幕",
                     "omit_filler": False,
                     "omit_non_speech": False,
+                    "speaker_id": "speaker_1 から speaker_6、または unknown",
+                    "confidence": "声に基づく話者判定の確信度0から1",
+                }
+            ],
+            "speaker_assignments": [
+                {
+                    "source_id": 1,
                     "speaker_id": "speaker_1 から speaker_6、または unknown",
                     "confidence": "声に基づく話者判定の確信度0から1",
                 }
@@ -649,7 +656,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 }
             ],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。原音に発話や意味のある笑い声等がなく、明らかに誤認識だけのIDはtextを空にしomit_non_speechをtrueにする。判断できない発話や一部に発話が含まれるIDは残す。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、短くて区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。声の特徴を区間全体で比較し、各元IDについてspeaker_assignmentsを別に返す。短い声も前後の同じ声と比較し、音声だけで識別できる場合はIDを付ける。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
     }
     value, _ = client.generate(
         f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
@@ -660,6 +667,28 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.
+    assignments = {}
+    ambiguous = set()
+    assignment_rows = value.get("speaker_assignments", [])
+    if isinstance(assignment_rows, list):
+        for item in assignment_rows:
+            if not isinstance(item, dict):
+                continue
+            sid = item.get("source_id")
+            if isinstance(sid, str) and sid.isascii() and sid.isdigit():
+                sid = int(sid)
+            if type(sid) is not int or not 1 <= sid <= len(source):
+                continue
+            if sid in assignments:
+                ambiguous.add(sid)
+                continue
+            speaker, confidence = item.get("speaker_id"), item.get("confidence")
+            certain = (isinstance(speaker, str) and speaker in SPEAKER_COLORS
+                       and type(confidence) in (int, float) and math.isfinite(confidence)
+                       and 0.8 <= confidence <= 1)
+            assignments[sid] = (speaker, confidence) if certain else ("unknown", 0)
+    for sid in ambiguous:
+        assignments[sid] = ("unknown", 0)
     replacements, consumed = {}, set()
     candidates = value.get("segments", [])
     if not isinstance(candidates, list):
@@ -689,14 +718,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         if any(b["start"] - a["end"] > 1.5 for a, b in zip(spans, spans[1:])):
             continue
         text = candidate.get("text")
-        if not isinstance(text, str) or (
-            not text.strip()
-            and candidate.get("omit_filler") is not True
-            and not (
-                value.get("audio_access") == "heard"
-                and candidate.get("omit_non_speech") is True
-            )
-        ):
+        if not isinstance(text, str) or not text.strip():
             continue
         speaker = candidate.get("speaker_id")
         confidence = candidate.get("confidence")
@@ -708,6 +730,18 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             and math.isfinite(confidence)
             and 0.8 <= confidence <= 1
         )
+        # Per-source voice labels survive a missing or unusable edited segment.
+        # Conflicting or unknown labels must not be merged into one voice.
+        source_speakers = [assignments[i] for i in ids if i in assignments]
+        distinct = {item[0] for item in source_speakers}
+        if len(ids) > 1 and (len(distinct - {"unknown"}) > 1 or "unknown" in distinct):
+            continue
+        if "unknown" in distinct:
+            certain = False
+        if len(source_speakers) == len(ids) and len(distinct) == 1 and "unknown" not in distinct:
+            speaker = source_speakers[0][0]
+            confidence = min(item[1] for item in source_speakers)
+            certain = True
         consumed.update(ids)
         replacements[ids[0]] = (
             {
@@ -729,13 +763,14 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             if replacements[index] is not None:
                 segments.append(replacements[index])
         elif index not in consumed:
+            speaker, confidence = assignments.get(index, ("unknown", 0))
             segments.append(
                 {
                     "start": row["start"],
                     "end": row["end"],
                     "text": row["text"],
-                    "speaker_id": "unknown",
-                    "confidence": 0,
+                    "speaker_id": speaker,
+                    "confidence": confidence,
                     "emotion": "neutral",
                     "emotion_level": 0,
                     "emotion_confidence": 0,

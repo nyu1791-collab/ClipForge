@@ -135,6 +135,7 @@ def segments(chars, start, end):
     out = []
     for members in _runs(stamps):
         words = []
+        pending = ""
         for index, (text, a, b) in enumerate(members):
             following = members[index + 1][1] if index + 1 < len(members) else b + 0.3
             first = max(start, start + a)
@@ -147,8 +148,19 @@ def segments(chars, start, end):
             first = max(round(first, 2), first_tick)
             last = min(round(last, 2), last_tick)
             if last > first:
-                words.append({"text": text, "start": first, "end": last})
-        words = [w for w in words if w["end"] > w["start"]]
+                words.append({"text": pending + text, "start": first, "end": last})
+                pending = ""
+            elif words:
+                # Several characters can share a timestamp after rounding. Keep
+                # their text with its neighbour instead of silently dropping it.
+                words[-1]["text"] += text
+            else:
+                pending += text
+        if pending:
+            if words:
+                words[-1]["text"] += pending
+            elif last_tick > first_tick:
+                words.append({"text": pending, "start": first_tick, "end": last_tick})
         if words:
             out.append(
                 {
