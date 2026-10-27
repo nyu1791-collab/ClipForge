@@ -8,7 +8,6 @@ import sys
 import time
 import urllib.error
 import urllib.parse
-import zipfile
 import uuid
 import subprocess
 
@@ -208,19 +207,17 @@ def deliver():
         headers=auth,
     ) as response:
         folder = json.load(response)
-    records = root.parent / "ClipForge-records.zip"
-    with zipfile.ZipFile(records, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(root.rglob("*")):
-            if path.is_file() and path.suffix.lower() in {
-                ".json",
-                ".srt",
-                ".ass",
-                ".txt",
-            }:
-                archive.write(path, path.relative_to(root).as_posix())
-    outputs = [(clip, f"clip-{i:02}.mp4") for i, clip in enumerate(clips, 1)] + [
-        (records, records.name)
-    ]
+    # The user requested finished videos only. Editorial text, subtitle files,
+    # source audio and diagnostic records must not be copied to Drive.
+    outputs = []
+    for i, clip in enumerate(clips, 1):
+        clip_name = clip.parent.name
+        filename = (
+            f"{clip_name}.mp4"
+            if re.fullmatch(r"clip-[0-9]{2,3}", clip_name)
+            else f"clip-{i:03}.mp4"
+        )
+        outputs.append((clip, filename))
     for path, filename in outputs:
         file_started = time.monotonic()
         expected = (
@@ -230,7 +227,7 @@ def deliver():
         )
         size = path.stat().st_size
         print("DELIVERY_STAGE=upload:" + filename, flush=True)
-        mime = "video/mp4" if path.suffix == ".mp4" else "application/zip"
+        mime = "video/mp4"
         with request(
             "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&fields=id,name,size,webViewLink",
             "POST",
