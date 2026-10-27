@@ -22,6 +22,7 @@ from clipforge.release_transfer import (
 )
 from clipforge.storage import write_json
 from clipforge.gpu_slots import clear_stopped
+from clipforge.github_cli import monitoring_block_status
 
 
 def command(args, env):
@@ -49,6 +50,11 @@ def main(collect_only=False, partial=False):
     source_ref = os.environ["CLIPFORGE_SOURCE_REF"]
     root = Path(os.environ["RUNNER_TEMP"]) / "parallel-selected-render"
     root.mkdir(mode=0o700, exist_ok=True)
+    monitor_pause = root / "monitor-pause.json"
+    if monitor_pause.exists():
+        raise RuntimeError(
+            "GitHub progress monitoring was paused; no automatic collection"
+        )
     private_repo()
     controller = Path(__file__).with_name("colab_actions.py")
     worker_ids = [
@@ -141,6 +147,7 @@ def main(collect_only=False, partial=False):
                 )
 
     errors, reported = [], set()
+    paused_status = None
     if not collect_only:
         with ThreadPoolExecutor(max_workers=len(groups)) as pool:
             pending = {pool.submit(worker, slot) for slot in range(len(groups))}
@@ -151,12 +158,23 @@ def main(collect_only=False, partial=False):
                         future.result()
                     except Exception as error:
                         errors.append(error)
+                if paused_status:
+                    continue
                 for index, identity in enumerate(worker_ids, 1):
                     if index in reported:
                         continue
                     try:
                         record = read_transfer(run_id, "clipforge-result-" + identity)
-                    except Exception:
+                    except Exception as error:
+                        status = monitoring_block_status(str(error))
+                        if status:
+                            paused_status = status
+                            write_json(monitor_pause, {"monitor_http_status": status})
+                            print(
+                                f"GitHub progress monitoring paused (HTTP {status}); no retry",
+                                flush=True,
+                            )
+                            break
                         continue
                     if (
                         record.get("request_receipt", {}).get("status")
@@ -180,6 +198,8 @@ def main(collect_only=False, partial=False):
                             % (len(reported), count, index, elapsed_text),
                             flush=True,
                         )
+    if paused_status:
+        raise RuntimeError("GitHub progress monitoring paused; no automatic collection")
     merged = root / ("merged-partial" if partial else "merged")
     merged.mkdir(mode=0o700)
     (merged / "clips").mkdir(mode=0o700)

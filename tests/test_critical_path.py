@@ -428,7 +428,8 @@ def test_colab_progress_exposes_only_known_markers(monkeypatch, capsys):
             hook(
                 {
                     "output_type": "stream",
-                    "text": "CLIPFORGE_DIAG_STAGE_render_RuntimeError",
+                    "text": "CLIPFORGE_DIAG_STAGE_render_RuntimeError\n"
+                    "CLIPFORGE_DIAG_INIT_ASR\nCLIPFORGE_DIAG_WORKER_ERROR_ValueError",
                 }
             )
             return []
@@ -437,6 +438,8 @@ def test_colab_progress_exposes_only_known_markers(monkeypatch, capsys):
     printed = capsys.readouterr().out
     assert "CLIPFORGE_BOOTSTRAP_WORKER" in printed
     assert "CLIPFORGE_DIAG_STAGE_render_RuntimeError" in printed
+    assert "CLIPFORGE_DIAG_INIT_ASR" in printed
+    assert "CLIPFORGE_DIAG_WORKER_ERROR_ValueError" in printed
     assert "private speech" not in printed
 
 

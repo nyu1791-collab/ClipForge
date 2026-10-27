@@ -5,6 +5,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -41,6 +42,9 @@ EDITORIAL_RENDER_VERSION = "editorial-render-v3"
 TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
 TRANSCRIPTION_UNIT = "selected_topic"
+FILLER_ONLY = re.compile(
+    r"[\s、。,.　]*(?:(?:え[ー〜～-]+|あ[ー〜～-]+|あの[ー〜～-]+|えっと|その[ー〜～-]+)[\s、。,.　]*)+"
+)
 
 
 def rules_file_for_phase(phase):
@@ -266,7 +270,7 @@ class Client:
             attempted = any(
                 r["phase"] == phase
                 or (
-                    phase_base.startswith("topics-")
+                    phase_base.startswith(("topics-", "transcript-"))
                     and r["phase"].startswith(phase_base + "-")
                 )
                 for r in saved["requests"]
@@ -538,7 +542,9 @@ def selected_gpu_transcripts(
     process = subprocess.Popen([control_python, str(helper), *arguments])
     seen = set()
     callback_error = None
-    while True:
+
+    def notify_ready_clips():
+        nonlocal callback_error
         if on_clip is not None and callback_error is None:
             for path in sorted(output.glob("selected-gpu-clip-*.json")):
                 try:
@@ -558,11 +564,17 @@ def selected_gpu_transcripts(
                 except Exception as error:
                     callback_error = error
                     break
+
+    while True:
+        notify_ready_clips()
         try:
             returncode = process.wait(timeout=0.5)
             break
         except subprocess.TimeoutExpired:
             continue
+    # The worker can publish its last successful part between the preceding
+    # scan and process exit. Drain once more, even if another part failed.
+    notify_ready_clips()
     if callback_error is not None:
         raise callback_error
     if returncode or not result_file.is_file():
@@ -575,7 +587,7 @@ def selected_gpu_transcripts(
     return result, reused
 
 
-def clean_selected_clip(client, raw, clip_index, clip, glossary):
+def clean_selected_clip(client, raw, clip_index, clip, glossary, speaker_audio=None):
     """Send GPU text once for cleanup and keep GPU timing for every returned phrase."""
     duration = clip.end - clip.start
     source = raw.get("segments", [])
@@ -594,11 +606,12 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
     ]
     request = {
         "subtitle_policy": SUBTITLE_POLICY,
-        "task": "以下は採用した話題をGPUで文字起こしした本文と発言時刻。音声の書き起こしは行わず、全文を前後の文脈で理解して要約せず整文する。曖昧な語は原文を保持し、入力にない内容や話者・感情を推測しない。長い無音をまたがない。字幕の開始・終了は指定された元IDからコードが引き継ぐ。",
+        "task": "以下は採用した話題をGPUで文字起こしした本文と発言時刻。全文を前後の文脈で理解して要約せず整文する。意味のある文や語句は削除しない。添付音声は声による話者判別のために使い、本文の再文字起こしや音声にない内容の追加はしない。曖昧な語は原文を保持する。字幕の開始・終了は元IDからコードが引き継ぐ。",
         "topic_context": {"title": clip.title, "reason": clip.reason},
         "glossary": glossary,
         "source_segments": numbered,
         "required_output_shape": {
+            "audio_access": "heard",
             "segments": [
                 {
                     "source_ids": [1],
@@ -613,12 +626,47 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
                     "reason": "入力文に根拠がある理由",
                 }
             ],
+            "speaker_assignments": [
+                {"source_id": 1, "speaker_id": "speaker_1", "confidence": 0.9}
+            ],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。必要な情報・元の発言順と時刻を保持し、削除は意味のない言い淀みだけ。音声根拠がないため話者色・感情の推測はしない。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。意味・発言順と時刻を保持し、削除は意味のない言い淀みだけ。speaker_assignmentsは音声で判別できる元IDだけに付け、声の出現順にspeaker_1、speaker_2とする。同時発話や不明な声はunknownとし、文脈だけで話者や感情を推測しない。異なる話者のIDは一つの字幕にまとめない。",
     }
     value, _ = client.generate(
-        f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False)
+        f"transcript-{clip_index}",
+        json.dumps(request, ensure_ascii=False),
+        audio=speaker_audio,
     )
+
+    assignments, duplicates = {}, set()
+    speaker_rows = value.get("speaker_assignments", [])
+    if (
+        speaker_audio is not None
+        and value.get("audio_access") == "heard"
+        and isinstance(speaker_rows, list)
+    ):
+        for assignment in speaker_rows:
+            if not isinstance(assignment, dict):
+                continue
+            sid = assignment.get("source_id")
+            speaker = assignment.get("speaker_id")
+            confidence = assignment.get("confidence")
+            if type(sid) is not int or not 1 <= sid <= len(source):
+                continue
+            if sid in assignments or sid in duplicates:
+                assignments.pop(sid, None)
+                duplicates.add(sid)
+                continue
+            if (
+                isinstance(speaker, str)
+                and speaker in SPEAKER_COLORS
+                and type(confidence) in (int, float)
+                and math.isfinite(confidence)
+                and 0.8 <= confidence <= 1
+            ):
+                assignments[sid] = (speaker, confidence)
+            else:
+                assignments[sid] = ("unknown", 0)
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.
@@ -648,6 +696,9 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
         if any(i in consumed for i in ids):
             continue
         spans = [source[i - 1] for i in ids]
+        voices = {assignments.get(i, ("unknown", 0))[0] for i in ids}
+        if len(voices) > 1:
+            continue
         if any(b["start"] - a["end"] > 1.5 for a, b in zip(spans, spans[1:])):
             continue
         text = candidate.get("text")
@@ -655,14 +706,23 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
             not text.strip() and candidate.get("omit_filler") is not True
         ):
             continue
+        # A mistaken empty model response must never delete a substantive utterance.
+        # Keep ambiguous interjections and punctuation that could express emotion.
+        if not text.strip() and not all(
+            FILLER_ONLY.fullmatch(str(span.get("text", ""))) for span in spans
+        ):
+            continue
         consumed.update(ids)
+        speaker, confidence = assignments.get(ids[0], ("unknown", 0))
+        if speaker != "unknown":
+            confidence = min(assignments[i][1] for i in ids)
         replacements[ids[0]] = (
             {
                 "start": spans[0]["start"],
                 "end": spans[-1]["end"],
                 "text": text,
-                "speaker_id": "unknown",
-                "confidence": 0,
+                "speaker_id": speaker,
+                "confidence": confidence,
                 "emotion": "neutral",
                 "emotion_level": 0,
                 "emotion_confidence": 0,
@@ -676,13 +736,14 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
             if replacements[index] is not None:
                 segments.append(replacements[index])
         elif index not in consumed:
+            speaker, confidence = assignments.get(index, ("unknown", 0))
             segments.append(
                 {
                     "start": row["start"],
                     "end": row["end"],
                     "text": row["text"],
-                    "speaker_id": "unknown",
-                    "confidence": 0,
+                    "speaker_id": speaker,
+                    "confidence": confidence,
                     "emotion": "neutral",
                     "emotion_level": 0,
                     "emotion_confidence": 0,
@@ -948,7 +1009,24 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
 
                 def cleanup_one(index, raw):
                     clip = chosen[index - 1]
-                    value = clean_selected_clip(client, raw, index, clip, glossary)
+                    speaker_audio = None
+                    if raw.get("segments"):
+                        speaker_audio = output / f"speaker-audio-{index}.ogg"
+                        if speaker_audio.exists() or speaker_audio.is_symlink():
+                            raise PipelineError(
+                                "Speaker audio already exists; use a fresh output"
+                            )
+                        encode_audio(
+                            audio,
+                            speaker_audio,
+                            clip.start,
+                            clip.end - clip.start,
+                            "12k",
+                            speech_fast=True,
+                        )
+                    value = clean_selected_clip(
+                        client, raw, index, clip, glossary, speaker_audio
+                    )
                     if renderer is not None:
                         transcript, turns = selected_transcript(
                             value, clip.end - clip.start

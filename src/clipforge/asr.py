@@ -133,7 +133,10 @@ def segments(chars, start, end):
     out = []
     for members in _runs(stamps):
         words = []
+        pending = ""
         for index, (text, a, b) in enumerate(members):
+            if not 0 <= a < end - start:
+                continue
             following = members[index + 1][1] if index + 1 < len(members) else b + 0.3
             first = max(start, start + a)
             last = start + max(b, min(following, a + MIN_CHAR_SECONDS))
@@ -145,7 +148,17 @@ def segments(chars, start, end):
             first = max(round(first, 2), first_tick)
             last = min(round(last, 2), last_tick)
             if last > first:
-                words.append({"text": text, "start": first, "end": last})
+                words.append({"text": pending + text, "start": first, "end": last})
+                pending = ""
+            elif words:
+                # Coarse or overlapping character stamps can collapse to the
+                # same centisecond. Keep the text on the adjacent timed word.
+                words[-1]["text"] += text
+            else:
+                pending += text
+        if pending and not words and end > start:
+            # Preserve a run even if every character rounded to the same tick.
+            words.append({"text": pending, "start": start, "end": end})
         words = [w for w in words if w["end"] > w["start"]]
         if words:
             out.append(

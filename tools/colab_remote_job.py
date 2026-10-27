@@ -711,6 +711,7 @@ def render_stage(payload, output, report, timings, environment):
 
 def main():
     os.umask(0o077)
+    print("CLIPFORGE_DIAG_INIT_PAYLOAD", flush=True)
     payload_path = Path("/content/.clipforge-job.json")
     payload = json.loads(payload_path.read_text())
     payload_path.unlink()
@@ -721,6 +722,7 @@ def main():
         raise RuntimeError("Invalid source revision")
     if payload["input_tag"] != "clipforge-input-" + payload["request_id"]:
         raise RuntimeError("Input identity mismatch")
+    print("CLIPFORGE_DIAG_INIT_WORKSPACE", flush=True)
     WORK.mkdir(mode=0o700)
     bundles = (
         None
@@ -768,12 +770,15 @@ def main():
     failed = False
     try:
         report["stage"] = "hardware-check"
+        print("CLIPFORGE_DIAG_INIT_HARDWARE", flush=True)
         if accelerator != "NONE":
             report["gpu"] = gpu_info(accelerator)
         report["host"] = host_info()
         if mode == "asr":
+            print("CLIPFORGE_DIAG_INIT_ASR", flush=True)
             report["status"] = recognise_part(bundles, payload, output, report, timings)
         else:
+            print("CLIPFORGE_DIAG_INIT_RENDER", flush=True)
             report["status"] = render_stage(
                 payload, output, report, timings, environment
             )
@@ -818,5 +823,6 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         # Never emit provider bodies, signed URLs, keys, or the private payload.
+        print("CLIPFORGE_DIAG_WORKER_ERROR_" + type(error).__name__, flush=True)
         print("Colab worker failed: " + type(error).__name__, file=sys.stderr)
         raise SystemExit(1) from None
