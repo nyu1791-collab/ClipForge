@@ -23,6 +23,8 @@ import wave
 MODEL = "nvidia/parakeet-tdt_ctc-0.6b-ja"
 NEMO = "nemo_toolkit[asr]==3.0.0"
 SAMPLE_RATE = 16000
+# Applied to the selected-topic ASR copy only; does not affect rendered audio.
+SELECTED_AUDIO_FILTER = "dynaudnorm=f=250:g=7:p=0.9:m=8"
 PIECE_SECONDS = 480
 # A cut is placed at the quietest WINDOW_SECONDS within SEARCH_SECONDS of each boundary.
 SEARCH_SECONDS = 30

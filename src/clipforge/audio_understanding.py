@@ -482,7 +482,8 @@ def selected_gpu_transcripts(
         "intervals": intervals,
         "recognizer": asr.MODEL,
         "language": settings.language or "ja",
-        "selected_input_version": 1,
+        "selected_input_version": 2,
+        "audio_preprocessing": asr.SELECTED_AUDIO_FILTER,
     }
     key = fingerprint(identity)
     plan_file = output / "selected-gpu-asr-plan.json"
@@ -494,6 +495,8 @@ def selected_gpu_transcripts(
         if result.get("input_key") == key and result.get("status") == "complete":
             write_json(result_file, result)
             return result, True
+        if result.get("input_key") != key:
+            raise PipelineError("Saved GPU transcript has a different ASR input; do not resubmit automatically")
 
     control_python = os.environ.get("CLIPFORGE_COLAB_CONTROL_PYTHON", "")
     if not control_python or not Path(control_python).is_file():
@@ -505,6 +508,8 @@ def selected_gpu_transcripts(
         if saved_state and saved_state.is_file()
         else {}
     )
+    if state.get("input_key") and state["input_key"] != key:
+        raise PipelineError("Saved GPU job has a different ASR input; do not resubmit automatically")
     if (
         state.get("input_key") == key
         and state.get("status") == "gpu_requests_or_unknown"
@@ -612,6 +617,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                     "source_ids": [1],
                     "text": "整文後の字幕。省くのが明白な無意味なフィラーだけなら空文字",
                     "omit_filler": False,
+                    "omit_non_speech": False,
                     "speaker_id": "speaker_1 から speaker_6、または unknown",
                     "confidence": "声に基づく話者判定の確信度0から1",
                 }
@@ -624,7 +630,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 }
             ],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、短くて区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。原音に発話や意味のある笑い声等がなく、明らかに誤認識だけのIDはtextを空にしomit_non_speechをtrueにする。判断できない発話や一部に発話が含まれるIDは残す。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、短くて区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
     }
     value, _ = client.generate(
         f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
@@ -663,7 +669,12 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             continue
         text = candidate.get("text")
         if not isinstance(text, str) or (
-            not text.strip() and candidate.get("omit_filler") is not True
+            not text.strip()
+            and candidate.get("omit_filler") is not True
+            and not (
+                value.get("audio_access") == "heard"
+                and candidate.get("omit_non_speech") is True
+            )
         ):
             continue
         speaker = candidate.get("speaker_id")
