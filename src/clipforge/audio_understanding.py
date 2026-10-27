@@ -2,10 +2,12 @@
 
 import argparse
 import hashlib
+import http.client
 import json
 import math
 import os
 import shutil
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
@@ -42,6 +44,7 @@ EDITORIAL_RENDER_VERSION = "editorial-render-v3"
 TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
 TRANSCRIPTION_UNIT = "selected_topic"
+MAX_MODEL_ATTEMPTS = 3
 
 
 def rules_file_for_phase(phase):
@@ -186,6 +189,7 @@ class Client:
             json.dumps({"phase": phase, "status": "checking_saved_response"}),
             flush=True,
         )
+        prior_attempts = []
         if self.resume:
             saved = json.loads((self.resume / "audio-editor-receipt.json").read_text())
             entries = [
@@ -268,16 +272,16 @@ class Client:
                         flush=True,
                     )
                     return value, row.get("grounding", {})
-            attempted = any(
-                r["phase"] == phase
-                or (
-                    phase_base.startswith("topics-")
-                    and r["phase"].startswith(phase_base + "-")
-                )
-                for r in saved["requests"]
-            )
-            if attempted or not self.continue_missing:
+            prior_attempts = [r for r in saved["requests"] if r.get("phase") == phase and not r.get("reused")]
+            if not self.continue_missing:
                 raise PipelineError("No complete saved response for " + phase)
+            if len(prior_attempts) >= MAX_MODEL_ATTEMPTS:
+                raise PipelineError("Gemini request already reached three attempts")
+            if prior_attempts and prior_attempts[-1].get("http_status") in (400, 401, 403, 404):
+                raise PipelineError("Non-retryable Gemini request failure")
+            with self._lock:
+                self.record["requests"].extend(prior_attempts)
+            self.save()
         print(json.dumps({"phase": phase, "status": "new_request"}), flush=True)
         token = self.vertex_token()
         prompt_path = self.output / (phase + ".prompt.txt")
@@ -303,6 +307,20 @@ class Client:
         data = json.dumps(body, ensure_ascii=False).encode()
         if len(data) > MAX_REQUEST_BYTES:
             raise PipelineError("Bounded Gemini input exceeded")
+        for attempt in range(len(prior_attempts) + 1, MAX_MODEL_ATTEMPTS + 1):
+            try:
+                return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt)
+            except urllib.error.HTTPError as error:
+                retryable = error.code == 429 or 500 <= error.code <= 599
+                if not retryable or attempt >= MAX_MODEL_ATTEMPTS:
+                    raise
+            except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionError, TimeoutError, socket.timeout):
+                if attempt >= MAX_MODEL_ATTEMPTS:
+                    raise
+            print(json.dumps({"phase": phase, "status": "retrying", "next_attempt": attempt + 1}), flush=True)
+            time.sleep(5 if attempt == 1 else 15)
+
+    def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt):
         row = LockedRequest(
             self._lock,
             {
@@ -310,6 +328,7 @@ class Client:
                 "model": model,
                 "thinking_level": thinking_level,
                 "status": "submitted",
+                "attempt": attempt,
                 "started_at": time.time(),
             },
         )
@@ -356,7 +375,7 @@ class Client:
                     )
                 else:
                     result, text, _, _ = collect_sse_response(
-                        response, self.output / (phase + ".sse.txt"), row, self.save
+                        response, self.output / (phase + f".attempt-{attempt}.sse.txt"), row, self.save
                     )
                     candidate = result["candidates"][0]
             row.update(
@@ -378,7 +397,7 @@ class Client:
 
             row["status"] = "failed"
             row.update(
-                capture_http_error(error, self.output / (phase + ".http-error.json"))
+                capture_http_error(error, self.output / (phase + f".attempt-{attempt}.http-error.json"))
             )
             raise
         except Exception:
@@ -1415,3 +1434,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
