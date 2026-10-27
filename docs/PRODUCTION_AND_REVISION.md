@@ -31,7 +31,7 @@ YouTubeの新規音声取得とGPU上の採用映像取得は、同じ既存の 
 
 通常の音声理解・Colab描画はrequest IDごとの待ち行列を使い、無関係な制作依頼との共通ロックを避ける。同じrequestの排他は保持し、進行中Runを自動キャンセルしない。GitHub内部のジョブ生成時間やrunner供給時間を保証するものではない。
 
-状態取得APIの一時失敗は監視の問題として記録し、最後に得た制作状態を残して読み取りだけを再試行する。モデル要求・workflow dispatchは再送しない。初期の汎用タイトルから別Runを推測せず、request ID付きタイトルを待つ。監視状態・待機時間はproduction-stateと約60秒ごとの表示へ残す。監視期限切れは `monitoring_paused` とし、遠隔の制作失敗と区別する。
+状態取得APIの一時失敗は監視の問題として記録し、最後に得た制作状態を残して読み取りだけを再試行する。workflow dispatchは再送しない。Gemini要求は一時的な通信障害・429・5xxに限り合計3回まで試行する。初期の汎用タイトルから別Runを推測せず、request ID付きタイトルを待つ。監視状態・待機時間はproduction-stateと約60秒ごとの表示へ残す。監視期限切れは `monitoring_paused` とし、遠隔の制作失敗と区別する。
 
 監視が途切れた場合は、同じ出力先を指定する。URL・Run IDは保存状態から復元できる。
 
@@ -47,7 +47,7 @@ python tools/produce_with_gemini.py --resume --output "$EXISTING_PRIVATE_OUTPUT"
 | 字幕本文・推定時刻・見出し・話者色・感情・効果音を修正 | 同じCLIに `--render-only --editorial-release PARENT --revision-file PRIVATE_PATCH` | Gemini・音声理解・字幕再生成へ戻らない |
 | 編集済みデータから描画だけ行う | `--render-only --editorial-release TAG` | モデルへ戻らない |
 | 前回完成クリップを使って変更分だけ描画 | 上記に `--reuse-render --previous-run RUN --previous-request REQUEST` | 一致する完成クリップの再エンコードを省く |
-| まだ投入していないモデル工程だけ進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。不明な送信を自動再送しない |
+| 保存済み応答を再利用し、未完了のモデル工程を進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。過去の送信回数を含め同一要求は最大3回 |
 | 保存済み完成動画の回収だけ | `python -m clipforge.release_transfer download RUN clipforge-result-REQUEST PRIVATE_DIR` | モデル・描画へ戻らない |
 | Driveへの納品だけ | `clipforge-drive-delivery.yml` のupload-release | モデル・描画へ戻らない |
 
