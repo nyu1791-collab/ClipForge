@@ -33,6 +33,7 @@ from .sound_effects import prepare_cues
 from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
+from .word_timing import preserve_word_timing
 from .terminology import RESEARCH_INSTRUCTIONS, grounded_terms
 
 WINDOW_SECONDS = 5400
@@ -176,7 +177,7 @@ class Client:
             if research or phase_base.startswith("transcript-")
             else "gemini-3.8-flash"
         )
-        thinking_level = "MINIMAL" if research else ("LOW" if phase_base.startswith("transcript-") else "MEDIUM")
+        thinking_level = "MINIMAL" if research else "MEDIUM"
         # The model is part of a subtitle response's identity: an earlier 3.8
         # response must not be reported as a 3.5 result even for the same text.
         phase_hash = (
@@ -436,9 +437,21 @@ def selected_transcript(value, duration, offset=0):
             raise PipelineError("Subtitle text is required")
         if not text.strip():
             continue
+        raw_words = row.get("words", [])
+        words = []
+        if isinstance(raw_words, list) and all(isinstance(w, dict) for w in raw_words):
+            if all(
+                isinstance(w.get("text"), str) and w["text"] and
+                type(w.get("start")) in (int, float) and type(w.get("end")) in (int, float) and
+                math.isfinite(w["start"]) and math.isfinite(w["end"]) and
+                start <= w["start"] < w["end"] <= end
+                for w in raw_words
+            ) and "".join(w["text"] for w in raw_words) == text:
+                words = [{"start": w["start"] + offset, "end": w["end"] + offset,
+                          "text": w["text"]} for w in raw_words]
         rows.append(
             Segment(
-                start=start + offset, end=end + offset, text=text, **annotation(row)
+                start=start + offset, end=end + offset, text=text, words=words, **annotation(row)
             )
         )
         speaker, confidence = row.get("speaker_id"), row.get("confidence", 0)
@@ -477,6 +490,7 @@ def selected_transcript(value, duration, offset=0):
                 start=min(r.start for r in members),
                 end=max(r.end for r in members),
                 text="\n".join(r.text for r in members),
+                words=members[0].words if len(members) == 1 else [],
                 **(annotation(members[0].model_dump()) if len(members) == 1 else {}),
             )
         )
@@ -622,7 +636,8 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             "finishing": {"status": "no_speech_recognized", "model_requests": 0},
         }
     numbered = [
-        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"]}
+        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"],
+         **({"gap_recovery": True} if row.get("gap_recovery") else {})}
         for index, row in enumerate(source, 1)
     ]
     request = {
@@ -659,6 +674,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             ],
         },
         "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。声の特徴を区間全体で比較し、各元IDについてspeaker_assignmentsを別に返す。短い声も前後の同じ声と比較し、音声だけで識別できる場合はIDを付ける。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "gap_recovery_rules": "gap_recoveryがtrueの行は空白部分を再認識した候補です。原音に発話や意味のある声がなく非発話の誤認識だけと明確な場合は、その候補だけでsource_idsを作り、textを空、omit_non_speechをtrueにします。不確かなら保持し、他の発言と混ぜません。",
     }
     value, _ = client.generate(
         f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
@@ -720,6 +736,11 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         if any(b["start"] - a["end"] > 1.5 for a, b in zip(spans, spans[1:])):
             continue
         text = candidate.get("text")
+        if (isinstance(text, str) and not text.strip() and candidate.get("omit_non_speech") is True
+            and all(span.get("gap_recovery") is True for span in spans)):
+            consumed.update(ids)
+            replacements[ids[0]] = None
+            continue
         if not isinstance(text, str) or not text.strip():
             continue
         speaker = candidate.get("speaker_id")
@@ -744,12 +765,15 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             speaker = source_speakers[0][0]
             confidence = min(item[1] for item in source_speakers)
             certain = True
+        source_words = [word for span in spans for word in span.get("words", [])]
+        preserved_words = preserve_word_timing(source_words, text)
         consumed.update(ids)
         replacements[ids[0]] = (
             {
                 "start": spans[0]["start"],
                 "end": spans[-1]["end"],
                 "text": text,
+                "words": preserved_words,
                 "speaker_id": speaker if certain else "unknown",
                 "confidence": confidence if certain else 0,
                 "emotion": "neutral",
@@ -771,6 +795,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                     "start": row["start"],
                     "end": row["end"],
                     "text": row["text"],
+                    "words": row.get("words", []),
                     "speaker_id": speaker,
                     "confidence": confidence,
                     "emotion": "neutral",
@@ -834,8 +859,15 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
 
 def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
     """Start one transcription per topic; finish each ready topic independently."""
-    from .transcribe_pipeline import transcribe_clip
+    from .transcribe_pipeline import transcribe_clip, recover_active_gaps
     from .streaming_render import StreamingRenderer
+    from .gap_diagnostics import describe_gaps
+
+    def advisory_gaps(path, duration, segments):
+        try:
+            return describe_gaps(path, duration, segments)
+        except Exception:
+            return {"status": "unavailable", "reason": "level_analysis_failed", "gaps": []}
 
     if resume:
         saved_receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
@@ -856,6 +888,11 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
                 encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
                 key = fingerprint({"source_audio_sha256": identity["audio_sha256"], "start": clip.start,
                                    "end": clip.end, "encoding": "ogg-opus-16000hz-mono-24k-voip-v1"})
+                levels = advisory_gaps(selected_audio, clip.end - clip.start, raw["segments"])
+                write_json(output / f"transcribe-gap-levels-{index:03}.json", levels)
+                raw, recovery = recover_active_gaps(client, audio, clip, index, identity["audio_sha256"], raw, levels)
+                write_json(output / f"transcribe-gap-recovery-{index:03}.json", recovery)
+                write_json(output / f"transcribe-selected-{index:03}.json", raw)
                 value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
             value["finishing"]["status"] = "transcribe_timestamps_preserved"
             value["finishing"]["timestamp_source"] = "gemini_transcribe"

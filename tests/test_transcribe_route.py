@@ -202,3 +202,160 @@ def test_six_topics_flow_through_transcription_and_cleanup(tmp_path, monkeypatch
     assert (
         output["timestamp_source"] == "gemini_transcribe" and len(output["clips"]) == 6
     )
+
+
+def test_unchanged_words_keep_original_times_but_edits_do_not_guess():
+    from clipforge.audio_understanding import clean_selected_clip, selected_transcript
+    from clipforge.models import SelectedClip
+
+    clip = SelectedClip(
+        start=0, end=10, candidate_id="one", title="話題", reason="会話", confidence=0.9
+    )
+    raw = {
+        "segments": [
+            {
+                "start": 1.0,
+                "end": 4.0,
+                "text": "こんにちは",
+                "words": [
+                    {"start": 1.0, "end": 1.4, "text": "こん"},
+                    {"start": 3.0, "end": 4.0, "text": "にちは"},
+                ],
+            }
+        ]
+    }
+
+    class Fake:
+        def __init__(self, text):
+            self.text = text
+
+        def generate(self, *args, **kwargs):
+            return {
+                "audio_access": "heard",
+                "segments": [{"source_ids": [1], "text": self.text}],
+                "sound_effects": [],
+            }, {}
+
+    unchanged = clean_selected_clip(Fake("こんにちは"), raw, 1, clip, [], "audio")
+    result, _ = selected_transcript(unchanged, 10)
+    assert [(word.text, word.start, word.end) for word in result.segments[0].words] == [
+        ("こん", 1.0, 1.4),
+        ("にちは", 3.0, 4.0),
+    ]
+    changed = clean_selected_clip(Fake("こんにちは。"), raw, 1, clip, [], "audio")
+    result, _ = selected_transcript(changed, 10)
+    assert [(word.text, word.start, word.end) for word in result.segments[0].words] == [
+        ("こん", 1.0, 1.4),
+        ("にちは。", 3.0, 4.0),
+    ]
+    assert result.segments[0].text == "こんにちは。"
+    rewritten = clean_selected_clip(Fake("こんばんは。"), raw, 1, clip, [], "audio")
+    result, _ = selected_transcript(rewritten, 10)
+    assert result.segments[0].words == []
+
+
+def test_gap_recovery_is_bounded_and_preserves_original_words(monkeypatch):
+    clip = SimpleNamespace(start=100, end=500)
+    calls = []
+
+    def fake(client, audio, clip, index, part, begin, length, sha):
+        calls.append((part, begin, length))
+        value = response()
+        word = value["candidates"][0]["content"]["parts"][0]["audioTranscription"][
+            "words"
+        ][0]
+        word.update(startOffset="3s", endOffset="3.2s")
+        return value
+
+    monkeypatch.setattr(route, "request_chunk", fake)
+    levels = {
+        "status": "complete",
+        "gaps": [
+            {"start": 10, "end": 40, "peak_one_second_rms_dbfs": -15},
+            {"start": 60, "end": 90, "peak_one_second_rms_dbfs": -20},
+            {"start": 100, "end": 130, "peak_one_second_rms_dbfs": -18},
+            {"start": 150, "end": 180, "peak_one_second_rms_dbfs": -70},
+        ],
+    }
+    raw = {
+        "segments": [
+            {
+                "start": 0,
+                "end": 1,
+                "text": "原文",
+                "words": [{"start": 0, "end": 1, "text": "原文"}],
+            }
+        ],
+        "untimed": [],
+    }
+    merged, report = route.recover_active_gaps(
+        None, "audio", clip, 1, "sha", raw, levels
+    )
+    assert len(calls) == 2
+    assert merged["segments"][0]["text"] == "原文"
+    assert len(report["requests"]) == 2
+    assert [row["text"] for row in merged["segments"]] == ["原文", "うん", "うん"]
+    assert "not speech detection" in report["note"]
+
+
+def test_gap_recovery_failure_does_not_erase_input(monkeypatch):
+    def fail(*args):
+        raise OSError("unavailable")
+
+    monkeypatch.setattr(route, "request_chunk", fail)
+    raw = {"segments": [{"start": 0, "end": 1, "text": "原文"}], "untimed": []}
+    levels = {"gaps": [{"start": 10, "end": 40, "peak_one_second_rms_dbfs": -10}]}
+    merged, report = route.recover_active_gaps(
+        None, "audio", SimpleNamespace(start=0, end=60), 1, "sha", raw, levels
+    )
+    assert merged == raw
+    assert report["requests"][0]["status"] == "unavailable"
+
+
+def test_overlap_removes_only_high_confidence_repeated_words(monkeypatch):
+    def fake(client, audio, clip, index, part, begin, length, sha):
+        value = response()
+        word = value["candidates"][0]["content"]["parts"][0]["audioTranscription"][
+            "words"
+        ][0]
+        word.update(
+            word="こんにちは",
+            startOffset="896.2s" if part == 0 else "0.4s",
+            endOffset="897.6s" if part == 0 else "1.9s",
+        )
+        return value
+
+    monkeypatch.setattr(route, "request_chunk", fake)
+    result = route.transcribe_clip(
+        None, "audio", SimpleNamespace(start=0, end=1000), 1, "sha"
+    )
+    assert [row["text"] for row in result["segments"]] == ["こんにちは"]
+
+
+def test_only_explicit_nonspeech_recovery_can_be_omitted():
+    from clipforge.audio_understanding import clean_selected_clip
+    from clipforge.models import SelectedClip
+
+    clip = SelectedClip(
+        start=0, end=20, candidate_id="one", title="話題", reason="会話", confidence=0.9
+    )
+    raw = {
+        "segments": [
+            {"start": 1, "end": 2, "text": "普通の発言"},
+            {"start": 3, "end": 4, "text": "誤認候補", "gap_recovery": True},
+        ]
+    }
+
+    class Fake:
+        def generate(self, *args, **kwargs):
+            return {
+                "audio_access": "heard",
+                "segments": [
+                    {"source_ids": [1], "text": "", "omit_non_speech": True},
+                    {"source_ids": [2], "text": "", "omit_non_speech": True},
+                ],
+                "sound_effects": [],
+            }, {}
+
+    result = clean_selected_clip(Fake(), raw, 1, clip, [], "audio")
+    assert [row["text"] for row in result["segments"]] == ["普通の発言"]
