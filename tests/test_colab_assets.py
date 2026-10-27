@@ -574,3 +574,17 @@ class LogTailTests(unittest.TestCase):
             self.assertNotIn("認識した本文", tail)
             self.assertEqual(tail[-1], "x" * 300)
             self.assertEqual(remote_job.log_tail(Path(temporary) / "missing"), [])
+
+    def test_tail_redacts_signed_urls_and_environment_tokens(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "prefetch.log"
+            path.write_text(
+                "download https://example.invalid/path?token=secret\n"
+                "token=synthetic-secret-value\n"
+            )
+            with unittest.mock.patch.dict(
+                os.environ, {"GH_TOKEN": "synthetic-secret-value"}
+            ):
+                tail = remote_job.log_tail(path)
+            self.assertNotIn("example.invalid", "\n".join(tail))
+            self.assertNotIn("synthetic-secret-value", "\n".join(tail))

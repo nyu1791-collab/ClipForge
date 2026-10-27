@@ -187,7 +187,7 @@ def host_info():
     }
 
 
-def worker_error(path):
+def worker_error(path, environment=None):
     # Only the error type and the worker's own bounded message are kept; never logs or paths.
     try:
         record = json.loads(Path(path).read_text())
@@ -198,6 +198,7 @@ def worker_error(path):
     message = record.get("message")
     if not isinstance(message, str):
         message = ""
+    message = "\n".join(sanitized_tail(message, environment=environment))
     return {"error_type": record["error_type"], "message": message[:300]}
 
 
@@ -226,7 +227,7 @@ def gpu_info(expected="T4"):
 
 
 def log_tail(path, lines=20):
-    """The last ASCII lines of a private log, so a failure can be diagnosed.
+    """Bound and redact package diagnostics before saving them privately.
 
     Lines with other characters are dropped, so recognised Japanese text never leaves the
     runtime; package and CUDA errors are ASCII.
@@ -235,8 +236,10 @@ def log_tail(path, lines=20):
         text = Path(path).read_text(errors="replace")
     except OSError:
         return []
-    kept = [line[:300] for line in text.splitlines() if line.isascii() and line.strip()]
-    return kept[-lines:]
+    kept = [line for line in text.splitlines() if line.isascii() and line.strip()][
+        -lines:
+    ]
+    return [line[:300] for line in sanitized_tail("\n".join(kept), lines=lines)]
 
 
 def asr_environment():
@@ -339,10 +342,8 @@ def recognise_part(bundles, payload, output, report, timings):
                     timeout=3600,
                 )
             except RuntimeError:
-                # The recognition log may contain private speech. Preserve only
-                # the failure type for selected audio, not a public log excerpt.
-                if not selected_only:
-                    report["log_tail"] = log_tail(WORK / "recognise.log")
+                # Any recognizer can emit speech, including ASCII-only names.
+                # Retain the failure type, never the recognition log excerpt.
                 raise
     finally:
         if prefetch.poll() is None:
@@ -682,7 +683,7 @@ def render_stage(payload, output, report, timings, environment):
                 "render",
             )
     except RuntimeError:
-        error = worker_error(output / "stage-error.json")
+        error = worker_error(output / "stage-error.json", environment=stage_env)
         if error is not None:
             report["worker_error"] = error
         raise

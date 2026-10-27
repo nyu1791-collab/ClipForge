@@ -173,11 +173,19 @@ class StreamingRenderer:
             )
             items = [item]
             started = time.monotonic()
+            with self.lock:
+                queued = self.enqueue_times.pop(item[0], started)
+            prepared = None
+            phase = "preparing"
             try:
+                # The private editorial data and request marker do not need a
+                # GPU. Publish them while selected ASR may still own all slots.
+                prepared = self.prepare(dict(items))
+                prepared_at = time.monotonic()
+                phase = "waiting_for_gpu"
                 with gpu_slot("render", control_state) as lease:
                     now = time.monotonic()
-                    with self.lock:
-                        queued = self.enqueue_times.pop(item[0], started)
+                    phase = "running"
                     print(
                         json.dumps(
                             {
@@ -186,12 +194,13 @@ class StreamingRenderer:
                                 "gpu_slot": lease.slot_index + 1,
                                 "status": "starting",
                                 "queue_wait_seconds": round(started - queued, 2),
-                                "gpu_slot_wait_seconds": round(now - started, 2),
+                                "preparation_seconds": round(prepared_at - started, 2),
+                                "gpu_slot_wait_seconds": round(now - prepared_at, 2),
                             }
                         ),
                         flush=True,
                     )
-                    self.render(worker_index, dict(items), control_state, lease)
+                    self.render(worker_index, prepared, control_state, lease)
                     print(
                         json.dumps(
                             {
@@ -209,12 +218,22 @@ class StreamingRenderer:
             except Exception as error:
                 with self.lock:
                     self.errors.append(type(error).__name__)
+                if prepared is not None:
+                    # Do not overwrite gpu_requested_or_unknown: the controller
+                    # may have allocated a runtime whose release is unconfirmed.
+                    self._mark(
+                        prepared["identity"],
+                        failed_phase=phase,
+                        error_type=type(error).__name__,
+                        failed_at=time.time(),
+                    )
                 print(
                     json.dumps(
                         {
                             "stage": "render",
                             "clips": [index for index, _ in items],
                             "status": "failed",
+                            "phase": phase,
                             "error_type": type(error).__name__,
                             "elapsed_seconds": round(time.monotonic() - started, 2),
                         }
@@ -253,7 +272,8 @@ class StreamingRenderer:
             self.stop_monitor.set()
             self.monitor.join(timeout=10)
 
-    def render(self, worker_index, completed, control_state, lease):
+    def prepare(self, completed):
+        """Save a single private shard before waiting for an owned GPU slot."""
         indices = sorted(completed)
         if not 1 <= len(indices) <= 2 or any(
             not 1 <= index <= len(self.clips) for index in indices
@@ -343,6 +363,21 @@ class StreamingRenderer:
             "Private render shard request marker.",
             timeout=600,
         )
+        self._mark(identity, status="ready_for_gpu", prepared_at=time.time())
+        return {
+            "indices": indices,
+            "identity": identity,
+            "editorial": editorial,
+            "marker": marker,
+            "group": group,
+        }
+
+    def render(self, worker_index, prepared, control_state, lease):
+        indices = prepared["indices"]
+        identity = prepared["identity"]
+        editorial = prepared["editorial"]
+        marker = prepared["marker"]
+        group = prepared["group"]
         self._mark(identity, status="gpu_requested_or_unknown")
         control = Path(__file__).resolve().parents[2] / "tools" / "colab_actions.py"
         output = self.control_root / ("receipt-" + identity)

@@ -24,8 +24,10 @@ def planned(tmp_path, monkeypatch):
     monkeypatch.setattr(
         route,
         "encode_audio",
-        lambda source, target, *args: target.write_bytes(b"synthetic opus"),
+        lambda source, target, *args, **kwargs: target.write_bytes(b"synthetic opus"),
     )
+    monkeypatch.setenv("CLIPFORGE_VERTEX_ACCESS_TOKEN", "synthetic")
+    monkeypatch.delenv("CLIPFORGE_STREAMING_RENDER", raising=False)
     monkeypatch.setattr(
         storage,
         "process",
@@ -36,7 +38,7 @@ def planned(tmp_path, monkeypatch):
     calls = []
 
     def generate(self, phase, prompt, audio=None, research=False):
-        calls.append((phase, prompt, research))
+        calls.append((phase, prompt, research, audio))
         if phase.startswith("topics"):
             return {
                 "audio_access": "heard",
@@ -54,53 +56,64 @@ def planned(tmp_path, monkeypatch):
         if research:
             return {"terms": []}, {}
         return {
-            "audio_access": "heard",
-            "complete": True,
             "segments": [
                 {
-                    "start": 0.5,
-                    "end": 3,
+                    "source_ids": [1],
                     "text": "ああ、そうか。これは省略せず全部字幕に残します。",
-                    "speaker_id": "speaker_2",
-                    "confidence": 0.95,
                 }
             ],
+            "sound_effects": [],
         }, {}
 
+    def selected_gpu(
+        audio, clips, settings, output, resume, missing, sha, on_clip=None
+    ):
+        parts = [
+            {
+                "segments": [
+                    {
+                        "start": 0.5,
+                        "end": 3.0,
+                        "text": "ああ、そうか。これは省略せず全部字幕に残します。",
+                    }
+                ]
+            }
+            for _ in clips
+        ]
+        for index, part in enumerate(parts, 1):
+            on_clip(index, part)
+        return {"clips": parts, "recognizer": "synthetic_parakeet"}, False
+
     monkeypatch.setattr(route.Client, "generate", generate)
+    monkeypatch.setattr(route, "selected_gpu_transcripts", selected_gpu)
     output = tmp_path / "review"
     route.plan(audio, URL, output, Settings(aspect="16:9", height=360))
     return output, audio, calls
 
 
-def test_audio_only_plan_never_requires_an_asr_transcript(planned):
+def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
     output, audio, calls = planned
-    assert [p for p, _, _ in calls] == [
-        "topics-0",
-        "terminology",
-        *[f"transcript-{i}" for i in range(1, 6)],
+    assert calls[0][0] == "topics-0" and calls[1][0] == "terminology"
+    assert sorted(p for p, _, _, _ in calls if p.startswith("transcript-")) == [
+        f"transcript-{i}" for i in range(1, 6)
     ]
     assert all(
-        "全文文字起こしは不要" in prompt
-        for p, prompt, _ in calls
+        "話題区間だけを返します" in prompt
+        for p, prompt, _, _ in calls
         if p.startswith("topics")
     )
     assert all(
-        "文字数の圧縮は禁止" in prompt
-        for p, prompt, _ in calls
+        "要約せず整文する" in prompt and attached is None
+        for p, prompt, _, attached in calls
         if p.startswith("transcript")
     )
     assert not (audio.parent / "asr-receipt.json").exists()
     receipt = json.loads((output / "audio-editor-receipt.json").read_text())
     assert receipt["status"] == "complete" and receipt["full_source_asr"] is False
     selected = json.loads((output / "selected-transcripts.json").read_text())
-    assert (
-        len(selected["clips"]) == 5
-        and selected["timestamp_source"] == "gemini_estimated"
-    )
+    assert len(selected["clips"]) == 5 and selected["timestamp_source"] == "gpu_asr"
     assert all("ああ、そうか" in c["segments"][0]["text"] for c in selected["clips"])
-    # Later clips include a short voice reference, rather than inferring identity from words.
-    assert (output / "focused-2.ogg").is_file()
+    assert not (output / "focused-2.ogg").exists()
 
 
 def test_resume_cannot_apply_responses_to_another_audio(planned, tmp_path, monkeypatch):
@@ -120,11 +133,14 @@ def test_resume_cannot_apply_responses_to_another_audio(planned, tmp_path, monke
         [{"start": 0, "end": 2, "text": "x"}, {"start": 1, "end": 3, "text": "y"}],
     ],
 )
-def test_invalid_estimated_timing_is_rejected(segments):
-    with pytest.raises(PipelineError):
-        route.selected_transcript(
-            {"audio_access": "heard", "complete": True, "segments": segments}, 10
-        )
+def test_estimated_timing_is_made_renderable_without_dropping_text(segments):
+    transcript, _ = route.selected_transcript(
+        {"audio_access": "heard", "complete": True, "segments": segments}, 10
+    )
+    assert all(0 <= row.start < row.end <= 10 for row in transcript.segments)
+    assert "\n".join(row.text for row in transcript.segments) == "\n".join(
+        row["text"] for row in segments
+    )
 
 
 def test_unavailable_or_incomplete_audio_is_not_renderable():
@@ -161,6 +177,7 @@ def test_renderer_keeps_remux_offset_out_of_speaker_times(
     assert len(drawn) == 5
     assert drawn[0][1].segments[0].start == 2.5
     assert drawn[0][2]["speaker_turns"][0]["start"] == 0.5
+    assert drawn[0][2]["speaker_turns"][0]["speaker_id"] is None
 
 
 def test_failed_vertex_call_is_not_retried(tmp_path, monkeypatch):

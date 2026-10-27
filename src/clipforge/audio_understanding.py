@@ -750,6 +750,14 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             "Already attempted; use a separate output for saved-response replay"
         )
     duration = audio_first.audio_info(audio)["duration"]
+    starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
+    # A window in a new output directory has no verified link to this input.
+    # Refuse it before any concurrent request can send the wrong audio; saved
+    # responses use the separate --resume-from directory and input identity.
+    for index in range(len(starts)):
+        path = output / f"overview-{index}.ogg"
+        if path.exists() or path.is_symlink():
+            raise PipelineError("Overview output already exists; use a fresh output")
     identity = {
         "source_url": url,
         "audio_sha256": digest(audio),
@@ -774,15 +782,13 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
     topic_pool = None
     try:
         topics = []
-        starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
 
         def prepare_overview(index, start):
             path = output / f"overview-{index}.ogg"
             started = time.monotonic()
             started_at = time.time()
             length = min(WINDOW_SECONDS, duration - start)
-            if not path.is_file():
-                encode_audio(audio, path, start, length, "12k", speech_fast=True)
+            encode_audio(audio, path, start, length, "12k", speech_fast=True)
             return path, {
                 "index": index,
                 "source_start_seconds": start,

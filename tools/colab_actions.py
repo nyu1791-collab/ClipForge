@@ -558,16 +558,20 @@ del _clipforge_bootstrap
                 + host_text(receipt.get("host")),
                 flush=True,
             )
-            # ASCII-only package and CUDA lines from a failed ASR stage; never speech text.
-            for line in receipt.get("log_tail") or []:
-                if isinstance(line, str) and line.isascii():
-                    print("Colab log: " + line[:300], flush=True)
+            # Even ASCII output can contain private speech, cookies or URLs.
+            # The redacted details remain in the private worker result only.
+            if receipt.get("log_tail"):
+                print(
+                    "Colab diagnostics are retained in the private result.", flush=True
+                )
             worker_error = receipt.get("worker_error")
             if isinstance(worker_error, dict):
-                line = "Worker error: " + str(worker_error.get("error_type"))
-                if worker_error.get("message"):
-                    line += ": " + str(worker_error["message"])
-                print(line, flush=True)
+                name = worker_error.get("error_type")
+                if not isinstance(name, str) or not re.fullmatch(
+                    r"[A-Za-z][A-Za-z0-9_]{0,60}", name
+                ):
+                    name = "UnknownError"
+                print("Worker error: " + name, flush=True)
             return
 
     def collect(self, record, output, execution_failed, token):
