@@ -199,11 +199,13 @@ def test_color_is_validated(color, expected, no_sleep):
     assert got[0]["color"] == expected
 
 
-def test_transient_failures_are_retried(no_sleep):
-    session = FakeSession([row(1, 30)], plan={BASE: [429, 503], MESSAGES: [500]})
+@pytest.mark.parametrize("status", [429, 500, 503])
+def test_transient_failures_are_not_retried(no_sleep, status):
+    session = FakeSession([row(1, 30)], plan={BASE: [status]})
 
-    assert len(fetch(session)) == 1
-    assert no_sleep == [1.0, 2.0, 1.0]
+    with pytest.raises(PipelineError, match=f"HTTP {status}"):
+        fetch(session)
+    assert len(session.calls) == 1 and no_sleep == []
 
 
 def test_transport_errors_fail_without_leaking_url(no_sleep):
@@ -216,7 +218,8 @@ def test_transport_errors_fail_without_leaking_url(no_sleep):
 
     assert "kick.com" not in str(info.value)
     assert "reset" not in str(info.value)
-    assert sum(1 for url, _ in session.calls if url == MESSAGES) == 4
+    assert sum(1 for url, _ in session.calls if url == MESSAGES) == 1
+    assert no_sleep == []
 
 
 def test_final_http_failure_has_status_only(no_sleep):
@@ -477,23 +480,25 @@ def test_first_line_with_name_fits_the_wrap_width(no_sleep):
 
 
 @pytest.mark.parametrize(
-    ("header", "pause"),
+    "header",
     [
-        ("7", 7.0),
-        ("999", 30.0),
-        ("Fri, 01 Jan 2100 00:00:00 GMT", 30.0),
-        ("Wed, 21 Oct 2015 07:28:00 GMT", 0.0),
-        ("soon", 1.0),
+        "7",
+        "999",
+        "Fri, 01 Jan 2100 00:00:00 GMT",
+        "Wed, 21 Oct 2015 07:28:00 GMT",
+        "soon",
     ],
 )
-def test_429_honours_retry_after_up_to_30_seconds(header, pause, no_sleep):
+def test_429_does_not_retry_even_with_retry_after(header, no_sleep):
     session = FakeSession(
         [row(1, 30)],
         plan={MESSAGES: [Response(429, headers={"Retry-After": header})]},
     )
 
-    assert len(fetch(session)) == 1
-    assert no_sleep == [pause]
+    with pytest.raises(PipelineError, match="HTTP 429"):
+        fetch(session)
+    assert sum(1 for url, _ in session.calls if url == MESSAGES) == 1
+    assert no_sleep == []
 
 
 def test_channel_and_vod_lookups_are_cached_per_vod(no_sleep):
