@@ -177,7 +177,11 @@ class Client:
             if research or phase_base.startswith("transcript-")
             else "gemini-3.8-flash"
         )
-        thinking_level = "MINIMAL" if research else "MEDIUM"
+        thinking_level = (
+            "MINIMAL" if research
+            else "HIGH" if phase_base.startswith("transcript-")
+            else "MEDIUM"
+        )
         # The model is part of a subtitle response's identity: an earlier 3.8
         # response must not be reported as a 3.5 result even for the same text.
         phase_hash = (
