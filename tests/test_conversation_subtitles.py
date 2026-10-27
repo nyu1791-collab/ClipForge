@@ -31,6 +31,7 @@ def test_empty_model_reply_cannot_delete_meaningful_sentence():
                 "segments": [
                     {"source_ids": [1], "text": "", "omit_filler": True},
                     {"source_ids": [2], "text": "", "omit_filler": True},
+                    {"source_ids": [3], "text": "", "omit_filler": True},
                 ]
             }, {}
 
@@ -38,11 +39,12 @@ def test_empty_model_reply_cannot_delete_meaningful_sentence():
         "segments": [
             {"start": 0, "end": 1, "text": "それは違います。"},
             {"start": 1, "end": 2, "text": "えー"},
+            {"start": 2, "end": 2.5, "text": "あの"},
         ]
     }
     clip = SimpleNamespace(start=0, end=3, title="話題", reason="文脈")
     result = audio_understanding.clean_selected_clip(Client(), raw, 1, clip, [])
-    assert [row["text"] for row in result["segments"]] == ["それは違います。"]
+    assert [row["text"] for row in result["segments"]] == ["それは違います。", "あの"]
 
 
 def test_same_audio_cleanup_request_assigns_voices_without_merging_speakers():

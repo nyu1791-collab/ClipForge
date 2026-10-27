@@ -43,7 +43,7 @@ TOPIC_RULES_FILE = PROMPT_DIR / "gemini_topics_ja.md"
 SUBTITLE_RULES_FILE = PROMPT_DIR / "gemini_subtitles_ja.md"
 TRANSCRIPTION_UNIT = "selected_topic"
 FILLER_ONLY = re.compile(
-    r"[\s、。,.　]*(?:(?:え[ー〜～-]+|あ[ー〜～-]+|あの[ー〜～-]*|えっと|その[ー〜～-]+)[\s、。,.　]*)+"
+    r"[\s、。,.　]*(?:(?:え[ー〜～-]+|あ[ー〜～-]+|あの[ー〜～-]+|えっと|その[ー〜～-]+)[\s、。,.　]*)+"
 )
 
 
