@@ -131,15 +131,8 @@ def run_parallel(source, plan_file, output):
             "Selected GPU ASR was already attempted; inspect its saved state"
         )
     groups = [[] for _ in range(count)]
-    loads = [0.0] * count
-    for index in sorted(
-        range(len(clips)),
-        key=lambda i: clips[i]["end"] - clips[i]["start"],
-        reverse=True,
-    ):
-        slot = min(range(count), key=loads.__getitem__)
-        groups[slot].append(index)
-        loads[slot] += clips[index]["end"] - clips[index]["start"]
+    for index in range(len(clips)):
+        groups[index % count].append(index)
     root = output / "selected-gpu-parts"
     root.mkdir(mode=0o700)
     state = {

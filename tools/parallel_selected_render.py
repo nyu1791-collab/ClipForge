@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from clipforge.release_transfer import (
@@ -54,16 +54,22 @@ def main():
         hashlib.sha256((parent + ":render:" + str(i)).encode()).hexdigest()[:32]
         for i in range(1, count + 1)
     ]
+    groups = [
+        list(range(slot + 1, count + 1, min(4, count))) for slot in range(min(4, count))
+    ]
 
-    def worker(index):
-        identity = worker_ids[index - 1]
+    def worker(slot):
+        indices = groups[slot]
+        identity = hashlib.sha256(
+            (parent + ":render-shard:" + str(slot)).encode()
+        ).hexdigest()[:32]
         tag = "clipforge-input-" + identity
         result_name = "clipforge-result-" + identity
         existing = release(result_name + "-run-" + run_id)
         if existing is not None:
             record = read_transfer(run_id, result_name)
-            if record.get("request_receipt", {}).get("status") != "clip_rendered":
-                raise RuntimeError("Saved partial render is not complete")
+            if record.get("request_receipt", {}).get("status") != "complete":
+                raise RuntimeError("Saved render shard is not complete")
             return
         if release(tag) is not None:
             raise RuntimeError(
@@ -73,8 +79,11 @@ def main():
             **os.environ,
             "REQUEST_ID": identity,
             "INPUT_TAG": tag,
-            "CLIP_INDEX": str(index),
+            "CLIP_INDEX": "",
+            "CLIPFORGE_RENDER_SHARD": ",".join(str(index) for index in indices),
+            "CLIPFORGE_PARENT_REQUEST": parent,
             "CLIPFORGE_SHARED_BALANCE": "1",
+            "CLIPFORGE_ALLOCATION_WAIT_SECONDS": "600",
         }
         command(
             [
@@ -90,8 +99,8 @@ def main():
             ],
             env,
         )
-        state = root / ("control-" + str(index))
-        output = root / ("receipt-" + str(index))
+        state = root / ("control-" + str(slot))
+        output = root / ("receipt-" + str(slot))
         try:
             command(
                 [
@@ -130,24 +139,51 @@ def main():
                     env,
                 )
 
-    with ThreadPoolExecutor(max_workers=min(4, count)) as pool:
-        futures = [pool.submit(worker, i) for i in range(1, count + 1)]
+    with ThreadPoolExecutor(max_workers=len(groups)) as pool:
+        pending = {pool.submit(worker, slot) for slot in range(len(groups))}
         errors = []
-        for future in futures:
-            try:
-                future.result()
-            except Exception as error:
-                errors.append(error)
-    if errors:
-        raise RuntimeError(
-            "Some parallel renders failed; completed private results were retained"
-        )
+        reported = set()
+        while pending:
+            done, pending = wait(pending, timeout=10, return_when=FIRST_COMPLETED)
+            for future in done:
+                try:
+                    future.result()
+                except Exception as error:
+                    errors.append(error)
+            for index, identity in enumerate(worker_ids, 1):
+                if index in reported:
+                    continue
+                try:
+                    record = read_transfer(run_id, "clipforge-result-" + identity)
+                except Exception:
+                    continue
+                if record.get("request_receipt", {}).get("status") == "clip_rendered":
+                    reported.add(index)
+                    gpu_record = record.get("gpu_receipt") or {}
+                    started_at = gpu_record.get("started_at")
+                    elapsed = (
+                        max(0, time.time() - started_at)
+                        if isinstance(started_at, (int, float))
+                        else gpu_record.get("elapsed_seconds")
+                    )
+                    elapsed_text = (
+                        "%.1f秒" % elapsed
+                        if isinstance(elapsed, (int, float))
+                        else "不明"
+                    )
+                    print(
+                        "[%d/%d 完了] clip-%03d (保存確認まで: %s)"
+                        % (len(reported), count, index, elapsed_text),
+                        flush=True,
+                    )
     merged = root / "merged"
     merged.mkdir(mode=0o700)
     (merged / "clips").mkdir(mode=0o700)
     rows = []
     gpu_parts = []
     for index, identity in enumerate(worker_ids, 1):
+        if errors and index not in reported:
+            continue
         part = root / ("part-" + str(index))
         transfer = download(run_id, "clipforge-result-" + identity, part)
         manifest = transfer["stage_manifest"]
@@ -171,10 +207,10 @@ def main():
                 "receipt": transfer.get("gpu_receipt"),
             }
         )
-        if index == 1:
+        if not (merged / "audio-review").exists():
             shutil.copytree(part / "audio-review", merged / "audio-review")
     manifest = {
-        "status": "complete",
+        "status": "partial" if errors else "complete",
         "rendered": rows,
         "reused_clips": sum(row.get("reused") is True for row in rows),
         "newly_rendered_clips": sum(row.get("reused") is not True for row in rows),
@@ -190,7 +226,7 @@ def main():
         merged / "gpu-receipt.json",
         {
             "mode": "parallel-audio-stage",
-            "status": "complete",
+            "status": "partial" if errors else "complete",
             "human_review_performed": False,
             "parts": gpu_parts,
             "elapsed_seconds": round(time.monotonic() - start, 2),
@@ -202,14 +238,18 @@ def main():
             "request_id": parent,
             "source_ref": source_ref,
             "workflow_run": run_id,
-            "status": "complete",
+            "status": "partial" if errors else "complete",
             "audio_stage": "render",
             "selection_basis": "audio_understanding",
-            "rendered_clips": count,
+            "rendered_clips": len(rows),
             "sha256": {"manifest.json": sha(merged / "manifest.json")},
         },
     )
     publish(merged, "clipforge-result-" + parent)
+    if errors:
+        raise RuntimeError(
+            "Some renders failed; partial results are saved for explicit render-only reuse"
+        )
     print(
         "Parallel selected render completed in %.1f seconds"
         % (time.monotonic() - start),

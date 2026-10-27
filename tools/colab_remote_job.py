@@ -8,6 +8,7 @@ rendered with NVENC on a GPU runtime from the verified analysis.
 """
 
 import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,7 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 from colab_bundle import ReleaseBundles, digest
 
@@ -330,6 +332,144 @@ def recognise_part(bundles, payload, output, report, timings):
     return manifest["status"]
 
 
+def render_shard(payload, output, report, stage_env, records, selection, config):
+    """Render up to two clips concurrently on this runtime and publish each immediately."""
+    stage = payload["stage"]
+    indices = stage["clip_indices"]
+    parent = stage["parent_request"]
+    if (
+        not indices
+        or len(indices) != len(set(indices))
+        or any(
+            type(index) is not int or not 1 <= index <= len(selection["clips"])
+            for index in indices
+        )
+        or not re.fullmatch(r"[a-f0-9]{32}", parent)
+    ):
+        raise RuntimeError("Invalid saved render shard")
+    parts = WORK / ("render-shard-" + payload["request_id"])
+    parts.mkdir(mode=0o700)
+
+    def render_one(index):
+        started = time.monotonic()
+        started_at = time.time()
+        identity = hashlib.sha256(
+            (parent + ":render:" + str(index)).encode()
+        ).hexdigest()[:32]
+        part_root = parts / str(index)
+        part_root.mkdir(mode=0o700)
+        part = part_root / "out"
+        arguments = [
+            str(ROOT / ".venv/bin/python"),
+            "-m",
+            "clipforge.audio_understanding",
+            "render",
+            "--review",
+            str(records / "final-selection.json"),
+            "--transcripts",
+            str(records / "selected-transcripts.json"),
+            "--output",
+            str(part),
+            "--config",
+            config,
+            "--clip-index",
+            str(index),
+        ]
+        invocation = 'source tools/colab_cache_env.sh && exec "$@"'
+        command(
+            ["bash", "-c", invocation, "clipforge-stage", *arguments],
+            stage_env,
+            "render-clip-" + str(index),
+        )
+        shutil.copytree(records, part / "audio-review")
+        (part / "request-receipt.json").write_text(
+            json.dumps(
+                {
+                    "request_id": identity,
+                    "source_ref": payload["source_ref"],
+                    "workflow_run": payload["workflow_run"],
+                    "status": "clip_rendered",
+                    "audio_stage": "render",
+                    "selection_basis": "audio_understanding",
+                    "rendered_clips": 1,
+                    "sha256": {"manifest.json": digest(part / "manifest.json")},
+                }
+            )
+        )
+        (part / "gpu-receipt.json").write_text(
+            json.dumps(
+                {
+                    "mode": "audio-stage",
+                    "status": "clip_rendered",
+                    "clip_index": index,
+                    "human_review_performed": False,
+                    "gpu": report.get("gpu"),
+                    "host": report.get("host"),
+                    "started_at": started_at,
+                    "elapsed_seconds": round(time.monotonic() - started, 2),
+                }
+            )
+        )
+        transfer_env = {
+            **stage_env,
+            "GITHUB_RUN_ID": str(payload["workflow_run"]),
+            "CLIPFORGE_SOURCE_REF": payload["source_ref"],
+            "PYTHONPATH": str(ROOT / "src"),
+        }
+        command(
+            [
+                sys.executable,
+                "-m",
+                "clipforge.release_transfer",
+                "publish",
+                str(part),
+                "clipforge-result-" + identity,
+            ],
+            transfer_env,
+            "publish-clip-" + str(index),
+            timeout=1800,
+        )
+        return index
+
+    with ThreadPoolExecutor(max_workers=min(2, len(indices))) as pool:
+        futures = [pool.submit(render_one, index) for index in indices]
+        errors = []
+        for future in futures:
+            try:
+                future.result()
+            except Exception as error:
+                errors.append(error)
+    if errors:
+        raise RuntimeError(
+            "A render shard failed; completed clip releases were retained"
+        )
+    (output / "manifest.json").write_text(
+        json.dumps(
+            {
+                "status": "complete",
+                "rendered": [],
+                "clip_indices": indices,
+                "source_url": selection["source_url"],
+            }
+        )
+    )
+    (output / "request-receipt.json").write_text(
+        json.dumps(
+            {
+                "request_id": payload["request_id"],
+                "source_ref": payload["source_ref"],
+                "workflow_run": payload["workflow_run"],
+                "status": "complete",
+                "audio_stage": "render",
+                "selection_basis": "audio_understanding",
+                "rendered_clips": len(indices),
+                "sha256": {"manifest.json": digest(output / "manifest.json")},
+            }
+        )
+    )
+    return "complete"
+
+
 def render_stage(payload, output, report, timings, environment):
     # One reviewed clip (or every clip) is rendered from the verified analysis artifact;
     # the worker itself checks the previous run and its identity.
@@ -457,6 +597,21 @@ def render_stage(payload, output, report, timings, environment):
             shutil.copytree(previous / "clips", output / "clips", dirs_exist_ok=True)
     if payload.get("youtube_cookies_b64"):
         stage_env["YOUTUBE_COOKIES_B64"] = payload["youtube_cookies_b64"]
+    if stage.get("clip_indices"):
+        if not direct_audio or payload.get("resume_render"):
+            raise RuntimeError(
+                "Render shards require a fresh saved audio-understanding selection"
+            )
+        with timed(timings, "render"):
+            return render_shard(
+                payload,
+                output,
+                report,
+                stage_env,
+                records,
+                selection,
+                setup_environment["CLIPFORGE_RENDER_CONFIG"],
+            )
     invocation = 'source tools/colab_cache_env.sh && exec "$@"'
     try:
         with timed(timings, "render"):

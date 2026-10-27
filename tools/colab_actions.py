@@ -169,6 +169,21 @@ def stage_request():
         "clip_index": os.environ.get("CLIP_INDEX") or None,
         "config_file": os.environ.get("CONFIG_FILE") or None,
     }
+    shard = os.environ.get("CLIPFORGE_RENDER_SHARD", "")
+    if shard:
+        if not re.fullmatch(r"[1-9][0-9]?(,[1-9][0-9]?)*", shard):
+            raise ControlError("Invalid render shard")
+        indices = [int(item) for item in shard.split(",")]
+        parent = os.environ.get("CLIPFORGE_PARENT_REQUEST", "")
+        if (
+            stage["clip_index"] is not None
+            or len(indices) != len(set(indices))
+            or len(indices) > 10
+            or not re.fullmatch(r"[a-f0-9]{32}", parent)
+        ):
+            raise ControlError("Invalid render shard identity")
+        stage["clip_indices"] = indices
+        stage["parent_request"] = parent
     if (
         stage["audio_stage"] != "render"
         or not re.fullmatch(r"[0-9]{1,20}", stage["previous_run"])

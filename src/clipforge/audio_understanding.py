@@ -11,6 +11,8 @@ from pathlib import Path
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from threading import RLock
 
 from . import asr, audio_first, pipeline
 from .caption_emotions import annotation
@@ -49,10 +51,27 @@ def rules_file_for_phase(phase):
     return None
 
 
+class LockedRequest(dict):
+    """Serialize request-row updates with receipt snapshots across workers."""
+
+    def __init__(self, lock, value):
+        self._lock = lock
+        super().__init__(value)
+
+    def update(self, *args, **kwargs):
+        with self._lock:
+            return super().update(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            return super().__setitem__(key, value)
+
+
 class Client:
     def __init__(self, output, resume=None, continue_missing=False):
         self.output, self.resume = output, resume
         self.continue_missing = continue_missing
+        self._lock = RLock()
         self._vertex_token = os.environ.get("CLIPFORGE_VERTEX_ACCESS_TOKEN")
         self._vertex_token_at = time.monotonic()
         self.record = {
@@ -67,10 +86,15 @@ class Client:
         self.save()
 
     def save(self):
-        write_json(self.output / "audio-editor-receipt.json", self.record)
+        with self._lock:
+            write_json(self.output / "audio-editor-receipt.json", self.record)
 
     def vertex_token(self):
         """Refresh the same OIDC identity after a long selected-audio GPU job."""
+        with self._lock:
+            return self._vertex_token_locked()
+
+    def _vertex_token_locked(self):
         if time.monotonic() - self._vertex_token_at < 2700:
             if self._vertex_token:
                 return self._vertex_token
@@ -164,6 +188,7 @@ class Client:
                 for r in saved["requests"]
                 if r["phase"] == phase
                 and r.get("finish_reason") == "STOP"
+                and r.get("status") == "received"
                 and (
                     r.get("prompt_sha256") == prompt_sha256
                     or (not rule_files and not r.get("prompt_sha256"))
@@ -173,7 +198,8 @@ class Client:
                 if len(entries) != 1:
                     raise PipelineError("Ambiguous saved response for " + phase)
                 value = json.loads((self.resume / (phase + ".json")).read_text())
-                self.record["requests"].append({**entries[0], "reused": True})
+                with self._lock:
+                    self.record["requests"].append({**entries[0], "reused": True})
                 write_json(self.output / (phase + ".json"), value)
                 (self.output / (phase + ".prompt.txt")).write_text(
                     complete_prompt, encoding="utf-8"
@@ -198,6 +224,7 @@ class Client:
                     if (
                         not row.get("phase", "").startswith(phase_base + "-")
                         or row.get("finish_reason") != "STOP"
+                        or row.get("status") != "received"
                     ):
                         continue
                     if topic_source not in row.get("prompt_rules_sources", []):
@@ -220,9 +247,10 @@ class Client:
                     value = json.loads(
                         (self.resume / (previous_phase + ".json")).read_text()
                     )
-                    self.record["requests"].append(
-                        {**row, "reused": True, "prior_rules_preserved": True}
-                    )
+                    with self._lock:
+                        self.record["requests"].append(
+                            {**row, "reused": True, "prior_rules_preserved": True}
+                        )
                     write_json(self.output / (previous_phase + ".json"), value)
                     (self.output / row["prompt_file"]).write_text(
                         prior_prompt, encoding="utf-8"
@@ -270,13 +298,16 @@ class Client:
         data = json.dumps(body, ensure_ascii=False).encode()
         if len(data) > MAX_REQUEST_BYTES:
             raise PipelineError("Bounded Gemini input exceeded")
-        row = {
-            "phase": phase,
-            "model": model,
-            "thinking_level": thinking_level,
-            "status": "submitted",
-            "started_at": time.time(),
-        }
+        row = LockedRequest(
+            self._lock,
+            {
+                "phase": phase,
+                "model": model,
+                "thinking_level": thinking_level,
+                "status": "submitted",
+                "started_at": time.time(),
+            },
+        )
         if rule_files:
             row.update(
                 prompt_rules_file=" + ".join(source["file"] for source in rule_sources),
@@ -289,9 +320,10 @@ class Client:
             prompt_file=prompt_path.name,
             prompt_sha256=prompt_sha256,
         )
-        self.record["requests"].append(row)
-        self.record["new_generation_requests"] += 1
-        self.save()
+        with self._lock:
+            self.record["requests"].append(row)
+            self.record["new_generation_requests"] += 1
+            self.save()
         tick = time.monotonic()
         try:
             endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/{model}:"
@@ -788,11 +820,30 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             "full_source_asr": False,
         }
         client.save()
-        selection, transcripts = [], []
-        for index, clip in enumerate(chosen, 1):
-            value = clean_selected_clip(
-                client, gpu_clips[index - 1], index, clip, glossary
+        # Refresh once before concurrent requests so workers share the same identity.
+        client.vertex_token()
+        subtitle_started = time.monotonic()
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, min(5, len(chosen)))) as pool:
+                futures = [
+                    pool.submit(
+                        clean_selected_clip,
+                        client,
+                        gpu_clips[index - 1],
+                        index,
+                        clip,
+                        glossary,
+                    )
+                    for index, clip in enumerate(chosen, 1)
+                ]
+                values = [future.result() for future in futures]
+        finally:
+            client.record["timings"]["subtitle_parallel_elapsed_seconds"] = round(
+                time.monotonic() - subtitle_started, 3
             )
+            client.save()
+        selection, transcripts = [], []
+        for index, (clip, value) in enumerate(zip(chosen, values), 1):
             transcript, turns = selected_transcript(value, clip.end - clip.start)
             client.record.setdefault("subtitle_display", []).append(
                 {
