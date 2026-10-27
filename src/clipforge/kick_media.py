@@ -405,21 +405,22 @@ class KickVOD:
         return self._fetch(self.session, url, limit, lock=self._session_lock)
 
     def _fetch(self, session, url, limit, *, segment=False, lock=None):
-        last_status, forbidden_retried = "unavailable", False
-        for attempt in range(1, 2):
+        # These are idempotent media reads, not model submissions or workflow
+        # dispatches. Retry one transient failure, without trying another account.
+        last_status = "unavailable"
+        for attempt in range(1, 3):
             try:
                 return self._fetch_once(session, url, limit, segment=segment, lock=lock)
             except HTTPFailure as error:
                 last_status = error.status
-                if error.status == 403 and not forbidden_retried:
-                    forbidden_retried, delay = True, retry_after(error.headers, 10)
-                elif error.status == 429 or 500 <= error.status <= 504:
-                    delay = retry_after(error.headers, (5, 15, 45)[min(attempt - 1, 2)])
-                else:
+                if error.status != 429 and not 500 <= error.status <= 504:
                     break
+                delay = retry_after(error.headers or {}, 5)
             except self._transport_errors:
-                delay = (5, 15, 45)[min(attempt - 1, 2)]
-            if attempt == 1:
+                delay = 5
+            # Do not retry earlier than a server's requested delay, and do not
+            # keep the production waiting for an arbitrarily long cooldown.
+            if attempt == 2 or delay > 15:
                 break
             time.sleep(delay)
         raise PipelineError(

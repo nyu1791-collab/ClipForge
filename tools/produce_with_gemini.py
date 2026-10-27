@@ -71,11 +71,15 @@ def main():
         help="Reuse completed clips from the previous render pair",
     )
     ap.add_argument("--clips", type=int)
-    ap.add_argument("--config-file", default="config.landscape-long.example.json")
+    # The user's normal production target is 360p for both retrieval and output.
+    # Explicit profiles still opt into the 720p or 1080p text canvases.
+    ap.add_argument(
+        "--config-file", default="config.landscape-long-preview.example.json"
+    )
     ap.add_argument(
         "--render-profile",
         choices=["preview", "standard", "full-hd"],
-        help="360p / 720p / 1080p text canvas; source stays <=360p",
+        help="preview: 360p (default) / standard: 720p / full-hd: 1080p; source <=360p",
     )
     ap.add_argument(
         "--deliver-drive",

@@ -119,8 +119,16 @@ def verify_manifest(root, manifest):
     )
 
 
-def safe_extract(archive, destination):
+def safe_extract(archive, destination, *, files=None, hashes=None):
     """The archive root is the stage root; nested parent directories are never guessed."""
+    if files is not None and (not isinstance(files, dict) or not files):
+        fail("RESULT_STRUCTURE_INVALID")
+    if hashes is not None and not isinstance(hashes, dict):
+        fail("RESULT_STRUCTURE_INVALID")
+    for filename, expected in (hashes or {}).items():
+        member(filename)
+        if not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected):
+            fail("RESULT_STRUCTURE_INVALID")
     if destination.exists() or any(
         p.is_symlink() for p in [destination, *destination.parents]
     ):
@@ -143,11 +151,27 @@ def safe_extract(archive, destination):
             total += info.file_size
             if total > MAX_BYTES or len(seen) > MAX_FILES:
                 fail("RESULT_STRUCTURE_INVALID")
+            if files is not None:
+                description = files.get(info.filename)
+                if (
+                    not isinstance(description, dict)
+                    or description.get("bytes") != info.file_size
+                ):
+                    fail("RESULT_STRUCTURE_INVALID")
             target = destination / info.filename
             target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             with bundle.open(info) as source, target.open("xb") as out:
-                shutil.copyfileobj(source, out, 1024 * 1024)
+                expected = (hashes or {}).get(info.filename)
+                digest = hashlib.sha256() if expected is not None else None
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    out.write(chunk)
+                    if digest is not None:
+                        digest.update(chunk)
+                if digest is not None and digest.hexdigest() != expected:
+                    fail("RESULT_SHA_MISMATCH")
             target.chmod(0o600)
+    if (files is not None and seen != set(files)) or not set(hashes or {}) <= seen:
+        fail("RESULT_STRUCTURE_INVALID")
 
 
 def private_repo():
@@ -217,11 +241,39 @@ def download(run_id, name, destination, expected=None, *, record=None):
             or (expected is not None and manifest != expected)
         ):
             fail("RESULT_STRUCTURE_INVALID")
+        schema = manifest.get("schema")
+        if schema not in {1, 2}:
+            fail("RESULT_STRUCTURE_INVALID")
+        files = manifest.get("files")
+        if not isinstance(files, dict):
+            fail("RESULT_STRUCTURE_INVALID")
+        if schema == 1:
+            archive_hash = manifest.get("archive_sha256")
+            if not isinstance(archive_hash, str) or not re.fullmatch(
+                r"[a-f0-9]{64}", archive_hash
+            ):
+                fail("RESULT_STRUCTURE_INVALID")
+            if sha(work / "result.zip") != archive_hash:
+                fail("RESULT_SHA_MISMATCH")
+            hashes = {
+                filename: description.get("sha256")
+                for filename, description in files.items()
+                if isinstance(description, dict)
+            }
+        else:
+            hashes = manifest.get("producer_sha256")
+            if not isinstance(hashes, dict) or not hashes:
+                fail("RESULT_STRUCTURE_INVALID")
         unpacked = work / "unpacked"
-        safe_extract(work / "result.zip", unpacked)
-        validate_identity(
+        safe_extract(work / "result.zip", unpacked, files=files, hashes=hashes)
+        receipt = validate_identity(
             unpacked, run_id, name, manifest["source_ref"], audit_hashes=False
         )
+        if schema == 2 and (
+            receipt != manifest.get("request_receipt")
+            or receipt.get("sha256") != hashes
+        ):
+            fail("RESULT_STRUCTURE_INVALID")
         if destination.exists() or destination.is_symlink():
             fail("RESULT_STRUCTURE_INVALID")
         unpacked.rename(destination)

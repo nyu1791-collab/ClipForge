@@ -139,6 +139,63 @@ def test_remote_roundtrip_and_tamper(stage, tmp_path, monkeypatch):
     assert not (tmp_path / "bad").exists()
 
 
+def test_current_transfer_checks_files_and_producer_hashes_during_extraction(
+    stage, tmp_path, monkeypatch
+):
+    receipt = json.loads((stage / "request-receipt.json").read_text())
+    record = {
+        "schema": 2,
+        "run_id": RUN,
+        "name": NAME,
+        "source_ref": SHA,
+        "files": transfer.inventory(stage, include_hashes=False),
+        "producer_sha256": receipt["sha256"],
+        "request_receipt": receipt,
+        "stage_manifest": {},
+        "gpu_receipt": None,
+        "post_upload_audit": "not_run",
+    }
+    archive = tmp_path / "remote.zip"
+
+    def write_archive(*, changed=False, extra=False):
+        with zipfile.ZipFile(archive, "w") as out:
+            for name in record["files"]:
+                data = (stage / name).read_bytes()
+                if changed and name == "transcripts/asr.json":
+                    data = b"X" + data[1:]  # preserve length and ZIP CRC correctness
+                out.writestr(name, data)
+            if extra:
+                out.writestr("unexpected", "data")
+
+    write_archive()
+    monkeypatch.setattr(
+        transfer,
+        "release",
+        lambda tag: {
+            "assets": [
+                {"name": "result.zip", "size": archive.stat().st_size},
+                {"name": "transfer.json", "size": 1000},
+            ]
+        },
+    )
+
+    def gh(*args):
+        folder = Path(args[-1])
+        (folder / "result.zip").write_bytes(archive.read_bytes())
+        (folder / "transfer.json").write_text(json.dumps(record))
+
+    monkeypatch.setattr(transfer, "gh", gh)
+    transfer.download(RUN, NAME, tmp_path / "valid")
+    write_archive(changed=True)
+    with pytest.raises(transfer.TransferError, match="RESULT_SHA_MISMATCH"):
+        transfer.download(RUN, NAME, tmp_path / "changed")
+    assert not (tmp_path / "changed").exists()
+    write_archive(extra=True)
+    with pytest.raises(transfer.TransferError, match="RESULT_STRUCTURE_INVALID"):
+        transfer.download(RUN, NAME, tmp_path / "extra")
+    assert not (tmp_path / "extra").exists()
+
+
 def test_missing_remote_is_not_success(monkeypatch, tmp_path):
     monkeypatch.setattr(transfer, "private_repo", lambda: None)
     monkeypatch.setattr(transfer, "release", lambda tag: None)
@@ -175,22 +232,41 @@ def test_corrupt_release_never_falls_back_to_artifacts(monkeypatch, tmp_path):
 
 
 def test_publish_rejects_remote_failure_and_never_overwrites(stage, monkeypatch):
-    from types import SimpleNamespace
-
     monkeypatch.setenv("GITHUB_RUN_ID", RUN)
     monkeypatch.setattr(transfer, "private_repo", lambda: None)
     monkeypatch.setattr(transfer, "release", lambda tag: {"assets": []})
+    monkeypatch.setattr(transfer, "read_transfer", lambda *args: {"different": True})
 
     def never_upload(*args):
         pytest.fail("existing tags must never be overwritten")
 
     monkeypatch.setattr(transfer, "gh", never_upload)
-    monkeypatch.setattr(
-        transfer.subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1)
-    )
-    with pytest.raises(transfer.TransferError, match="RESULT_UPLOAD_FAILED"):
+    with pytest.raises(transfer.TransferError, match="RESULT_STRUCTURE_INVALID"):
         transfer.publish(stage, NAME)
     assert transfer.main(["publish", str(stage), NAME]) == 1
+
+
+def test_publish_reuses_identical_release_without_upload(stage, monkeypatch, capsys):
+    receipt = json.loads((stage / "request-receipt.json").read_text())
+    record = {
+        "schema": 2,
+        "run_id": RUN,
+        "name": NAME,
+        "source_ref": SHA,
+        "files": transfer.inventory(stage, include_hashes=False),
+        "producer_sha256": receipt["sha256"],
+        "request_receipt": receipt,
+        "stage_manifest": {},
+        "gpu_receipt": None,
+        "post_upload_audit": "not_run",
+    }
+    monkeypatch.setenv("GITHUB_RUN_ID", RUN)
+    monkeypatch.setattr(transfer, "private_repo", lambda: None)
+    monkeypatch.setattr(transfer, "release", lambda tag: {"assets": []})
+    monkeypatch.setattr(transfer, "read_transfer", lambda *args: record)
+    monkeypatch.setattr(transfer, "gh", lambda *args: pytest.fail("unexpected upload"))
+    transfer.publish(stage, NAME)
+    assert "RESULT_REUSED" in capsys.readouterr().out
 
 
 def test_archive_rejects_destination_with_symlink_parent(tmp_path):

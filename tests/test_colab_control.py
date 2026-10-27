@@ -499,7 +499,7 @@ class ControlTests(unittest.TestCase):
                 stdout.getvalue(),
             )
 
-    def test_report_stages_prints_the_worker_error_on_its_own_line(self):
+    def test_report_stages_prints_only_the_worker_error_type(self):
         message = "clip failed the quality gate: captions.srt and captions.ass differ"
         with tempfile.TemporaryDirectory() as temporary:
             (Path(temporary) / "gpu-receipt.json").write_text(
@@ -521,8 +521,9 @@ class ControlTests(unittest.TestCase):
                 controller.report_stages(temporary)
         self.assertEqual(
             stdout.getvalue().splitlines()[1],
-            "Worker error: PipelineError: " + message,
+            "Worker error: PipelineError",
         )
+        self.assertNotIn(message, stdout.getvalue())
 
     def test_report_stages_without_worker_error_prints_only_the_stage_line(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -535,6 +536,23 @@ class ControlTests(unittest.TestCase):
                 controller.report_stages(temporary)
         self.assertEqual(len(stdout.getvalue().splitlines()), 1)
         self.assertNotIn("Worker error", stdout.getvalue())
+
+    def test_report_stages_never_prints_private_ascii_log_text(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            (Path(temporary) / "gpu-receipt.json").write_text(
+                json.dumps(
+                    {
+                        "stage": "prefetch",
+                        "error_type": "RuntimeError",
+                        "log_tail": ["private-english-dialogue-and-secret"],
+                    }
+                )
+            )
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                control.Controller(temporary).report_stages(temporary)
+        self.assertNotIn("private-english-dialogue-and-secret", stdout.getvalue())
+        self.assertIn("private result", stdout.getvalue())
 
     def test_worker_error_keeps_type_and_bounded_message_only(self):
         with tempfile.TemporaryDirectory() as temporary:
