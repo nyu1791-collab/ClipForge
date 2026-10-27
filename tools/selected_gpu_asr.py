@@ -211,14 +211,21 @@ def run_parallel(source, plan_file, output):
             futures = {pool.submit(run_part, slot): slot for slot in range(count)}
             errors = []
             for future in as_completed(futures):
+                part_info = state["parts"][futures[future]]
+                part_result_file = (
+                    root / part_info["directory"] / "selected-gpu-asr.json"
+                )
                 try:
                     future.result()
-                    part_info = state["parts"][futures[future]]
-                    part_result = json.loads(
-                        (
-                            root / part_info["directory"] / "selected-gpu-asr.json"
-                        ).read_text()
-                    )
+                except Exception as error:
+                    errors.append(error)
+                    part_info["error_type"] = type(error).__name__
+                    # A controller may fail after saving a complete transcript.
+                    # Use it only after the same identity checks as a normal result.
+                    if not part_result_file.is_file():
+                        continue
+                try:
+                    part_result = json.loads(part_result_file.read_text())
                     if (
                         part_result.get("status") != "complete"
                         or part_result.get("input_key") != part_info["input_key"]
@@ -242,6 +249,7 @@ def run_parallel(source, plan_file, output):
                         )
                 except Exception as error:
                     errors.append(error)
+                    part_info["result_error_type"] = type(error).__name__
         if errors:
             raise ControlError(
                 "Selected-audio GPU parts did not all complete; inspect saved states"
@@ -315,6 +323,7 @@ def run(source, plan_file, output):
     work = output / "selected-gpu-work"
     work.mkdir(mode=0o700)
     controller = Controller(work / "control")
+    phase = "preparing_audio"
     try:
         audio, mappings = prepare_audio(source, plan["clips"], work)
         request = {
@@ -331,10 +340,12 @@ def run(source, plan_file, output):
         }
         request_path = work / "request.json"
         write_json(request_path, request)
+        phase = "checking_private_storage"
         if github("api", "repos/" + REPOSITORY, "--jq", ".private").strip() != "true":
             raise ControlError("Selected ASR storage must remain private")
         state["status"] = "staging_or_unknown"
         write_json(state_path, state)
+        phase = "staging_input"
         github(
             "release",
             "create",
@@ -355,6 +366,7 @@ def run(source, plan_file, output):
             pending = str(register_pending(plan["input_key"]))
         try:
             slot_wait_started = time.monotonic()
+            phase = "waiting_for_gpu"
             with gpu_slot("asr", work / "control", pending=pending) as lease:
                 state.update(
                     gpu_slot=lease.slot_index + 1,
@@ -377,16 +389,27 @@ def run(source, plan_file, output):
                         flush=True,
                     )
                     lease.mark_requested()
+                    phase = "running_gpu"
                     controller.start("asr")
                     controller.run(work / "result")
                 finally:
-                    if controller.state_path.exists():
-                        controller.stop()
-                    lease.confirm_release()
-                    state["gpu_slot_released_at"] = time.time()
+                    active_error = sys.exc_info()[0] is not None
+                    if not active_error:
+                        phase = "releasing_gpu"
+                    try:
+                        if controller.state_path.exists():
+                            controller.stop()
+                    except Exception as error:
+                        state["stop_error_type"] = type(error).__name__
+                        if not active_error:
+                            raise
+                    else:
+                        lease.confirm_release()
+                        state["gpu_slot_released_at"] = time.time()
                     write_json(state_path, state)
         finally:
             Path(pending).unlink(missing_ok=True)
+        phase = "saving_result"
         raw = json.loads((work / "result/transcript.json").read_text())
         result = {
             "status": "complete",
@@ -401,10 +424,20 @@ def run(source, plan_file, output):
         state.update(
             status="complete", elapsed_sec=round(time.time() - state["started_at"], 3)
         )
+    except Exception as error:
+        state.update(
+            failed_phase=phase, error_type=type(error).__name__, failed_at=time.time()
+        )
+        raise
     finally:
+        active_error = sys.exc_info()[0] is not None
         try:
             if controller.state_path.exists():
                 controller.stop()
+        except Exception as error:
+            state["stop_error_type"] = type(error).__name__
+            if not active_error:
+                raise
         finally:
             state.setdefault("elapsed_sec", round(time.time() - state["started_at"], 3))
             write_json(state_path, state)
