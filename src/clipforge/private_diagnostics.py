@@ -20,6 +20,13 @@ def sanitized_tail(value, *, environment=None, lines=50):
         ):
             text = text.replace(secret, "[REDACTED]")
     text = re.sub(r"(?i)https?://[^\s\"'<>]+", "[URL REDACTED]", text)
+    # A Cookie header can contain many semicolon-separated values and Basic
+    # authorization has a separate encoded value: redact the whole remainder.
+    text = re.sub(
+        r"(?im)\b((?:set-)?cookie|authorization)([\"']?\s*[:=]\s*)[^\r\n]*",
+        r"\1\2[REDACTED]",
+        text,
+    )
     text = re.sub(r"(?i)bearer\s+[^\s\"',;]+", "Bearer [REDACTED]", text)
     text = re.sub(
         r"(?i)(token|password|secret|api[_-]?key|authorization|cookie)"

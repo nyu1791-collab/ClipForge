@@ -2,6 +2,7 @@
 
 import json
 import math
+import time
 from fractions import Fraction
 from pathlib import Path
 
@@ -481,12 +482,14 @@ def render(
         "+faststart",
         str(Path(destination).resolve()),
     ]
+    ffmpeg_started_at = time.time()
     result = process(
         command,
         cwd=Path(destination).parent,
         timeout=max(300, duration * 20),
         stage="render",
     )
+    ffmpeg_finished_at = time.time()
     if result.stderr.strip():
         raise PipelineError("clip rendering failed")
     info = probe(destination)
@@ -494,4 +497,10 @@ def render(
         raise PipelineError("rendered duration does not match the selection")
     if (info["width"], info["height"]) != (width, height):
         raise PipelineError("rendered dimensions do not match the requested layout")
-    return info
+    return {
+        **info,
+        "ffmpeg_process_timing": {
+            "started_at": ffmpeg_started_at,
+            "finished_at": ffmpeg_finished_at,
+        },
+    }

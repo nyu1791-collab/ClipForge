@@ -3,13 +3,20 @@
 from contextlib import contextmanager
 import importlib
 import json
+import subprocess
 import sys
 import threading
 from types import SimpleNamespace
 
 import pytest
 
-from clipforge import audio_understanding, storage, streaming_render
+from clipforge import (
+    audio_understanding,
+    media,
+    private_diagnostics,
+    storage,
+    streaming_render,
+)
 from clipforge.models import Settings
 
 
@@ -155,3 +162,47 @@ def test_colab_progress_exposes_only_known_markers(monkeypatch, capsys):
     assert "CLIPFORGE_BOOTSTRAP_WORKER" in printed
     assert "CLIPFORGE_DIAG_STAGE_render_RuntimeError" in printed
     assert "private speech" not in printed
+
+
+def test_private_diagnostics_redacts_complete_cookie_and_auth_headers():
+    lines = private_diagnostics.sanitized_tail(
+        "Cookie: first=session-one; second=session-two\n"
+        "Authorization: Basic encoded-credentials\n"
+        "ordinary ffmpeg diagnostic"
+    )
+    result = "\n".join(lines)
+    assert "session-one" not in result
+    assert "session-two" not in result
+    assert "encoded-credentials" not in result
+    assert "ordinary ffmpeg diagnostic" in result
+
+
+def test_render_records_ffmpeg_process_start_and_end(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        media,
+        "probe",
+        lambda path: {
+            "duration": 5,
+            "width": 640,
+            "height": 360,
+            "audio": False,
+            "frame_rate": "30/1",
+        },
+    )
+    monkeypatch.setattr(
+        media,
+        "process",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, b"", b""),
+    )
+    moments = iter([100.0, 103.0])
+    monkeypatch.setattr(media.time, "time", lambda: next(moments))
+    result = media.render(
+        tmp_path / "input.mp4",
+        tmp_path / "output.mp4",
+        SimpleNamespace(start=0.0, end=5.0),
+        Settings(aspect="16:9", height=360),
+    )
+    assert result["ffmpeg_process_timing"] == {
+        "started_at": 100.0,
+        "finished_at": 103.0,
+    }
