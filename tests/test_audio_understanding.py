@@ -103,7 +103,7 @@ def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
         if p.startswith("topics")
     )
     assert all(
-        "要約せず整文する" in prompt and attached is None
+        "要約せず整文する" in prompt and attached is not None
         for p, prompt, _, attached in calls
         if p.startswith("transcript")
     )

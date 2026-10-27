@@ -46,7 +46,6 @@ from .caption_sentences import (
 )
 from .models import Word
 from .speaker_captions import SPEAKER_COLORS, speaker_for_token, validate_turns
-from .storage import PipelineError
 
 __all__ = [
     "NO_LINE_START",
@@ -696,8 +695,24 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
     subtitles.styles["Sequential"] = pysubs2.SSAStyle(
         secondarycolor=pysubs2.Color(*YELLOW, 255), **base
     )
+    known_speakers = sorted(
+        {
+            turn["speaker_id"]
+            for turn in validate_turns(speaker_turns or [], duration)
+            if turn["speaker_id"] is not None
+        }
+    )
+    positions = (
+        {known_speakers[0]: 1, known_speakers[1]: 3} if len(known_speakers) == 2 else {}
+    )
     for speaker, color in SPEAKER_COLORS.items():
         speaker_base = {**base, "primarycolor": pysubs2.Color(*color)}
+        if speaker in positions:
+            speaker_base["alignment"] = (
+                pysubs2.Alignment.BOTTOM_LEFT
+                if positions[speaker] == 1
+                else pysubs2.Alignment.BOTTOM_RIGHT
+            )
         # Karaoke retains the speaker's hue on both sides of the fill; sequential
         # reveal keeps its transparent secondary color. The hue never cycles yellow.
         subtitles.styles[speaker] = pysubs2.SSAStyle(
@@ -773,12 +788,12 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
                 event_style = f"{event_style}__{mood}_{level}"
         text = group_text(items, measure, line_px, settings.caption)
         if placed:
-            # Bottom centre (\an2); the event's own MarginV sets how high the caption sits.
+            # Preserve the speaker's horizontal position when a vertical lift is used.
             event = pysubs2.SSAEvent(
                 start=start,
                 end=end,
                 style=event_style,
-                text=r"{\an2}" + text,
+                text="{\\an" + str(positions.get(speaker, 2)) + "}" + text,
                 marginv=margin,
             )
         else:
