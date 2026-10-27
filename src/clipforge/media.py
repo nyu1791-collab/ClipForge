@@ -3,11 +3,26 @@
 import json
 import math
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from fractions import Fraction
 from pathlib import Path
 
 from .hardware import encode_threads, video_options
 from .storage import PipelineError, process
+
+_FFMPEG_TIMING = ContextVar("clipforge_ffmpeg_timing", default=None)
+
+
+@contextmanager
+def capture_ffmpeg_timing(timings):
+    """Record this render's process interval without changing media metadata."""
+    token = _FFMPEG_TIMING.set(timings)
+    try:
+        yield
+    finally:
+        _FFMPEG_TIMING.reset(token)
+
 
 PROTOCOLS = ["-protocol_whitelist", "file,pipe"]
 FORMATS = ["-format_whitelist", "mov,matroska,avi,flv,mpeg,mpegts,ogg,asf,wav,flac,mp3"]
@@ -482,14 +497,19 @@ def render(
         "+faststart",
         str(Path(destination).resolve()),
     ]
-    ffmpeg_started_at = time.time()
-    result = process(
-        command,
-        cwd=Path(destination).parent,
-        timeout=max(300, duration * 20),
-        stage="render",
-    )
-    ffmpeg_finished_at = time.time()
+    timing = _FFMPEG_TIMING.get()
+    ffmpeg_started_at = time.time() if timing is not None else None
+    try:
+        result = process(
+            command,
+            cwd=Path(destination).parent,
+            timeout=max(300, duration * 20),
+            stage="render",
+        )
+    finally:
+        if timing is not None:
+            timing["ffmpeg_started_at"] = ffmpeg_started_at
+            timing["ffmpeg_finished_at"] = time.time()
     if result.stderr.strip():
         raise PipelineError("clip rendering failed")
     info = probe(destination)
@@ -497,10 +517,4 @@ def render(
         raise PipelineError("rendered duration does not match the selection")
     if (info["width"], info["height"]) != (width, height):
         raise PipelineError("rendered dimensions do not match the requested layout")
-    return {
-        **info,
-        "ffmpeg_process_timing": {
-            "started_at": ffmpeg_started_at,
-            "finished_at": ffmpeg_finished_at,
-        },
-    }
+    return info

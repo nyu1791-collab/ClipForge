@@ -196,13 +196,13 @@ def test_render_records_ffmpeg_process_start_and_end(tmp_path, monkeypatch):
     )
     moments = iter([100.0, 103.0])
     monkeypatch.setattr(media.time, "time", lambda: next(moments))
-    result = media.render(
-        tmp_path / "input.mp4",
-        tmp_path / "output.mp4",
-        SimpleNamespace(start=0.0, end=5.0),
-        Settings(aspect="16:9", height=360),
-    )
-    assert result["ffmpeg_process_timing"] == {
-        "started_at": 100.0,
-        "finished_at": 103.0,
-    }
+    timing = {}
+    with media.capture_ffmpeg_timing(timing):
+        result = media.render(
+            tmp_path / "input.mp4",
+            tmp_path / "output.mp4",
+            SimpleNamespace(start=0.0, end=5.0),
+            Settings(aspect="16:9", height=360),
+        )
+    assert timing == {"ffmpeg_started_at": 100.0, "ffmpeg_finished_at": 103.0}
+    assert "ffmpeg_process_timing" not in result

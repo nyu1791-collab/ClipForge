@@ -466,21 +466,30 @@ def render_clip(
                 **({"speaker_turns": speaker_turns} if speaker_turns else {}),
             ),
         )
-        info = timed(
-            timings,
-            "encode",
-            lambda: media.render(
-                source,
-                directory / "video.mp4",
-                clip,
-                settings,
-                ass=directory / "captions.ass",
-                **({"sound_effects": sound_effects} if sound_effects else {}),
-                **({"chat_ass": directory / "chat.ass"} if settings.chat_panel else {}),
-                # Only the chat fill crops by position; standard layouts keep the framing setting.
-                **({"crop_x": layout["x"]} if layout and settings.chat_panel else {}),
-            ),
-        )
+        with media.capture_ffmpeg_timing(timings):
+            info = timed(
+                timings,
+                "encode",
+                lambda: media.render(
+                    source,
+                    directory / "video.mp4",
+                    clip,
+                    settings,
+                    ass=directory / "captions.ass",
+                    **({"sound_effects": sound_effects} if sound_effects else {}),
+                    **(
+                        {"chat_ass": directory / "chat.ass"}
+                        if settings.chat_panel
+                        else {}
+                    ),
+                    # Only the chat fill crops by position; standard layouts keep the framing setting.
+                    **(
+                        {"crop_x": layout["x"]}
+                        if layout and settings.chat_panel
+                        else {}
+                    ),
+                ),
+            )
         visual_reference = {"status": "not_requested"}
         if settings.visual_reference_sheet:
             try:
