@@ -326,6 +326,16 @@ def main():
                     args.source_ref,
                     audit_hashes=False,
                 )
+            elif (args.output / "completed").is_dir() and any(
+                (args.output / "completed").glob("clip-*")
+            ):
+                # Preserve earlier per-clip downloads; collect only missing clips and
+                # assemble the final bundle from the verified transfer records.
+                from clipforge.streaming_collection import assemble_collected
+
+                assemble_collected(
+                    args.output, final_run, final_request, args.source_ref, metadata
+                )
             else:
                 download(final_run, "clipforge-result-" + final_request, local)
         state["render_complete"] = True

@@ -11,13 +11,19 @@ import subprocess
 import sys
 import time
 import wave
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from colab_actions import Controller, ControlError
 from colab_bundle import ReleaseBundles, digest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from clipforge.storage import write_json
+from clipforge.gpu_slots import (
+    clear_stopped,
+    gpu_slot,
+    register_pending,
+    root as gpu_slots_root,
+)
 
 REPOSITORY = "nyu1791-collab/ai-model-workers"
 RATE = 16000
@@ -122,7 +128,7 @@ def run_parallel(source, plan_file, output):
     """Run disjoint selected topics on up to four separately owned GPU runtimes."""
     plan = json.loads(plan_file.read_text())
     clips = plan["clips"]
-    count = min(4, len(clips))
+    count = len(clips)
     if count <= 1:
         return run(source, plan_file, output)
     state_path = output / "selected-gpu-asr-state.json"
@@ -130,9 +136,7 @@ def run_parallel(source, plan_file, output):
         raise ControlError(
             "Selected GPU ASR was already attempted; inspect its saved state"
         )
-    groups = [[] for _ in range(count)]
-    for index in range(len(clips)):
-        groups[index % count].append(index)
+    groups = [[index] for index in range(count)]
     root = output / "selected-gpu-parts"
     root.mkdir(mode=0o700)
     state = {
@@ -159,36 +163,83 @@ def run_parallel(source, plan_file, output):
         )
     state["status"] = "gpu_requests_or_unknown"
     write_json(state_path, state)
+    pending = []
+    try:
+        for slot in range(count):
+            pending.append(
+                register_pending(plan["input_key"] + ":" + str(slot), slot + 1)
+            )
+    except Exception:
+        for marker in pending:
+            marker.unlink(missing_ok=True)
+        raise
 
     def run_part(slot):
         part = root / str(slot)
-        env = {**os.environ, "CLIPFORGE_SHARED_BALANCE": "1"}
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--single",
-                "--source",
-                str(source),
-                "--plan",
-                str(part / "plan.json"),
-                "--output",
-                str(part),
-            ],
-            env=env,
-        )
+        env = {
+            **os.environ,
+            "CLIPFORGE_SHARED_BALANCE": "1",
+            "CLIPFORGE_ALLOCATION_WAIT_SECONDS": "600",
+            "CLIPFORGE_GPU_PENDING": str(pending[slot]),
+            "CLIPFORGE_CLIP_INDEX": str(slot + 1),
+        }
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).resolve()),
+                    "--single",
+                    "--source",
+                    str(source),
+                    "--plan",
+                    str(part / "plan.json"),
+                    "--output",
+                    str(part),
+                ],
+                env=env,
+            )
+        finally:
+            pending[slot].unlink(missing_ok=True)
         if result.returncode:
             raise ControlError(
                 "A selected-audio GPU part failed; saved part states were retained"
             )
 
     try:
+        # Prepare queued clips concurrently; the shared slot pool still caps GPUs at four.
         with ThreadPoolExecutor(max_workers=count) as pool:
-            futures = [pool.submit(run_part, slot) for slot in range(count)]
+            futures = {pool.submit(run_part, slot): slot for slot in range(count)}
             errors = []
-            for future in futures:
+            for future in as_completed(futures):
                 try:
                     future.result()
+                    part_info = state["parts"][futures[future]]
+                    part_result = json.loads(
+                        (
+                            root / part_info["directory"] / "selected-gpu-asr.json"
+                        ).read_text()
+                    )
+                    if (
+                        part_result.get("status") != "complete"
+                        or part_result.get("input_key") != part_info["input_key"]
+                        or len(part_result.get("clips", []))
+                        != len(part_info["indices"])
+                    ):
+                        raise ControlError(
+                            "Selected-audio part identity or clip count differs"
+                        )
+                    for index, transcript in zip(
+                        part_info["indices"], part_result["clips"]
+                    ):
+                        write_json(
+                            output / f"selected-gpu-clip-{index + 1}.json",
+                            {
+                                "status": "complete",
+                                "input_key": plan["input_key"],
+                                "clip_index": index + 1,
+                                "transcript": transcript,
+                            },
+                        )
                 except Exception as error:
                     errors.append(error)
         if errors:
@@ -223,6 +274,8 @@ def run_parallel(source, plan_file, output):
         )
         state["status"] = "complete"
     finally:
+        for marker in pending:
+            marker.unlink(missing_ok=True)
         for part_info in state["parts"]:
             part_state = root / part_info["directory"] / "selected-gpu-asr-state.json"
             if part_state.is_file():
@@ -297,10 +350,32 @@ def run(source, plan_file, output):
         os.environ.update(REQUEST_ID=child, INPUT_TAG=tag)
         state["status"] = "gpu_requested_or_unknown"
         write_json(state_path, state)
-        controller.start("asr")
-        controller.run(
-            work / "result"
-        )  # Frees the GPU before collecting the small JSON.
+        pending = os.environ.get("CLIPFORGE_GPU_PENDING")
+        if not pending:
+            pending = str(register_pending(plan["input_key"]))
+        try:
+            with gpu_slot("asr", work / "control", pending=pending) as lease:
+                try:
+                    print(
+                        json.dumps(
+                            {
+                                "stage": "asr",
+                                "clip": os.environ.get("CLIPFORGE_CLIP_INDEX", "1"),
+                                "gpu_slot": lease.slot_index + 1,
+                                "status": "starting",
+                            }
+                        ),
+                        flush=True,
+                    )
+                    lease.mark_requested()
+                    controller.start("asr")
+                    controller.run(work / "result")
+                finally:
+                    if controller.state_path.exists():
+                        controller.stop()
+                    lease.confirm_release()
+        finally:
+            Path(pending).unlink(missing_ok=True)
         raw = json.loads((work / "result/transcript.json").read_text())
         result = {
             "status": "complete",
@@ -320,6 +395,7 @@ def run(source, plan_file, output):
             if controller.state_path.exists():
                 controller.stop()
         finally:
+            state.setdefault("elapsed_sec", round(time.time() - state["started_at"], 3))
             write_json(state_path, state)
 
 
@@ -401,10 +477,21 @@ def main():
         controls.extend(
             (args.output / "selected-gpu-parts").glob("*/selected-gpu-work/control")
         )
+        failures = []
         for control in controls:
             controller = Controller(control)
             if controller.state_path.exists():
-                controller.stop()
+                try:
+                    controller.stop()
+                    clear_stopped(control)
+                except Exception as error:
+                    failures.append(type(error).__name__)
+        if failures:
+            raise ControlError(
+                "Release could not be confirmed for every selected-audio GPU"
+            )
+        for marker in (gpu_slots_root() / "pending-asr").glob("*.wait"):
+            marker.unlink(missing_ok=True)
     elif args.recover:
         recover(args.recover, args.output)
     elif args.cleanup_input:

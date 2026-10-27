@@ -402,6 +402,7 @@ def render_shard(payload, output, report, stage_env, records, selection, config)
                     "mode": "audio-stage",
                     "status": "clip_rendered",
                     "clip_index": index,
+                    "render_batch_id": payload["request_id"],
                     "human_review_performed": False,
                     "gpu": report.get("gpu"),
                     "host": report.get("host"),
@@ -519,7 +520,7 @@ def render_stage(payload, output, report, timings, environment):
     if payload.get("audio_review_release"):
         tag = payload["audio_review_release"]
         if not re.fullmatch(
-            r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|revision-[a-f0-9]{32})",
+            r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|(?:revision|shard)-[a-f0-9]{32})",
             tag,
         ):
             raise RuntimeError("Invalid audio review release")
@@ -538,11 +539,12 @@ def render_stage(payload, output, report, timings, environment):
                 ("final-selection.json", 4 * 1024**2),
             ]:
                 bundles.download_asset(assets[name], records / name, bound)
+        editorial_receipt = json.loads(
+            (records / "audio-editor-receipt.json").read_text()
+        )
         if (
-            json.loads((records / "audio-editor-receipt.json").read_text()).get(
-                "status"
-            )
-            != "complete"
+            editorial_receipt.get("status") != "complete"
+            and editorial_receipt.get("editing_status") != "complete"
         ):
             raise RuntimeError("Audio review did not complete")
         if json.loads((records / "final-selection.json").read_text()) != json.loads(

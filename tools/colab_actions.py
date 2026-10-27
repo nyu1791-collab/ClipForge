@@ -204,7 +204,7 @@ def stage_request():
     # Private audio-editor selections include speaker turns and sparse text edits.
     editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
     if editorial and not re.fullmatch(
-        r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|revision-[a-f0-9]{32})",
+        r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|(?:revision|shard)-[a-f0-9]{32})",
         editorial,
     ):
         raise ControlError("Invalid audio review release")
@@ -412,7 +412,7 @@ class Controller:
             editorial = os.environ.get("CLIPFORGE_AUDIO_REVIEW_RELEASE", "")
             if editorial:
                 if not re.fullmatch(
-                    r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|revision-[a-f0-9]{32})",
+                    r"clipforge-kick-editorial-(?:(?:replay-)?[0-9]+|(?:revision|shard)-[a-f0-9]{32})",
                     editorial,
                 ):
                     raise ControlError("Invalid audio review release")

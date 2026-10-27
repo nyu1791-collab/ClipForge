@@ -466,7 +466,7 @@ def selected_transcript(value, duration, offset=0):
 
 
 def selected_gpu_transcripts(
-    audio, clips, settings, output, resume, continue_missing, audio_sha256
+    audio, clips, settings, output, resume, continue_missing, audio_sha256, on_clip=None
 ):
     """Reuse a completed selected-only GPU result or run the existing Colab ASR worker once."""
     intervals = [{"start": clip.start, "end": clip.end} for clip in clips]
@@ -535,8 +535,37 @@ def selected_gpu_transcripts(
             str(output),
         ]
         reused = False
-    completed = subprocess.run([control_python, str(helper), *arguments], check=False)
-    if completed.returncode or not result_file.is_file():
+    process = subprocess.Popen([control_python, str(helper), *arguments])
+    seen = set()
+    callback_error = None
+    while True:
+        if on_clip is not None and callback_error is None:
+            for path in sorted(output.glob("selected-gpu-clip-*.json")):
+                try:
+                    item = json.loads(path.read_text())
+                    index = item.get("clip_index")
+                    if (
+                        item.get("status") != "complete"
+                        or item.get("input_key") != key
+                        or type(index) is not int
+                        or not 1 <= index <= len(clips)
+                        or not isinstance(item.get("transcript"), dict)
+                    ):
+                        raise PipelineError("Selected GPU clip identity differs")
+                    if index not in seen:
+                        on_clip(index, item["transcript"])
+                        seen.add(index)
+                except Exception as error:
+                    callback_error = error
+                    break
+        try:
+            returncode = process.wait(timeout=0.5)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    if callback_error is not None:
+        raise callback_error
+    if returncode or not result_file.is_file():
         raise PipelineError(
             "Selected GPU ASR did not complete; saved state was retained"
         )
@@ -667,6 +696,52 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary):
     }
 
 
+def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
+    """Persist complete editing data before waiting for render completion."""
+    selection, transcripts = [], []
+    for index, (clip, value) in enumerate(zip(chosen, values), 1):
+        transcript, turns = selected_transcript(value, clip.end - clip.start)
+        client.record.setdefault("subtitle_display", []).append(
+            {
+                "clip": index,
+                "source_segments": len(gpu_clips[index - 1].get("segments", [])),
+                "display_segments": len(transcript.segments),
+                "overlap_policy": "union_display_neutral_color_preserve_text",
+                "transcription_unit": TRANSCRIPTION_UNIT,
+                "editing_requests": value["finishing"]["model_requests"],
+                "finishing": value["finishing"],
+            }
+        )
+        selection.append(
+            {
+                **clip.model_dump(),
+                "speaker_turns": turns,
+                "sound_effects": value["sound_effects"],
+            }
+        )
+        transcripts.append(transcript.model_dump())
+    write_json(
+        output / "selected-transcripts.json",
+        {
+            "timestamp_source": "gpu_asr",
+            "subtitle_policy": SUBTITLE_POLICY,
+            "transcription_unit": TRANSCRIPTION_UNIT,
+            "clips": transcripts,
+        },
+    )
+    write_json(
+        output / "final-selection.json",
+        {
+            "selection_basis": "audio_understanding",
+            "subtitle_policy": SUBTITLE_POLICY,
+            "source_url": url,
+            "clips": selection,
+        },
+    )
+    client.record["editing_status"] = "complete"
+    client.save()
+
+
 def plan(audio, url, output, settings, resume=None, continue_missing=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -695,13 +770,30 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         settings=settings.model_dump(),
         input_identity=identity,
     )
+    overview_pool = ThreadPoolExecutor(max_workers=2)
     try:
         topics = []
-        for index, start in enumerate(range(0, math.ceil(duration), WINDOW_SECONDS)):
-            length = min(WINDOW_SECONDS, duration - start)
+        starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
+
+        def prepare_overview(index, start):
             path = output / f"overview-{index}.ogg"
+            started = time.monotonic()
+            length = min(WINDOW_SECONDS, duration - start)
             if not path.is_file():
                 encode_audio(audio, path, start, length, "12k")
+            return path, round(time.monotonic() - started, 3)
+
+        overviews = {
+            index: overview_pool.submit(prepare_overview, index, start)
+            for index, start in enumerate(starts)
+        }
+        for index, start in enumerate(starts):
+            length = min(WINDOW_SECONDS, duration - start)
+            path, prepare_seconds = overviews[index].result()
+            client.record["timings"].setdefault(
+                "overview_preparation_seconds", []
+            ).append(prepare_seconds)
+            client.save()
             value, _ = client.generate(
                 f"topics-{index}",
                 "今回の全体把握用音声窓について話題区間だけを返します。"
@@ -798,91 +890,101 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
         )
-        gpu_result, gpu_reused = selected_gpu_transcripts(
-            audio,
-            chosen,
-            settings,
-            output,
-            resume,
-            continue_missing,
-            identity["audio_sha256"],
-        )
-        gpu_clips = gpu_result.get("clips")
-        if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
-            raise PipelineError(
-                "Selected GPU transcripts do not match the chosen topics"
-            )
-        client.record["selected_gpu_asr"] = {
-            "recognizer": gpu_result.get("recognizer"),
-            "gpu_request_id": gpu_result.get("gpu_request_id"),
-            "reused": gpu_reused,
-            "selected_topics": len(gpu_clips),
-            "full_source_asr": False,
-        }
-        client.save()
-        # Refresh once before concurrent requests so workers share the same identity.
-        client.vertex_token()
+        # A completed ASR clip releases its GPU before notifying this process.
+        # The next queued clip can then acquire that GPU while cleanup begins.
+        streaming = os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true"
+        renderer = None
+        if streaming:
+            from .streaming_render import StreamingRenderer
+
+            renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"])
+        cleanup_futures = {}
         subtitle_started = time.monotonic()
+        client.vertex_token()
         try:
-            with ThreadPoolExecutor(max_workers=max(1, min(5, len(chosen)))) as pool:
-                futures = [
-                    pool.submit(
-                        clean_selected_clip,
-                        client,
-                        gpu_clips[index - 1],
-                        index,
-                        clip,
-                        glossary,
+            with ThreadPoolExecutor(max_workers=len(chosen)) as cleanup_pool:
+
+                def cleanup_one(index, raw):
+                    clip = chosen[index - 1]
+                    value = clean_selected_clip(client, raw, index, clip, glossary)
+                    if renderer is not None:
+                        transcript, turns = selected_transcript(
+                            value, clip.end - clip.start
+                        )
+                        renderer.enqueue(
+                            index,
+                            {
+                                "transcript": transcript.model_dump(),
+                                "turns": turns,
+                                "sound_effects": value["sound_effects"],
+                            },
+                        )
+                    return value
+
+                def on_clip(index, raw):
+                    if index not in cleanup_futures:
+                        cleanup_futures[index] = cleanup_pool.submit(
+                            cleanup_one, index, raw
+                        )
+
+                gpu_result, gpu_reused = selected_gpu_transcripts(
+                    audio,
+                    chosen,
+                    settings,
+                    output,
+                    resume,
+                    continue_missing,
+                    identity["audio_sha256"],
+                    on_clip=on_clip,
+                )
+                gpu_clips = gpu_result.get("clips")
+                if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
+                    raise PipelineError(
+                        "Selected GPU transcripts do not match the chosen topics"
                     )
-                    for index, clip in enumerate(chosen, 1)
+                for index, raw in enumerate(gpu_clips, 1):
+                    on_clip(index, raw)
+                values = [
+                    cleanup_futures[index].result()
+                    for index in range(1, len(chosen) + 1)
                 ]
-                values = [future.result() for future in futures]
+                with client._lock:
+                    subtitle_rows = [
+                        row
+                        for row in client.record["requests"]
+                        if row.get("phase", "").startswith("transcript-")
+                        and not row.get("reused")
+                    ]
+                    if subtitle_rows and all(
+                        row.get("finished_at") for row in subtitle_rows
+                    ):
+                        client.record["timings"]["subtitle_request_wall_seconds"] = (
+                            round(
+                                max(row["finished_at"] for row in subtitle_rows)
+                                - min(row["started_at"] for row in subtitle_rows),
+                                3,
+                            )
+                        )
+                client.record["selected_gpu_asr"] = {
+                    "recognizer": gpu_result.get("recognizer"),
+                    "gpu_request_id": gpu_result.get("gpu_request_id"),
+                    "gpu_parts": gpu_result.get("gpu_parts", 1),
+                    "reused": gpu_reused,
+                    "selected_topics": len(gpu_clips),
+                    "full_source_asr": False,
+                }
+                save_selected_outputs(output, url, chosen, gpu_clips, values, client)
+                if renderer is not None:
+                    renderer.finish()
         finally:
-            client.record["timings"]["subtitle_parallel_elapsed_seconds"] = round(
-                time.monotonic() - subtitle_started, 3
-            )
-            client.save()
-        selection, transcripts = [], []
-        for index, (clip, value) in enumerate(zip(chosen, values), 1):
-            transcript, turns = selected_transcript(value, clip.end - clip.start)
-            client.record.setdefault("subtitle_display", []).append(
-                {
-                    "clip": index,
-                    "source_segments": len(gpu_clips[index - 1].get("segments", [])),
-                    "display_segments": len(transcript.segments),
-                    "overlap_policy": "union_display_neutral_color_preserve_text",
-                    "transcription_unit": TRANSCRIPTION_UNIT,
-                    "editing_requests": value["finishing"]["model_requests"],
-                    "finishing": value["finishing"],
-                }
-            )
-            client.save()
-            selection.append(
-                {
-                    **clip.model_dump(),
-                    "speaker_turns": turns,
-                    "sound_effects": value["sound_effects"],
-                }
-            )
-            transcripts.append(transcript.model_dump())
-        write_json(
-            output / "selected-transcripts.json",
-            {
-                "timestamp_source": "gpu_asr",
-                "subtitle_policy": SUBTITLE_POLICY,
-                "transcription_unit": TRANSCRIPTION_UNIT,
-                "clips": transcripts,
-            },
-        )
-        write_json(
-            output / "final-selection.json",
-            {
-                "selection_basis": "audio_understanding",
-                "subtitle_policy": SUBTITLE_POLICY,
-                "source_url": url,
-                "clips": selection,
-            },
-        )
+            try:
+                if renderer is not None:
+                    renderer.close()
+            finally:
+                client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
+                    time.monotonic() - subtitle_started, 3
+                )
+                client.save()
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
@@ -894,6 +996,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record["status"] = "failed"
         raise
     finally:
+        overview_pool.shutdown(wait=True, cancel_futures=True)
         client.record["finished_at"] = time.time()
         client.save()
 
