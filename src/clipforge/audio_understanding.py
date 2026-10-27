@@ -798,34 +798,13 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         "settings": settings.model_dump(),
     }
     if resume:
-        saved_receipt = json.loads(
+        saved_identity = json.loads(
             (resume / "audio-editor-receipt.json").read_text()
-        )
-        saved_identity = saved_receipt.get("input_identity")
+        ).get("input_identity")
         if identity != saved_identity:
             raise PipelineError(
                 "Saved audio responses belong to another input/configuration"
             )
-        marker_path = resume / "selected-reprocess.json"
-        if marker_path.is_file():
-            marker = json.loads(marker_path.read_text())
-            prior_duration = marker.get("parent_duration")
-            if (
-                not continue_missing
-                or marker.get("source_url") != url
-                or marker.get("audio_sha256") != identity["audio_sha256"]
-                or not isinstance(prior_duration, (int, float))
-                or abs(prior_duration - duration) > 0.5
-            ):
-                raise PipelineError("Saved reprocessing input identity differs")
-            # Preserve the original topic-window clock and validate the final
-            # selected intervals before requesting a new GPU job.
-            duration = prior_duration
-            starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
-        else:
-            marker = None
-    else:
-        marker = None
     client = Client(output, resume, continue_missing)
     client.record.update(
         source_url=url,
@@ -959,12 +938,6 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             )
             padded.append(clip.model_copy(update={"start": start, "end": end}))
         chosen = padded
-        if marker is not None:
-            expected = marker.get("clips")
-            actual = [clip.model_dump() for clip in chosen]
-            if actual != expected:
-                raise PipelineError("Saved topic intervals differ from the reprocessing request")
-            client.record["selected_reprocess"] = marker
         client.record["clip_safety_margins"] = margins
         if not chosen:
             raise PipelineError("No usable topic intervals were returned")

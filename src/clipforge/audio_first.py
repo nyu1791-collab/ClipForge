@@ -9,7 +9,6 @@ import fcntl
 import json
 import time
 import math
-import os
 from pathlib import Path
 import re
 
@@ -123,29 +122,7 @@ def retrieved(vod, path, start=0, end=None, *, audio_only=False, quality="360p")
     return receipt
 
 
-def restore_private_audio_cache(vod, root):
-    """Restore a source-bound private audio cache if one was explicitly staged."""
-    if os.environ.get("GITHUB_ACTIONS") != "true" or not os.environ.get("GH_TOKEN"):
-        return False
-    from .release_transfer import gh, private_repo, release
-
-    tag = "clipforge-audio-cache-" + fingerprint({"source_url": vod.url})[:32]
-    private_repo()
-    record = release(tag)
-    if record is None:
-        return False
-    assets = {a.get("name"): a for a in record.get("assets", [])}
-    if not {"audio.m4a", "audio.m4a.receipt.json"} <= set(assets):
-        raise PipelineError("Private audio cache is incomplete")
-    if any((root / name).exists() for name in ("audio.m4a", "audio.m4a.receipt.json")):
-        raise PipelineError("Private audio cache destination already exists")
-    gh("release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers",
-       "--pattern", "audio.m4a", "--pattern", "audio.m4a.receipt.json", "--dir", str(root))
-    return True
-
-
 def acquire(vod, root):
-    restored = restore_private_audio_cache(vod, root)
     receipt = retrieved(vod, root / "audio.m4a", audio_only=True, quality="lowest")
     write_json(
         root / "acquisition.json",
@@ -154,7 +131,6 @@ def acquire(vod, root):
             "source_url": vod.url,
             "audio": receipt,
             "asr_started": False,
-            "reused_private_audio_cache": restored,
             "high_quality_video_fetched": receipt.get(
                 "high_quality_video_fetched", False
             ),
