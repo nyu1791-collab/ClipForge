@@ -192,7 +192,7 @@ def test_failed_vertex_call_is_not_retried(tmp_path, monkeypatch):
     assert client.record["requests"][0]["status"] == "failed"
 
 
-def test_only_subtitle_cleanup_uses_high_thinking(tmp_path, monkeypatch):
+def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
     """The actual request keeps the other stages on their own profiles."""
     monkeypatch.setenv("CLIPFORGE_VERTEX_ACCESS_TOKEN", "synthetic")
     client = route.Client(tmp_path)
@@ -208,9 +208,9 @@ def test_only_subtitle_cleanup_uses_high_thinking(tmp_path, monkeypatch):
     client.generate("topics-0", "話題の選定")
     client.generate("terminology", "用語の調査", research=True)
     assert [(model, thinking) for model, thinking, _, _ in sent] == [
-        ("gemini-3.5-flash", "HIGH"),
+        ("gemini-3.5-flash", "MEDIUM"),
         ("gemini-3.8-flash", "MEDIUM"),
         ("gemini-3.5-flash", "MINIMAL"),
     ]
     assert [body["generationConfig"]["thinkingConfig"]["thinkingLevel"]
-            for _, _, body, _ in sent] == ["HIGH", "MEDIUM", "MINIMAL"]
+            for _, _, body, _ in sent] == ["MEDIUM", "MEDIUM", "MINIMAL"]
