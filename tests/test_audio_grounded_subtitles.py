@@ -174,3 +174,47 @@ def test_prior_asr_version_is_not_resubmitted(tmp_path):
     clips = [SelectedClip(start=0, end=2, candidate_id="a", title="a", reason="b", confidence=1)]
     with pytest.raises(PipelineError, match="do not resubmit"):
         route.selected_gpu_transcripts(tmp_path / "input", clips, Settings(), output, resume, True, "abc")
+
+
+def test_reprocess_uses_saved_intervals_and_starts_new_asr(tmp_path, monkeypatch):
+    resume = tmp_path / "parent"
+    resume.mkdir()
+    source = tmp_path / "audio.m4a"
+    source.write_bytes(b"new source")
+    settings = Settings()
+    url = "https://kick.com/example/videos/01a171d4-2920-7e7b-a842-e2b580698688"
+    rows = [{"start": 10, "end": 20, "candidate_id": "topic-0", "title": "話題", "reason": "会話", "confidence": 0.9}]
+    (resume / "audio-editor-receipt.json").write_text(json.dumps({"input_identity": {"source_url": url, "audio_sha256": "old", "settings": settings.model_dump()}, "duration": 30}))
+    (resume / "selected-gpu-asr-plan.json").write_text(json.dumps({"source_audio_sha256": "old", "clips": [{"start": 10, "end": 20}]}))
+    (resume / "final-selection.json").write_text(json.dumps({"source_url": url, "clips": rows}))
+    (resume / "terminology-glossary.json").write_text(json.dumps({"terms": []}))
+    monkeypatch.setattr(route.audio_first, "audio_info", lambda _: {"duration": 30})
+    monkeypatch.setattr(route, "validate_reacquired_source", lambda *args: {"method": "matched"})
+    selected = []
+
+    def process(audio, passed_url, output, passed_settings, prior, continue_missing, identity, client, clips, glossary):
+        assert prior is None and continue_missing is False
+        selected.extend(c.model_dump() for c in clips)
+
+    monkeypatch.setattr(route, "process_selected", process)
+    output = tmp_path / "new"
+    route.reprocess_saved(source, url, output, settings, resume)
+    assert selected == rows
+    receipt = json.loads((output / "audio-editor-receipt.json").read_text())
+    assert receipt["status"] == "complete"
+    assert receipt["reprocessed_selection"]["parent_audio_sha256"] == "old"
+
+
+def test_reprocess_rejects_mismatched_saved_intervals(tmp_path, monkeypatch):
+    resume = tmp_path / "parent"
+    resume.mkdir()
+    source = tmp_path / "audio.m4a"
+    source.write_bytes(b"source")
+    settings = Settings()
+    url = "https://kick.com/example/videos/01a171d4-2920-7e7b-a842-e2b580698688"
+    rows = [{"start": 10, "end": 20, "candidate_id": "topic-0", "title": "話題", "reason": "会話", "confidence": 0.9}]
+    (resume / "audio-editor-receipt.json").write_text(json.dumps({"input_identity": {"source_url": url, "audio_sha256": "old", "settings": settings.model_dump()}, "duration": 30}))
+    (resume / "selected-gpu-asr-plan.json").write_text(json.dumps({"source_audio_sha256": "old", "clips": [{"start": 11, "end": 20}]}))
+    (resume / "final-selection.json").write_text(json.dumps({"source_url": url, "clips": rows}))
+    with pytest.raises(PipelineError, match="intervals differ"):
+        route.reprocess_saved(source, url, tmp_path / "new", settings, resume)

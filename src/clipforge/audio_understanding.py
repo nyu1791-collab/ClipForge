@@ -776,6 +776,218 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
     client.save()
 
 
+def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
+    # A completed ASR clip releases its GPU before notifying this process.
+    # The next queued clip can then acquire that GPU while cleanup begins.
+    streaming = os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true"
+    renderer = None
+    if streaming:
+        from .streaming_render import StreamingRenderer
+
+        renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"])
+    cleanup_futures = {}
+    subtitle_started = time.monotonic()
+    client.vertex_token()
+    try:
+        with ThreadPoolExecutor(max_workers=len(chosen)) as cleanup_pool:
+
+            def cleanup_one(index, raw):
+                clip = chosen[index - 1]
+                with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
+                    selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
+                    encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
+                    audio_source_key = fingerprint({
+                        "source_audio_sha256": identity["audio_sha256"],
+                        "start": clip.start,
+                        "end": clip.end,
+                        "encoding": "ogg-opus-16000hz-mono-24k-voip-v1",
+                    })
+                    value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, audio_source_key)
+                if renderer is not None:
+                    transcript, turns = selected_transcript(
+                        value, clip.end - clip.start
+                    )
+                    renderer.enqueue(
+                        index,
+                        {
+                            "transcript": transcript.model_dump(),
+                            "turns": turns,
+                            "sound_effects": value["sound_effects"],
+                        },
+                    )
+                return value
+
+            def on_clip(index, raw):
+                if index not in cleanup_futures:
+                    cleanup_futures[index] = cleanup_pool.submit(
+                        cleanup_one, index, raw
+                    )
+
+            gpu_result, gpu_reused = selected_gpu_transcripts(
+                audio,
+                chosen,
+                settings,
+                output,
+                resume,
+                continue_missing,
+                identity["audio_sha256"],
+                on_clip=on_clip,
+            )
+            gpu_clips = gpu_result.get("clips")
+            if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
+                raise PipelineError(
+                    "Selected GPU transcripts do not match the chosen topics"
+                )
+            for index, raw in enumerate(gpu_clips, 1):
+                on_clip(index, raw)
+            values = [
+                cleanup_futures[index].result()
+                for index in range(1, len(chosen) + 1)
+            ]
+            with client._lock:
+                subtitle_rows = [
+                    row
+                    for row in client.record["requests"]
+                    if row.get("phase", "").startswith("transcript-")
+                    and not row.get("reused")
+                ]
+                if subtitle_rows and all(
+                    row.get("finished_at") for row in subtitle_rows
+                ):
+                    client.record["timings"]["subtitle_request_wall_seconds"] = (
+                        round(
+                            max(row["finished_at"] for row in subtitle_rows)
+                            - min(row["started_at"] for row in subtitle_rows),
+                            3,
+                        )
+                    )
+            client.record["selected_gpu_asr"] = {
+                "recognizer": gpu_result.get("recognizer"),
+                "gpu_request_id": gpu_result.get("gpu_request_id"),
+                "gpu_parts": gpu_result.get("gpu_parts", 1),
+                "reused": gpu_reused,
+                "selected_topics": len(gpu_clips),
+                "full_source_asr": False,
+            }
+            save_selected_outputs(output, url, chosen, gpu_clips, values, client)
+            if renderer is not None:
+                renderer.finish()
+    finally:
+        try:
+            if renderer is not None:
+                renderer.close()
+        finally:
+            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
+                time.monotonic() - subtitle_started, 3
+            )
+            client.save()
+
+
+def validate_reacquired_source(audio, resume, clips, saved_duration):
+    """Compare short source samples to the saved overview before reusing intervals."""
+    import numpy as np
+    from .release_transfer import gh, private_repo
+
+    tag = os.environ.get("EDITORIAL_RELEASE", "")
+    if not __import__("re").fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
+        raise PipelineError("Saved editorial identity is required for source verification")
+    private_repo()
+    windows = sorted({int((clip.start + 5) // WINDOW_SECONDS) for clip in clips})
+    with tempfile.TemporaryDirectory(prefix="clipforge-source-match-") as temporary:
+        ref_dir = Path(temporary)
+        arguments = ["release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers"]
+        for window in windows:
+            arguments.extend(["--pattern", f"overview-{window}.ogg"])
+        gh(*arguments, "--dir", str(ref_dir))
+
+        def decode(path, start):
+            result = subprocess.run(
+                ["ffmpeg", "-v", "error", "-ss", str(start), "-i", str(path),
+                 "-t", "12", "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
+                capture_output=True, timeout=60,
+            )
+            if result.returncode:
+                raise PipelineError("Source comparison could not decode audio")
+            return np.frombuffer(result.stdout, dtype="<f4").astype(np.float64)
+
+        matches = []
+        for clip in clips:
+            position = clip.start + 5
+            window = int(position // WINDOW_SECONDS)
+            original = decode(ref_dir / f"overview-{window}.ogg", position - window * WINDOW_SECONDS)
+            current = decode(audio, position)
+            size = min(len(original), len(current))
+            if size < 8 * 8000:
+                raise PipelineError("Source comparison has insufficient audio")
+            x, y = original[:size], current[:size]
+            x = x - x.mean()
+            y = y - y.mean()
+            denom = np.linalg.norm(x) * np.linalg.norm(y)
+            if denom == 0:
+                raise PipelineError("Source comparison cannot match silent samples")
+            fftsize = 1 << ((2 * size - 1).bit_length())
+            cross = np.fft.irfft(np.fft.rfft(x, fftsize) * np.conj(np.fft.rfft(y, fftsize)), fftsize)
+            search = np.r_[cross[-8000:], cross[:8001]]
+            best = int(np.argmax(np.abs(search)))
+            correlation = float(abs(search[best]) / denom)
+            offset = (best - 8000) / 8000
+            if correlation < 0.35 or abs(offset) > 0.08:
+                raise PipelineError("Reacquired source does not match saved topic audio")
+            matches.append({"start": position, "correlation": round(correlation, 4), "offset_seconds": offset})
+    return {"method": "decoded_audio_sample_comparison", "saved_duration": saved_duration, "samples": matches}
+
+
+def reprocess_saved(audio, url, output, settings, resume):
+    """Explicitly start fresh GPU ASR for the exact saved selected intervals."""
+    if not resume:
+        raise PipelineError("Reprocessing requires a saved editorial release")
+    canonical(url)
+    output.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if (output / "audio-editor-receipt.json").exists():
+        raise PipelineError("Already attempted; inspect the saved request")
+    receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
+    selection = json.loads((resume / "final-selection.json").read_text())
+    prior_asr = json.loads((resume / "selected-gpu-asr-plan.json").read_text())
+    old_identity = receipt.get("input_identity", {})
+    if (canonical(selection.get("source_url", "")) != canonical(url)
+        or old_identity.get("source_url") != url
+        or old_identity.get("settings") != settings.model_dump()
+        or prior_asr.get("source_audio_sha256") != old_identity.get("audio_sha256")):
+        raise PipelineError("Saved selection belongs to another source or configuration")
+    clips = [SelectedClip.model_validate({k: row[k] for k in
+             ("start", "end", "candidate_id", "title", "reason", "confidence")})
+             for row in selection.get("clips", [])]
+    if not clips or [{"start": c.start, "end": c.end} for c in clips] != prior_asr.get("clips"):
+        raise PipelineError("Saved selected intervals differ from prior GPU input")
+    duration = audio_first.audio_info(audio)["duration"]
+    saved_duration = receipt.get("duration")
+    if (not isinstance(saved_duration, (int, float)) or abs(duration - saved_duration) > 0.5
+        or any(c.end > duration for c in clips)):
+        raise PipelineError("Reacquired audio duration differs from saved source")
+    current_sha = digest(audio)
+    comparison = {"method": "sha256_match"} if current_sha == old_identity.get("audio_sha256") else validate_reacquired_source(audio, resume, clips, saved_duration)
+    glossary = json.loads((resume / "terminology-glossary.json").read_text()).get("terms", [])
+    identity = {"source_url": url, "audio_sha256": current_sha, "settings": settings.model_dump()}
+    client = Client(output)
+    client.record.update(source_url=url, duration=duration, settings=settings.model_dump(),
+                         input_identity=identity,
+                         reprocessed_selection={"parent_release": os.environ.get("EDITORIAL_RELEASE"),
+                            "parent_audio_sha256": old_identity.get("audio_sha256"),
+                            "source_comparison": comparison, "topic_count": len(clips)})
+    client.save()
+    try:
+        process_selected(audio, url, output, settings, None, False, identity, client, clips, glossary)
+        client.record.update(status="complete", timestamp_alignment="not_forced_aligned",
+                             timestamp_method="gpu_asr_source_segments", subtitle_policy=SUBTITLE_POLICY,
+                             sound_effects_status="planned_not_rendered")
+    except Exception:
+        client.record["status"] = "failed"
+        raise
+    finally:
+        client.record["finished_at"] = time.time()
+        client.save()
+
+
 def plan(audio, url, output, settings, resume=None, continue_missing=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -966,110 +1178,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
         )
-        # A completed ASR clip releases its GPU before notifying this process.
-        # The next queued clip can then acquire that GPU while cleanup begins.
-        streaming = os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true"
-        renderer = None
-        if streaming:
-            from .streaming_render import StreamingRenderer
-
-            renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"])
-        cleanup_futures = {}
-        subtitle_started = time.monotonic()
-        client.vertex_token()
-        try:
-            with ThreadPoolExecutor(max_workers=len(chosen)) as cleanup_pool:
-
-                def cleanup_one(index, raw):
-                    clip = chosen[index - 1]
-                    with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
-                        selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
-                        encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
-                        audio_source_key = fingerprint({
-                            "source_audio_sha256": identity["audio_sha256"],
-                            "start": clip.start,
-                            "end": clip.end,
-                            "encoding": "ogg-opus-16000hz-mono-24k-voip-v1",
-                        })
-                        value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, audio_source_key)
-                    if renderer is not None:
-                        transcript, turns = selected_transcript(
-                            value, clip.end - clip.start
-                        )
-                        renderer.enqueue(
-                            index,
-                            {
-                                "transcript": transcript.model_dump(),
-                                "turns": turns,
-                                "sound_effects": value["sound_effects"],
-                            },
-                        )
-                    return value
-
-                def on_clip(index, raw):
-                    if index not in cleanup_futures:
-                        cleanup_futures[index] = cleanup_pool.submit(
-                            cleanup_one, index, raw
-                        )
-
-                gpu_result, gpu_reused = selected_gpu_transcripts(
-                    audio,
-                    chosen,
-                    settings,
-                    output,
-                    resume,
-                    continue_missing,
-                    identity["audio_sha256"],
-                    on_clip=on_clip,
-                )
-                gpu_clips = gpu_result.get("clips")
-                if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
-                    raise PipelineError(
-                        "Selected GPU transcripts do not match the chosen topics"
-                    )
-                for index, raw in enumerate(gpu_clips, 1):
-                    on_clip(index, raw)
-                values = [
-                    cleanup_futures[index].result()
-                    for index in range(1, len(chosen) + 1)
-                ]
-                with client._lock:
-                    subtitle_rows = [
-                        row
-                        for row in client.record["requests"]
-                        if row.get("phase", "").startswith("transcript-")
-                        and not row.get("reused")
-                    ]
-                    if subtitle_rows and all(
-                        row.get("finished_at") for row in subtitle_rows
-                    ):
-                        client.record["timings"]["subtitle_request_wall_seconds"] = (
-                            round(
-                                max(row["finished_at"] for row in subtitle_rows)
-                                - min(row["started_at"] for row in subtitle_rows),
-                                3,
-                            )
-                        )
-                client.record["selected_gpu_asr"] = {
-                    "recognizer": gpu_result.get("recognizer"),
-                    "gpu_request_id": gpu_result.get("gpu_request_id"),
-                    "gpu_parts": gpu_result.get("gpu_parts", 1),
-                    "reused": gpu_reused,
-                    "selected_topics": len(gpu_clips),
-                    "full_source_asr": False,
-                }
-                save_selected_outputs(output, url, chosen, gpu_clips, values, client)
-                if renderer is not None:
-                    renderer.finish()
-        finally:
-            try:
-                if renderer is not None:
-                    renderer.close()
-            finally:
-                client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
-                    time.monotonic() - subtitle_started, 3
-                )
-                client.save()
+        process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary)
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
@@ -1276,14 +1385,12 @@ def main():
         finally:
             vod.close()
     elif args.mode == "plan":
-        plan(
-            args.audio,
-            args.url,
-            args.output,
-            settings,
-            args.resume_from,
-            args.continue_missing,
-        )
+        if args.config.name == "config.landscape-reprocess.example.json":
+            if not args.continue_missing:
+                raise PipelineError("Selected-topic reprocessing must be explicitly requested")
+            reprocess_saved(args.audio, args.url, args.output, settings, args.resume_from)
+        else:
+            plan(args.audio, args.url, args.output, settings, args.resume_from, args.continue_missing)
     else:
         try:
             render(
