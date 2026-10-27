@@ -545,24 +545,19 @@
           "if": "inputs.result_store != 'release'"
         },
         {
-          "name": "Allocate the cheapest runtime the account grants",
+          "name": "Render selected clips on up to four GPUs and publish private output",
           "env": {
-            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}"
-          },
-          "run": "REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" \\\n  clipforge-source/tools/colab_actions.py start --mode audio-stage\n"
-        },
-        {
-          "name": "Render on Colab and publish final private outputs",
-          "env": {
+            "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
             "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py run\n"
+          "run": "REVIEW_FILE=\"$RUNNER_TEMP/review.json\" \"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/parallel_selected_render.py\n"
         },
         {
-          "name": "Release and verify removal of the runtime",
+          "name": "Release and verify every owned parallel runtime",
           "if": "always() && steps.control.outcome == 'success'",
-          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/colab_actions.py stop\n"
+          "timeout-minutes": 5,
+          "run": "\"$RUNNER_TEMP/colab-control/bin/python\" clipforge-source/tools/parallel_selected_render.py --stop\n"
         },
         {
           "name": "Delete the private transfer release",

@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import wave
+from concurrent.futures import ThreadPoolExecutor
 
 from colab_actions import Controller, ControlError
 from colab_bundle import ReleaseBundles, digest
@@ -115,6 +116,126 @@ def split_transcript(value, mappings, language):
                 )
         clips.append({"language": language, "segments": rows})
     return clips
+
+
+def run_parallel(source, plan_file, output):
+    """Run disjoint selected topics on up to four separately owned GPU runtimes."""
+    plan = json.loads(plan_file.read_text())
+    clips = plan["clips"]
+    count = min(4, len(clips))
+    if count <= 1:
+        return run(source, plan_file, output)
+    state_path = output / "selected-gpu-asr-state.json"
+    if state_path.exists():
+        raise ControlError(
+            "Selected GPU ASR was already attempted; inspect its saved state"
+        )
+    groups = [[] for _ in range(count)]
+    loads = [0.0] * count
+    for index in sorted(
+        range(len(clips)),
+        key=lambda i: clips[i]["end"] - clips[i]["start"],
+        reverse=True,
+    ):
+        slot = min(range(count), key=loads.__getitem__)
+        groups[slot].append(index)
+        loads[slot] += clips[index]["end"] - clips[index]["start"]
+    root = output / "selected-gpu-parts"
+    root.mkdir(mode=0o700)
+    state = {
+        "input_key": plan["input_key"],
+        "status": "preparing",
+        "started_at": time.time(),
+        "parts": [],
+    }
+    for slot, indices in enumerate(groups):
+        indices.sort()
+        part = root / str(slot)
+        part.mkdir(mode=0o700)
+        part_key = hashlib.sha256(
+            (plan["input_key"] + ":part:" + str(slot)).encode()
+        ).hexdigest()
+        part_plan = {
+            **plan,
+            "input_key": part_key,
+            "clips": [clips[i] for i in indices],
+        }
+        write_json(part / "plan.json", part_plan)
+        state["parts"].append(
+            {"directory": str(slot), "indices": indices, "input_key": part_key}
+        )
+    state["status"] = "gpu_requests_or_unknown"
+    write_json(state_path, state)
+
+    def run_part(slot):
+        part = root / str(slot)
+        env = {**os.environ, "CLIPFORGE_SHARED_BALANCE": "1"}
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--single",
+                "--source",
+                str(source),
+                "--plan",
+                str(part / "plan.json"),
+                "--output",
+                str(part),
+            ],
+            env=env,
+        )
+        if result.returncode:
+            raise ControlError(
+                "A selected-audio GPU part failed; saved part states were retained"
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=count) as pool:
+            futures = [pool.submit(run_part, slot) for slot in range(count)]
+            errors = []
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as error:
+                    errors.append(error)
+        if errors:
+            raise ControlError(
+                "Selected-audio GPU parts did not all complete; inspect saved states"
+            )
+        ordered = [None] * len(clips)
+        for part_info in state["parts"]:
+            part_result = json.loads(
+                (root / part_info["directory"] / "selected-gpu-asr.json").read_text()
+            )
+            if (
+                part_result.get("status") != "complete"
+                or part_result.get("input_key") != part_info["input_key"]
+                or len(part_result["clips"]) != len(part_info["indices"])
+            ):
+                raise ControlError("Selected-audio part identity or clip count differs")
+            for index, transcript in zip(part_info["indices"], part_result["clips"]):
+                ordered[index] = transcript
+        if any(item is None for item in ordered):
+            raise ControlError("A selected-audio transcript is missing")
+        write_json(
+            output / "selected-gpu-asr.json",
+            {
+                "status": "complete",
+                "input_key": plan["input_key"],
+                "recognizer": plan["recognizer"],
+                "timestamp_source": "gpu_asr",
+                "gpu_parts": count,
+                "clips": ordered,
+            },
+        )
+        state["status"] = "complete"
+    finally:
+        for part_info in state["parts"]:
+            part_state = root / part_info["directory"] / "selected-gpu-asr-state.json"
+            if part_state.is_file():
+                part_info["state"] = json.loads(part_state.read_text())
+        state["elapsed_sec"] = round(time.time() - state["started_at"], 3)
+        write_json(state_path, state)
 
 
 def run(source, plan_file, output):
@@ -280,14 +401,39 @@ def main():
     parser.add_argument("--stop", action="store_true")
     parser.add_argument("--cleanup-input", action="store_true")
     parser.add_argument("--recover", type=Path)
+    parser.add_argument("--single", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.stop:
-        controller = Controller(args.output / "selected-gpu-work/control")
-        if controller.state_path.exists():
-            controller.stop()
+        controls = [args.output / "selected-gpu-work/control"]
+        controls.extend(
+            (args.output / "selected-gpu-parts").glob("*/selected-gpu-work/control")
+        )
+        for control in controls:
+            controller = Controller(control)
+            if controller.state_path.exists():
+                controller.stop()
     elif args.recover:
         recover(args.recover, args.output)
     elif args.cleanup_input:
+        parts = args.output / "selected-gpu-parts"
+        parent_state = args.output / "selected-gpu-asr-state.json"
+        parent_complete = (
+            parent_state.is_file()
+            and json.loads(parent_state.read_text()).get("status") == "complete"
+        )
+        if parts.is_dir() and parent_complete:
+            for part in parts.iterdir():
+                if part.is_dir():
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(Path(__file__).resolve()),
+                            "--cleanup-input",
+                            "--output",
+                            str(part),
+                        ],
+                        check=True,
+                    )
         path = args.output / "selected-gpu-asr-state.json"
         if path.is_file():
             state = json.loads(path.read_text())
@@ -305,7 +451,7 @@ def main():
                     "--cleanup-tag",
                 )
     else:
-        run(args.source, args.plan, args.output)
+        (run if args.single else run_parallel)(args.source, args.plan, args.output)
 
 
 if __name__ == "__main__":

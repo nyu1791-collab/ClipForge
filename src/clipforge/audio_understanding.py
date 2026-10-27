@@ -466,6 +466,13 @@ def selected_gpu_transcripts(
         if saved_state and saved_state.is_file()
         else {}
     )
+    if (
+        state.get("input_key") == key
+        and state.get("status") == "gpu_requests_or_unknown"
+    ):
+        raise PipelineError(
+            "Parallel selected GPU requests were already attempted; inspect saved part states before recovery"
+        )
     if state.get("input_key") == key and state.get("status") in {
         "gpu_requested_or_unknown",
         "complete",
@@ -840,7 +847,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.save()
 
 
-def render(review, transcripts_file, output, settings):
+def render(review, transcripts_file, output, settings, clip_index=None):
     from .landscape import validate_selection
 
     if settings.chat_panel:
@@ -878,6 +885,8 @@ def render(review, transcripts_file, output, settings):
         data["clips"]
     ) != len(clips):
         raise PipelineError("Mismatched selected transcripts")
+    if clip_index is not None and not 1 <= clip_index <= len(clips):
+        raise PipelineError("Requested clip is outside the saved selection")
     output.mkdir(parents=True, exist_ok=True)
     (output / "clips").mkdir(exist_ok=True)
     ranges = output.parent / "audio-understanding-source-ranges"
@@ -890,6 +899,8 @@ def render(review, transcripts_file, output, settings):
     rows = []
     try:
         for index, (clip, raw) in enumerate(zip(clips, data["clips"]), 1):
+            if clip_index is not None and index != clip_index:
+                continue
             clip_settings = settings.model_copy(
                 update={
                     "caption_emotions": settings.caption_emotions
@@ -967,7 +978,7 @@ def render(review, transcripts_file, output, settings):
         write_json(
             output / "manifest.json",
             {
-                "status": "complete",
+                "status": "clip_rendered" if clip_index is not None else "complete",
                 "rendered": rows,
                 "reused_clips": sum(row.get("reused") is True for row in rows),
                 "newly_rendered_clips": sum(
@@ -1002,6 +1013,7 @@ def main():
     )
     parser.add_argument("--review", type=Path)
     parser.add_argument("--transcripts", type=Path)
+    parser.add_argument("--clip-index", type=int)
     parser.add_argument(
         "--clips", type=int, help="Advisory target count for topic selection"
     )
@@ -1033,7 +1045,9 @@ def main():
         )
     else:
         try:
-            render(args.review, args.transcripts, args.output, settings)
+            render(
+                args.review, args.transcripts, args.output, settings, args.clip_index
+            )
         except Exception as error:
             pipeline.record_failure(args.output, error, "render")
             message = (

@@ -411,10 +411,6 @@ def render_stage(payload, output, report, timings, environment):
             raise RuntimeError("Render selection differs from the saved audio review")
         selection = json.loads(stage["review"])
         if selection.get("selection_basis") == "audio_understanding":
-            if stage.get("clip_index"):
-                raise RuntimeError(
-                    "Audio-understanding rendering requires the complete selected batch"
-                )
             direct_audio = True
             bundles.download_asset(
                 assets["selected-transcripts.json"],
@@ -435,6 +431,8 @@ def render_stage(payload, output, report, timings, environment):
                 "--config",
                 setup_environment["CLIPFORGE_RENDER_CONFIG"],
             ]
+            if stage.get("clip_index"):
+                arguments += ["--clip-index", stage["clip_index"]]
     if direct_audio and payload.get("resume_render"):
         previous = WORK / "previous-render"
         with timed(timings, "previous_render_transfer"):
@@ -479,10 +477,14 @@ def render_stage(payload, output, report, timings, environment):
                     "request_id": payload["request_id"],
                     "source_ref": payload["source_ref"],
                     "workflow_run": payload["workflow_run"],
-                    "status": "complete",
+                    "status": "clip_rendered"
+                    if stage.get("clip_index")
+                    else "complete",
                     "audio_stage": "render",
                     "selection_basis": "audio_understanding",
-                    "rendered_clips": len(selection["clips"]),
+                    "rendered_clips": 1
+                    if stage.get("clip_index")
+                    else len(selection["clips"]),
                     "sha256": {"manifest.json": digest(output / "manifest.json")},
                 }
             )
