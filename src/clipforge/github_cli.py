@@ -11,6 +11,14 @@ import subprocess
 DEFAULT_TIMEOUT = 120
 
 
+def monitoring_block_status(text):
+    """Return only a GitHub access/rate-limit status, never the diagnostic text."""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", errors="replace")
+    match = re.search(r"\bHTTP (401|403|429)\b", text or "")
+    return int(match[1]) if match else None
+
+
 def run(
     *args,
     body=None,

@@ -12,6 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .github_cli import run as gh
+from .github_cli import monitoring_block_status
 from .gpu_slots import gpu_slot
 from .release_transfer import private_repo, release
 from .storage import PipelineError, write_json
@@ -56,6 +57,7 @@ class StreamingRenderer:
         self.enqueue_times = {}
         self.queue = queue.Queue()
         self.errors = []
+        self.monitor_block_status = None
         self.stopping = False
         self.workers = ThreadPoolExecutor(max_workers=self.worker_count)
         self.worker_futures = [
@@ -83,6 +85,23 @@ class StreamingRenderer:
             self.state["groups"].setdefault(str(slot), {}).update(fields)
             self._save()
 
+    def _pause_monitor(self, status):
+        self.monitor_block_status = status
+        self.stop_monitor.set()
+        with self.lock:
+            self.state["monitor_status"] = (
+                "rate_limited" if status == 429 else "access_denied"
+            )
+            self.state["monitor_http_status"] = status
+            self._save()
+            write_json(
+                self.control_root / "monitor-pause.json",
+                {"monitor_http_status": status},
+            )
+        print(
+            f"GitHub progress monitoring paused (HTTP {status}); no retry", flush=True
+        )
+
     def _monitor(self):
         while not self.stop_monitor.is_set():
             for index in range(1, len(self.clips) + 1):
@@ -103,6 +122,10 @@ class StreamingRenderer:
                         check=False,
                     )
                     if info.returncode:
+                        status = monitoring_block_status(info.stderr)
+                        if status:
+                            self._pause_monitor(status)
+                            return
                         continue
                     assets = json.loads(info.stdout).get("assets", [])
                     uploaded = {
@@ -129,6 +152,10 @@ class StreamingRenderer:
                             check=False,
                         )
                         if result.returncode:
+                            status = monitoring_block_status(result.stderr)
+                            if status:
+                                self._pause_monitor(status)
+                                return
                             continue
                         record = json.loads((Path(tmp) / "transfer.json").read_text())
                     receipt = record.get("request_receipt", {})
@@ -252,6 +279,8 @@ class StreamingRenderer:
         for future in self.worker_futures:
             future.result()
         self.workers.shutdown(wait=True)
+        self.stop_monitor.set()
+        self.monitor.join()
         with self.lock:
             if self.state["status"] == "running":
                 self.state.update(
@@ -263,6 +292,11 @@ class StreamingRenderer:
         if self.errors:
             raise PipelineError(
                 "Some render batches failed; completed clips remain saved"
+            )
+        if self.monitor_block_status:
+            raise PipelineError(
+                f"GitHub progress monitoring paused (HTTP {self.monitor_block_status}); "
+                "completed clips remain saved"
             )
 
     def close(self):
