@@ -83,7 +83,7 @@ class Client:
             "requests": [],
             "new_generation_requests": 0,
             "full_source_asr": False,
-            "timestamp_source": "gpu_asr",
+            "timestamp_source": "gemini_transcribe",
             "timings": {},
             "started_at": time.time(),
         }
@@ -176,7 +176,7 @@ class Client:
             if research or phase_base.startswith("transcript-")
             else "gemini-3.8-flash"
         )
-        thinking_level = "MINIMAL" if research else "MEDIUM"
+        thinking_level = "MINIMAL" if research else ("LOW" if phase_base.startswith("transcript-") else "MEDIUM")
         # The model is part of a subtitle response's identity: an earlier 3.8
         # response must not be reported as a 3.5 result even for the same text.
         phase_hash = (
@@ -813,7 +813,7 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
     write_json(
         output / "selected-transcripts.json",
         {
-            "timestamp_source": "gpu_asr",
+            "timestamp_source": client.record.get("timestamp_source", "gpu_asr"),
             "subtitle_policy": SUBTITLE_POLICY,
             "transcription_unit": TRANSCRIPTION_UNIT,
             "clips": transcripts,
@@ -833,109 +833,57 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
 
 
 def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
-    # A completed ASR clip releases its GPU before notifying this process.
-    # The next queued clip can then acquire that GPU while cleanup begins.
-    streaming = os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true"
+    """Start one transcription per topic; finish each ready topic independently."""
+    from .transcribe_pipeline import transcribe_clip
+    from .streaming_render import StreamingRenderer
+
+    if resume:
+        saved_receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
+        if saved_receipt.get("timestamp_source") != "gemini_transcribe":
+            raise PipelineError("Saved production used a different transcription route; resume its original code")
+    client.record["timestamp_source"] = "gemini_transcribe"
+    client.save()
     renderer = None
-    if streaming:
-        from .streaming_render import StreamingRenderer
-
-        renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"])
-    cleanup_futures = {}
-    subtitle_started = time.monotonic()
-    client.vertex_token()
+    if os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true":
+        renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"], timestamp_source="gemini_transcribe")
+    started = time.monotonic()
     try:
-        with ThreadPoolExecutor(max_workers=len(chosen)) as cleanup_pool:
-
-            def cleanup_one(index, raw):
-                clip = chosen[index - 1]
-                with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
-                    selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
-                    encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
-                    audio_source_key = fingerprint({
-                        "source_audio_sha256": identity["audio_sha256"],
-                        "start": clip.start,
-                        "end": clip.end,
-                        "encoding": "ogg-opus-16000hz-mono-24k-voip-v1",
-                    })
-                    value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, audio_source_key)
-                if renderer is not None:
-                    transcript, turns = selected_transcript(
-                        value, clip.end - clip.start
-                    )
-                    renderer.enqueue(
-                        index,
-                        {
-                            "transcript": transcript.model_dump(),
-                            "turns": turns,
-                            "sound_effects": value["sound_effects"],
-                        },
-                    )
-                return value
-
-            def on_clip(index, raw):
-                if index not in cleanup_futures:
-                    cleanup_futures[index] = cleanup_pool.submit(
-                        cleanup_one, index, raw
-                    )
-
-            gpu_result, gpu_reused = selected_gpu_transcripts(
-                audio,
-                chosen,
-                settings,
-                output,
-                resume,
-                continue_missing,
-                identity["audio_sha256"],
-                on_clip=on_clip,
-            )
-            gpu_clips = gpu_result.get("clips")
-            if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
-                raise PipelineError(
-                    "Selected GPU transcripts do not match the chosen topics"
-                )
-            for index, raw in enumerate(gpu_clips, 1):
-                on_clip(index, raw)
-            values = [
-                cleanup_futures[index].result()
-                for index in range(1, len(chosen) + 1)
-            ]
-            with client._lock:
-                subtitle_rows = [
-                    row
-                    for row in client.record["requests"]
-                    if row.get("phase", "").startswith("transcript-")
-                    and not row.get("reused")
-                ]
-                if subtitle_rows and all(
-                    row.get("finished_at") for row in subtitle_rows
-                ):
-                    client.record["timings"]["subtitle_request_wall_seconds"] = (
-                        round(
-                            max(row["finished_at"] for row in subtitle_rows)
-                            - min(row["started_at"] for row in subtitle_rows),
-                            3,
-                        )
-                    )
-            client.record["selected_gpu_asr"] = {
-                "recognizer": gpu_result.get("recognizer"),
-                "gpu_request_id": gpu_result.get("gpu_request_id"),
-                "gpu_parts": gpu_result.get("gpu_parts", 1),
-                "reused": gpu_reused,
-                "selected_topics": len(gpu_clips),
-                "full_source_asr": False,
-            }
-            save_selected_outputs(output, url, chosen, gpu_clips, values, client)
+        def process_one(index, clip):
+            raw = transcribe_clip(client, audio, clip, index, identity["audio_sha256"])
+            write_json(output / f"transcribe-selected-{index:03}.json", raw)
+            with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
+                selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
+                encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
+                key = fingerprint({"source_audio_sha256": identity["audio_sha256"], "start": clip.start,
+                                   "end": clip.end, "encoding": "ogg-opus-16000hz-mono-24k-voip-v1"})
+                value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
+            value["finishing"]["status"] = "transcribe_timestamps_preserved"
+            value["finishing"]["timestamp_source"] = "gemini_transcribe"
             if renderer is not None:
-                renderer.finish()
+                transcript, turns = selected_transcript(value, clip.end - clip.start)
+                renderer.enqueue(index, {"transcript": transcript.model_dump(), "turns": turns,
+                                         "sound_effects": value["sound_effects"]})
+            return raw, value
+
+        with ThreadPoolExecutor(max_workers=min(6, len(chosen))) as pool:
+            futures = [pool.submit(process_one, index, clip) for index, clip in enumerate(chosen, 1)]
+            results = [future.result() for future in futures]
+        raws, values = zip(*results)
+        client.record["selected_transcription"] = {"recognizer": "gemini-3.5-transcribe",
+                                                   "selected_topics": len(raws), "full_source_asr": False}
+        save_selected_outputs(output, url, chosen, raws, values, client)
+        path = output / "selected-transcripts.json"
+        saved = json.loads(path.read_text())
+        saved["timestamp_source"] = "gemini_transcribe"
+        write_json(path, saved)
+        if renderer is not None:
+            renderer.finish()
     finally:
         try:
             if renderer is not None:
                 renderer.close()
         finally:
-            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
-                time.monotonic() - subtitle_started, 3
-            )
+            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
             client.save()
 
 
@@ -1034,7 +982,7 @@ def reprocess_saved(audio, url, output, settings, resume):
     try:
         process_selected(audio, url, output, settings, None, False, identity, client, clips, glossary)
         client.record.update(status="complete", timestamp_alignment="not_forced_aligned",
-                             timestamp_method="gpu_asr_source_segments", subtitle_policy=SUBTITLE_POLICY,
+                             timestamp_method="transcribe_word_offsets", subtitle_policy=SUBTITLE_POLICY,
                              sound_effects_status="planned_not_rendered")
     except Exception:
         client.record["status"] = "failed"
@@ -1244,7 +1192,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
-            timestamp_method="gpu_asr_source_segments",
+            timestamp_method="transcribe_word_offsets",
             subtitle_policy=SUBTITLE_POLICY,
             sound_effects_status="planned_not_rendered",
         )
