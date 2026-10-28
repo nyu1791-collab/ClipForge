@@ -18,6 +18,7 @@ from colab_bundle import ReleaseBundles, digest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from clipforge.storage import write_json
+from clipforge.asr import SELECTED_AUDIO_FILTER
 from clipforge.gpu_slots import (
     clear_stopped,
     gpu_slot,
@@ -59,6 +60,8 @@ def prepare_audio(source, clips, work):
                     "-t",
                     str(clip["end"] - clip["start"]),
                     "-vn",
+                    "-af",
+                    SELECTED_AUDIO_FILTER,
                     "-ac",
                     "1",
                     "-ar",

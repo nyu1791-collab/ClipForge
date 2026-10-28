@@ -584,8 +584,6 @@ def render(vod, root, settings, review_file, analysis_result, only=None):
                 pending = ahead.submit(
                     prefetch_interval, vod, clips[index], targets[index]
                 )
-            if not 0 < (receipt["rendition_height"] or 0) <= 360:
-                raise PipelineError("selected source video must be at most 360p")
             start_offset = receipt["start_offset"]
             local = clip.model_copy(
                 update={

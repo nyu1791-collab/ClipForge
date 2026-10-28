@@ -2,13 +2,15 @@
 
 # 通常制作・修正・再開の共通経路
 
+字幕整文では採用音声とTranscribeの文字起こしを同じ要求で扱い、元IDの時間内ではっきり聞こえる聞き落としも残すよう依頼する。空の整文や未対応IDは元の文字起こしを保持し、文字時刻が丸めで重なる場合も文字を隣に残す。字幕の結合とは別に元IDごとの音声に基づく話者判定を受け、判定不能や衝突はunknownにする。これは品質の停止条件ではない。Transcribeが発話を区間ごと認識せず元IDがない場合、正確な時刻を得られず、その発話の字幕化は保証できない。実音声での認識精度・話者判定は別途確認が必要。
+
 接続・新規制作・再接続は [最短手順](QUICK_START.md) を参照。新規制作も修正も、同じ `final-selection.json` / `selected-transcripts.json` を描画へ渡す。モデルへ戻る必要がない修正は、保存済み編集データの別版として記録して直接描画する。モデル呼び出し・描画・保存・納品を混同しない。
 
 ```mermaid
 flowchart TD
   A[新しいURL] --> B[元音声を取得]
   B --> C[必読ルール＋3.8の話題選定・見出し]
-  C --> X[採用部分だけGPUで文字起こし]
+  C --> X[採用部分だけTranscribeで文字起こし]
   X --> D[話題ごと1回、文字起こしを3.5 Flash/MEDIUMで整文]
   D --> E[非公開の編集Release]
   E --> F[共通のGPU描画]
@@ -31,7 +33,7 @@ YouTubeの新規音声取得とGPU上の採用映像取得は、同じ既存の 
 
 通常の音声理解・Colab描画はrequest IDごとの待ち行列を使い、無関係な制作依頼との共通ロックを避ける。同じrequestの排他は保持し、進行中Runを自動キャンセルしない。GitHub内部のジョブ生成時間やrunner供給時間を保証するものではない。
 
-状態取得APIの一時失敗は監視の問題として記録し、最後に得た制作状態を残して読み取りだけを再試行する。モデル要求・workflow dispatchは再送しない。初期の汎用タイトルから別Runを推測せず、request ID付きタイトルを待つ。監視状態・待機時間はproduction-stateと約60秒ごとの表示へ残す。監視期限切れは `monitoring_paused` とし、遠隔の制作失敗と区別する。
+状態取得APIの一時失敗は監視の問題として記録し、最後に得た制作状態を残して読み取りだけを再試行する。workflow dispatchは再送しない。Gemini要求は一時的な通信障害・429・5xxに限り合計3回まで試行する。初期の汎用タイトルから別Runを推測せず、request ID付きタイトルを待つ。監視状態・待機時間はproduction-stateと約60秒ごとの表示へ残す。監視期限切れは `monitoring_paused` とし、遠隔の制作失敗と区別する。
 
 監視が途切れた場合は、同じ出力先を指定する。URL・Run IDは保存状態から復元できる。
 
@@ -47,7 +49,7 @@ python tools/produce_with_gemini.py --resume --output "$EXISTING_PRIVATE_OUTPUT"
 | 字幕本文・推定時刻・見出し・話者色・感情・効果音を修正 | 同じCLIに `--render-only --editorial-release PARENT --revision-file PRIVATE_PATCH` | Gemini・音声理解・字幕再生成へ戻らない |
 | 編集済みデータから描画だけ行う | `--render-only --editorial-release TAG` | モデルへ戻らない |
 | 前回完成クリップを使って変更分だけ描画 | 上記に `--reuse-render --previous-run RUN --previous-request REQUEST` | 一致する完成クリップの再エンコードを省く |
-| まだ投入していないモデル工程だけ進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。不明な送信を自動再送しない |
+| 保存済み応答を再利用し、未完了のモデル工程を進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。過去の送信回数を含め同一要求は最大3回 |
 | 保存済み完成動画の回収だけ | `python -m clipforge.release_transfer download RUN clipforge-result-REQUEST PRIVATE_DIR` | モデル・描画へ戻らない |
 | Driveへの納品だけ | `clipforge-drive-delivery.yml` のupload-release | モデル・描画へ戻らない |
 
@@ -108,7 +110,7 @@ python tools/produce_with_gemini.py "$SOURCE_URL" \
 
 ## 仕上げと描画プロファイル
 
-新規選定時に切り出し余白を一度だけ加え、採用音声のGPU文字起こし時刻を使う。採用話題ごと1回で字幕を作るため60秒境界の結合処理は不要。修正・render-onlyでは保存済みの時刻を使い、これらを再適用しない。素材は最大360p、通常描画は360p。`--render-profile preview` は360p、明示指定の `standard` は720p、`full-hd` は1080pを選ぶ。モデルへ戻らずrender-onlyでも変更できるが、解像度が変わるクリップは新しい描画が必要になる。
+新規選定時に切り出し余白を一度だけ加え、採用音声のTranscribe文字起こし時刻を使う。採用話題ごと1回で字幕を作るため60秒境界の結合処理は不要。修正・render-onlyでは保存済みの時刻を使い、これらを再適用しない。素材は360p以下を優先し、利用できなければ取得可能な映像を使う。通常描画は360p。`--render-profile preview` は360p、明示指定の `standard` は720p、`full-hd` は1080pを選ぶ。モデルへ戻らずrender-onlyでも変更できるが、解像度が変わるクリップは新しい描画が必要になる。
 
 新規描画の `contact-sheet.jpg` は最大3場面の参考画像で、品質判定ではない。非公開zip内に保存し、可能なら完成Releaseへクリップ名付きの単体JPEGも追加する。画像が作れない場合も動画の保存を続ける。画像を見て直したい箇所があれば、同じ明示パッチへ進む。画像を作ったことだけで目視確認済みとは報告しない。
 

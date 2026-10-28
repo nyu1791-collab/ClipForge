@@ -557,7 +557,7 @@ def _caption_groups(
         segments, cleanup = clean_segments(transcript.segments)
     caption_transcript = transcript.model_copy(update={"segments": segments})
     tokens, approximate = collect_tokens(
-        caption_transcript, clip, settings.caption_emotions
+        caption_transcript, clip, settings.caption_emotions or bool(speaker_turns)
     )
     tokens, split = split_long(tokens, measure, line_px)
     approximate += split

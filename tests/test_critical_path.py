@@ -49,16 +49,12 @@ def test_overview_requests_overlap_and_keep_window_order(tmp_path, monkeypatch):
         assert research
         return {"terms": []}, {}
 
-    def selected_gpu(
-        audio, clips, settings, output, resume, missing, sha, on_clip=None
-    ):
-        parts = [{"segments": []} for _ in clips]
-        for index, part in enumerate(parts, 1):
-            on_clip(index, part)
-        return {"clips": parts, "recognizer": "synthetic"}, False
+    def selected_transcribe(client, audio, clip, index, sha):
+        return {"segments": [], "untimed": []}
 
     monkeypatch.setattr(audio_understanding.Client, "generate", generate)
-    monkeypatch.setattr(audio_understanding, "selected_gpu_transcripts", selected_gpu)
+    from clipforge import transcribe_pipeline
+    monkeypatch.setattr(transcribe_pipeline, "transcribe_clip", selected_transcribe)
     output = tmp_path / "out"
     audio_understanding.plan(
         audio,
