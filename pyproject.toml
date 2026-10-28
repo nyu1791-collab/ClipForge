@@ -17,6 +17,7 @@ dependencies = [
   "unidic-lite==1.0.8",
   "fonttools==4.67.0",
   "pillow==13.0.0",
+  "google-antigravity==0.1.22",
 ]
 
 [project.optional-dependencies]

@@ -19,14 +19,13 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
 
 from . import asr, audio_first, pipeline
+from .antigravity_client import AntigravityError, generate_text
 from .caption_emotions import annotation
 from .gemini_audio_editor import (
-    PROJECT,
     MAX_REQUEST_BYTES,
     audio_part,
     encode_audio,
     extract_json_object,
-    collect_sse_response,
 )
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript, Segment, SelectedClip
@@ -285,45 +284,28 @@ class Client:
                 self.record["requests"].extend(prior_attempts)
             self.save()
         print(json.dumps({"phase": phase, "status": "new_request"}), flush=True)
-        token = self.vertex_token()
         prompt_path = self.output / (phase + ".prompt.txt")
         prompt_path.write_text(complete_prompt, encoding="utf-8")
         parts = [{"text": user_prompt}]
         for label, audio_path in audio_items:
             parts.append({"text": f"\n\n音声パート「{label}」:"})
             parts.append(audio_part(Path(audio_path)))
-        body = {
-            "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {
-                "thinkingConfig": {"thinkingLevel": thinking_level},
-                "maxOutputTokens": 8192 if research else 65536,
-            },
-        }
-        if rule_text:
-            body["systemInstruction"] = {
-                "role": "system",
-                "parts": [{"text": rule_text}],
-            }
-        if research:
-            body["tools"] = [{"googleSearch": {}}]
-        data = json.dumps(body, ensure_ascii=False).encode()
-        if len(data) > MAX_REQUEST_BYTES:
+        size = sum(len(part["text"].encode()) for part in parts if "text" in part) + sum(
+            len(part["inlineData"]["data"]) for part in parts if "inlineData" in part
+        )
+        if size > MAX_REQUEST_BYTES:
             raise PipelineError("Bounded Gemini input exceeded")
         last_attempt = len(prior_attempts) + MAX_MODEL_ATTEMPTS
         for attempt in range(len(prior_attempts) + 1, last_attempt + 1):
             try:
-                return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt)
-            except urllib.error.HTTPError as error:
-                retryable = error.code == 429 or 500 <= error.code <= 599
-                if not retryable or attempt >= last_attempt:
-                    raise
-            except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionError, TimeoutError, socket.timeout):
-                if attempt >= last_attempt:
+                return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, parts, research, attempt)
+            except AntigravityError as error:
+                if not error.retryable or attempt >= last_attempt:
                     raise
             print(json.dumps({"phase": phase, "status": "retrying", "next_attempt": attempt + 1}), flush=True)
             time.sleep((15 if attempt == len(prior_attempts) + 1 else 45) + random.uniform(0, 5))
 
-    def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt):
+    def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, parts, research, attempt):
         row = LockedRequest(
             self._lock,
             {
@@ -355,53 +337,30 @@ class Client:
             self.save()
         tick = time.monotonic()
         try:
-            endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/{model}:"
-            endpoint += (
-                "generateContent" if research else "streamGenerateContent?alt=sse"
+            text = generate_text(
+                model,
+                thinking_level,
+                rule_text,
+                parts,
+                research=research,
+                max_tokens=8192 if research else 65536,
             )
-            req = urllib.request.Request(
-                endpoint,
-                data=data,
-                headers={
-                    "Authorization": "Bearer " + token,
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=1800) as response:
-                if research:
-                    result = json.loads(response.read())
-                    candidate = result["candidates"][0]
-                    text = "".join(
-                        p.get("text", "")
-                        for p in candidate.get("content", {}).get("parts", [])
-                        if not p.get("thought")
-                    )
-                else:
-                    result, text, _, _ = collect_sse_response(
-                        response, self.output / (phase + f".attempt-{attempt}.sse.txt"), row, self.save
-                    )
-                    candidate = result["candidates"][0]
             row.update(
-                finish_reason=candidate.get("finishReason"),
-                usage=result.get("usageMetadata", {}),
-                grounding=candidate.get("groundingMetadata", {}),
+                finish_reason="not_reported",
+                usage={"status": "not_reported_by_antigravity_sdk"},
+                grounding={"status": "not_reported_by_antigravity_sdk"} if research else {},
+                transport="antigravity_sdk_vertex",
             )
             (self.output / (phase + ".raw.txt")).write_text(text)
-            if row["finish_reason"] != "STOP":
-                raise PipelineError("Incomplete Gemini response; not retried")
             value = extract_json_object(text)
             if not isinstance(value, dict):
                 raise PipelineError("Expected JSON object")
             write_json(self.output / (phase + ".json"), value)
             row["status"] = "received"
             return value, row["grounding"]
-        except urllib.error.HTTPError as error:
-            from .http_diagnostics import capture_http_error
-
+        except AntigravityError as error:
             row["status"] = "failed"
-            row.update(
-                capture_http_error(error, self.output / (phase + f".attempt-{attempt}.http-error.json"))
-            )
+            row["error_class"] = "retryable" if error.retryable else "non_retryable"
             raise
         except Exception:
             row["status"] = "failed"

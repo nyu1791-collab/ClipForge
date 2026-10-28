@@ -1,6 +1,5 @@
 import json
 from types import SimpleNamespace
-import urllib.error
 
 import pytest
 
@@ -191,22 +190,35 @@ def test_renderer_keeps_remux_offset_out_of_speaker_times(
     assert drawn[0][2]["speaker_turns"][0]["speaker_id"] is None
 
 
-def test_failed_vertex_call_is_not_retried(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLIPFORGE_VERTEX_ACCESS_TOKEN", "synthetic")
+def test_failed_antigravity_call_is_not_retried(tmp_path, monkeypatch):
     calls = []
 
     def fail(*args, **kwargs):
         calls.append(1)
-        raise urllib.error.HTTPError(
-            "https://example.test", 400, "unsupported", {}, None
-        )
+        raise route.AntigravityError("Antigravity request failed: PermissionError", retryable=False)
 
-    monkeypatch.setattr(route.urllib.request, "urlopen", fail)
+    monkeypatch.setattr(route, "generate_text", fail)
     client = route.Client(tmp_path)
-    with pytest.raises(urllib.error.HTTPError):
+    with pytest.raises(route.AntigravityError):
         client.generate("topics-0", "audio topics")
     assert len(calls) == 1
     assert client.record["requests"][0]["status"] == "failed"
+    assert client.record["requests"][0]["error_class"] == "non_retryable"
+
+
+def test_transient_antigravity_call_is_retried_up_to_the_limit(tmp_path, monkeypatch):
+    calls = []
+
+    def busy(*args, **kwargs):
+        calls.append(1)
+        raise route.AntigravityError("Antigravity request failed: RuntimeError", retryable=True)
+
+    monkeypatch.setattr(route, "generate_text", busy)
+    monkeypatch.setattr(route.time, "sleep", lambda seconds: None)
+    client = route.Client(tmp_path)
+    with pytest.raises(route.AntigravityError):
+        client.generate("topics-0", "audio topics")
+    assert len(calls) == route.MAX_MODEL_ATTEMPTS
 
 
 def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
@@ -216,18 +228,16 @@ def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
     sent = []
 
     def capture(phase, model, thinking, files, sources, rules, prompt_path,
-                prompt_hash, audio, audio_key, token, body, research, attempt):
-        sent.append((model, thinking, json.loads(body), research))
+                prompt_hash, audio, audio_key, parts, research, attempt):
+        sent.append((model, thinking, research))
         return {}, {}
 
     monkeypatch.setattr(client, "_generate_attempt", capture)
     client.generate("transcript-1", "字幕の整文")
     client.generate("topics-0", "話題の選定")
     client.generate("terminology", "用語の調査", research=True)
-    assert [(model, thinking) for model, thinking, _, _ in sent] == [
-        ("gemini-3.5-flash", "MEDIUM"),
-        ("gemini-3.8-flash", "MEDIUM"),
-        ("gemini-3.5-flash", "MINIMAL"),
+    assert sent == [
+        ("gemini-3.5-flash", "MEDIUM", False),
+        ("gemini-3.8-flash", "MEDIUM", False),
+        ("gemini-3.5-flash", "MINIMAL", True),
     ]
-    assert [body["generationConfig"]["thinkingConfig"]["thinkingLevel"]
-            for _, _, body, _ in sent] == ["MEDIUM", "MEDIUM", "MINIMAL"]
