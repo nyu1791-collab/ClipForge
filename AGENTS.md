@@ -14,10 +14,10 @@
 
 ## 現行の制作経路
 
-URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravity SDK経由）で音声から話題・見出し選定 → 採用音声を仮切り出し → 3.5 Flash/MINIMALで根拠付き表記調査1回 → 3.5 Transcribeで採用部分だけを文字起こし・単語時刻・話者分離 → 3.5 Flash/MEDIUMが文字起こし本文を採用話題ごとに1回整文し、必要な効果音を提案 → Colab GPU/NVENCで360p以下を優先した素材・通常360pキャンバス描画 → 非公開Release保存・回収 → 指定時だけDrive納品。
+URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravity SDK経由）で音声から話題・見出し選定 → 採用音声を仮切り出し → 3.5 Transcribeで採用部分だけを文字起こし（Vertex直接）・単語時刻・話者分離 → 3.5 Flash/MEDIUMが文字起こし本文を採用話題ごとに1回整文し、必要な効果音を提案 → Colab GPU/NVENCで360p以下を優先した素材・通常360pキャンバス描画 → 非公開Release保存・回収 → 指定時だけDrive納品。
 
 - 制作は公開ClipForgeのGitHub Actionsを正規経路として実行する。素材取得・Gemini処理・Colab GPUへのASR/描画依頼・非公開保存・回収をこの経路に集約し、制御VMから直接制作したり別経路へ切り替えたりしない。移行時は既存のRun/保存済み状態を引き継ぎ、未完了Runは再投入せず再接続し、完了済み成果物は再利用する。ユーザーが別経路を明示した場合はその指示を優先する。
-- 字幕要求を60秒ごとに分割しない。新規モデル要求数は全体把握の音声窓数＋表記調査1回＋Transcribe窓数＋空白補助要求＋採用話題数。898秒以内なら通常のTranscribeと整文は各1回、空白補助は最大2回。最大6話題を並行する。1話題1回と一文要約は別で、字幕segmentは発話に沿って複数作る。
+- 字幕要求を60秒ごとに分割しない。新規モデル要求数は全体把握の音声窓数＋Transcribe窓数＋採用話題の整文数。898秒以内なら通常のTranscribeと整文は各1回、用語調査と空白補助は行わない。最大6話題を並行する。1話題1回と一文要約は別で、字幕segmentは発話に沿って複数作る。
 - 全文GPU ASR・3.5の全文文字起こし・保存ASR必須の候補計画・追加の時刻照合・OpenCode/査読モデルへ自動で戻さない。旧ASR経路は過去結果の明示的な復旧専用。
 - 文字起こしは採用区間だけを対象とし、TranscribeのVERBATIM・単語時刻・話者分離を使用する。15分超は余白付きで分割し、分割間の話者IDを勝手に同一視しない。3.5 Flash/MEDIUMには採用区間の音声と文字列・発話時刻を渡す。音声区間の分割は字幕整文の60秒分割を意味しない。
 - YouTube/Twitch/Kick/直接HTTPSを維持する。元媒体と出力先は分離し、元媒体を上書きしない。制御VMで重いASRや描画を行わない。
@@ -45,7 +45,7 @@ URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravit
 
 ## 接続と保存
 
-- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定に3.8 Flash/MEDIUM、整文に3.5 Flash/MEDIUM、用語調査に3.5 Flash/MINIMALの3段階はGoogle Antigravity SDK（同じVertexプロジェクト・global）経由。文字起こしの3.5 Transcribeは従来どおりVertexへ直接送る。経路・起動入力・確認方法は`docs/ANTIGRAVITY_ROUTE.md`。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
+- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定に3.8 Flash/MEDIUM、整文に3.5 Flash/MEDIUM、整文の3.5 Flash/MEDIUMはGoogle Antigravity SDK（同じVertexプロジェクト・global）経由。文字起こしの3.5 Transcribeは従来どおりVertexへ直接送る。経路・起動入力・確認方法は`docs/ANTIGRAVITY_ROUTE.md`。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
 - 公開ClipForgeはコードとActions、非公開`nyu1791-collab/ai-model-workers`は制作データのRelease保存庫。公開Artifactsに音声/動画/字幕/モデル応答を出さない。配布用`deploy/audio-stages.yml`は公開Actions定義と揃える。
 - APIキー/OAuth/Cookie/私有媒体をGit/ログ/チャットへ出さない。Secretsは名前だけ扱う。接続一覧の閲覧不可はunknownとし、未登録や制作不能と断定しない。
 - Colabは既存の専用エンドユーザー資格情報を再利用する。Drive専用資格情報をVertexサービスアカウントで代用しない。Driveの所有者は許可済みの`n.yu1791@gmail.com`または`n.yu17919191@gmail.com`と照合する。

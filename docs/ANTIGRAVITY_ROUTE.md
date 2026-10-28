@@ -7,8 +7,7 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 | 工程 | モデル・段階 | 経路 | コード |
 |---|---|---|---|
 | 全体把握・話題選定 | Gemini 3.8 Flash / MEDIUM（`topics-N`） | Antigravity SDK（Vertex） | `audio_understanding.Client.generate` → `antigravity_client.generate_text` |
-| 整文 | Gemini 3.5 Flash / MEDIUM（`transcript-*`） | Antigravity SDK（Vertex） | 同上 |
-| 用語調査 | Gemini 3.5 Flash / MINIMAL（`terminology`、Web検索） | Antigravity SDK（Vertex） | 同上 |
+| 清書 | Gemini 3.5 Flash / MEDIUM（`transcript-*`）。誤字脱字と明らかな誤認識だけを直す。話者は Transcribe のラベルをそのまま使い、効果音は出さない | Antigravity SDK（Vertex） | 同上 |
 | 文字起こし | Gemini 3.5 Transcribe | Vertex 直接 `generateContent` | `transcribe_pipeline.transcribe_clip`（試行は `transcribe_trial.transcribe_topic`） |
 
 - Vertex プロジェクトは `project-fdadb4dd-cb77-4270-9cd`、ロケーションは `global`。
@@ -52,6 +51,6 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 
 ## 5. 既知の差と未確認
 
-- 用語調査は Google 検索の根拠メタデータを受け取れない。根拠の引用が無い語は既存の仕組みで採用されない（`terminology.grounded_terms`）。
+- 用語調査は経路から外した（Antigravity 経由では Google 検索の根拠が返らず、用語が採用されないため）。記録は `terminology-glossary.json` の `skipped` になる。
 - Antigravity SDK の既定プロンプトと、整文ルールの system instruction の合成は未確認。実行結果で確かめる。
 - Antigravity 経由の音声入力と JSON 応答は、本番の実データで初めて確かめる。試行の結果はこのファイルの末尾に追記する。

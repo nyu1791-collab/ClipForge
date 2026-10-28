@@ -256,7 +256,10 @@ def transcribe_clip(client, audio, clip, index, source_sha):
             )
     return {
         "language": "ja",
-        "segments": [{k: v for k, v in row.items() if k != "source"} for row in groups],
+        "segments": [
+            {**{k: v for k, v in row.items() if k != "source"}, "speaker": row["source"][1]}
+            for row in groups
+        ],
         "untimed": untimed,
     }
 

@@ -14,7 +14,6 @@ import pytest
 
 from clipforge import asr, audio_understanding as route
 from clipforge.models import SelectedClip, Settings
-from clipforge.speaker_captions import speaker_for_token
 from clipforge.storage import PipelineError
 
 
@@ -32,9 +31,14 @@ def raw():
     ]}
 
 
-def test_cleanup_keeps_gpu_times_and_safe_speaker_assignments(tmp_path, clip, raw):
+def test_cleanup_uses_transcribe_speakers_and_ignores_model_speaker_and_effects(tmp_path, clip):
     audio = tmp_path / "selected.ogg"
     audio.write_bytes(b"audio")
+    raw = {"segments": [
+        {"start": 1, "end": 2, "text": "うん", "speaker": "spk:0"},
+        {"start": 3, "end": 4, "text": "誤認", "speaker": None},
+        {"start": 5, "end": 6, "text": "短い声", "speaker": "spk:1"},
+    ]}
 
     class Client:
         def generate(self, phase, prompt, audio, audio_source_key):
@@ -42,19 +46,27 @@ def test_cleanup_keeps_gpu_times_and_safe_speaker_assignments(tmp_path, clip, ra
             assert audio.read_bytes() == b"audio"
             assert audio_source_key == "source-key"
             request = json.loads(prompt)
-            assert request["source_segments"] == [dict(id=i, **row) for i, row in enumerate(raw["segments"], 1)]
+            assert "speaker_assignments は空配列" in request["task"]
+            # The model sees timing and text only; speakers come from Transcribe.
+            assert request["source_segments"] == [
+                {"id": i, "start": row["start"], "end": row["end"], "text": row["text"]}
+                for i, row in enumerate(raw["segments"], 1)
+            ]
             return {"audio_access": "heard", "segments": [
-                {"source_ids": [1], "text": "うん", "speaker_id": "speaker_2", "confidence": 0.95},
-                {"source_ids": [2], "text": "", "omit_non_speech": True},
-                {"source_ids": [3], "text": "短い声", "speaker_id": "speaker_1", "confidence": 0.6},
-            ]}, {}
+                {"source_ids": [1], "text": "うん"},
+                {"source_ids": [2], "text": "誤認識を直した"},
+                {"source_ids": [3], "text": "短い声"},
+            ], "speaker_assignments": [{"source_id": 1, "speaker_id": "speaker_2", "confidence": 0.95}],
+               "sound_effects": [{"at": 1, "kind": "soft_pop", "reason": "model"}]}, {}
 
     result = route.clean_selected_clip(Client(), raw, 1, clip, [], audio, "source-key")
-    assert [(s["start"], s["end"], s["text"]) for s in result["segments"]] == [(1, 2, "うん"), (5, 6, "短い声")]
-    transcript, turns = route.selected_transcript(result, 10)
-    assert [(s.start, s.end) for s in transcript.segments] == [(1, 2), (5, 6)]
-    assert speaker_for_token(1, 2, turns) == "speaker_2"
-    assert speaker_for_token(5, 6, turns) is None
+    assert [(s["start"], s["end"], s["text"]) for s in result["segments"]] == [
+        (1, 2, "うん"), (3, 4, "誤認識を直した"), (5, 6, "短い声"),
+    ]
+    assert {s["start"]: s["speaker_id"] for s in result["segments"]} == {
+        1: "speaker_1", 3: "unknown", 5: "speaker_2",
+    }
+    assert result["sound_effects"] == []
 
 
 @pytest.mark.parametrize("audio_access", ["unavailable", None])

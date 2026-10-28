@@ -86,7 +86,8 @@ def planned(tmp_path, monkeypatch):
 
 def test_audio_plan_uses_only_selected_transcribe_results(planned):
     output, audio, calls = planned
-    assert calls[0][0] == "topics-0" and calls[1][0] == "terminology"
+    assert calls[0][0] == "topics-0"
+    assert all(call[0] != "terminology" for call in calls)
     assert sorted(p for p, _, _, _, _ in calls if p.startswith("transcript-")) == [
         f"transcript-{i}" for i in range(1, 6)
     ]
@@ -96,7 +97,7 @@ def test_audio_plan_uses_only_selected_transcribe_results(planned):
         if p.startswith("topics")
     )
     assert all(
-        "要約せず整文" in prompt and attached == b"synthetic opus" and audio_key
+        "要約もしない" in prompt and attached == b"synthetic opus" and audio_key
         for p, prompt, _, attached, audio_key in calls
         if p.startswith("transcript")
     )
@@ -110,18 +111,11 @@ def test_audio_plan_uses_only_selected_transcribe_results(planned):
 
 
 @pytest.fixture
-def unavailable_terminology(monkeypatch):
-    def fail(*args):
-        raise ValueError("bad optional terminology response")
-
-    monkeypatch.setattr(route, "grounded_terms", fail)
-
-
-def test_unavailable_terminology_does_not_stop_selected_topics(unavailable_terminology, planned):
+def test_terminology_is_recorded_as_skipped_and_selected_topics_still_finish(planned):
     output, _, _ = planned
     glossary = json.loads((output / "terminology-glossary.json").read_text())
     assert glossary["terms"] == []
-    assert glossary["diagnostics"]["status"] == "unavailable"
+    assert glossary["diagnostics"] == {"status": "skipped", "reason": "not_in_route"}
     selected = json.loads((output / "selected-transcripts.json").read_text())
     assert len(selected["clips"]) == 5
 

@@ -2,19 +2,15 @@
 
 import argparse
 import hashlib
-import http.client
 import json
 import math
 import os
 import random
 import shutil
-import socket
 import subprocess
 import tempfile
 from pathlib import Path
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
 
@@ -34,7 +30,6 @@ from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
 from .word_timing import preserve_word_timing
-from .terminology import RESEARCH_INSTRUCTIONS, grounded_terms
 
 WINDOW_SECONDS = 5400
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
@@ -605,7 +600,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
     ]
     request = {
         "subtitle_policy": SUBTITLE_POLICY,
-        "task": "添付音声はこの採用区間の先頭を0秒とする。文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
+        "task": "添付音声はこの採用区間の先頭を0秒とする。入力文の誤字脱字と明らかな誤認識だけを、音声と照合して直す。言い淀み・相槌・反復は削除せず、要約もしない。話者判定はしないので speaker_assignments は空配列で返す。効果音は出さないので sound_effects は空配列で返す。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
         "topic_context": {"title": clip.title, "reason": clip.reason},
         "glossary": glossary,
         "source_segments": numbered,
@@ -636,7 +631,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 }
             ],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。声の特徴を区間全体で比較し、各元IDについてspeaker_assignmentsを別に返す。短い声も前後の同じ声と比較し、音声だけで識別できる場合はIDを付ける。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。話者判定はしない。speaker_assignmentsは空配列で返す。同じ話者と確認できない発話を結合しない。名前や役割を推定しない。時刻を推測して分割しない。感情はneutral。",
         "gap_recovery_rules": "gap_recoveryがtrueの行は空白部分を再認識した候補です。原音に発話や意味のある声がなく非発話の誤認識だけと明確な場合は、その候補だけでsource_idsを作り、textを空、omit_non_speechをtrueにします。不確かなら保持し、他の発言と混ぜません。",
     }
     value, _ = client.generate(
@@ -648,28 +643,22 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.
+    # Speakers are Transcribe's own labels, numbered by first appearance in this
+    # clip. A missing label, or one beyond the palette, stays unknown.
     assignments = {}
-    ambiguous = set()
-    assignment_rows = value.get("speaker_assignments", [])
-    if isinstance(assignment_rows, list):
-        for item in assignment_rows:
-            if not isinstance(item, dict):
-                continue
-            sid = item.get("source_id")
-            if isinstance(sid, str) and sid.isascii() and sid.isdigit():
-                sid = int(sid)
-            if type(sid) is not int or not 1 <= sid <= len(source):
-                continue
-            if sid in assignments:
-                ambiguous.add(sid)
-                continue
-            speaker, confidence = item.get("speaker_id"), item.get("confidence")
-            certain = (isinstance(speaker, str) and speaker in SPEAKER_COLORS
-                       and type(confidence) in (int, float) and math.isfinite(confidence)
-                       and 0.8 <= confidence <= 1)
-            assignments[sid] = (speaker, confidence) if certain else ("unknown", 0)
-    for sid in ambiguous:
-        assignments[sid] = ("unknown", 0)
+    numbered_labels = {}
+    for index, row in enumerate(source, 1):
+        label = row.get("speaker")
+        if label is None or (
+            label not in numbered_labels and len(numbered_labels) == len(SPEAKER_COLORS)
+        ):
+            assignments[index] = ("unknown", 0)
+            continue
+        if label not in numbered_labels:
+            numbered_labels[label] = f"speaker_{len(numbered_labels) + 1}"
+        assignments[index] = (numbered_labels[label], 1.0)
+    # Sound effects are not part of this route.
+    value["sound_effects"] = []
     replacements, consumed = {}, set()
     candidates = value.get("segments", [])
     if not isinstance(candidates, list):
@@ -822,15 +811,8 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
 
 def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
     """Start one transcription per topic; finish each ready topic independently."""
-    from .transcribe_pipeline import transcribe_clip, recover_active_gaps
+    from .transcribe_pipeline import transcribe_clip
     from .streaming_render import StreamingRenderer
-    from .gap_diagnostics import describe_gaps
-
-    def advisory_gaps(path, duration, segments):
-        try:
-            return describe_gaps(path, duration, segments)
-        except Exception:
-            return {"status": "unavailable", "reason": "level_analysis_failed", "gaps": []}
 
     if resume:
         saved_receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
@@ -851,11 +833,6 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
                 encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
                 key = fingerprint({"source_audio_sha256": identity["audio_sha256"], "start": clip.start,
                                    "end": clip.end, "encoding": "ogg-opus-16000hz-mono-24k-voip-v1"})
-                levels = advisory_gaps(selected_audio, clip.end - clip.start, raw["segments"])
-                write_json(output / f"transcribe-gap-levels-{index:03}.json", levels)
-                raw, recovery = recover_active_gaps(client, audio, clip, index, identity["audio_sha256"], raw, levels)
-                write_json(output / f"transcribe-gap-recovery-{index:03}.json", recovery)
-                write_json(output / f"transcribe-selected-{index:03}.json", raw)
                 value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
             value["finishing"]["status"] = "transcribe_timestamps_preserved"
             value["finishing"]["timestamp_source"] = "gemini_transcribe"
@@ -1177,33 +1154,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
             ],
         }
         client.save()
-        corpus = "\n".join(c.title + " " + c.reason for c in chosen)
-        try:
-            research, grounding = client.generate(
-                "terminology",
-                RESEARCH_INSTRUCTIONS + "\n配信URL:" + url + "\n話題資料:" + corpus,
-                research=True,
-            )
-        except urllib.error.HTTPError as error:
-            if error.code in (401, 403):
-                raise
-            glossary, diagnostics = [], {"status": "unavailable", "reason": "http_error", "http_status": error.code}
-        except PipelineError as error:
-            if str(error) not in {
-                "Incomplete Gemini response; not retried",
-                "Expected JSON object",
-                "Gemini returned no complete JSON object; raw response was preserved",
-            }:
-                raise
-            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
-        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
-                TimeoutError, socket.timeout) as error:
-            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
-        else:
-            try:
-                glossary, diagnostics = grounded_terms(research, grounding, corpus)
-            except (ValueError, KeyError, TypeError) as error:
-                glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+        # The route is topic selection, Transcribe and proofreading. Terminology
+        # research is not part of it, so the glossary is recorded as empty.
+        glossary, diagnostics = [], {"status": "skipped", "reason": "not_in_route"}
         write_json(
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
