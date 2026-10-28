@@ -1,0 +1,113 @@
+name: Translation video
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: Public video URL (visible in workflow history)
+        type: string
+        required: true
+      source_language:
+        description: BCP-47 language hint; blank detects automatically
+        type: string
+        default: ''
+      target_language:
+        description: Target language
+        type: string
+        default: 日本語
+      start_seconds:
+        description: Start in seconds
+        type: string
+        default: '0'
+      end_seconds:
+        description: End in seconds; blank means end of video
+        type: string
+        default: ''
+      thinking:
+        description: Translation reasoning level
+        type: choice
+        options: [MINIMAL, LOW, MEDIUM, HIGH]
+        default: MEDIUM
+      workers:
+        description: Maximum concurrent audio windows
+        type: choice
+        options: ['1', '2', '3', '4', '5', '6']
+        default: '6'
+      gap_recovery:
+        description: Try to recover some transcription gaps
+        type: boolean
+        default: true
+      bilingual:
+        description: Show the source text beneath the translation
+        type: boolean
+        default: false
+      subtitles_only:
+        description: Produce subtitle files without video rendering
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  translate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      SOURCE_URL: ${{ inputs.source_url }}
+      SOURCE_LANGUAGE: ${{ inputs.source_language }}
+      TARGET_LANGUAGE: ${{ inputs.target_language }}
+      START_SECONDS: ${{ inputs.start_seconds }}
+      END_SECONDS: ${{ inputs.end_seconds }}
+      THINKING: ${{ inputs.thinking }}
+      WORKERS: ${{ inputs.workers }}
+      GAP_RECOVERY: ${{ inputs.gap_recovery }}
+      BILINGUAL: ${{ inputs.bilingual }}
+      SUBTITLES_ONLY: ${{ inputs.subtitles_only }}
+      GOOGLE_CLOUD_PROJECT: ${{ vars.TRANSLATION_PROJECT_ID }}
+      STORE_REPO: ${{ vars.TRANSLATION_STORAGE_REPO }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.23'
+      - name: Install FFmpeg and Japanese fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto-cjk
+          uv sync --locked --no-dev
+      - name: Connect Vertex with GitHub OIDC
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.TRANSLATION_WIF_PROVIDER }}
+          service_account: ${{ vars.TRANSLATION_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+      - name: Transcribe, translate and render
+        env:
+          YOUTUBE_COOKIES_B64: ${{ secrets.YOUTUBE_COOKIES_B64 }}
+        run: |
+          set -euo pipefail
+          args=("$SOURCE_URL" --output "$RUNNER_TEMP/translation-output" --config config.example.json --project "$GOOGLE_CLOUD_PROJECT" --target-language "$TARGET_LANGUAGE" --start "$START_SECONDS" --thinking "$THINKING" --workers "$WORKERS")
+          if [ -n "$SOURCE_LANGUAGE" ]; then args+=(--source-language "$SOURCE_LANGUAGE"); fi
+          if [ -n "$END_SECONDS" ]; then args+=(--end "$END_SECONDS"); fi
+          if [ "$BILINGUAL" = true ]; then args+=(--bilingual); fi
+          if [ "$SUBTITLES_ONLY" = true ]; then args+=(--subtitles-only); fi
+          if [ "$GAP_RECOVERY" = false ]; then args+=(--no-gap-recovery); fi
+          uv run --no-sync python -m translation "${args[@]}"
+      - name: Save output in the private results repository
+        env:
+          GH_TOKEN: ${{ secrets.TRANSLATION_STORAGE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$STORE_REPO" && test -n "$GH_TOKEN"
+          test "$(gh api "repos/$STORE_REPO" --jq .private)" = true
+          python - <<'PY'
+          import json, os, pathlib, zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'translation-output'
+          manifest = json.loads((root / 'manifest.json').read_text())
+          with zipfile.ZipFile(pathlib.Path(os.environ['RUNNER_TEMP']) / 'result.zip', 'w', allowZip64=True) as bundle:
+              for name in ['manifest.json', *manifest['files']]:
+                  bundle.write(root / name, name)
+          PY
+          gh release create "translation-result-$GITHUB_RUN_ID" "$RUNNER_TEMP/result.zip" --repo "$STORE_REPO" --latest=false --notes 'Private translated subtitle video and editable subtitles.'

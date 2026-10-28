@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=77,<81"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "translation-video"
+version = "0.1.0"
+description = "Time-aligned translated subtitles and video, using Gemini and FFmpeg"
+requires-python = ">=3.11"
+dependencies = ["google-auth[requests]>=2.35,<3", "pysubs2==1.8.1", "budoux==0.10.0", "yt-dlp[default]==2026.10.21", "curl-cffi==0.15.0", "av>=18,<20", "numpy>=2,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+translation-video = "translation.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

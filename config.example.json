@@ -1,0 +1,19 @@
+{
+  "source_language": "",
+  "target_language": "日本語",
+  "workers": 6,
+  "batch_size": 60,
+  "model": "gemini-3.5-flash",
+  "thinking": "MEDIUM",
+  "height": 360,
+  "encoder": "libx264",
+  "preset": "veryfast",
+  "font": "Noto Sans CJK JP",
+  "font_size": 24,
+  "line_chars": 25,
+  "bilingual": false,
+  "subtitles_only": false,
+  "gap_recovery": true,
+  "max_bytes": 6442450944,
+  "max_seconds": 21600
+}
