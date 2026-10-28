@@ -2,7 +2,7 @@
 
 通常操作は `tools/produce_with_gemini.py` に集約する。監査・strict品質検査・候補映像の承認待ちは挟まない。
 
-制作の正規経路は公開ClipForgeのGitHub Actionsです。Actionsが素材取得とGemini処理を行い、採用話題の文字起こしはGemini 3.5 Transcribeに送り、描画はColab GPUへ依頼して非公開保存します。ローカル/VMへ制作を移さず、移行時は既存Runを再接続し、完了済み成果物を再利用してください。二重投入はしません。
+制作の正規経路は公開ClipForgeのGitHub Actionsです。3.8・3.5 Flashは Antigravity SDK（Vertex）経由、3.5 Transcribeは Vertex 直接で呼びます。起動入力と確認方法は [ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md) を参照してください。Actionsが素材取得とGemini処理を行い、採用話題の文字起こしはGemini 3.5 Transcribeに送り、描画はColab GPUへ依頼して非公開保存します。ローカル/VMへ制作を移さず、移行時は既存Runを再接続し、完了済み成果物を再利用してください。二重投入はしません。
 
 ## 接続済みの場合
 

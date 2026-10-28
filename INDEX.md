@@ -10,9 +10,9 @@
 
 ## 現在の通常経路
 
-URL → 音声取得・再利用 → 3.8が話題・見出し選定 → 採用区間を切り出し → 3.5が用語表記調査 → Colab GPUが採用部分だけ文字起こし → 3.5 Flash/MEDIUMが文字起こしを話題ごと1回で整文・SEを提案 → Colab GPU/NVENCで最大360p素材・標準720pキャンバス描画 → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
+URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し選定 → 採用区間を切り出し → 3.5（Antigravity）が用語表記調査 → 3.5 Transcribe（Vertex直接）が採用部分だけ文字起こし → 3.5 Flash/MEDIUMが文字起こしを話題ごと1回で整文・SEを提案 → Colab GPU/NVENCで最大360p素材・標準720pキャンバス描画 → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
 
-- 最短入口・接続・再接続: `docs/QUICK_START.md`。修正・再利用: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。最新方針: `docs/HANDOFF_SEIBUN_2026-10-26.md`。過去実行記録: `docs/HANDOFF_FINISHING_2026-10-26.md`。
+- 最短入口・接続・再接続: `docs/QUICK_START.md`。Antigravity経路の起動入力と確認: `docs/ANTIGRAVITY_ROUTE.md`。修正・再利用: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。最新方針: `docs/HANDOFF_SEIBUN_2026-10-26.md`。過去実行記録: `docs/HANDOFF_FINISHING_2026-10-26.md`。
 - 通常入口: `tools/produce_with_gemini.py`。実装: `src/clipforge/audio_understanding.py`。
 - Actions: `.github/workflows/clipforge-stages.yml`のunderstandingとselected-audio-render。
 - Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
