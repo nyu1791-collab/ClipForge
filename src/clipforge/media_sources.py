@@ -175,9 +175,9 @@ class RemoteMedia:
 
     def _options(self, audio_only, quality):
         video_format = (
-            "bestvideo[height<=360]+bestaudio/best[height<=?360]"
+            "bestvideo[height<=360]+bestaudio/best[height<=?360]/worstvideo+bestaudio/worst[height>?0]"
             if quality == "360p"
-            else "worst[height<=?360]"
+            else "worst[height<=?360]/worstvideo+bestaudio/worst[height>?0]"
             if quality == "preview"
             else "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best"
         )
@@ -349,21 +349,6 @@ class RemoteMedia:
                 self._validate(info)
                 self._check_hls(info)
                 phase = "download"
-                if not audio_only and quality == "360p":
-                    formats = info.get("requested_formats") or [info]
-                    low_video = any(
-                        0 < (row.get("height") or 0) <= 360 for row in formats
-                    )
-                    # Progressive direct files may omit dimensions until ffprobe.
-                    direct_unknown = source_kind(self.url) == "direct" and any(
-                        row.get("height") is None for row in formats
-                    )
-                    if (not low_video and not direct_unknown) or any(
-                        (row.get("height") or 0) > 360 for row in formats
-                    ):
-                        raise PipelineError(
-                            "source has no video rendition at or below 360p"
-                        )
                 downloader.process_ie_result(info, download=True)
         except PipelineError:
             raise
@@ -425,9 +410,6 @@ class RemoteMedia:
             "video_start": float(video.get("start_time", 0)) if video else 0,
             "has_video": video is not None,
         }
-        if not audio_only and quality in {"360p", "preview"} and video is not None:
-            if not 0 < (details["height"] or 0) <= 360:
-                raise PipelineError("selected source video must be at most 360p")
         # Audio-only YouTube renditions do not describe the source's available video.
         if not audio_only or source_kind(self.url) == "direct":
             self.has_video = details["has_video"]

@@ -301,9 +301,10 @@
             "VERTEX_PROJECT_NUMBER": "${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}",
             "COLAB_CONNECTION": "${{ secrets.COLAB_ADC_JSON }}",
             "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}",
-            "CONTINUE_MISSING": "${{ inputs.continue_missing }}"
+            "CONTINUE_MISSING": "${{ inputs.continue_missing }}",
+            "AUTO_RENDER": "${{ inputs.auto_render }}"
           },
-          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -z \"$EDITORIAL_RELEASE\" ] || [ \"$CONTINUE_MISSING\" = true ]; then\n test -n \"$VERTEX_PROJECT_NUMBER\" || { echo \"Register CLIPFORGE_VERTEX_PROJECT_NUMBER; see docs/QUICK_START.md.\"; exit 1; }\nfi\nif [ -z \"$EDITORIAL_RELEASE\" ]; then\n test -n \"$COLAB_CONNECTION\" || { echo \"Register COLAB_ADC_JSON using tools/configure_colab_oauth.py for selected-topic GPU ASR.\"; exit 1; }\nfi"
+          "run": "test -n \"$STORE_TOKEN\" || { echo \"Register CLIPFORGE_PAT in ClipForge secrets.\"; exit 1; }\nif [ -z \"$EDITORIAL_RELEASE\" ] || [ \"$CONTINUE_MISSING\" = true ]; then\n test -n \"$VERTEX_PROJECT_NUMBER\" || { echo \"Register CLIPFORGE_VERTEX_PROJECT_NUMBER; see docs/QUICK_START.md.\"; exit 1; }\nfi\nif [ \"$AUTO_RENDER\" = true ]; then\n test -n \"$COLAB_CONNECTION\" || { echo \"Register COLAB_ADC_JSON using tools/configure_colab_oauth.py before rendering.\"; exit 1; }\nfi"
         },
         {
           "name": "Require the configured public Vertex execution branch",

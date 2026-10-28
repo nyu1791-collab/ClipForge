@@ -5,6 +5,7 @@ import urllib.error
 import pytest
 
 from clipforge import audio_understanding as route, storage
+from clipforge import transcribe_pipeline
 from clipforge.models import Settings
 from clipforge.storage import PipelineError
 
@@ -66,11 +67,8 @@ def planned(tmp_path, monkeypatch):
             "sound_effects": [],
         }, {}
 
-    def selected_gpu(
-        audio, clips, settings, output, resume, missing, sha, on_clip=None
-    ):
-        parts = [
-            {
+    def selected_transcribe(client, audio, clip, index, sha):
+        return {
                 "segments": [
                     {
                         "start": 0.5,
@@ -79,20 +77,15 @@ def planned(tmp_path, monkeypatch):
                     }
                 ]
             }
-            for _ in clips
-        ]
-        for index, part in enumerate(parts, 1):
-            on_clip(index, part)
-        return {"clips": parts, "recognizer": "synthetic_parakeet"}, False
 
     monkeypatch.setattr(route.Client, "generate", generate)
-    monkeypatch.setattr(route, "selected_gpu_transcripts", selected_gpu)
+    monkeypatch.setattr(transcribe_pipeline, "transcribe_clip", selected_transcribe)
     output = tmp_path / "review"
     route.plan(audio, URL, output, Settings(aspect="16:9", height=360))
     return output, audio, calls
 
 
-def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
+def test_audio_plan_uses_only_selected_transcribe_results(planned):
     output, audio, calls = planned
     assert calls[0][0] == "topics-0" and calls[1][0] == "terminology"
     assert sorted(p for p, _, _, _, _ in calls if p.startswith("transcript-")) == [
@@ -112,9 +105,26 @@ def test_audio_plan_uses_only_selected_gpu_transcripts(planned):
     receipt = json.loads((output / "audio-editor-receipt.json").read_text())
     assert receipt["status"] == "complete" and receipt["full_source_asr"] is False
     selected = json.loads((output / "selected-transcripts.json").read_text())
-    assert len(selected["clips"]) == 5 and selected["timestamp_source"] == "gpu_asr"
+    assert len(selected["clips"]) == 5 and selected["timestamp_source"] == "gemini_transcribe"
     assert all("ああ、そうか" in c["segments"][0]["text"] for c in selected["clips"])
     assert not (output / "focused-2.ogg").exists()
+
+
+@pytest.fixture
+def unavailable_terminology(monkeypatch):
+    def fail(*args):
+        raise ValueError("bad optional terminology response")
+
+    monkeypatch.setattr(route, "grounded_terms", fail)
+
+
+def test_unavailable_terminology_does_not_stop_selected_topics(unavailable_terminology, planned):
+    output, _, _ = planned
+    glossary = json.loads((output / "terminology-glossary.json").read_text())
+    assert glossary["terms"] == []
+    assert glossary["diagnostics"]["status"] == "unavailable"
+    selected = json.loads((output / "selected-transcripts.json").read_text())
+    assert len(selected["clips"]) == 5
 
 
 def test_resume_cannot_apply_responses_to_another_audio(planned, tmp_path, monkeypatch):
@@ -197,3 +207,27 @@ def test_failed_vertex_call_is_not_retried(tmp_path, monkeypatch):
         client.generate("topics-0", "audio topics")
     assert len(calls) == 1
     assert client.record["requests"][0]["status"] == "failed"
+
+
+def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
+    """The actual request keeps the other stages on their own profiles."""
+    monkeypatch.setenv("CLIPFORGE_VERTEX_ACCESS_TOKEN", "synthetic")
+    client = route.Client(tmp_path)
+    sent = []
+
+    def capture(phase, model, thinking, files, sources, rules, prompt_path,
+                prompt_hash, audio, audio_key, token, body, research, attempt):
+        sent.append((model, thinking, json.loads(body), research))
+        return {}, {}
+
+    monkeypatch.setattr(client, "_generate_attempt", capture)
+    client.generate("transcript-1", "字幕の整文")
+    client.generate("topics-0", "話題の選定")
+    client.generate("terminology", "用語の調査", research=True)
+    assert [(model, thinking) for model, thinking, _, _ in sent] == [
+        ("gemini-3.5-flash", "MEDIUM"),
+        ("gemini-3.8-flash", "MEDIUM"),
+        ("gemini-3.5-flash", "MINIMAL"),
+    ]
+    assert [body["generationConfig"]["thinkingConfig"]["thinkingLevel"]
+            for _, _, body, _ in sent] == ["MEDIUM", "MEDIUM", "MINIMAL"]
