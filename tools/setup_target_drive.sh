@@ -23,7 +23,7 @@ if client.get('project_id')!='project-fdadb4dd-cb77-4270-9cd':
 PYCLIENT
 gcloud services enable drive.googleapis.com --project="$drive_project" --quiet
 gcloud auth application-default login --client-id-file="$drive_client" --no-launch-browser --scopes='openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/drive.file'
-if ! gh auth status --hostname github.com >/dev/null 2>&1; then
+if ! gh api user --jq .login >/dev/null 2>&1; then
   gh auth login --hostname github.com --git-protocol https --web --scopes repo
 fi
 python3 - <<'PYCODE'
