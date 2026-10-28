@@ -189,7 +189,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
 .flag{background:#fff3d3}button{cursor:pointer}</style>
 <h1>話題別の確認用動画と字幕</h1><p>字幕を焼き込む前の確認用動画です。時刻は動画の先頭からの目安です。
 候補は機械的な目印で、網羅や正確さを保証しません。原音・映像と照合してください。
-人名・店名などの固有名詞、見出し、話題の切れ目、各動画の冒頭と末尾も確認してください。
+固有名詞、見出し、話題の切れ目なども、必要に応じて確認・修正を指示できます。
 番号と時刻、修正内容を会話でお知らせください。</p>"""
     ]
     order = []
@@ -201,7 +201,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
         unresolved = sum(not row["mapping_exact"] for row in rows)
         order.append((unresolved > 0, changes, index, unresolved))
     parts.append(
-        "<h2>確認の順番</h2><p>語の変更が少ない動画から2本ずつ確認します。対応不明のある動画は要確認です。</p><ol>"
+        "<h2>確認の順番の参考</h2><p>語の変更が少ない動画から並べています。見る順番は自由です。</p><ol>"
     )
     for _, changes, index, unresolved in sorted(order):
         parts.append(
@@ -254,7 +254,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             key=lambda row: row["start"],
         )
         parts.append(
-            f"<h3>変更なしの抜き取り（{len(samples)}行）</h3><p>各クリップから無作為に最大10行。誤りがあればそのクリップは全行を確認します。</p><ul>"
+            f"<h3>変更なしの抜き取り（{len(samples)}行）</h3><p>必要に応じて見るための参考です。誤りがあれば、追加で確認する範囲を選べます。</p><ul>"
         )
         for row in samples:
             parts.append(
