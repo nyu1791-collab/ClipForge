@@ -1215,12 +1215,32 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         }
         client.save()
         corpus = "\n".join(c.title + " " + c.reason for c in chosen)
-        research, grounding = client.generate(
-            "terminology",
-            RESEARCH_INSTRUCTIONS + "\n配信URL:" + url + "\n話題資料:" + corpus,
-            research=True,
-        )
-        glossary, diagnostics = grounded_terms(research, grounding, corpus)
+        try:
+            research, grounding = client.generate(
+                "terminology",
+                RESEARCH_INSTRUCTIONS + "\n配信URL:" + url + "\n話題資料:" + corpus,
+                research=True,
+            )
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                raise
+            glossary, diagnostics = [], {"status": "unavailable", "reason": "http_error", "http_status": error.code}
+        except PipelineError as error:
+            if str(error) not in {
+                "Incomplete Gemini response; not retried",
+                "Expected JSON object",
+                "Gemini returned no complete JSON object; raw response was preserved",
+            }:
+                raise
+            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
+                TimeoutError, socket.timeout) as error:
+            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+        else:
+            try:
+                glossary, diagnostics = grounded_terms(research, grounding, corpus)
+            except (ValueError, KeyError, TypeError) as error:
+                glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
         write_json(
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
@@ -1344,8 +1364,6 @@ def render(review, transcripts_file, output, settings, clip_index=None):
             receipt = audio_first.retrieved(
                 vod, target, clip.start, clip.end, quality="360p"
             )
-            if not 0 < receipt.get("rendition_height", 0) <= 360:
-                raise PipelineError("Source must be at most 360p")
             offset = receipt["start_offset"]
             transcript = audio_first.shifted_transcript(
                 Transcript.model_validate(raw), 0, clip.end - clip.start, offset=offset
