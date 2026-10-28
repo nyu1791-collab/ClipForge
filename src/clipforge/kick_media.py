@@ -477,13 +477,17 @@ class KickVOD:
         elif quality == "preview":
             videos = [v for v in ordered if 0 < v["height"] <= 360]
             if not videos:
+                videos = [v for v in ordered if v["height"] > 0]
+            if not videos:
                 raise PipelineError("no video rendition for topic review")
             selected = videos[0]
         else:
             cap = {"360p": 360, "720p": 720, "1080p": 1080, "best": 100000}[quality]
             eligible = [v for v in ordered if 0 < v["height"] <= cap]
             if not eligible:
-                raise PipelineError("requested quality unavailable")
+                eligible = [v for v in ordered if v["height"] > 0][:1]
+            if not eligible:
+                raise PipelineError("video rendition unavailable")
             selected = eligible[-1]
         text = self.fetch(selected["url"], 2 * 1024**2).decode()
         segments = parse_media(text, selected["url"], self.root)

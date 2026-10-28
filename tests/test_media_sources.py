@@ -55,7 +55,7 @@ def test_invalid_sources_fail_before_network(url):
         sources.canonical(url)
 
 
-def test_360p_format_selection_keeps_best_audio_without_hd_fallback(tmp_path):
+def test_360p_format_selection_prefers_low_video_but_falls_back(tmp_path):
     from yt_dlp import YoutubeDL
 
     source = sources.RemoteMedia("https://youtu.be/abcdefghijk", tmp_path / "cache")
@@ -93,12 +93,15 @@ def test_360p_format_selection_keeps_best_audio_without_hd_fallback(tmp_path):
                 "audio",
             ]
             context["formats"] = [formats[0], formats[-1]]
-            assert list(selector(context)) == []
+            selected = list(selector(context))
+            assert [row["format_id"] for row in selected[0]["requested_formats"]] == [
+                "1080", "audio"
+            ]
     finally:
         source.close()
 
 
-def test_360p_rejects_high_resolution_metadata_before_transfer(tmp_path, monkeypatch):
+def test_360p_does_not_reject_high_resolution_metadata_before_transfer(tmp_path, monkeypatch):
     import yt_dlp
 
     class Downloader:
@@ -122,12 +125,12 @@ def test_360p_rejects_high_resolution_metadata_before_transfer(tmp_path, monkeyp
             }
 
         def process_ie_result(self, *args, **kwargs):
-            pytest.fail("high resolution source must not be transferred")
+            raise PipelineError("download attempted")
 
     monkeypatch.setattr(yt_dlp, "YoutubeDL", Downloader)
     source = sources.RemoteMedia("https://cdn.example/source.mp4", tmp_path / "cache")
     try:
-        with pytest.raises(PipelineError, match="at or below 360p"):
+        with pytest.raises(PipelineError, match="download attempted"):
             source.retrieve(tmp_path / "out.mp4", 0, 5, quality="360p")
     finally:
         source.close()

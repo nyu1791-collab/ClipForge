@@ -259,12 +259,11 @@ def test_production_prefetch_and_retrieve_use_same_360p_segments(vod, tmp_path):
     assert command[command.index("-c") + 1] == "copy"
 
 
-def test_production_refuses_only_high_resolution_renditions(vod):
+def test_production_uses_available_high_resolution_rendition(vod):
     value, _, calls, _ = vod
     value.variants = [row for row in value.variants if row["height"] == 1080]
-    with pytest.raises(PipelineError, match="quality unavailable"):
-        value.prefetch(0, 5)
-    assert not any(url.endswith(".ts") for url in calls)
+    value.prefetch(0, 5)
+    assert any(url.endswith(".ts") for url in calls)
 
 
 def test_concurrent_prefetch_and_segment_never_download_a_url_twice(vod):

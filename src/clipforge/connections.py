@@ -66,7 +66,7 @@ def describe_connections(repository="nyu1791-collab/ClipForge"):
             entry(
                 secrets,
                 "COLAB_ADC_JSON",
-                "GPU文字起こし・描画",
+                "動画描画（旧GPU文字起こしの復旧を含む）",
                 "tools/configure_colab_oauth.py",
             ),
             entry(
