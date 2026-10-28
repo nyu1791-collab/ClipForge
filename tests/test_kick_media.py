@@ -605,3 +605,51 @@ def test_extract_streamed_reports_a_download_failure_instead_of_short_audio(
             0.0,
             1.0,
         )
+
+
+def test_transient_media_failure_is_retried_then_succeeds(monkeypatch):
+    waits = []
+    monkeypatch.setattr(km.time, "sleep", lambda seconds: waits.append(seconds))
+    replies = [km.HTTPFailure(502, {}), km.HTTPFailure(503, {}), b"segment"]
+    fetcher = km.KickVOD.__new__(km.KickVOD)
+    fetcher._transport_errors = (ConnectionError, TimeoutError)
+
+    def once(session, url, limit, *, segment, lock):
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr(fetcher, "_fetch_once", once)
+    assert fetcher._fetch(None, "https://example.test/playlist.m3u8", 100) == b"segment"
+    assert waits == [10, 30]
+
+
+def test_non_transient_media_status_stops_without_retry(monkeypatch):
+    waits = []
+    monkeypatch.setattr(km.time, "sleep", lambda seconds: waits.append(seconds))
+    fetcher = km.KickVOD.__new__(km.KickVOD)
+    fetcher._transport_errors = (ConnectionError, TimeoutError)
+
+    def gone(session, url, limit, *, segment, lock):
+        raise km.HTTPFailure(404, {})
+
+    monkeypatch.setattr(fetcher, "_fetch_once", gone)
+    with pytest.raises(PipelineError, match="HTTP 404; failed after 1 attempts"):
+        fetcher._fetch(None, "https://example.test/x", 100)
+    assert waits == []
+
+
+def test_media_retry_gives_up_after_the_fixed_spacing(monkeypatch):
+    waits = []
+    monkeypatch.setattr(km.time, "sleep", lambda seconds: waits.append(seconds))
+    fetcher = km.KickVOD.__new__(km.KickVOD)
+    fetcher._transport_errors = (ConnectionError, TimeoutError)
+
+    def busy(session, url, limit, *, segment, lock):
+        raise km.HTTPFailure(502, {})
+
+    monkeypatch.setattr(fetcher, "_fetch_once", busy)
+    with pytest.raises(PipelineError, match="HTTP 502; failed after 4 attempts"):
+        fetcher._fetch(None, "https://example.test/x", 100)
+    assert waits == [10, 30, 60]

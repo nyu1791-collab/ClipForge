@@ -26,6 +26,10 @@ from .storage import TIME_TOLERANCE, PipelineError, digest, process, write_json
 RANGE_FORMAT = "segment-remux-v1"
 
 
+# Waits before each retry of a transient media failure (429, 5xx, or a transport error).
+MEDIA_RETRY_DELAYS = (10, 30, 60)
+
+
 class HTTPFailure(Exception):
     def __init__(self, status, headers):
         self.status, self.headers = status, headers
@@ -415,15 +419,24 @@ class KickVOD:
         return self._fetch(self.session, url, limit, lock=self._session_lock)
 
     def _fetch(self, session, url, limit, *, segment=False, lock=None):
-        # The production policy forbids automatically retrying media retrieval.
-        try:
-            return self._fetch_once(session, url, limit, segment=segment, lock=lock)
-        except HTTPFailure as error:
-            last_status = error.status
-        except self._transport_errors:
-            last_status = "unavailable"
+        # A media GET is idempotent and costs nothing to repeat. Only transient upstream
+        # failures are retried, at fixed spacing; any other status stops at once.
+        attempts = 0
+        while True:
+            attempts += 1
+            try:
+                return self._fetch_once(session, url, limit, segment=segment, lock=lock)
+            except HTTPFailure as error:
+                last_status = error.status
+                transient = error.status == 429 or 500 <= error.status <= 599
+            except self._transport_errors:
+                last_status = "unavailable"
+                transient = True
+            if not transient or attempts > len(MEDIA_RETRY_DELAYS):
+                break
+            time.sleep(MEDIA_RETRY_DELAYS[attempts - 1])
         raise PipelineError(
-            f"Kick media HTTP {last_status}; failed after 1 attempts"
+            f"Kick media HTTP {last_status}; failed after {attempts} attempts"
         ) from None
 
     def _fetch_once(self, session, url, limit, *, segment, lock):
