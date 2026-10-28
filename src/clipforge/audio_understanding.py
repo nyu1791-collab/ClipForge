@@ -33,6 +33,7 @@ from .sound_effects import prepare_cues
 from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
+from .word_timing import preserve_word_timing
 from .terminology import RESEARCH_INSTRUCTIONS, grounded_terms
 
 WINDOW_SECONDS = 5400
@@ -83,7 +84,7 @@ class Client:
             "requests": [],
             "new_generation_requests": 0,
             "full_source_asr": False,
-            "timestamp_source": "gpu_asr",
+            "timestamp_source": "gemini_transcribe",
             "timings": {},
             "started_at": time.time(),
         }
@@ -134,6 +135,8 @@ class Client:
         rule_parts, rule_sources = [], []
         for path in rule_files:
             text = path.read_text(encoding="utf-8").strip()
+            if phase.startswith("transcript-") and self.record.get("timestamp_source") == "gemini_transcribe":
+                text = text.replace("GPU文字起こし", "音声文字起こし").replace("GPUの文字起こし", "音声文字起こし").replace("GPU時刻", "文字起こし時刻").replace("GPUが文字起こし", "Transcribeが文字起こし")
             if not text:
                 raise PipelineError("Required Gemini rulebook is empty: " + path.name)
             rule_parts.append(text)
@@ -434,9 +437,21 @@ def selected_transcript(value, duration, offset=0):
             raise PipelineError("Subtitle text is required")
         if not text.strip():
             continue
+        raw_words = row.get("words", [])
+        words = []
+        if isinstance(raw_words, list) and all(isinstance(w, dict) for w in raw_words):
+            if all(
+                isinstance(w.get("text"), str) and w["text"] and
+                type(w.get("start")) in (int, float) and type(w.get("end")) in (int, float) and
+                math.isfinite(w["start"]) and math.isfinite(w["end"]) and
+                start <= w["start"] < w["end"] <= end
+                for w in raw_words
+            ) and "".join(w["text"] for w in raw_words) == text:
+                words = [{"start": w["start"] + offset, "end": w["end"] + offset,
+                          "text": w["text"]} for w in raw_words]
         rows.append(
             Segment(
-                start=start + offset, end=end + offset, text=text, **annotation(row)
+                start=start + offset, end=end + offset, text=text, words=words, **annotation(row)
             )
         )
         speaker, confidence = row.get("speaker_id"), row.get("confidence", 0)
@@ -475,6 +490,7 @@ def selected_transcript(value, duration, offset=0):
                 start=min(r.start for r in members),
                 end=max(r.end for r in members),
                 text="\n".join(r.text for r in members),
+                words=members[0].words if len(members) == 1 else [],
                 **(annotation(members[0].model_dump()) if len(members) == 1 else {}),
             )
         )
@@ -620,12 +636,13 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             "finishing": {"status": "no_speech_recognized", "model_requests": 0},
         }
     numbered = [
-        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"]}
+        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"],
+         **({"gap_recovery": True} if row.get("gap_recovery") else {})}
         for index, row in enumerate(source, 1)
     ]
     request = {
         "subtitle_policy": SUBTITLE_POLICY,
-        "task": "添付音声はこの採用区間の先頭を0秒とする。GPU文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
+        "task": "添付音声はこの採用区間の先頭を0秒とする。文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
         "topic_context": {"title": clip.title, "reason": clip.reason},
         "glossary": glossary,
         "source_segments": numbered,
@@ -634,9 +651,16 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             "segments": [
                 {
                     "source_ids": [1],
-                    "text": "整文後の字幕。省くのが明白な無意味なフィラーだけなら空文字",
+                    "text": "元の発言を保持した整文後の字幕",
                     "omit_filler": False,
                     "omit_non_speech": False,
+                    "speaker_id": "speaker_1 から speaker_6、または unknown",
+                    "confidence": "声に基づく話者判定の確信度0から1",
+                }
+            ],
+            "speaker_assignments": [
+                {
+                    "source_id": 1,
                     "speaker_id": "speaker_1 から speaker_6、または unknown",
                     "confidence": "声に基づく話者判定の確信度0から1",
                 }
@@ -649,7 +673,8 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 }
             ],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。原音に発話や意味のある笑い声等がなく、明らかに誤認識だけのIDはtextを空にしomit_non_speechをtrueにする。判断できない発話や一部に発話が含まれるIDは残す。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、短くて区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。声の特徴を区間全体で比較し、各元IDについてspeaker_assignmentsを別に返す。短い声も前後の同じ声と比較し、音声だけで識別できる場合はIDを付ける。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "gap_recovery_rules": "gap_recoveryがtrueの行は空白部分を再認識した候補です。原音に発話や意味のある声がなく非発話の誤認識だけと明確な場合は、その候補だけでsource_idsを作り、textを空、omit_non_speechをtrueにします。不確かなら保持し、他の発言と混ぜません。",
     }
     value, _ = client.generate(
         f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
@@ -660,6 +685,28 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.
+    assignments = {}
+    ambiguous = set()
+    assignment_rows = value.get("speaker_assignments", [])
+    if isinstance(assignment_rows, list):
+        for item in assignment_rows:
+            if not isinstance(item, dict):
+                continue
+            sid = item.get("source_id")
+            if isinstance(sid, str) and sid.isascii() and sid.isdigit():
+                sid = int(sid)
+            if type(sid) is not int or not 1 <= sid <= len(source):
+                continue
+            if sid in assignments:
+                ambiguous.add(sid)
+                continue
+            speaker, confidence = item.get("speaker_id"), item.get("confidence")
+            certain = (isinstance(speaker, str) and speaker in SPEAKER_COLORS
+                       and type(confidence) in (int, float) and math.isfinite(confidence)
+                       and 0.8 <= confidence <= 1)
+            assignments[sid] = (speaker, confidence) if certain else ("unknown", 0)
+    for sid in ambiguous:
+        assignments[sid] = ("unknown", 0)
     replacements, consumed = {}, set()
     candidates = value.get("segments", [])
     if not isinstance(candidates, list):
@@ -689,14 +736,12 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         if any(b["start"] - a["end"] > 1.5 for a, b in zip(spans, spans[1:])):
             continue
         text = candidate.get("text")
-        if not isinstance(text, str) or (
-            not text.strip()
-            and candidate.get("omit_filler") is not True
-            and not (
-                value.get("audio_access") == "heard"
-                and candidate.get("omit_non_speech") is True
-            )
-        ):
+        if (isinstance(text, str) and not text.strip() and candidate.get("omit_non_speech") is True
+            and all(span.get("gap_recovery") is True for span in spans)):
+            consumed.update(ids)
+            replacements[ids[0]] = None
+            continue
+        if not isinstance(text, str) or not text.strip():
             continue
         speaker = candidate.get("speaker_id")
         confidence = candidate.get("confidence")
@@ -708,12 +753,27 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             and math.isfinite(confidence)
             and 0.8 <= confidence <= 1
         )
+        # Per-source voice labels survive a missing or unusable edited segment.
+        # Conflicting or unknown labels must not be merged into one voice.
+        source_speakers = [assignments[i] for i in ids if i in assignments]
+        distinct = {item[0] for item in source_speakers}
+        if len(ids) > 1 and (len(distinct - {"unknown"}) > 1 or "unknown" in distinct):
+            continue
+        if "unknown" in distinct:
+            certain = False
+        if len(source_speakers) == len(ids) and len(distinct) == 1 and "unknown" not in distinct:
+            speaker = source_speakers[0][0]
+            confidence = min(item[1] for item in source_speakers)
+            certain = True
+        source_words = [word for span in spans for word in span.get("words", [])]
+        preserved_words = preserve_word_timing(source_words, text)
         consumed.update(ids)
         replacements[ids[0]] = (
             {
                 "start": spans[0]["start"],
                 "end": spans[-1]["end"],
                 "text": text,
+                "words": preserved_words,
                 "speaker_id": speaker if certain else "unknown",
                 "confidence": confidence if certain else 0,
                 "emotion": "neutral",
@@ -729,13 +789,15 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             if replacements[index] is not None:
                 segments.append(replacements[index])
         elif index not in consumed:
+            speaker, confidence = assignments.get(index, ("unknown", 0))
             segments.append(
                 {
                     "start": row["start"],
                     "end": row["end"],
                     "text": row["text"],
-                    "speaker_id": "unknown",
-                    "confidence": 0,
+                    "words": row.get("words", []),
+                    "speaker_id": speaker,
+                    "confidence": confidence,
                     "emotion": "neutral",
                     "emotion_level": 0,
                     "emotion_confidence": 0,
@@ -776,7 +838,7 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
     write_json(
         output / "selected-transcripts.json",
         {
-            "timestamp_source": "gpu_asr",
+            "timestamp_source": client.record.get("timestamp_source", "gpu_asr"),
             "subtitle_policy": SUBTITLE_POLICY,
             "transcription_unit": TRANSCRIPTION_UNIT,
             "clips": transcripts,
@@ -796,109 +858,69 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
 
 
 def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
-    # A completed ASR clip releases its GPU before notifying this process.
-    # The next queued clip can then acquire that GPU while cleanup begins.
-    streaming = os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true"
+    """Start one transcription per topic; finish each ready topic independently."""
+    from .transcribe_pipeline import transcribe_clip, recover_active_gaps
+    from .streaming_render import StreamingRenderer
+    from .gap_diagnostics import describe_gaps
+
+    def advisory_gaps(path, duration, segments):
+        try:
+            return describe_gaps(path, duration, segments)
+        except Exception:
+            return {"status": "unavailable", "reason": "level_analysis_failed", "gaps": []}
+
+    if resume:
+        saved_receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
+        if saved_receipt.get("timestamp_source") != "gemini_transcribe":
+            raise PipelineError("Saved production used a different transcription route; resume its original code")
+    client.record["timestamp_source"] = "gemini_transcribe"
+    client.save()
     renderer = None
-    if streaming:
-        from .streaming_render import StreamingRenderer
-
-        renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"])
-    cleanup_futures = {}
-    subtitle_started = time.monotonic()
-    client.vertex_token()
+    if os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true":
+        renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"], timestamp_source="gemini_transcribe")
+    started = time.monotonic()
     try:
-        with ThreadPoolExecutor(max_workers=len(chosen)) as cleanup_pool:
-
-            def cleanup_one(index, raw):
-                clip = chosen[index - 1]
-                with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
-                    selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
-                    encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
-                    audio_source_key = fingerprint({
-                        "source_audio_sha256": identity["audio_sha256"],
-                        "start": clip.start,
-                        "end": clip.end,
-                        "encoding": "ogg-opus-16000hz-mono-24k-voip-v1",
-                    })
-                    value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, audio_source_key)
-                if renderer is not None:
-                    transcript, turns = selected_transcript(
-                        value, clip.end - clip.start
-                    )
-                    renderer.enqueue(
-                        index,
-                        {
-                            "transcript": transcript.model_dump(),
-                            "turns": turns,
-                            "sound_effects": value["sound_effects"],
-                        },
-                    )
-                return value
-
-            def on_clip(index, raw):
-                if index not in cleanup_futures:
-                    cleanup_futures[index] = cleanup_pool.submit(
-                        cleanup_one, index, raw
-                    )
-
-            gpu_result, gpu_reused = selected_gpu_transcripts(
-                audio,
-                chosen,
-                settings,
-                output,
-                resume,
-                continue_missing,
-                identity["audio_sha256"],
-                on_clip=on_clip,
-            )
-            gpu_clips = gpu_result.get("clips")
-            if not isinstance(gpu_clips, list) or len(gpu_clips) != len(chosen):
-                raise PipelineError(
-                    "Selected GPU transcripts do not match the chosen topics"
-                )
-            for index, raw in enumerate(gpu_clips, 1):
-                on_clip(index, raw)
-            values = [
-                cleanup_futures[index].result()
-                for index in range(1, len(chosen) + 1)
-            ]
-            with client._lock:
-                subtitle_rows = [
-                    row
-                    for row in client.record["requests"]
-                    if row.get("phase", "").startswith("transcript-")
-                    and not row.get("reused")
-                ]
-                if subtitle_rows and all(
-                    row.get("finished_at") for row in subtitle_rows
-                ):
-                    client.record["timings"]["subtitle_request_wall_seconds"] = (
-                        round(
-                            max(row["finished_at"] for row in subtitle_rows)
-                            - min(row["started_at"] for row in subtitle_rows),
-                            3,
-                        )
-                    )
-            client.record["selected_gpu_asr"] = {
-                "recognizer": gpu_result.get("recognizer"),
-                "gpu_request_id": gpu_result.get("gpu_request_id"),
-                "gpu_parts": gpu_result.get("gpu_parts", 1),
-                "reused": gpu_reused,
-                "selected_topics": len(gpu_clips),
-                "full_source_asr": False,
-            }
-            save_selected_outputs(output, url, chosen, gpu_clips, values, client)
+        def process_one(index, clip):
+            raw = transcribe_clip(client, audio, clip, index, identity["audio_sha256"])
+            write_json(output / f"transcribe-selected-{index:03}.json", raw)
+            with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
+                selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
+                encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
+                key = fingerprint({"source_audio_sha256": identity["audio_sha256"], "start": clip.start,
+                                   "end": clip.end, "encoding": "ogg-opus-16000hz-mono-24k-voip-v1"})
+                levels = advisory_gaps(selected_audio, clip.end - clip.start, raw["segments"])
+                write_json(output / f"transcribe-gap-levels-{index:03}.json", levels)
+                raw, recovery = recover_active_gaps(client, audio, clip, index, identity["audio_sha256"], raw, levels)
+                write_json(output / f"transcribe-gap-recovery-{index:03}.json", recovery)
+                write_json(output / f"transcribe-selected-{index:03}.json", raw)
+                value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
+            value["finishing"]["status"] = "transcribe_timestamps_preserved"
+            value["finishing"]["timestamp_source"] = "gemini_transcribe"
             if renderer is not None:
-                renderer.finish()
+                transcript, turns = selected_transcript(value, clip.end - clip.start)
+                renderer.enqueue(index, {"transcript": transcript.model_dump(), "turns": turns,
+                                         "sound_effects": value["sound_effects"]})
+            return raw, value
+
+        with ThreadPoolExecutor(max_workers=min(6, len(chosen))) as pool:
+            futures = [pool.submit(process_one, index, clip) for index, clip in enumerate(chosen, 1)]
+            results = [future.result() for future in futures]
+        raws, values = zip(*results)
+        client.record["selected_transcription"] = {"recognizer": "gemini-3.5-transcribe",
+                                                   "selected_topics": len(raws), "full_source_asr": False}
+        save_selected_outputs(output, url, chosen, raws, values, client)
+        path = output / "selected-transcripts.json"
+        saved = json.loads(path.read_text())
+        saved["timestamp_source"] = "gemini_transcribe"
+        write_json(path, saved)
+        if renderer is not None:
+            renderer.finish()
     finally:
         try:
             if renderer is not None:
                 renderer.close()
         finally:
-            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
-                time.monotonic() - subtitle_started, 3
-            )
+            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
             client.save()
 
 
@@ -997,7 +1019,7 @@ def reprocess_saved(audio, url, output, settings, resume):
     try:
         process_selected(audio, url, output, settings, None, False, identity, client, clips, glossary)
         client.record.update(status="complete", timestamp_alignment="not_forced_aligned",
-                             timestamp_method="gpu_asr_source_segments", subtitle_policy=SUBTITLE_POLICY,
+                             timestamp_method="transcribe_word_offsets", subtitle_policy=SUBTITLE_POLICY,
                              sound_effects_status="planned_not_rendered")
     except Exception:
         client.record["status"] = "failed"
@@ -1007,7 +1029,7 @@ def reprocess_saved(audio, url, output, settings, resume):
         client.save()
 
 
-def plan(audio, url, output, settings, resume=None, continue_missing=False):
+def plan(audio, url, output, settings, resume=None, continue_missing=False, transcribe_trial=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     if (output / "audio-editor-receipt.json").exists():
@@ -1172,6 +1194,12 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record["clip_safety_margins"] = margins
         if not chosen:
             raise PipelineError("No usable topic intervals were returned")
+        if transcribe_trial:
+            from .transcribe_trial import transcribe_topic
+
+            transcribe_topic(audio, chosen[0], output, client)
+            client.record.update(status="complete", timestamp_method="transcribe_word_offsets")
+            return
         client.record["topic_selection"] = {
             "requested_clips": settings.clips,
             "selected_clips": len(chosen),
@@ -1187,12 +1215,32 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         }
         client.save()
         corpus = "\n".join(c.title + " " + c.reason for c in chosen)
-        research, grounding = client.generate(
-            "terminology",
-            RESEARCH_INSTRUCTIONS + "\n配信URL:" + url + "\n話題資料:" + corpus,
-            research=True,
-        )
-        glossary, diagnostics = grounded_terms(research, grounding, corpus)
+        try:
+            research, grounding = client.generate(
+                "terminology",
+                RESEARCH_INSTRUCTIONS + "\n配信URL:" + url + "\n話題資料:" + corpus,
+                research=True,
+            )
+        except urllib.error.HTTPError as error:
+            if error.code in (401, 403):
+                raise
+            glossary, diagnostics = [], {"status": "unavailable", "reason": "http_error", "http_status": error.code}
+        except PipelineError as error:
+            if str(error) not in {
+                "Incomplete Gemini response; not retried",
+                "Expected JSON object",
+                "Gemini returned no complete JSON object; raw response was preserved",
+            }:
+                raise
+            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
+                TimeoutError, socket.timeout) as error:
+            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+        else:
+            try:
+                glossary, diagnostics = grounded_terms(research, grounding, corpus)
+            except (ValueError, KeyError, TypeError) as error:
+                glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
         write_json(
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
@@ -1201,7 +1249,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False):
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
-            timestamp_method="gpu_asr_source_segments",
+            timestamp_method="transcribe_word_offsets",
             subtitle_policy=SUBTITLE_POLICY,
             sound_effects_status="planned_not_rendered",
         )
@@ -1316,8 +1364,6 @@ def render(review, transcripts_file, output, settings, clip_index=None):
             receipt = audio_first.retrieved(
                 vod, target, clip.start, clip.end, quality="360p"
             )
-            if not 0 < receipt.get("rendition_height", 0) <= 360:
-                raise PipelineError("Source must be at most 360p")
             offset = receipt["start_offset"]
             transcript = audio_first.shifted_transcript(
                 Transcript.model_validate(raw), 0, clip.end - clip.start, offset=offset
@@ -1404,12 +1450,19 @@ def main():
         finally:
             vod.close()
     elif args.mode == "plan":
-        if args.config.name == "config.landscape-reprocess.example.json":
+        if args.config.name == "config.landscape-trial-finish.example.json":
+            if not args.continue_missing:
+                raise PipelineError("Finishing the transcription trial requires continue-missing")
+            from .finish_transcribe_trial import finish_trial
+
+            finish_trial(args.url, args.output, settings, args.resume_from)
+        elif args.config.name == "config.landscape-reprocess.example.json":
             if not args.continue_missing:
                 raise PipelineError("Selected-topic reprocessing must be explicitly requested")
             reprocess_saved(args.audio, args.url, args.output, settings, args.resume_from)
         else:
-            plan(args.audio, args.url, args.output, settings, args.resume_from, args.continue_missing)
+            plan(args.audio, args.url, args.output, settings, args.resume_from, args.continue_missing,
+                 transcribe_trial=args.config.name == "config.landscape-transcribe-trial.example.json")
     else:
         try:
             render(
