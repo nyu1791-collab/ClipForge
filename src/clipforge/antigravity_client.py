@@ -70,7 +70,12 @@ async def _chat(model, thinking, system_text, content, research, max_tokens):
             max_output_tokens=max_tokens,
         ),
     )
+    # vertex=True selects the Vertex backend; without it the SDK validates the
+    # per-model endpoint as a Gemini API endpoint and demands an API key.
     config = LocalAgentConfig(
+        vertex=True,
+        project=PROJECT,
+        location=LOCATION,
         models=[ModelTarget(name=model, endpoint=endpoint)],
         system_instructions=system_text or None,
         workspaces=[tempfile.mkdtemp(prefix="clipforge-antigravity-")],

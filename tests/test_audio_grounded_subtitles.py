@@ -2,7 +2,6 @@
 
 import base64
 import importlib
-import io
 import json
 import math
 import shutil
@@ -72,13 +71,12 @@ def test_vertex_request_contains_audio_json_rules_and_reuses_the_same_source(tmp
     monkeypatch.setenv("CLIPFORGE_VERTEX_ACCESS_TOKEN", "fake")
     calls = []
     result = {"audio_access": "heard", "segments": []}
-    candidate = {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": json.dumps(result)}]}}]}
 
-    def fake_urlopen(request, timeout):
-        calls.append((request.full_url, json.loads(request.data)))
-        return io.BytesIO(b"data: " + json.dumps(candidate).encode() + b"\n\n")
+    def fake_generate(model, thinking, system_text, parts, research=False, max_tokens=65536):
+        calls.append((model, thinking, system_text, parts))
+        return json.dumps(result)
 
-    monkeypatch.setattr(route.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(route, "generate_text", fake_generate)
     audio = tmp_path / "selected.ogg"
     audio.write_bytes(b"fake ogg payload")
     first = tmp_path / "first"
@@ -86,11 +84,10 @@ def test_vertex_request_contains_audio_json_rules_and_reuses_the_same_source(tmp
     client = route.Client(first)
     value, _ = client.generate("transcript-1", '{"source_segments":[]}', audio=audio, audio_source_key="same-source")
     assert value == result
-    url, body = calls[0]
-    assert "gemini-3.5-flash:streamGenerateContent" in url
-    assert body["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "MEDIUM"
-    assert "unknown" in body["systemInstruction"]["parts"][0]["text"]
-    parts = body["contents"][0]["parts"]
+    model, thinking, system_text, parts = calls[0]
+    assert model == "gemini-3.5-flash"
+    assert thinking == "MEDIUM"
+    assert "unknown" in system_text
     assert json.loads(parts[0]["text"].split("\n\n")[0])["source_segments"] == []
     attached = next(p["inlineData"] for p in parts if "inlineData" in p)
     assert attached["mimeType"] == "audio/ogg"

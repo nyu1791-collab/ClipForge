@@ -345,8 +345,12 @@ class Client:
                 research=research,
                 max_tokens=8192 if research else 65536,
             )
+            # The SDK returns text only after the turn completed. Saved-response reuse
+            # requires STOP; the source is kept separate because the SDK reports no
+            # token-limit reason.
             row.update(
-                finish_reason="not_reported",
+                finish_reason="STOP",
+                finish_reason_source="antigravity_turn_completed",
                 usage={"status": "not_reported_by_antigravity_sdk"},
                 grounding={"status": "not_reported_by_antigravity_sdk"} if research else {},
                 transport="antigravity_sdk_vertex",
