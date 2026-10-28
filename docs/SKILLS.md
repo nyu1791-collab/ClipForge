@@ -46,11 +46,12 @@
 |---|---|---|---|
 | verification-before-completion（obra/superpowers, MIT） | 採用（無改変） | `.claude/skills/verification-before-completion/` | AGENTS.md の「完了と報告する前に確認」と同じ向き。「全テストを実行」は、利用者がテストを依頼したときだけ。それ以外は、Run の結論・保存ファイル・ログ・差分で確認し、確認できない項目は「未確認」と書く |
 | systematic-debugging（同上） | 採用（無改変、補助スクリプトは除外） | `.claude/skills/systematic-debugging/` | 原因の調査を先に行う。再現のための制作・GPU 実行は、利用者が指定した範囲だけ。失敗した Run は自動で再投入しない（AGENTS.md） |
-| subtitle-qc の `check`（scribetoany, MIT） | 試験中。実行が自動判定で拒否され、未実行 | 取得先 `/home/user/scribetoany/skills`（リポジトリ外） | `--cps 5 --max-chars 18 --max-lines 2 --min-duration 0.8` で ClipForge の目安に合わせる（`--max-chars` などの指定を読んで確認）。`fix`・`apply` は使わない。SKILL.md の宣伝文は消して取り込む |
-| video-watch（ridelink0, MIT） | 試験中。同上 | 取得先 `/home/user/ridelink0/video-watch`（リポジトリ外） | 範囲指定（`--from` `--to`）と等間隔の連絡表（`--sheet 3x3 --label`）を使う。シーン検出は長い VOD で遅くなる |
+| subtitle-qc の `check`（scribetoany, MIT） | 採用。SKILL.md は ClipForge 用に書き直し（宣伝文なし、check のみ）、スクリプトは無改変 | `.claude/skills/subtitle-qc/` | `--cps 5 --max-chars 18 --max-lines 2 --min-duration 0.8`。`fix`・`apply` は使わない。5 クリップの検査は各 0.1 秒以下 |
+| video-watch（ridelink0, MIT） | 採用。SKILL.md の実行パスだけ変更、`watch.mjs` は無改変 | `.claude/skills/watch-video/` | 範囲指定（`--from` `--to`）と等間隔の連絡表（`--sheet 3x3 --label`）。4.8 分のクリップで 9 コマの連絡表が約 8.6 秒。シーン検出は長い VOD で遅くなる |
 
 - 採用の判断: 中身（SKILL.md と同梱ファイル）を読み、通信・削除・`curl | sh` がないことを確認した。入れるのは 4〜6 個までの目安に収める。
-- subtitle-qc と video-watch は、実行して動作と所要時間を確かめてから `.claude/skills/` に入れる。
+- 検査の結果（zingisukan 5 クリップ、目安 5 字/秒・18 字・2 行）: 5 字/秒を超える字幕は 61〜79%（中央値 5.6〜6.8 字/秒）、7 字/秒を超えるのは 20〜47%。行長超過は clip-002 の 2 件と、重なりなどの重大な問題は 0 件。文字数に全角スペースを含む点に注意。5 字/秒は目安で、現状の出力は満たしていない（FINISHING_TARGETS の未整合 4 と同じ論点）。
+- 連絡表は clip-003 で字幕の位置と画面内の収まりを確認できた（字幕の文字そのものは小さいため、字幕ファイルで確認する）。
 
 ## 4. 導入候補（汎用）
 
