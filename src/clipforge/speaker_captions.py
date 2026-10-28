@@ -9,10 +9,11 @@ MIN_CONFIDENCE = 0.8
 SPEAKER_COLORS = {
     "speaker_1": (255, 255, 255),
     "speaker_2": (110, 220, 255),
-    "speaker_3": (255, 200, 115),
-    "speaker_4": (170, 245, 170),
-    "speaker_5": (235, 180, 255),
-    "speaker_6": (255, 175, 200),
+    # Only white and light blue: white for the first voice, light blue for any other.
+    "speaker_3": (110, 220, 255),
+    "speaker_4": (110, 220, 255),
+    "speaker_5": (110, 220, 255),
+    "speaker_6": (110, 220, 255),
 }
 
 
