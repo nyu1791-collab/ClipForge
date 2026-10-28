@@ -81,8 +81,6 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
             raise PipelineError(
                 "Transcribe request failure is not known to be retryable"
             )
-        if len(rows) >= 3:
-            raise PipelineError("Transcribe request already reached three attempts")
         with client._lock:
             client.record["requests"].extend(rows)
             client.save()
@@ -98,7 +96,8 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
             }
         ).encode()
         endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/gemini-3.5-transcribe:generateContent"
-        for attempt in range(len(rows) + 1, 4):
+        last_attempt = len(rows) + 3
+        for attempt in range(len(rows) + 1, last_attempt + 1):
             row = {
                 "phase": phase,
                 "model": identity["model"],
@@ -139,7 +138,7 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                     http_status=error.code,
                     retryable=error.code == 429 or 500 <= error.code <= 599,
                 )
-                if (error.code != 429 and not 500 <= error.code <= 599) or attempt == 3:
+                if (error.code != 429 and not 500 <= error.code <= 599) or attempt == last_attempt:
                     raise
             except (
                 urllib.error.URLError,
@@ -149,7 +148,7 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                 socket.timeout,
             ):
                 row.update(status="failed", retryable=True)
-                if attempt == 3:
+                if attempt == last_attempt:
                     raise
             except Exception:
                 row.update(status="failed", retryable=False)
@@ -160,7 +159,7 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                     finished_at=time.time(),
                 )
                 client.save()
-            time.sleep(5 if attempt == 1 else 15)
+            time.sleep(15 if attempt == len(rows) + 1 else 45)
 
 
 def transcribe_clip(client, audio, clip, index, source_sha):

@@ -6,6 +6,7 @@ import http.client
 import json
 import math
 import os
+import random
 import shutil
 import socket
 import subprocess
@@ -278,8 +279,6 @@ class Client:
             prior_attempts = [r for r in saved["requests"] if r.get("phase") == phase and not r.get("reused")]
             if not self.continue_missing:
                 raise PipelineError("No complete saved response for " + phase)
-            if len(prior_attempts) >= MAX_MODEL_ATTEMPTS:
-                raise PipelineError("Gemini request already reached three attempts")
             if prior_attempts and prior_attempts[-1].get("http_status") in (400, 401, 403, 404):
                 raise PipelineError("Non-retryable Gemini request failure")
             with self._lock:
@@ -310,18 +309,19 @@ class Client:
         data = json.dumps(body, ensure_ascii=False).encode()
         if len(data) > MAX_REQUEST_BYTES:
             raise PipelineError("Bounded Gemini input exceeded")
-        for attempt in range(len(prior_attempts) + 1, MAX_MODEL_ATTEMPTS + 1):
+        last_attempt = len(prior_attempts) + MAX_MODEL_ATTEMPTS
+        for attempt in range(len(prior_attempts) + 1, last_attempt + 1):
             try:
                 return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt)
             except urllib.error.HTTPError as error:
                 retryable = error.code == 429 or 500 <= error.code <= 599
-                if not retryable or attempt >= MAX_MODEL_ATTEMPTS:
+                if not retryable or attempt >= last_attempt:
                     raise
             except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionError, TimeoutError, socket.timeout):
-                if attempt >= MAX_MODEL_ATTEMPTS:
+                if attempt >= last_attempt:
                     raise
             print(json.dumps({"phase": phase, "status": "retrying", "next_attempt": attempt + 1}), flush=True)
-            time.sleep(5 if attempt == 1 else 15)
+            time.sleep((15 if attempt == len(prior_attempts) + 1 else 45) + random.uniform(0, 5))
 
     def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt):
         row = LockedRequest(
@@ -1116,7 +1116,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 cancelled.set()
                 raise
 
-        topic_pool = ThreadPoolExecutor(max_workers=min(3, len(starts)))
+        topic_pool = ThreadPoolExecutor(max_workers=min(1 if resume else 2, len(starts)))
         topic_futures = {
             index: topic_pool.submit(request_overview, index, start)
             for index, start in enumerate(starts)
