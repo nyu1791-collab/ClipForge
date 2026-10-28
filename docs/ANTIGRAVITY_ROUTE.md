@@ -1,4 +1,4 @@
-# Antigravity経路（Gemini 3.5 / 3.8）と Vertex Transcribe
+# Antigravity経路（Gemini 3.8 Flash）と Vertex Transcribe（Gemini 3.5）
 
 Claude Code 以外（Codex など）が同じ制作を再現するための手順。正規の入口は公開ClipForgeのGitHub Actions（`clipforge-stages.yml`）で、制御側のローカル環境で Gemini や GPU を直接呼ばない。
 
@@ -12,7 +12,7 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 
 - Vertex プロジェクトは `project-fdadb4dd-cb77-4270-9cd`、ロケーションは `global`。
 - 音声は `audio/ogg` のまま渡す。思考レベルは段階ごとに `GeminiModelOptions.thinking_level` で指定する。
-- 3.5 / 3.8 の応答は本文のJSONを `extract_json_object` で読む。構造化スキーマは渡さない（従来と同じ）。
+- 3.8 の応答は本文のJSONを `extract_json_object` で読む。構造化スキーマは渡さない（従来と同じ）。
 - 失敗は再試行できるもの（429、5xx、タイムアウト、空応答）と、それ以外に分ける。エラーの文面はログに出さない（音声・字幕・認証情報を含み得るため）。
 
 ## 2. 認証
@@ -33,7 +33,7 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 | `auto_render` | `false`（`true` だと `CLIPFORGE_STREAMING_RENDER` が有効になり、Colab GPU で描画が始まる） |
 | `resume_render` | `false` |
 | `result_store` | `release` |
-| `config_file` | 試行は `config.landscape-transcribe-trial.example.json`（先頭1話題だけ文字起こし）。本番の設定は `config.landscape-long-preview.example.json`（既定値）を使わず、字幕・描画の方針を確認してから決める |
+| `config_file` | 試行は `config.landscape-transcribe-trial.example.json`（先頭1話題だけ文字起こし）。本番の設定は `config.landscape-long-preview.example.json`（既定値）を使わず、字幕・描画の方針を確認してから決める。プレーン字幕で GPU/NVENC を使う例は `config.landscape-gpu-plain.example.json`。 |
 | `source_url` | 対象URL |
 | `source_ref` | 実行するコミットのSHA（`git rev-parse HEAD`） |
 | `request_id` / `input_tag` | 新しい32桁の16進数。`input_tag` は `clipforge-input-<request_id>` |
@@ -53,4 +53,6 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 
 - 用語調査は経路から外した（Antigravity 経由では Google 検索の根拠が返らず、用語が採用されないため）。記録は `terminology-glossary.json` の `skipped` になる。
 - Antigravity SDK の既定プロンプトと、整文ルールの system instruction の合成は未確認。実行結果で確かめる。
-- Antigravity 経由の音声入力と JSON 応答は、本番の実データで初めて確かめる。試行の結果はこのファイルの末尾に追記する。
+- 3.8 清書（Antigravity 経由の音声入力と JSON 応答）の実 Run は未確認。次の本番 Run で確かめ、結果をこのファイルの末尾に追記する。
+- 並列描画は `tools/dispatch_parallel_render.py` で行う。各クリップを clip_index 指定の Run にし、全部成功したら merge Run で結合する。失敗した部分は自動で再投入せず、同じ引数で明示的に再実行する。
+- render-only の 1 Run は 1 Colab runtime で、選んだクリップを順に描画する。

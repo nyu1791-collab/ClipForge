@@ -10,21 +10,25 @@
 
 ## 現在の通常経路
 
-URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し選定 → 採用区間を切り出し → 3.5 Transcribe（Vertex直接）が採用部分だけ文字起こし → 3.8 Flash/MEDIUMが文字起こしの誤字脱字と明らかな誤認識だけを話題ごと1回で修正（話者・効果音は付けない） → Colab GPU/NVENCで最大360p素材・標準720pキャンバス描画 → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
+URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し選定 → 採用区間を切り出し → 3.5 Transcribe（Vertex直接）が採用部分だけ文字起こし → 3.8 Flash/MEDIUMが文字起こしの誤字脱字と明らかな誤認識だけを話題ごと1回で修正（話者・効果音は付けない） → Colab GPU/NVENCで最大360p素材・通常360pキャンバス描画（720pは明示選択） → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
 
 - 最短入口・接続・再接続: `docs/QUICK_START.md`。Antigravity経路の起動入力と確認: `docs/ANTIGRAVITY_ROUTE.md`。修正・再利用: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。最新方針: `docs/HANDOFF_SEIBUN_2026-10-26.md`。過去実行記録: `docs/HANDOFF_FINISHING_2026-10-26.md`。
 - 通常入口: `tools/produce_with_gemini.py`。実装: `src/clipforge/audio_understanding.py`。
-- Actions: `.github/workflows/clipforge-stages.yml`のunderstandingとselected-audio-render。
+- Actions: `.github/workflows/clipforge-stages.yml`（`audio_stage`: understanding / render / merge）。clip別の並列描画は `tools/dispatch_parallel_render.py`。
 - Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
 - 旧全編ASRの手順は復旧用に維持。新規制作に適用しない。
 
 ## src/clipforge
+- 話題・文字起こし・清書: `audio_understanding.py`（工程本体）・`antigravity_client.py`（Antigravity SDK）・`transcribe_pipeline.py`（Transcribe）・`transcribe_trial.py`（試行）・`gemini_audio_editor.py`（音声の仮切り出し）。プロンプトは `src/clipforge/prompts/`。
 - 時刻・設定の型: `models.py`／保存・ハッシュ: `storage.py`
 - 取得: `media_sources.py`（振り分けと yt-dlp）・`kick_media.py`（Kick）
 - 段階: `audio_first.py`（話題の割り当て・プレビュー・描画・`caption_edits`）・`worker_audio.py`（worker での実行と結合）
 - 話題: `topics.py`・`topic_hints.py`・`review_draft.py`・`chat_activity.py`・`audio_volume.py`
-- 描画: `pipeline.py`（1クリップ）・`media.py`（ffmpeg）・`auto_layout.py`・`kick_chat.py`（チャット欄）
+- 描画: `pipeline.py`（1クリップ）・`media.py`（ffmpeg）・`auto_layout.py`・`kick_chat.py`（チャット欄）・`streaming_render.py`・`gpu_slots.py`（同時5枠）・`hardware.py`（NVENC）
 - 字幕: `captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`fonts.py`／品質: `quality.py`
+
+## tools（主要）
+- `produce_with_gemini.py`（通常入口）・`collect_production_clip.py`（完成クリップの回収）・`dispatch_parallel_render.py`（clip別の描画Run＋merge）・`run_audio_stage.py`・`colab_actions.py`・`check_github_api.sh`（GitHub API確認）・`check_antigravity_vertex.py`（Antigravity/Vertex確認）。
 
 ## tests
 `tests/test_<モジュール名>.py` が基本。共通の fixture は `tests/conftest.py`。

@@ -1,3 +1,5 @@
+> 2026-10-28 注: この文書には旧経路（3.5 Flashの整文・効果音・話者判定、Parakeet）の記述が残っています。現行は [ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md) と [QUICK_START.md](QUICK_START.md) を優先してください。
+
 # 音声からの話題選定と、採用話題ごとの整文字幕
 
 接続・制作・再接続は [QUICK_START.md](QUICK_START.md)、修正・再利用は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。この文書は現行の音声経路だけを扱う。全編GPU ASRを前提とする旧経路は `ASR.md` / `AUDIO_FIRST.md` に復旧用として残す。
