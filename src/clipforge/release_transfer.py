@@ -200,6 +200,50 @@ def release(tag):
         raise
 
 
+def download_release_asset(record, name, destination, *, max_bytes=MAX_BYTES):
+    """Fetch one named private Release asset through REST and check its recorded size."""
+    assets = [asset for asset in record.get("assets", []) if asset.get("name") == name]
+    if len(assets) != 1:
+        fail("RESULT_STRUCTURE_INVALID")
+    asset = assets[0]
+    asset_id, size = asset.get("id"), asset.get("size")
+    if (
+        type(asset_id) is not int
+        or asset_id <= 0
+        or type(size) is not int
+        or not 0 < size <= max_bytes
+    ):
+        fail("RESULT_STRUCTURE_INVALID")
+    target = Path(destination)
+    created = False
+    try:
+        with target.open("xb") as out:
+            created = True
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{REPO}/releases/assets/{asset_id}",
+                    "-H",
+                    "Accept: application/octet-stream",
+                ],
+                stdout=out,
+                stderr=subprocess.PIPE,
+                timeout=1800,
+            )
+        if result.returncode:
+            fail("RESULT_DOWNLOAD_FAILED")
+        if target.stat().st_size != size:
+            fail("RESULT_SIZE_MISMATCH")
+        expected_digest = asset.get("digest")
+        if expected_digest and expected_digest != "sha256:" + sha(target):
+            fail("RESULT_SHA_MISMATCH")
+    except Exception:
+        if created:
+            target.unlink(missing_ok=True)
+        raise
+
+
 def download(run_id, name, destination, expected=None, *, record=None):
     tag = tag_for(run_id, name)
     record = record if record is not None else release(tag)
@@ -221,19 +265,8 @@ def download(run_id, name, destination, expected=None, *, record=None):
     destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     with tempfile.TemporaryDirectory(dir=destination.parent) as temporary:
         work = Path(temporary)
-        gh(
-            "release",
-            "download",
-            tag,
-            "--repo",
-            REPO,
-            "--pattern",
-            "result.zip",
-            "--pattern",
-            "transfer.json",
-            "--dir",
-            str(work),
-        )
+        for filename in ("result.zip", "transfer.json"):
+            download_release_asset(record, filename, work / filename)
         manifest = json.loads((work / "transfer.json").read_text())
         if (
             manifest.get("run_id") != str(run_id)
@@ -303,17 +336,15 @@ def download_stage(run_id, name, destination, artifact_runner=None):
 def read_transfer(run_id, name):
     """Read only the small transfer record, never the media archive."""
     tag = tag_for(run_id, name)
+    remote = release(tag)
+    if remote is None:
+        fail("RESULT_NOT_FOUND")
     with tempfile.TemporaryDirectory() as temporary:
-        gh(
-            "release",
-            "download",
-            tag,
-            "--repo",
-            REPO,
-            "--pattern",
+        download_release_asset(
+            remote,
             "transfer.json",
-            "--dir",
-            temporary,
+            Path(temporary) / "transfer.json",
+            max_bytes=8 * 1024**2,
         )
         record = json.loads((Path(temporary) / "transfer.json").read_text())
     if record.get("run_id") != str(run_id) or record.get("name") != name:

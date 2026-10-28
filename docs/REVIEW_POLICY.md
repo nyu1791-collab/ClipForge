@@ -48,4 +48,4 @@
 
 ## 7. 今のセッションでの制約
 
-- 回収の CLI は `gh release download` を使うため、Claude Code のセッションでは 403 で止まることがあります。その場合は、Release を REST API で取得し、転送記録とサイズで照合します（[OPERATIONS.md](OPERATIONS.md)）。
+- 確認用パッケージと完成物の回収は Release の REST API を使い、asset のサイズを照合します。完成物はさらに転送記録とファイルの同一性を照合します。接続の拒否は別アカウントや別経路で回避しません（[OPERATIONS.md](OPERATIONS.md)）。

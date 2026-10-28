@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 import stat
 import zipfile
 
@@ -124,12 +123,14 @@ def test_remote_roundtrip_and_tamper(stage, tmp_path, monkeypatch):
         },
     )
 
-    def gh(*args):
-        folder = Path(args[-1])
-        (folder / "result.zip").write_bytes(archive.read_bytes())
-        (folder / "transfer.json").write_text(json.dumps(record))
+    def fetch(_record, name, target, **kwargs):
+        target.write_bytes(
+            archive.read_bytes()
+            if name == "result.zip"
+            else json.dumps(record).encode()
+        )
 
-    monkeypatch.setattr(transfer, "gh", gh)
+    monkeypatch.setattr(transfer, "download_release_asset", fetch)
     destination = tmp_path / "result"
     transfer.download(RUN, NAME, destination, record)
     assert transfer.inventory(destination) == files
@@ -179,12 +180,14 @@ def test_current_transfer_checks_files_and_producer_hashes_during_extraction(
         },
     )
 
-    def gh(*args):
-        folder = Path(args[-1])
-        (folder / "result.zip").write_bytes(archive.read_bytes())
-        (folder / "transfer.json").write_text(json.dumps(record))
+    def fetch(_record, name, target, **kwargs):
+        target.write_bytes(
+            archive.read_bytes()
+            if name == "result.zip"
+            else json.dumps(record).encode()
+        )
 
-    monkeypatch.setattr(transfer, "gh", gh)
+    monkeypatch.setattr(transfer, "download_release_asset", fetch)
     transfer.download(RUN, NAME, tmp_path / "valid")
     write_archive(changed=True)
     with pytest.raises(transfer.TransferError, match="RESULT_SHA_MISMATCH"):

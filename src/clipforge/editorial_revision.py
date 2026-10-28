@@ -59,16 +59,26 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
     assets = release.get("assets", [])
     for name in ASSETS:
         matches = [asset for asset in assets if asset.get("name") == name]
-        if (len(matches) != 1 or type(matches[0].get("id")) is not int
+        if (
+            len(matches) != 1
+            or type(matches[0].get("id")) is not int
             or type(matches[0].get("size")) is not int
-            or not 0 < matches[0]["size"] <= 8 * 1024**2):
+            or not 0 < matches[0]["size"] <= 8 * 1024**2
+        ):
             raise PipelineError("Private editorial asset is missing or invalid")
         target = parent / name
         with target.open("xb") as destination:
             result = subprocess.run(
-                ["gh", "api", f"repos/{PRIVATE_REPO}/releases/assets/{matches[0]['id']}",
-                 "-H", "Accept: application/octet-stream"],
-                stdout=destination, stderr=subprocess.PIPE, timeout=600,
+                [
+                    "gh",
+                    "api",
+                    f"repos/{PRIVATE_REPO}/releases/assets/{matches[0]['id']}",
+                    "-H",
+                    "Accept: application/octet-stream",
+                ],
+                stdout=destination,
+                stderr=subprocess.PIPE,
+                timeout=600,
             )
         if result.returncode or target.stat().st_size != matches[0]["size"]:
             target.unlink(missing_ok=True)
