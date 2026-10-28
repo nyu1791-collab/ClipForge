@@ -1,3 +1,5 @@
+> 旧経路（全編 Parakeet ASR）の記録。現行の文字起こしは Gemini 3.5 Transcribe（[ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md)）。過去成果物の復旧時だけ参照する。
+
 # 文字起こし（Parakeet を最大4台で）
 
 文字起こしは NVIDIA Parakeet（`nvidia/parakeet-tdt_ctc-0.6b-ja`、NeMo 3.0.0）だけを使う。全編を1回起こし、その結果を話題分けと字幕の両方に使う。区間ごとの起こし直しはしない。

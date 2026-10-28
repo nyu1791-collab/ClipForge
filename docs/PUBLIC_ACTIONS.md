@@ -1,3 +1,5 @@
+> 2026-10 の移行記録。現行の入口・Secrets は [QUICK_START.md](QUICK_START.md) と [OPERATIONS.md](OPERATIONS.md) を参照。
+
 # 公開ClipForgeへの実行入口の統合
 
 コードと制作Actions、段階再開、OpenCodeの定義を公開ClipForgeへ集約する。動画・ASR・作業レポートは公開しないため、ai-model-workersは非公開Release保存庫として残す。通常の操作先はClipForgeとなる。既存成果物は移動・削除しない。

@@ -11,7 +11,7 @@ YouTube の全音声取得に成功した経路を、通常の取得と診断で
 PRをレビューする段階では、`--ref PUBLIC_SOURCE_SHA --workflow-ref WORKER_BRANCH`も指定する。
 `--ref`は公開側のコード、`--workflow-ref`は非公開workerのworkflowを選ぶ。
 worker refもreceiptへ保存し、再開時にmainへ戻さない。PRは未マージのため既定mainへは未反映。
-URLだけの解析用で、文字起こしは既定4台（[ASR.md](ASR.md)）。
+URLだけの解析用の記録。文字起こしは現行では Gemini 3.5 Transcribe で、旧ASRの台数（[ASR.md](ASR.md)）は復旧用。
 既定の `standard` は従来どおりで、失敗時にWARPへ自動で切り替えない。
 
 WARPは使い捨てのGitHub-hosted runnerにだけ導入する。

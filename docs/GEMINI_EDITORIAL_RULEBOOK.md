@@ -1,47 +1,36 @@
-# Gemini 3.8の必読編集ルールと適用経路
+# 字幕ルールの適用と記録（現行）
 
-> 字幕表現の最新指示は [要約しない整文の引き継ぎ](HANDOFF_SEIBUN_2026-10-26.md)。本文の旧「短文化・自然な言い換え」の許可は上書きされる。GPU文字起こしと3.5整文の役割も同文書を参照。
+字幕の表現規則の本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。この文書は、その規則が実際のリクエストへどう入り、何が記録されるかだけを説明する。過去の版の規則（GPU 文字起こしと 3.5 Flash の整文）は現行の経路では使わない。
 
-新規制作のルール本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。工程別の字幕契約は [gemini_subtitles_ja.md](../src/clipforge/prompts/gemini_subtitles_ja.md)。要約せず意味・口調・確かさを保つ整文、固有名詞と不明箇所の扱い、良い例/避ける例、時刻、話者、控えめな効果音を定義する。逐語全文を表示する旧方針を更新した。
+## 読み込まれる規則
 
-通常制作と修正の共通案内は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。見出し・感情・字幕・効果音の修正から同じ描画へ進む。
+- 共通本文: `src/clipforge/prompts/gemini_editorial_rulebook_ja.md`。すべての音声工程の systemInstruction に入る。
+- 話題選定: 共通本文と `gemini_topics_ja.md` を連結する。
+- 清書: 共通本文と `gemini_subtitles_ja.md` を連結する。
+- Transcribe には自由文の規則を送らない。設定は `transcription_config()` に定義し、[TRANSCRIBE_RULES.md](TRANSCRIBE_RULES.md) に従う。
+- 読み込みは `audio_understanding.Client.generate` が行う。規則ファイルが欠けている・空の場合はデプロイの不備として停止し、規則なしで制作を続けない。
+- モデルの「読みました」という自己申告や読了の検査は行わない。
 
-## 必読は実リクエストへの注入
+## 記録
 
-`audio_understanding.Client.generate` は話題選定の3.8と字幕整文の3.5の呼び出しで共通本文と工程別本文を読み、その連結をVertexの `systemInstruction.parts[].text` へ入れる。話題選定時も共通本文を読み、字幕工程と担当範囲を区別する。3.5の表記調査には字幕生成を担当させない。欠落・空ファイルはデプロイ不備として報告し、ルールなしで別の制作を始めない。「読みました」というモデルの自己申告や読了検査は追加しない。
+- `*.prompt.txt`: 実際に送った systemInstruction と依頼文。
+- 受領記録 `audio-editor-receipt.json`: `prompt_rules_sources`（各規則のパスと SHA-256）、`prompt_rules_sha256`（連結した本文）、`prompt_sha256`（依頼文全体）。
+- 規則を変えると `prompt_sha256` が変わり、保存済みの応答は再利用されない。これは意図どおりの動きである。
+- 規則の内容をモデルが守ったかは、ハッシュでは保証しない。
 
-`*.prompt.txt` は実際に送るsystemInstructionとユーザー依頼文を保存する。`audio-editor-receipt.json` の `prompt_rules_sources` は各ルールのパスとSHA-256、`prompt_rules_sha256` は連結本文、`prompt_sha256` は実依頼文全体のハッシュ。工程キーにも実依頼文ハッシュが入るので、ルール更新前の応答を新ルールの成果として再利用しない。モデルによる内容遵守をハッシュだけで保証するものではない。
+## 清書の出力と描画
 
-## 字幕から描画まで
+- 応答は `segments[].source_ids` と `text`。時刻は `source_ids` から Transcribe の発話区間をコードが引き継ぐ。
+- 新規の編集データには `subtitle_policy = meaning_preserving_cleanup_v1` を保存する。
+- 描画は plain の字幕で、`caption_preserve_text` を使う。清書した本文を機械的な反復除去に通さず、単語カラオケは付けない。
+- 話者色は Transcribe のラベルによる。感情は neutral。
+- 効果音は現行の清書では指示しない（`sound_effects` は空配列）。描画側の効果音処理は、修正パッチで指示が与えられた場合だけ働く。
 
-採用話題だけをGPUで文字起こしし、本文と発話時刻を3.5 Flash/MEDIUMへ話題ごと1回渡す。60秒窓への細分化はしない。`segments[].text` は要約しない整文字幕。時刻はGPU ASRの元発話区間を引き継ぐ。音声自体を短縮しない。
+## 見出し（title）と感情の修正
 
-新規の `selected-transcripts.json` と `final-selection.json` に `subtitle_policy=meaning_preserving_cleanup_v1` を保存する。旧meaning_preserving_compact_v1も保存済みデータの描画互換性のため受け入れる。描画側はこの字幕方針で `caption=plain`、`caption_preserve_text=true` を使い、話者色と横幅のあるレイアウトを維持する。発言と文字が一対一にならない編集字幕へカラオケの単語追跡を付けない。旧ASRの反復/定型句/圧縮率による文字削除は、この編集字幕では呼ばない。行組み・時刻の表示範囲への整形は維持する。
+- 見出しは話題選定の応答の `title` をそのまま使う。見出しだけを作る追加の呼び出しはしない。
+- 見出しや感情を変えるときは、修正パッチで保存済みの編集データを直し、同じ描画へ進む。元の音声理解へは戻らない（[PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)）。
 
-## 効果音の実経路
+## 未確認
 
-同じ字幕応答の `sound_effects` で `at`・`kind`・`reason` を受け取る。追加のモデル要求はない。音声パート内の秒数をクリップ内の秒数へ変換し、担当窓に属する指示だけを `final-selection.json` のクリップ行へ保存する。提案段階のreceiptは `sound_effects_status=planned_not_rendered`。
-
-`pipeline.render_clip` → `media.render` → `sound_effects.mix_graph` で、固定レシピのsoft_pop/light_chime/transition_tickをFFmpegの正弦波から合成する。外部音源・商用音源のコピー・別の生成APIを使わない。会話の既存1パス音量処理の後へ、波形ピーク0.025（約−32 dBFS）の短音を足し、既存リミッターを通す。音量はモデルに決めさせない。聞こえ方や商用品質を未試聴で保証しない。
-
-未知の音・不正/区間外の時刻・末尾に収まらない音・30秒未満の密集は適用せず続行する。効果音はゼロでも成立し、最低数を設けない。原音に音声がない場合は勝手に効果音だけの音声へ差し替えず、未適用を記録する。`render.json` に適用指示・レシピ版・合成ミックスの状態を残し、描画キーにも指示とレシピ版を含める。
-
-深刻な事故・怪我・死・災害や未確認の非難を茶化す音を提案しないルールを同じsystemInstructionに含める。内容を別モデルへ再送して査読する工程は設けない。
-
-## 運用
-
-目標本数・尺・短縮率・効果音数・品質点は停止条件にしない。検査・監査・音量再測定・不合格再生成は追加しない。素材・認証・媒体破損・保存先の取り違えは実行エラーとして区別する。
-
-今回テスト・モデル呼び出し・音や映像の生成/試聴・制作再投入は行っていない。実装とルール登録の段階で、次回の通常制作から適用する。既存の成功Run 40326850563をこのルールの実行結果とは扱わない。
-
-## 感情・見出しの追加指示
-
-共通本文に、原音で裏付けられる感情だけ通常/控えめ/強めで演出する規則と、対象＋見る理由の伝わる見出しの規則を追加した。字幕の `emotion` / `emotion_level` / `emotion_confidence` は採用音声だけの同じ応答で受け取り、表示時刻変換でも保持する。通常はneutral/0。未知・不確かな感情は通常へ戻す。感情の流れが変わる位置で表示グループを分け、同じ字幕の途中で点滅させない。
-
-感情の字体はNoto Sans CJK JPを基準に、しんみりは利用可能ならNoto Serif CJK JPを使う。追加フォントが使えなくても通常フォントで続行する。最大サイズ増加8%と両方の字体の幅を含めて改行し、フォント名・感情付き字幕数・描画プリセット版を記録する。話者色がある箇所は文字色を維持し、感情の色は暗い縁へ付ける。話者不明の箇所では文字色にも控えめな感情アクセントを使う。
-
-見出しは話題選定のtitleをそのまま描画へ渡す。別モデルや別の見出し生成工程を増やさない。変更したい場合は、保存済み編集データのtitleへの明示パッチで修正し、元音声理解へ戻らない。
-
-## 仕上げ目標の追加
-
-[FINISHING_TARGETS.md](FINISHING_TARGETS.md)を参照。既定の描画は360p、素材は最大360pを維持する。GPU文字起こしの発話時刻を使い、整文済み時刻への追加補助や再測定はしない。低音量SEは声に応じてSE側だけを抑える。最大3場面の参考画像は合否検査ではなく任意の修正資料で、作成できなくても動画を保存する。
+- 3.8 Flash の清書が規則どおりに返すかは、実音声の Run でまだ確認していない。

@@ -52,7 +52,7 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 ## 5. 既知の差と未確認
 
 - 用語調査は経路から外した（Antigravity 経由では Google 検索の根拠が返らず、用語が採用されないため）。記録は `terminology-glossary.json` の `skipped` になる。
-- Antigravity SDK の既定プロンプトと、整文ルールの system instruction の合成は未確認。実行結果で確かめる。
+- Antigravity SDK の既定プロンプトと、清書ルールの system instruction の合成は未確認。実行結果で確かめる。
 - 3.8 清書（Antigravity 経由の音声入力と JSON 応答）の実 Run は未確認。次の本番 Run で確かめ、結果をこのファイルの末尾に追記する。
 - 並列描画は `tools/dispatch_parallel_render.py` で行う。各クリップを clip_index 指定の Run にし、全部成功したら merge Run で結合する。失敗した部分は自動で再投入せず、同じ引数で明示的に再実行する。
 - render-only の 1 Run は 1 Colab runtime で、選んだクリップを順に描画する。

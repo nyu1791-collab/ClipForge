@@ -1,21 +1,28 @@
 # 現行の品質・速度方針
 
-通常経路はGPU_ROUTE.md。文字起こしはParakeetのみ、4分割WAV、NeMo準備と入力取得の並行を維持する。描画はGPU/NVENC。旧Whisper、CPU描画、cut経由の制作、事前音量2パス、完成後の映像デコードと音量測定は1走査へ統合した。
+通常経路は [QUICK_START.md](QUICK_START.md) と [ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md)。品質の数値は仕上がりを目指す目安で、停止条件ではない（[FINISHING_TARGETS.md](FINISHING_TARGETS.md)）。
 
-## 字幕と内容
+## 検査の扱い
 
-BudouXとfugashiで文節・語の境界を使い、実フォント幅で最大2行へ配置する。横字幕の目標は7字/秒。ASS/SRTの本文・時刻、文字欠け、行数、重なり、画面超過を確認する。単語時刻や本文を警告削減のために改変しない。承認JSONのcaption_editsで必要な字幕訂正を行い、該当1本だけ再描画する。話題の面白さ・完結性・発話の正確さは候補確認で扱う。
+- strict と report は off に正規化する（`models.py`）。品質ゲート・字幕 ID の完全一致・網羅率の検査は行わない。
+- 品質の指摘は記録するが、制作や納品を止めない（`quality.py`）。
+- 完成映像の全デコード、ebur128 による音量の再測定、追加のモデル査読は行わない。
+- 参考画像（最大 3 場面）は修正の資料であり、合否の判定ではない。
 
-## 画面とエンコード
+## 音声
 
-通常設定はconfig.landscape-long-preview.example.json（16:9、640×360、NVENC）。素材の取得と先行取得も最大360pで揃え、360p以下の最良renditionを選ぶ。高画質しかない素材へ自動で切り替えない。横用設定はすべて360pで、チャット列も160pxへ比例縮小する。見出しは左上1.4倍、通常字幕は下中央・1.6倍で読みやすさを保つ。固定画面の上への持ち上げは高さの32%まで。ソースfpsは30を上限に保持する。字幕・overlay等のフィルターはCPUで実行されるため、NVENCだけで描画全体がGPU化されるわけではない。
+- 描画中の 1 パス loudnorm（`I=-14`、`TP=-1.5`、`LRA=11`）と既存のリミッターで音量を整える。
+- 描画の前に音量を測定しない。描画の後に完成映像を読み直して測定しない。
 
-## 音声と統合検査
+## 映像と字幕
 
-事前音量測定は行わず、描画中の1パスloudnormとリミッターで48kHz AACへ出力する。完成MP4を1回読み、映像デコードとebur128音量・真ピーク測定を同じFFmpegで実行する。-vnは付けず、破損エラー・欠けた測定結果を失敗とする。無音、-17〜-15 LUFS外、真ピーク-1 dBTP超をstrictで拒否する。字幕の整合性・配置とFFprobeの検査も維持する。
-
-検査の成功時だけfull_decode_performed=true、音声を測れた場合だけloudness_measured=trueとし、実測値を保存する。無音の-inf等はJSONではnullにして失敗理由を記録する。qualityと共有summaryのverification_scopeはsingle_pass_full_decode_loudness_and_captions。passedを内容の合格と混同しない。
+- 通常の設定は `config.landscape-long-preview.example.json`（16:9、640×360）。素材は 360p 以下を優先する。
+- 字幕と見出しは 360p のキャンバスに焼き付ける。明示指定で 720p（`standard`）・1080p（`full-hd`）を選べる（`--render-profile`）。
+- 字幕の表示時間の目安は 0.8 秒程度。読み取り用の延長は最大約 1.5 秒。
+- 字幕・オーバーレイなどのフィルターは CPU で実行される。NVENC が担うのは映像の符号化である。
 
 ## 計測
 
-利用者の待ち時間はwall_seconds、各部分の作業時間合計はtotalとして別記録する。並列runの経過時間は最初の開始から最後の終了で測り、部分の時間を足さない。7分06秒は旧Whisperの過去記録。Parakeetの認識本体・入力・準備待ちはASR.mdの実ログ内訳を使う。今回のNVENC変更の短縮率は実機比較前には示さない。
+- 利用者の待ち時間は `wall_seconds`、各工程の作業時間の合計は `total` として別に記録する。
+- 並列 Run の経過時間は最初の開始から最後の終了までで測り、部分の時間を足さない。
+- 旧 ASR（Parakeet）の時間の記録は [ASR.md](ASR.md) の過去の実行記録にある。現行の経路の時間は、実 Run の工程時間から記録する。
