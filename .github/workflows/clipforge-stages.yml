@@ -33,6 +33,14 @@
       },
       "steps": [
         {
+          "name": "Require explicit review approval for rendering",
+          "env": {
+            "AUDIO_STAGE": "${{ inputs.audio_stage }}",
+            "REVIEW_APPROVED": "${{ inputs.review_approved }}"
+          },
+          "run": "if [ \"$AUDIO_STAGE\" = render ] && [ \"$REVIEW_APPROVED\" != true ]; then echo \"Explicit review approval is required before rendering.\"; exit 1; fi\n"
+        },
+        {
           "name": "Require private storage credentials before processing",
           "env": {
             "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
@@ -181,6 +189,14 @@
       },
       "steps": [
         {
+          "name": "Require explicit review approval for rendering",
+          "env": {
+            "AUDIO_STAGE": "${{ inputs.audio_stage }}",
+            "REVIEW_APPROVED": "${{ inputs.review_approved }}"
+          },
+          "run": "if [ \"$AUDIO_STAGE\" = render ] && [ \"$REVIEW_APPROVED\" != true ]; then echo \"Explicit review approval is required before rendering.\"; exit 1; fi\n"
+        },
+        {
           "name": "Require storage and GPU connections before downloading",
           "env": {
             "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
@@ -294,6 +310,13 @@
         "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
       },
       "steps": [
+        {
+          "name": "Require human review before rendering",
+          "env": {
+            "AUTO_RENDER": "${{ inputs.auto_render }}"
+          },
+          "run": "if [ \"$AUTO_RENDER\" = true ]; then echo \"Automatic rendering is disabled; prepare the review package first.\"; exit 1; fi\n"
+        },
         {
           "name": "Require the connections used by this production",
           "env": {
@@ -438,12 +461,21 @@
           "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/parallel_selected_render.py --stop\n"
         },
         {
+          "name": "Prepare private topic videos and review checklist",
+          "env": {
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
+            "CONFIG_FILE": "${{ inputs.config_file }}"
+          },
+          "run": ".venv/bin/python -m clipforge.review_package --editorial \"$RUNNER_TEMP/editorial\" --output \"$RUNNER_TEMP/editorial/review-package.zip\" --config \"$CONFIG_FILE\"\n"
+        },
+        {
           "name": "Save transcripts review and timing privately",
           "if": "always()",
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi",
+          "run": "if [ \"$(gh api repos/nyu1791-collab/ai-model-workers --jq .private)\" != true ]; then echo \"Private storage is required.\"; exit 1; fi\nshopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg \"$RUNNER_TEMP/editorial/\"*.zip)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi",
           "id": "save-editorial"
         },
         {
@@ -704,6 +736,11 @@
           "description": "Advisory topic count; blank uses the committed config",
           "type": "string",
           "default": ""
+        },
+        "review_approved": {
+          "type": "boolean",
+          "default": false,
+          "description": "User explicitly approved this selection for rendering"
         }
       }
     }

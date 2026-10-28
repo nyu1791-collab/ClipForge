@@ -52,6 +52,7 @@ def part_inputs(request_id, index, count, args):
         "editorial_release": args.editorial_release,
         "continue_missing": False,
         "auto_render": False,
+        "review_approved": args.review_approved,
         "resume_render": False,
         "target_clips": str(count),
     }
@@ -145,7 +146,10 @@ def main():
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--review-approved", action="store_true")
     args = parser.parse_args()
+    if not args.review_approved:
+        parser.error("explicit review approval is required before rendering")
     if not 1 <= args.clips <= 20:
         parser.error("clips must be between 1 and 20")
     if not re.fullmatch(r"config\.[a-z0-9-]+\.example\.json", args.config):

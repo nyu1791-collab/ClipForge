@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve a supplied video URL, let Gemini plan it, and render without a handoff gate."""
+"""Prepare a private human review package, or render an explicitly approved selection."""
 
 import argparse
 import json
@@ -47,7 +47,7 @@ def main():
     )
     ap.add_argument(
         "--source-ref",
-        help="Pin this commit; omitted resolves the execution branch once before dispatch",
+        help="Required exact 40-character source commit for a new dispatch",
     )
     ap.add_argument(
         "--repository",
@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--editorial-release", default="")
     ap.add_argument("--continue-missing", action="store_true")
     ap.add_argument("--render-only", action="store_true")
+    ap.add_argument("--review-approved", action="store_true", help="Confirm the saved selection was approved for rendering")
+    ap.add_argument("--review-state", type=Path, help="Private production-state.json of the reviewed package")
     ap.add_argument("--analysis-run", "--previous-run", dest="analysis_run")
     ap.add_argument("--analysis-request", "--previous-request", dest="analysis_request")
     ap.add_argument(
@@ -74,7 +76,7 @@ def main():
     # The user's normal production target is 360p for both retrieval and output.
     # Explicit profiles still opt into the 720p or 1080p text canvases.
     ap.add_argument(
-        "--config-file", default="config.landscape-long-preview.example.json"
+        "--config-file", help="Explicit committed configuration for a new dispatch"
     )
     ap.add_argument(
         "--render-profile",
@@ -114,6 +116,8 @@ def main():
             or args.deliver_drive
             or args.render_profile
             or args.render_only
+            or args.review_approved
+            or args.review_state
             or args.editorial_release
             or args.reuse_render
             or args.analysis_run
@@ -136,6 +140,10 @@ def main():
         ap.error(
             "a source URL is required for a new production; use --resume to reconnect"
         )
+    if resumed is None and args.clips is None:
+        ap.error("clips must be explicitly specified before dispatch")
+    if resumed is None and not (args.config_file or args.render_profile):
+        ap.error("config-file or render-profile must be explicitly specified before dispatch")
     if args.render_profile:
         args.config_file = {
             "preview": "config.landscape-long-preview.example.json",
@@ -160,6 +168,16 @@ def main():
         )
     if args.render_only and args.continue_missing:
         ap.error("render-only does not generate missing model responses")
+    if args.render_only and not args.review_approved:
+        ap.error("render-only requires explicit --review-approved")
+    if args.render_only and not args.review_state:
+        ap.error("render-only requires the reviewed package's --review-state")
+    if args.review_state and not args.render_only:
+        ap.error("review-state requires render-only")
+    if args.review_approved and not args.render_only:
+        ap.error("review-approved requires render-only")
+    if resumed is None and args.deliver_drive and not args.render_only:
+        ap.error("Drive delivery is available only after review and explicit render-only")
     if args.continue_missing and not args.editorial_release:
         ap.error("continue-missing requires editorial-release")
     if args.render_only and not (
@@ -168,15 +186,19 @@ def main():
         ap.error(
             "render-only requires editorial-release and the saved run/request pair"
         )
+    if args.render_only:
+        reviewed = json.loads(args.review_state.read_text())
+        if (reviewed.get("status") != "awaiting_review"
+            or reviewed.get("editorial_release") != args.editorial_release
+            or canonical(reviewed.get("source_url")) != canonical(args.url)
+            or (not args.reuse_render and
+                (str(reviewed.get("review_run_id")) != args.analysis_run
+                 or reviewed.get("review_request_id") != args.analysis_request))):
+            ap.error("render selection does not match the reviewed package")
     if args.repository != "nyu1791-collab/ClipForge":
         ap.error("new audio-understanding production runs from ClipForge")
     if not args.source_ref:
-        args.source_ref = gh(
-            "api",
-            f"repos/{args.repository}/commits/{args.workflow_ref}",
-            "--jq",
-            ".sha",
-        ).strip()
+        ap.error("source-ref is required and must identify the requested code commit")
     if not re.fullmatch("[a-f0-9]{40}", args.source_ref):
         ap.error("source-ref must be an exact commit SHA")
     if bool(args.analysis_run) != bool(args.analysis_request):
@@ -290,7 +312,9 @@ def main():
             state["editorial_revision"] = revision
             save()
         state["editorial_release"] = args.editorial_release
-        state["mode"] = "render_only" if args.render_only else "production"
+        state["mode"] = "render_only" if args.render_only else "review"
+        if args.render_only:
+            state["review_approved"] = True
         state["reuse_render"] = args.reuse_render
         save()
         final_run, final_request = dispatch(
@@ -304,7 +328,8 @@ def main():
                 "config_file": args.config_file,
                 "editorial_release": args.editorial_release,
                 "continue_missing": args.continue_missing,
-                "auto_render": not args.render_only,
+                "auto_render": False,
+                "review_approved": args.review_approved,
                 "resume_render": args.reuse_render,
                 "target_clips": str(args.clips),
             },
@@ -424,7 +449,19 @@ def main():
                 )
         else:
             final_run, final_request = start_production()
-        collect(final_run, final_request)
+        if state.get("mode") == "review":
+            from clipforge.review_package import collect_package
+
+            package = collect_package(final_run, args.output, state, save)
+            state.update(status="awaiting_review", review_run_id=final_run,
+                         review_request_id=final_request,
+                         editorial_release=f"clipforge-kick-editorial-{final_run}")
+            save()
+            print(json.dumps({"status": "awaiting_review", "review_package": str(package),
+                              "editorial_release": state["editorial_release"],
+                              "run_id": final_run, "request_id": final_request}), flush=True)
+        else:
+            collect(final_run, final_request)
     except MonitoringPending:
         state["status"] = "monitoring_paused"
         save()

@@ -24,7 +24,7 @@
 
 ## 現行の制作経路
 
-URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravity SDK経由）で音声から話題・見出し選定 → 採用音声を仮切り出し → 3.5 Transcribeで採用部分だけを文字起こし（Vertex直接）・単語時刻・話者ラベル → 3.8 Flash/MEDIUMが採用話題ごとに1回、誤字脱字と明らかな誤認識だけを直す（話者判定・効果音はしない） → Colab GPU/NVENCで360p以下を優先した素材・通常360pキャンバス描画 → 非公開Release保存・回収 → 指定時だけDrive納品。
+URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravity SDK経由）で話題・見出し選定 → 3.5 Transcribeで採用部分を文字起こし → 3.8 Flash/MEDIUMが話題ごとに清書 → 話題別の確認用動画と確認候補一覧を非公開で回収 → 利用者の確認・明示的な承認 → Colab GPU/NVENCで描画 → 非公開Release保存・回収 → 指定時だけDrive納品。詳細は `docs/HUMAN_REVIEW_WORKFLOW.md`。
 
 - 制作は公開ClipForgeのGitHub Actionsを正規経路として実行する。素材取得・Gemini処理・Colab GPUへの描画依頼・非公開保存・回収をこの経路に集約し、制御VMから直接制作したり別経路へ切り替えたりしない。移行時は既存のRun/保存済み状態を引き継ぎ、未完了Runは再投入せず再接続し、完了済み成果物は再利用する。ユーザーが別経路を明示した場合はその指示を優先する。
 - 字幕要求を60秒ごとに分割しない。新規モデル要求数は全体把握の音声窓数＋Transcribe窓数＋採用話題の清書数。898秒以内なら通常のTranscribeと清書は各1回、用語調査と空白補助は行わない。最大6話題を並行する。1話題1回と一文要約は別で、字幕segmentは発話に沿って複数作る。
