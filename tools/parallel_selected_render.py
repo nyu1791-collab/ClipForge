@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render saved audio-understanding clips with at most four owned Colab runtimes."""
+"""Render saved audio-understanding clips with at most SLOT_COUNT owned Colab runtimes."""
 
 import hashlib
 import json
@@ -21,7 +21,7 @@ from clipforge.release_transfer import (
     sha,
 )
 from clipforge.storage import write_json
-from clipforge.gpu_slots import clear_stopped
+from clipforge.gpu_slots import SLOT_COUNT, clear_stopped
 
 
 def command(args, env):
@@ -56,7 +56,7 @@ def main(collect_only=False, partial=False):
         for i in range(1, count + 1)
     ]
     groups = [
-        list(range(slot + 1, count + 1, min(4, count))) for slot in range(min(4, count))
+        list(range(slot + 1, count + 1, min(SLOT_COUNT, count))) for slot in range(min(SLOT_COUNT, count))
     ]
 
     def worker(slot):
@@ -251,7 +251,7 @@ def main(collect_only=False, partial=False):
         "full_source_asr": False,
         "timestamp_source": (json.loads((review.parent / "selected-transcripts.json").read_text()).get("timestamp_source", "unknown") if (review.parent / "selected-transcripts.json").is_file() else "unknown"),
         "full_video_quality_audit": "not_run",
-        "max_gpu_slots": min(4, count),
+        "max_gpu_slots": min(SLOT_COUNT, count),
     }
     write_json(merged / "manifest.json", manifest)
     write_json(

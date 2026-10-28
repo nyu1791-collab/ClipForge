@@ -72,7 +72,8 @@ def video_options(settings, quality):
             )
         encoder = "h264_nvenc" if available else "libx264"
     if encoder == "h264_nvenc":
-        options = ["-preset", "p1", "-rc", "vbr", "-cq", str(quality), "-b:v", "0"]
+        # p5 with tune hq: NVENC's slow-but-good preset; p1 is the fastest and lowest quality.
+        options = ["-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", str(quality), "-b:v", "0"]
     else:
         options = ["-preset", "veryfast", "-crf", str(quality)]
     return [
