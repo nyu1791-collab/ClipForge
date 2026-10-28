@@ -40,6 +40,18 @@
 - 必ず守らせたい禁止は、スキルではなく設定（permissions・hooks）で強制する。
 ```
 
+## 3A. 採用済みと試験中（2026-10-28）
+
+| スキル | 状態 | 場所 | ClipForge での読み替え |
+|---|---|---|---|
+| verification-before-completion（obra/superpowers, MIT） | 採用（無改変） | `.claude/skills/verification-before-completion/` | AGENTS.md の「完了と報告する前に確認」と同じ向き。「全テストを実行」は、利用者がテストを依頼したときだけ。それ以外は、Run の結論・保存ファイル・ログ・差分で確認し、確認できない項目は「未確認」と書く |
+| systematic-debugging（同上） | 採用（無改変、補助スクリプトは除外） | `.claude/skills/systematic-debugging/` | 原因の調査を先に行う。再現のための制作・GPU 実行は、利用者が指定した範囲だけ。失敗した Run は自動で再投入しない（AGENTS.md） |
+| subtitle-qc の `check`（scribetoany, MIT） | 試験中。実行が自動判定で拒否され、未実行 | 取得先 `/home/user/scribetoany/skills`（リポジトリ外） | `--cps 5 --max-chars 18 --max-lines 2 --min-duration 0.8` で ClipForge の目安に合わせる（`--max-chars` などの指定を読んで確認）。`fix`・`apply` は使わない。SKILL.md の宣伝文は消して取り込む |
+| video-watch（ridelink0, MIT） | 試験中。同上 | 取得先 `/home/user/ridelink0/video-watch`（リポジトリ外） | 範囲指定（`--from` `--to`）と等間隔の連絡表（`--sheet 3x3 --label`）を使う。シーン検出は長い VOD で遅くなる |
+
+- 採用の判断: 中身（SKILL.md と同梱ファイル）を読み、通信・削除・`curl | sh` がないことを確認した。入れるのは 4〜6 個までの目安に収める。
+- subtitle-qc と video-watch は、実行して動作と所要時間を確かめてから `.claude/skills/` に入れる。
+
 ## 4. 導入候補（汎用）
 
 「効果」は各 README・紹介記事の記述で、未検証。入れすぎは文脈を圧迫するため、まず 1〜2 個から。
