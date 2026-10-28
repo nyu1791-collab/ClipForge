@@ -23,7 +23,7 @@
 - 応答は `segments[].source_ids` と `text`。時刻は `source_ids` から Transcribe の発話区間をコードが引き継ぐ。
 - 新規の編集データには `subtitle_policy = meaning_preserving_cleanup_v1` を保存する。
 - 描画は plain の字幕で、`caption_preserve_text` を使う。清書した本文を機械的な反復除去に通さず、単語カラオケは付けない。
-- 話者色は Transcribe のラベルによる。感情は neutral。
+- 字の色は白・黄・水色の3色。水色はTranscribeの話者ラベルの違い（別の声）から決め、判定はしない。感情は neutral。
 - 効果音は現行の清書では指示しない（`sound_effects` は空配列）。描画側の効果音処理は、修正パッチで指示が与えられた場合だけ働く。
 
 ## 見出し（title）と感情の修正

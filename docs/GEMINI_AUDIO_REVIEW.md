@@ -32,7 +32,7 @@
 - 要約・同義語への言い換え・情報圧縮・推測の補完はしない。言い淀み・相槌・反復は削除しない。
 - 清書済みの字幕は `caption_preserve_text` で描画し、機械的な ASR 反復除去（`asr_cleanup`）を通さない。単語単位のカラオケ追跡は付けない。
 - 時刻は Transcribe の発話時刻を引き継ぐ。清書後の単語精度・強制アライメントは保証しない。
-- 感情は neutral（段階 0）。話者色は Transcribe のラベルに基づき、判定はしない。
+- 感情は neutral（段階 0）。水色（別の声）はTranscribeの話者ラベルの違いに基づき、判定はしない。
 - 効果音は現行の清書では指示しない。
 - 方針の識別子は `subtitle_policy = meaning_preserving_cleanup_v1`。旧 `meaning_preserving_compact_v1` の保存済みデータは描画のために読めるが、新しい清書の実績には数えない。
 
