@@ -36,6 +36,11 @@
 - 描画のエラー詳細は、取得できた場合だけ作業出力の `diagnostics/render/` に保存する（URL と認証情報は伏せる）。
 - モデルの拒否・割り当て超過・認証の拒否を、別アカウントや別サービスで回避しない。
 
+## Claude Code セッションでの回収
+
+- 回収の CLI（`read_transfer`）は `gh release download` を使う。この環境では GraphQL が 403 で拒否され、`RESULT_UPLOAD_FAILED` と表示されることがある。Release 自体は正常な場合が多い。
+- その場合は、Release を REST API（`gh api repos/.../releases/tags/<tag>` と `releases/assets/<id>`）で取得し、`transfer.json` のサイズと照合する。
+
 ## 旧経路の運用
 
 - 旧の投入と回収（`submit_job.py`・`submit_audio_stage.py`）と全編 ASR の部分結果は、[ASR.md](ASR.md) と [AUDIO_FIRST.md](AUDIO_FIRST.md) の復旧用。現行の制作には使わない。

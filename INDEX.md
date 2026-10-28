@@ -12,7 +12,7 @@
 
 URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し選定 → 採用区間を切り出し → 3.5 Transcribe（Vertex直接）が採用部分だけ文字起こし → 3.8 Flash/MEDIUMが文字起こしの誤字脱字と明らかな誤認識だけを話題ごと1回で修正（話者・効果音は付けない） → Colab GPU/NVENCで最大360p素材・通常360pキャンバス描画（720pは明示選択） → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
 
-- 最短入口・接続・再接続: `docs/QUICK_START.md`。Antigravity経路の起動入力と確認: `docs/ANTIGRAVITY_ROUTE.md`。修正・再利用: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。履歴（現行の規則ではない）: `docs/HANDOFF_*_2026-10-26.md`・`docs/incidents/`・`docs/REVIEW_*.md`・`docs/HEALTH_REVIEW_2026-10-27.md`。
+- 最短入口・接続・再接続: `docs/QUICK_START.md`。納品前の見直し: `docs/REVIEW_POLICY.md`。Antigravity経路の起動入力と確認: `docs/ANTIGRAVITY_ROUTE.md`。修正・再利用: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。履歴（現行の規則ではない）: `docs/HANDOFF_*_2026-10-26.md`・`docs/incidents/`・`docs/REVIEW_*.md`・`docs/HEALTH_REVIEW_2026-10-27.md`。
 - 通常入口: `tools/produce_with_gemini.py`。実装: `src/clipforge/audio_understanding.py`。
 - Actions: `.github/workflows/clipforge-stages.yml`（`audio_stage`: understanding / render / merge）。clip別の並列描画は `tools/dispatch_parallel_render.py`。
 - Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
