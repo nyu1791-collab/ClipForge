@@ -58,8 +58,16 @@ def main():
     ap.add_argument("--editorial-release", default="")
     ap.add_argument("--continue-missing", action="store_true")
     ap.add_argument("--render-only", action="store_true")
-    ap.add_argument("--review-approved", action="store_true", help="Confirm the saved selection was approved for rendering")
-    ap.add_argument("--review-state", type=Path, help="Private production-state.json of the reviewed package")
+    ap.add_argument(
+        "--review-approved",
+        action="store_true",
+        help="Confirm the saved selection was approved for rendering",
+    )
+    ap.add_argument(
+        "--review-state",
+        type=Path,
+        help="Private production-state.json of the reviewed package",
+    )
     ap.add_argument("--analysis-run", "--previous-run", dest="analysis_run")
     ap.add_argument("--analysis-request", "--previous-request", dest="analysis_request")
     ap.add_argument(
@@ -143,7 +151,9 @@ def main():
     if resumed is None and args.clips is None:
         ap.error("clips must be explicitly specified before dispatch")
     if resumed is None and not (args.config_file or args.render_profile):
-        ap.error("config-file or render-profile must be explicitly specified before dispatch")
+        ap.error(
+            "config-file or render-profile must be explicitly specified before dispatch"
+        )
     if args.render_profile:
         args.config_file = {
             "preview": "config.landscape-long-preview.example.json",
@@ -177,7 +187,9 @@ def main():
     if args.review_approved and not args.render_only:
         ap.error("review-approved requires render-only")
     if resumed is None and args.deliver_drive and not args.render_only:
-        ap.error("Drive delivery is available only after review and explicit render-only")
+        ap.error(
+            "Drive delivery is available only after review and explicit render-only"
+        )
     if args.continue_missing and not args.editorial_release:
         ap.error("continue-missing requires editorial-release")
     if args.render_only and not (
@@ -186,15 +198,25 @@ def main():
         ap.error(
             "render-only requires editorial-release and the saved run/request pair"
         )
+    approved_digests = None
     if args.render_only:
+        from clipforge.review_package import validate_local_package
+
         reviewed = json.loads(args.review_state.read_text())
-        if (reviewed.get("status") != "awaiting_review"
+        if (
+            reviewed.get("status") != "awaiting_review"
             or reviewed.get("editorial_release") != args.editorial_release
             or canonical(reviewed.get("source_url")) != canonical(args.url)
-            or (not args.reuse_render and
-                (str(reviewed.get("review_run_id")) != args.analysis_run
-                 or reviewed.get("review_request_id") != args.analysis_request))):
+            or (
+                not args.reuse_render
+                and (
+                    str(reviewed.get("review_run_id")) != args.analysis_run
+                    or reviewed.get("review_request_id") != args.analysis_request
+                )
+            )
+        ):
             ap.error("render selection does not match the reviewed package")
+        approved_digests = validate_local_package(reviewed, args.review_state)
     if args.repository != "nyu1791-collab/ClipForge":
         ap.error("new audio-understanding production runs from ClipForge")
     if not args.source_ref:
@@ -295,6 +317,7 @@ def main():
         )
 
     def start_production():
+        nonlocal approved_digests
         if args.revision_file:
             revision = create_revision(
                 args.editorial_release,
@@ -304,6 +327,19 @@ def main():
             )
             if canonical(revision["source_url"]) != url:
                 raise RuntimeError("Editorial revision belongs to another source URL")
+            if any(
+                revision["parent_sha256"].get(name) != sha
+                for name, sha in approved_digests.items()
+            ):
+                raise RuntimeError(
+                    "Editorial revision does not match the reviewed package"
+                )
+            from clipforge.storage import digest
+
+            approved_digests = {
+                name: digest(args.output / "editorial-revision" / name)
+                for name in approved_digests
+            }
             # Publish once after source identity is known, without regenerating anything.
             from clipforge.editorial_revision import publish_revision
 
@@ -330,6 +366,12 @@ def main():
                 "continue_missing": args.continue_missing,
                 "auto_render": False,
                 "review_approved": args.review_approved,
+                "approved_selection_sha256": (approved_digests or {}).get(
+                    "final-selection.json", ""
+                ),
+                "approved_transcripts_sha256": (approved_digests or {}).get(
+                    "selected-transcripts.json", ""
+                ),
                 "resume_render": args.reuse_render,
                 "target_clips": str(args.clips),
             },
@@ -453,13 +495,25 @@ def main():
             from clipforge.review_package import collect_package
 
             package = collect_package(final_run, args.output, state, save)
-            state.update(status="awaiting_review", review_run_id=final_run,
-                         review_request_id=final_request,
-                         editorial_release=f"clipforge-kick-editorial-{final_run}")
+            state.update(
+                status="awaiting_review",
+                review_run_id=final_run,
+                review_request_id=final_request,
+                editorial_release=f"clipforge-kick-editorial-{final_run}",
+            )
             save()
-            print(json.dumps({"status": "awaiting_review", "review_package": str(package),
-                              "editorial_release": state["editorial_release"],
-                              "run_id": final_run, "request_id": final_request}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "status": "awaiting_review",
+                        "review_package": str(package),
+                        "editorial_release": state["editorial_release"],
+                        "run_id": final_run,
+                        "request_id": final_request,
+                    }
+                ),
+                flush=True,
+            )
         else:
             collect(final_run, final_request)
     except MonitoringPending:

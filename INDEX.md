@@ -1,6 +1,7 @@
 # ClipForge 要約マップ
 
 最新の確認待ち制作経路は [HUMAN_REVIEW_WORKFLOW.md](docs/HUMAN_REVIEW_WORKFLOW.md)。描画前に利用者の明示的な承認が必要。
+確認済みの範囲と未確認事項は [確認待ち経路の点検](docs/REVIEW_ROUTE_AUDIT_2026-10-28.md)。
 
 再開時はまずこのファイルだけを読む。本文はタスクに必要なファイルだけ、`rg -n` で位置を決めて `sed -n` で範囲を読む。テスト・監査は通常制作の前提にしない。
 

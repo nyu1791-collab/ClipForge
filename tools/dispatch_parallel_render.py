@@ -53,6 +53,8 @@ def part_inputs(request_id, index, count, args):
         "continue_missing": False,
         "auto_render": False,
         "review_approved": args.review_approved,
+        "approved_selection_sha256": args.approved_selection_sha256,
+        "approved_transcripts_sha256": args.approved_transcripts_sha256,
         "resume_render": False,
         "target_clips": str(count),
     }
@@ -86,25 +88,42 @@ def plan(args):
     parts = []
     for index in range(1, args.clips + 1):
         request_id = uuid.uuid4().hex
-        parts.append({
-            "clip_index": index,
-            "request_id": request_id,
-            "inputs": part_inputs(request_id, index, args.clips, args),
-        })
+        parts.append(
+            {
+                "clip_index": index,
+                "request_id": request_id,
+                "inputs": part_inputs(request_id, index, args.clips, args),
+            }
+        )
     return parts
 
 
 def dispatch(inputs, args):
     body = json.dumps({"ref": args.ref, "inputs": inputs})
-    gh("api", "--method", "POST",
-       f"repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches", "--input", "-", body=body)
+    gh(
+        "api",
+        "--method",
+        "POST",
+        f"repos/{REPO}/actions/workflows/{WORKFLOW}/dispatches",
+        "--input",
+        "-",
+        body=body,
+    )
 
 
 def find_run(request_id, attempts=24):
     """The run appears a few seconds after dispatch; its title carries the request id."""
     for _ in range(attempts):
-        listing = json.loads(gh("api", f"repos/{REPO}/actions/workflows/{WORKFLOW}/runs",
-                                "-X", "GET", "-f", "per_page=20"))
+        listing = json.loads(
+            gh(
+                "api",
+                f"repos/{REPO}/actions/workflows/{WORKFLOW}/runs",
+                "-X",
+                "GET",
+                "-f",
+                "per_page=20",
+            )
+        )
         for run in listing.get("workflow_runs", []):
             if request_id in (run.get("display_title") or run.get("name") or ""):
                 return run["id"]
@@ -113,8 +132,12 @@ def find_run(request_id, attempts=24):
 
 
 def run_state(run_id):
-    value = gh("api", f"repos/{REPO}/actions/runs/{run_id}",
-               "--jq", '.status + " " + (.conclusion // "-")')
+    value = gh(
+        "api",
+        f"repos/{REPO}/actions/runs/{run_id}",
+        "--jq",
+        '.status + " " + (.conclusion // "-")',
+    )
     status, conclusion = value.split()
     return status, conclusion
 
@@ -130,7 +153,9 @@ def wait_for(run_id, timeout):
 
 
 def save(state_path, state):
-    state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    state_path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def main():
@@ -141,15 +166,31 @@ def main():
     parser.add_argument("--config", required=True)
     parser.add_argument("--source-ref", required=True)
     parser.add_argument("--source-url", required=True)
-    parser.add_argument("--clips", type=int, default=5)
+    parser.add_argument("--clips", type=int, required=True)
     parser.add_argument("--ref", default="main")
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--timeout", type=int, default=3600)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--review-approved", action="store_true")
+    parser.add_argument("--review-state", type=Path, required=True)
     args = parser.parse_args()
     if not args.review_approved:
         parser.error("explicit review approval is required before rendering")
+    from clipforge.review_package import validate_local_package
+    from clipforge.media_sources import canonical
+
+    reviewed = json.loads(args.review_state.read_text())
+    if (
+        reviewed.get("status") != "awaiting_review"
+        or reviewed.get("editorial_release") != args.editorial_release
+        or canonical(reviewed.get("source_url")) != canonical(args.source_url)
+        or str(reviewed.get("review_run_id")) != str(args.previous_run)
+        or reviewed.get("review_request_id") != args.previous_request
+    ):
+        parser.error("render selection does not match the reviewed package")
+    hashes = validate_local_package(reviewed, args.review_state)
+    args.approved_selection_sha256 = hashes["final-selection.json"]
+    args.approved_transcripts_sha256 = hashes["selected-transcripts.json"]
     if not 1 <= args.clips <= 20:
         parser.error("clips must be between 1 and 20")
     if not re.fullmatch(r"config\.[a-z0-9-]+\.example\.json", args.config):
@@ -163,7 +204,11 @@ def main():
     state = {"started_at": now(), "clips": args.clips, "parts": parts, "merge": None}
     if args.dry_run:
         for part in parts:
-            print(json.dumps({"clip_index": part["clip_index"], "request_id": part["request_id"]}))
+            print(
+                json.dumps(
+                    {"clip_index": part["clip_index"], "request_id": part["request_id"]}
+                )
+            )
         return
     save(args.state, state)
     for part in parts:
@@ -193,7 +238,13 @@ def main():
     save(args.state, state)
     state["merge"]["conclusion"] = wait_for(state["merge"]["run_id"], args.timeout)
     save(args.state, state)
-    print("merge", state["merge"]["run_id"], "->", state["merge"]["conclusion"], flush=True)
+    print(
+        "merge",
+        state["merge"]["run_id"],
+        "->",
+        state["merge"]["conclusion"],
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
