@@ -168,11 +168,9 @@ class Client:
         # --continue-missing generate with the new instructions without colliding
         # with an already completed response from an older prompt.
         phase_base = phase
-        model = (
-            "gemini-3.5-flash"
-            if research or phase_base.startswith("transcript-")
-            else "gemini-3.8-flash"
-        )
+        # Topic selection and proofreading both use 3.8 Flash at MEDIUM; only the
+        # terminology research uses 3.5 Flash at MINIMAL.
+        model = "gemini-3.5-flash" if research else "gemini-3.8-flash"
         thinking_level = "MINIMAL" if research else "MEDIUM"
         # The model is part of a subtitle response's identity: an earlier 3.8
         # response must not be reported as a 3.5 result even for the same text.

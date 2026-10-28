@@ -231,7 +231,7 @@ def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
     client.generate("topics-0", "話題の選定")
     client.generate("terminology", "用語の調査", research=True)
     assert sent == [
-        ("gemini-3.5-flash", "MEDIUM", False),
+        ("gemini-3.8-flash", "MEDIUM", False),
         ("gemini-3.8-flash", "MEDIUM", False),
         ("gemini-3.5-flash", "MINIMAL", True),
     ]

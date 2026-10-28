@@ -97,7 +97,7 @@ def test_vertex_request_contains_audio_json_rules_and_reuses_the_same_source(tmp
     value, _ = client.generate("transcript-1", '{"source_segments":[]}', audio=audio, audio_source_key="same-source")
     assert value == result
     model, thinking, system_text, parts = calls[0]
-    assert model == "gemini-3.5-flash"
+    assert model == "gemini-3.8-flash"
     assert thinking == "MEDIUM"
     assert "unknown" in system_text
     assert json.loads(parts[0]["text"].split("\n\n")[0])["source_segments"] == []

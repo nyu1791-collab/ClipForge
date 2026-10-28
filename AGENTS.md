@@ -45,7 +45,7 @@ URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravit
 
 ## 接続と保存
 
-- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定に3.8 Flash/MEDIUM、整文に3.5 Flash/MEDIUM、整文の3.5 Flash/MEDIUMはGoogle Antigravity SDK（同じVertexプロジェクト・global）経由。文字起こしの3.5 Transcribeは従来どおりVertexへ直接送る。経路・起動入力・確認方法は`docs/ANTIGRAVITY_ROUTE.md`。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
+- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定と整文の3.8 Flash/MEDIUMはGoogle Antigravity SDK（同じVertexプロジェクト・global）経由。文字起こしの3.5 Transcribeは従来どおりVertexへ直接送る。経路・起動入力・確認方法は`docs/ANTIGRAVITY_ROUTE.md`。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
 - 公開ClipForgeはコードとActions、非公開`nyu1791-collab/ai-model-workers`は制作データのRelease保存庫。公開Artifactsに音声/動画/字幕/モデル応答を出さない。配布用`deploy/audio-stages.yml`は公開Actions定義と揃える。
 - APIキー/OAuth/Cookie/私有媒体をGit/ログ/チャットへ出さない。Secretsは名前だけ扱う。接続一覧の閲覧不可はunknownとし、未登録や制作不能と断定しない。
 - Colabは既存の専用エンドユーザー資格情報を再利用する。Drive専用資格情報をVertexサービスアカウントで代用しない。Driveの所有者は許可済みの`n.yu1791@gmail.com`または`n.yu17919191@gmail.com`と照合する。
