@@ -49,7 +49,7 @@ python tools/produce_with_gemini.py --resume --output "$EXISTING_PRIVATE_OUTPUT"
 | 字幕本文・推定時刻・見出し・話者色・感情・効果音を修正 | 同じCLIに `--render-only --editorial-release PARENT --revision-file PRIVATE_PATCH` | Gemini・音声理解・字幕再生成へ戻らない |
 | 編集済みデータから描画だけ行う | `--render-only --editorial-release TAG` | モデルへ戻らない |
 | 前回完成クリップを使って変更分だけ描画 | 上記に `--reuse-render --previous-run RUN --previous-request REQUEST` | 一致する完成クリップの再エンコードを省く |
-| 保存済み応答を再利用し、未完了のモデル工程を進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。過去の送信回数を含め同一要求は最大3回 |
+| 保存済み応答を再利用し、未完了のモデル工程を進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。一度の実行につき同一要求は最大3回。一時エラーで止まった場合は明示的に再開でき、過去の試行も記録する |
 | 保存済み完成動画の回収だけ | `python -m clipforge.release_transfer download RUN clipforge-result-REQUEST PRIVATE_DIR` | モデル・描画へ戻らない |
 | Driveへの納品だけ | `clipforge-drive-delivery.yml` のupload-release | モデル・描画へ戻らない |
 
