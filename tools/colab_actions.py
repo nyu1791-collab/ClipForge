@@ -523,9 +523,10 @@ del _clipforge_bootstrap
             detail = str(error)
             if not re.fullmatch(r"RESULT_[A-Z_]+(?: \(HTTP [0-9]{3}\))?", detail):
                 detail = type(error).__name__
-            print("Colab result collection failed: " + detail, flush=True)
             if execution_error is not None:
+                print("Colab result unavailable after execution failure: " + detail, flush=True)
                 raise execution_error from None
+            print("Colab result collection failed: " + detail, flush=True)
             raise
         finally:
             self.report_stages(output)

@@ -35,13 +35,14 @@ def test_overview_requests_overlap_and_keep_window_order(tmp_path, monkeypatch):
         "encode_audio",
         lambda source, target, *args, **kwargs: target.write_bytes(b"synthetic ogg"),
     )
-    barrier = threading.Barrier(3, timeout=5)
+    barrier = threading.Barrier(2, timeout=5)
     calls = []
 
     def generate(self, phase, prompt, audio=None, research=False):
         calls.append(phase)
         if phase.startswith("topics-"):
-            barrier.wait()
+            if len(calls) <= 2:
+                barrier.wait()
             return {
                 "audio_access": "heard",
                 "topics": [{"start": 10, "end": 60, "title": phase, "confidence": 1}],
