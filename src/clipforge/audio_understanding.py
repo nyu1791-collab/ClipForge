@@ -297,7 +297,8 @@ class Client:
                 if not error.retryable or attempt >= last_attempt:
                     raise
             print(json.dumps({"phase": phase, "status": "retrying", "next_attempt": attempt + 1}), flush=True)
-            time.sleep((15 if attempt == len(prior_attempts) + 1 else 45) + random.uniform(0, 5))
+            # The same spacing as Transcribe: 30 s, then 90 s, with a little jitter.
+            time.sleep((30 if attempt == len(prior_attempts) + 1 else 90) + random.uniform(0, 5))
 
     def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, parts, research, attempt):
         row = LockedRequest(
