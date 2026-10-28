@@ -10,9 +10,16 @@ def load(monkeypatch):
 
 def arguments(clips=5):
     return argparse.Namespace(
-        editorial_release="clipforge-kick-editorial-1", previous_run=1,
-        previous_request="a" * 32, config="config.landscape-gpu-plain.example.json",
-        source_ref="b" * 40, source_url="https://example.test/video", clips=clips,
+        editorial_release="clipforge-kick-editorial-1",
+        previous_run=1,
+        previous_request="a" * 32,
+        config="config.landscape-gpu-plain.example.json",
+        source_ref="b" * 40,
+        source_url="https://example.test/video",
+        clips=clips,
+        review_approved=True,
+        approved_selection_sha256="c" * 64,
+        approved_transcripts_sha256="d" * 64,
     )
 
 
@@ -27,6 +34,8 @@ def test_each_clip_gets_its_own_gpu_render_run(monkeypatch):
         assert inputs["audio_stage"] == "render"
         assert inputs["worker"] == "colab-auto"
         assert inputs["auto_render"] is False
+        assert inputs["review_approved"] is True
+        assert inputs["approved_transcripts_sha256"] == "d" * 64
         assert inputs["continue_missing"] is False
         assert inputs["previous_request_id"] == "a" * 32
 

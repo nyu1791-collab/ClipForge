@@ -1,6 +1,8 @@
 # 接続・制作・再接続の最短手順
 
-通常操作は `tools/produce_with_gemini.py` に集約する。監査・strict品質検査・候補映像の承認待ちは挟まない。
+> この文書の自動描画や引数省略に関する記述は旧経路です。新規制作は [確認待ち経路](HUMAN_REVIEW_WORKFLOW.md) に従い、指定のURL・本数・設定・コードSHAで確認用パッケージを作り、利用者の承認後に描画してください。Actionsのワークフロー定義が実行ブランチに反映されるまでは新経路を実行できません。
+
+通常操作は `tools/produce_with_gemini.py` に集約する。監査・strict品質検査は挟まず、利用者による候補映像と確認箇所の確認・承認を描画前に挟む。
 
 制作の正規経路は公開ClipForgeのGitHub Actionsです。Gemini 3.8 Flash は Antigravity SDK（Vertex）経由、3.5 Transcribe は Vertex 直接で呼びます。起動入力と確認方法は [ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md) を参照してください。Actionsが素材取得とGemini処理を行い、採用話題の文字起こしはGemini 3.5 Transcribeに送り、描画はColab GPUへ依頼して非公開保存します。ローカル/VMへ制作を移さず、移行時は既存Runを再接続し、完了済み成果物を再利用してください。二重投入はしません。
 
@@ -10,10 +12,10 @@
 
 ```sh
 uv sync --locked --no-dev --inexact
-uv run --no-sync python tools/produce_with_gemini.py "$SOURCE_URL" --output "$PRIVATE_OUTPUT"
+uv run --no-sync python tools/produce_with_gemini.py "$SOURCE_URL" --source-ref "$CODE_SHA" --clips "$CLIPS" --config-file config.landscape-long-preview.example.json --output "$PRIVATE_OUTPUT"
 ```
 
-通常は360p以下の素材を優先し、利用できなければ取得可能な映像を使い、640×360で描画する。必要なら `--clips 3`（選定目安）、`--render-profile standard`（720pキャンバスを明示選択）、`--deliver-drive`（描画後に指定Driveへ1回納品）を付ける。省略したコードSHAは実行ブランチから一度だけ解決して保存する。`--clips`はActionsから選定処理まで渡す。
+最初に確認用パッケージを保存する。承認後の描画は通常360p以下の素材を優先し、利用できなければ取得可能な映像を使い、640×360で描画する。選定本数と設定は明示し、コードSHAは40桁で指定する。描画・Drive納品は確認後に別途指定する。
 
 Kick素材のGETは429・5xx・通信障害だけを10秒・30秒・60秒の間隔で最大3回まで再試行する。制作workflowの投入は自動再試行しない。Geminiの一時的な通信障害・429・5xxは一度の実行で同一要求につき合計3回まで試す。明示的に再開すると未完了要求を再び最大3回試す。認証拒否・無効な要求は再試行しない。応答が不明なまま再送すると重複課金の可能性がある。取得済みの成果物は保持し、失敗を記録する。KickメタデータのAPIが404の場合だけ、同じ動画の公開ページから情報を取得する。認証拒否・レート制限・通信障害・メタデータの矛盾では、ページ取得へ切り替えない。
 

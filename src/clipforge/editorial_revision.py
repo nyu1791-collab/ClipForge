@@ -49,24 +49,40 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
         raise PipelineError(
             "Revision output already exists; use its saved state instead of resubmitting"
         )
-    private = json.loads(gh("repo", "view", PRIVATE_REPO, "--json", "isPrivate"))
-    if private.get("isPrivate") is not True:
+    private = json.loads(gh("api", f"repos/{PRIVATE_REPO}"))
+    if private.get("private") is not True:
         raise PipelineError("Editorial storage must be private")
     output.mkdir(parents=True, mode=0o700)
     parent = output / "parent"
     parent.mkdir(mode=0o700)
+    release = json.loads(gh("api", f"repos/{PRIVATE_REPO}/releases/tags/{parent_tag}"))
+    assets = release.get("assets", [])
     for name in ASSETS:
-        gh(
-            "release",
-            "download",
-            parent_tag,
-            "--repo",
-            PRIVATE_REPO,
-            "--pattern",
-            name,
-            "--dir",
-            str(parent),
-        )
+        matches = [asset for asset in assets if asset.get("name") == name]
+        if (
+            len(matches) != 1
+            or type(matches[0].get("id")) is not int
+            or type(matches[0].get("size")) is not int
+            or not 0 < matches[0]["size"] <= 8 * 1024**2
+        ):
+            raise PipelineError("Private editorial asset is missing or invalid")
+        target = parent / name
+        with target.open("xb") as destination:
+            result = subprocess.run(
+                [
+                    "gh",
+                    "api",
+                    f"repos/{PRIVATE_REPO}/releases/assets/{matches[0]['id']}",
+                    "-H",
+                    "Accept: application/octet-stream",
+                ],
+                stdout=destination,
+                stderr=subprocess.PIPE,
+                timeout=600,
+            )
+        if result.returncode or target.stat().st_size != matches[0]["size"]:
+            target.unlink(missing_ok=True)
+            raise PipelineError("Private editorial asset download failed")
     receipt = json.loads((parent / ASSETS[0]).read_text())
     selection = json.loads((parent / ASSETS[1]).read_text())
     transcripts = json.loads((parent / ASSETS[2]).read_text())

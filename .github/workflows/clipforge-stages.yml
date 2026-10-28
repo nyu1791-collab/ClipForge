@@ -33,6 +33,14 @@
       },
       "steps": [
         {
+          "name": "Require explicit review approval for rendering",
+          "env": {
+            "AUDIO_STAGE": "${{ inputs.audio_stage }}",
+            "REVIEW_APPROVED": "${{ inputs.review_approved }}"
+          },
+          "run": "if [ \"$AUDIO_STAGE\" = render ] && [ \"$REVIEW_APPROVED\" != true ]; then echo \"Explicit review approval is required before rendering.\"; exit 1; fi\nif [ \"$AUDIO_STAGE\" = render ]; then echo \"Approved rendering requires the Colab editorial route.\"; exit 1; fi\n"
+        },
+        {
           "name": "Require private storage credentials before processing",
           "env": {
             "STORE_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
@@ -177,9 +185,20 @@
         "RESULT_STORE": "${{ inputs.result_store }}",
         "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers",
         "CLIPFORGE_AUDIO_REVIEW_RELEASE": "${{ inputs.editorial_release }}",
-        "CLIPFORGE_RESUME_RENDER": "${{ inputs.resume_render }}"
+        "CLIPFORGE_RESUME_RENDER": "${{ inputs.resume_render }}",
+        "CLIPFORGE_REQUIRE_REVIEW_HASHES": "true",
+        "CLIPFORGE_APPROVED_SELECTION_SHA256": "${{ inputs.approved_selection_sha256 }}",
+        "CLIPFORGE_APPROVED_TRANSCRIPTS_SHA256": "${{ inputs.approved_transcripts_sha256 }}"
       },
       "steps": [
+        {
+          "name": "Require explicit review approval for rendering",
+          "env": {
+            "AUDIO_STAGE": "${{ inputs.audio_stage }}",
+            "REVIEW_APPROVED": "${{ inputs.review_approved }}"
+          },
+          "run": "if [ \"$AUDIO_STAGE\" = render ] && [ \"$REVIEW_APPROVED\" != true ]; then echo \"Explicit review approval is required before rendering.\"; exit 1; fi\n"
+        },
         {
           "name": "Require storage and GPU connections before downloading",
           "env": {
@@ -198,18 +217,6 @@
           "timeout-minutes": 1
         },
         {
-          "name": "Load saved selected-only subtitles for render-only continuation",
-          "if": "inputs.editorial_release != ''",
-          "env": {
-            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
-          },
-          "run": "[[ \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" =~ ^clipforge-kick-editorial-((replay-)?[0-9]+|revision-[a-f0-9]{32})$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/editorial-render\"\ngh release download \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern final-selection.json --dir \"$RUNNER_TEMP/editorial-render\"\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
-        },
-        {
-          "name": "Validate the clip render request",
-          "run": "python3 - <<'PY'\nimport os,re,json,pathlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=(pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json').read_text() if os.environ.get('CLIPFORGE_AUDIO_REVIEW_RELEASE') else os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=4*1024**2\njson.loads(text)\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
-        },
-        {
           "uses": "actions/checkout@v4",
           "with": {
             "repository": "nyu1791-collab/ClipForge",
@@ -217,6 +224,18 @@
             "path": "clipforge-source",
             "persist-credentials": false
           }
+        },
+        {
+          "name": "Load saved selected-only subtitles for render-only continuation",
+          "if": "inputs.editorial_release != ''",
+          "env": {
+            "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
+          },
+          "run": "python3 clipforge-source/tools/download_editorial.py --tag \"$CLIPFORGE_AUDIO_REVIEW_RELEASE\" --output \"$RUNNER_TEMP/editorial-render\" final-selection.json selected-transcripts.json\ncp \"$RUNNER_TEMP/editorial-render/final-selection.json\" \"$RUNNER_TEMP/review.json\"\n"
+        },
+        {
+          "name": "Validate the clip render request",
+          "run": "python3 - <<'PY'\nimport os,re,json,pathlib,hashlib\nif os.environ['AUDIO_STAGE'] != 'render':\n    raise SystemExit('worker=colab-auto requires audio_stage=render; use worker=cpu for previews or merge')\nfor key,length in [('CLIPFORGE_SOURCE_REF',40),('REQUEST_ID',32),('PREVIOUS_REQUEST',32)]:\n    assert re.fullmatch('[a-f0-9]{'+str(length)+'}',os.environ[key])\nassert os.environ['INPUT_TAG']=='clipforge-input-'+os.environ['REQUEST_ID']\nassert re.fullmatch('[0-9]{1,20}',os.environ['PREVIOUS_RUN'])\nassert os.environ['CLIP_INDEX']=='' or re.fullmatch('[1-9][0-9]?',os.environ['CLIP_INDEX'])\nassert re.fullmatch(r'config\\.[a-z0-9-]+\\.example\\.json',os.environ['CONFIG_FILE'])\ntext=(pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json').read_text() if os.environ.get('CLIPFORGE_AUDIO_REVIEW_RELEASE') else os.environ['REVIEW_JSON']\nassert text and len(text.encode())<=4*1024**2\njson.loads(text)\nassert os.environ.get(\"CLIPFORGE_AUDIO_REVIEW_RELEASE\")\nfor envname,filename in [(\"CLIPFORGE_APPROVED_SELECTION_SHA256\",\"final-selection.json\"),(\"CLIPFORGE_APPROVED_TRANSCRIPTS_SHA256\",\"selected-transcripts.json\")]:\n    expected=os.environ[envname]\n    assert re.fullmatch(\"[a-f0-9]{64}\",expected)\n    data=(pathlib.Path(os.environ[\"RUNNER_TEMP\"])/\"editorial-render\"/filename).read_bytes()\n    assert hashlib.sha256(data).hexdigest()==expected\npath=pathlib.Path(os.environ['RUNNER_TEMP'])/'review.json'\npath.write_text(text)\npath.chmod(0o600)\nPY\n"
         },
         {
           "uses": "actions/setup-python@v5",
@@ -294,6 +313,13 @@
         "CLIPFORGE_STORAGE_REPO": "nyu1791-collab/ai-model-workers"
       },
       "steps": [
+        {
+          "name": "Require human review before rendering",
+          "env": {
+            "AUTO_RENDER": "${{ inputs.auto_render }}"
+          },
+          "run": "if [ \"$AUTO_RENDER\" = true ]; then echo \"Automatic rendering is disabled; prepare the review package first.\"; exit 1; fi\n"
+        },
         {
           "name": "Require the connections used by this production",
           "env": {
@@ -401,7 +427,7 @@
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "EDITORIAL_RELEASE": "${{ inputs.editorial_release }}"
           },
-          "run": "[[ \"$EDITORIAL_RELEASE\" =~ ^clipforge-kick-editorial-(replay-)?[0-9]+$ ]] || exit 1\nmkdir -p \"$RUNNER_TEMP/saved-editorial\"\ngh release download \"$EDITORIAL_RELEASE\" --repo nyu1791-collab/ai-model-workers --pattern '*.json' --pattern '*.prompt.txt' --dir \"$RUNNER_TEMP/saved-editorial\"\n"
+          "run": "python3 tools/download_editorial.py --tag \"$EDITORIAL_RELEASE\" --output \"$RUNNER_TEMP/saved-editorial\"\n"
         },
         {
           "name": "Process selected topics with overlapping GPU ASR, cleanup and render",
@@ -438,12 +464,21 @@
           "run": "\"$RUNNER_TEMP/colab-control/bin/python\" tools/parallel_selected_render.py --stop\n"
         },
         {
+          "name": "Prepare private topic videos and review checklist",
+          "env": {
+            "SOURCE_URL": "${{ inputs.source_url }}",
+            "YOUTUBE_COOKIES_B64": "${{ secrets.YOUTUBE_COOKIES_B64 }}",
+            "CONFIG_FILE": "${{ inputs.config_file }}"
+          },
+          "run": ".venv/bin/python -m clipforge.review_package --editorial \"$RUNNER_TEMP/editorial\" --output \"$RUNNER_TEMP/editorial/review-package.zip\" --config \"$CONFIG_FILE\"\n"
+        },
+        {
           "name": "Save transcripts review and timing privately",
           "if": "always()",
           "env": {
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}"
           },
-          "run": "shopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi",
+          "run": "if [ \"$(gh api repos/nyu1791-collab/ai-model-workers --jq .private)\" != true ]; then echo \"Private storage is required.\"; exit 1; fi\nshopt -s nullglob\nreports=(\"$RUNNER_TEMP/editorial/\"*.json \"$RUNNER_TEMP/editorial/\"*.txt \"$RUNNER_TEMP/editorial/\"*.ogg \"$RUNNER_TEMP/editorial/\"*.zip)\nif [ ${#reports[@]} -gt 0 ]; then\n gh release create \"clipforge-kick-editorial-$GITHUB_RUN_ID\" \"${reports[@]}\" --repo nyu1791-collab/ai-model-workers --latest=false --notes \"Private audio understanding and selected-only transcription; no full-source ASR.\"\nfi",
           "id": "save-editorial"
         },
         {
@@ -704,6 +739,21 @@
           "description": "Advisory topic count; blank uses the committed config",
           "type": "string",
           "default": ""
+        },
+        "review_approved": {
+          "type": "boolean",
+          "default": false,
+          "description": "User explicitly approved this selection for rendering"
+        },
+        "approved_selection_sha256": {
+          "type": "string",
+          "default": "",
+          "description": "SHA-256 of approved private editorial data"
+        },
+        "approved_transcripts_sha256": {
+          "type": "string",
+          "default": "",
+          "description": "SHA-256 of approved private editorial data"
         }
       }
     }

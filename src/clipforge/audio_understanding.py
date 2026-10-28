@@ -725,6 +725,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 "start": spans[0]["start"],
                 "end": spans[-1]["end"],
                 "text": text,
+                "source_ids": ids,
                 "words": preserved_words,
                 "speaker_id": speaker if certain else "unknown",
                 "confidence": confidence if certain else 0,
@@ -747,6 +748,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                     "start": row["start"],
                     "end": row["end"],
                     "text": row["text"],
+                    "source_ids": [index],
                     "words": row.get("words", []),
                     "speaker_id": speaker,
                     "confidence": confidence,
@@ -836,6 +838,7 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
                 value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
             value["finishing"]["status"] = "transcribe_timestamps_preserved"
             value["finishing"]["timestamp_source"] = "gemini_transcribe"
+            write_json(output / f"review-source-{index:03}.json", {"segments": value["segments"]})
             if renderer is not None:
                 transcript, turns = selected_transcript(value, clip.end - clip.start)
                 renderer.enqueue(index, {"transcript": transcript.model_dump(), "turns": turns,

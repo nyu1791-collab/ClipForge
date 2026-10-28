@@ -2,6 +2,7 @@
 """Actions control plane using Google's Colab CLI SDK; secrets stay off the logs."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -235,6 +236,19 @@ def stage_request():
     if len(review.encode()) > (4 * 1024**2 if editorial else 60_000):
         raise ControlError("Review is too large")
     json.loads(review)
+    if os.environ.get("CLIPFORGE_REQUIRE_REVIEW_HASHES") == "true":
+        selection_sha = os.environ.get("CLIPFORGE_APPROVED_SELECTION_SHA256", "")
+        transcript_sha = os.environ.get("CLIPFORGE_APPROVED_TRANSCRIPTS_SHA256", "")
+        if (
+            not re.fullmatch(r"[a-f0-9]{64}", selection_sha)
+            or not re.fullmatch(r"[a-f0-9]{64}", transcript_sha)
+            or hashlib.sha256(review.encode()).hexdigest() != selection_sha
+        ):
+            raise ControlError(
+                "Approved editorial data does not match the render request"
+            )
+        stage["approved_selection_sha256"] = selection_sha
+        stage["approved_transcripts_sha256"] = transcript_sha
     stage["review"] = review
     return stage
 

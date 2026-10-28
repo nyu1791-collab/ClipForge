@@ -611,6 +611,14 @@ def render_stage(payload, output, report, timings, environment):
             stage["review"]
         ):
             raise RuntimeError("Render selection differs from the saved audio review")
+        if (
+            stage.get("approved_selection_sha256")
+            and digest(records / "final-selection.json")
+            != stage["approved_selection_sha256"]
+        ):
+            raise RuntimeError(
+                "Saved selection differs from the approved editorial data"
+            )
         selection = json.loads(stage["review"])
         if selection.get("selection_basis") == "audio_understanding":
             direct_audio = True
@@ -619,6 +627,14 @@ def render_stage(payload, output, report, timings, environment):
                 records / "selected-transcripts.json",
                 8 * 1024**2,
             )
+            if (
+                stage.get("approved_transcripts_sha256")
+                and digest(records / "selected-transcripts.json")
+                != stage["approved_transcripts_sha256"]
+            ):
+                raise RuntimeError(
+                    "Saved subtitles differ from the approved editorial data"
+                )
             arguments = [
                 str(ROOT / ".venv/bin/python"),
                 "-m",
