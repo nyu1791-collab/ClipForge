@@ -13,7 +13,7 @@ uv sync --locked --no-dev --inexact
 uv run --no-sync python tools/produce_with_gemini.py "$SOURCE_URL" --output "$PRIVATE_OUTPUT"
 ```
 
-通常は素材を最大360pで取得し、640×360で描画する。必要なら `--clips 3`（選定目安）、`--render-profile standard`（720pキャンバスを明示選択）、`--deliver-drive`（描画後に指定Driveへ1回納品）を付ける。省略したコードSHAは実行ブランチから一度だけ解決して保存する。`--clips`はActionsから選定処理まで渡す。
+通常は360p以下の素材を優先し、利用できなければ取得可能な映像を使い、640×360で描画する。必要なら `--clips 3`（選定目安）、`--render-profile standard`（720pキャンバスを明示選択）、`--deliver-drive`（描画後に指定Driveへ1回納品）を付ける。省略したコードSHAは実行ブランチから一度だけ解決して保存する。`--clips`はActionsから選定処理まで渡す。
 
 Kick素材の取得と制作workflowの投入は自動再試行しない。Geminiの一時的な通信障害・429・5xxは同一要求につき合計3回まで再試行する。認証拒否・無効な要求は再試行しない。応答が不明なまま再送すると重複課金の可能性がある。取得済みの成果物は保持し、失敗を記録する。KickメタデータのAPIが404の場合だけ、同じ動画の公開ページから情報を取得する。認証拒否・レート制限・通信障害・メタデータの矛盾では、ページ取得へ切り替えない。
 

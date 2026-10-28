@@ -110,6 +110,23 @@ def test_audio_plan_uses_only_selected_transcribe_results(planned):
     assert not (output / "focused-2.ogg").exists()
 
 
+@pytest.fixture
+def unavailable_terminology(monkeypatch):
+    def fail(*args):
+        raise ValueError("bad optional terminology response")
+
+    monkeypatch.setattr(route, "grounded_terms", fail)
+
+
+def test_unavailable_terminology_does_not_stop_selected_topics(unavailable_terminology, planned):
+    output, _, _ = planned
+    glossary = json.loads((output / "terminology-glossary.json").read_text())
+    assert glossary["terms"] == []
+    assert glossary["diagnostics"]["status"] == "unavailable"
+    selected = json.loads((output / "selected-transcripts.json").read_text())
+    assert len(selected["clips"]) == 5
+
+
 def test_resume_cannot_apply_responses_to_another_audio(planned, tmp_path, monkeypatch):
     output, audio, _ = planned
     audio.write_bytes(b"different audio")

@@ -400,7 +400,7 @@ def test_render_aligns_segment_clip_and_word_clock(audio_job, monkeypatch):
     )
 
 
-def test_render_rejects_high_resolution_source(audio_job, monkeypatch):
+def test_render_accepts_high_resolution_source(audio_job, monkeypatch):
     vod, root, settings, _, _ = audio_job
     review = reviewed_intervals(audio_job)
     retrieve = vod.retrieve
@@ -411,11 +411,13 @@ def test_render_rejects_high_resolution_source(audio_job, monkeypatch):
         return receipt
 
     monkeypatch.setattr(vod, "retrieve", high_resolution)
-    monkeypatch.setattr(
-        pipeline, "render_clip", lambda *a: pytest.fail("high resolution was rendered")
-    )
-    with pytest.raises(PipelineError, match="at most 360p"):
-        run_render(vod, root, settings, review, only=1)
+    rendered = []
+    def render(*args):
+        rendered.append(True)
+        return {"directory": "clips/clip-001"}
+    monkeypatch.setattr(pipeline, "render_clip", render)
+    run_render(vod, root, settings, review, only=1)
+    assert rendered == [True]
 
 
 def test_word_clock_and_text_shift_without_inventing_boundary_text():
