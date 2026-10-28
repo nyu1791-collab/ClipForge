@@ -85,3 +85,7 @@ Secretsの値をチャットへ貼らない。通常制作では必要な接続�
 描画エラーのスタック情報やプロセスのstderr末尾は、取得できた場合だけURL・認証情報を伏せて非公開結果Releaseの `diagnostics/` に保存する。公開Actionsログには段階とエラー種別のみを表示する。起動前の失敗や結果の保存自体が失敗した場合は詳細が残らないことがある。保存済みクリップや親Releaseを変更せず、失敗を理由に自動再描画しない。
 
 修正パッチ・前回描画の再利用・回収だけ/納品だけの操作は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。字幕本文の共通定義は [編集ルールブック](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。
+
+## Pro特典のクレジットを使う請求先
+
+通常経路のGemini 3.8 Flash、3.5 Flash、3.5 Transcribeはすべて `project-fdadb4dd-cb77-4270-9cd` のVertex AIへ送る。同じ請求先をTranslationとVOICEBOXも使用する。APIでは特定のプロモーションクレジットを選べず、適用対象・優先順位・残額はCloud Billing側で決まる。残額を使い切った後の自動停止は設定していない。

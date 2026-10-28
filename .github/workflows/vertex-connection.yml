@@ -1,0 +1,29 @@
+name: Check ClipForge Vertex connection
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google-github-actions/auth@v3
+        id: vertex
+        with:
+          workload_identity_provider: projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER || '793547679344' }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github
+          service_account: clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com
+          token_format: access_token
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Check small sample requests
+        env:
+          CLIPFORGE_VERTEX_ACCESS_TOKEN: ${{ steps.vertex.outputs.access_token }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq espeak-ng ffmpeg
+          espeak-ng -w "$RUNNER_TEMP/sample.wav" 'Testing speech recognition.'
+          ffmpeg -v error -i "$RUNNER_TEMP/sample.wav" -ar 16000 -ac 1 -b:a 48k "$RUNNER_TEMP/sample.mp3"
+          python tools/check_vertex_models.py "$RUNNER_TEMP/sample.mp3"
