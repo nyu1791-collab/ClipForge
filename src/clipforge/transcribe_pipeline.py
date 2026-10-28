@@ -159,7 +159,8 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                     finished_at=time.time(),
                 )
                 client.save()
-            time.sleep(15 if attempt == len(rows) + 1 else 45)
+            # Same retry spacing as the Gemini generation path: 30 s, then 90 s, for 429/5xx bursts.
+            time.sleep(30 if attempt == len(rows) + 1 else 90)
 
 
 def transcribe_clip(client, audio, clip, index, source_sha):
