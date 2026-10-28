@@ -32,6 +32,7 @@ from .storage import digest
 from .word_timing import preserve_word_timing
 
 WINDOW_SECONDS = 5400
+OVERVIEW_MARGIN_SECONDS = 600
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 EDITORIAL_RULES_FILE = PROMPT_DIR / "gemini_editorial_rulebook_ja.md"
 SUBTITLE_POLICY = "meaning_preserving_cleanup_v1"
@@ -873,12 +874,29 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
     if not __import__("re").fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
         raise PipelineError("Saved editorial identity is required for source verification")
     private_repo()
-    windows = sorted({int((clip.start + 5) // WINDOW_SECONDS) for clip in clips})
     with tempfile.TemporaryDirectory(prefix="clipforge-source-match-") as temporary:
         ref_dir = Path(temporary)
+        gh("release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers",
+           "--pattern", "audio-editor-receipt.json", "--dir", str(ref_dir))
+        saved = json.loads((ref_dir / "audio-editor-receipt.json").read_text())
+        saved_windows = (saved.get("overview_plan") or {}).get("windows")
+        if not saved_windows:
+            # Receipts from before the agent split used a fixed grid of windows.
+            saved_windows = [
+                {"index": k, "audio_start": k * WINDOW_SECONDS, "audio_end": (k + 1) * WINDOW_SECONDS}
+                for k in range(math.ceil(saved["duration"] / WINDOW_SECONDS))
+            ]
+
+        def window_for(position):
+            for window in saved_windows:
+                if window["audio_start"] <= position < window["audio_end"]:
+                    return window
+            raise PipelineError("Saved topic lies outside the overview windows")
+
+        needed = sorted({window_for(clip.start + 5)["index"] for clip in clips})
         arguments = ["release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers"]
-        for window in windows:
-            arguments.extend(["--pattern", f"overview-{window}.ogg"])
+        for index in needed:
+            arguments.extend(["--pattern", f"overview-{index}.ogg"])
         gh(*arguments, "--dir", str(ref_dir))
 
         def decode(path, start):
@@ -894,8 +912,8 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
         matches = []
         for clip in clips:
             position = clip.start + 5
-            window = int(position // WINDOW_SECONDS)
-            original = decode(ref_dir / f"overview-{window}.ogg", position - window * WINDOW_SECONDS)
+            window = window_for(position)
+            original = decode(ref_dir / f"overview-{window['index']}.ogg", position - window["audio_start"])
             current = decode(audio, position)
             size = min(len(original), len(current))
             if size < 8 * 8000:
@@ -969,6 +987,48 @@ def reprocess_saved(audio, url, output, settings, resume):
         client.save()
 
 
+def overview_windows(duration):
+    """One overview agent up to 1 h, two up to 2 h, otherwise four.
+
+    Owner ranges split the recording evenly. Each audio window reaches
+    OVERVIEW_MARGIN_SECONDS past its owner, so the agent that owns a topic near a
+    cut hears that topic whole.
+    """
+    count = 1 if duration <= 3600 else 2 if duration <= 7200 else 4
+    windows = []
+    for index in range(count):
+        owner_start = duration * index / count
+        owner_end = duration * (index + 1) / count
+        windows.append({
+            "index": index,
+            "owner_start": owner_start,
+            "owner_end": owner_end,
+            "audio_start": max(0.0, owner_start - OVERVIEW_MARGIN_SECONDS),
+            "audio_end": min(duration, owner_end + OVERVIEW_MARGIN_SECONDS),
+        })
+    return windows
+
+
+def owned_topics(candidates, windows):
+    """Keep each topic from the agent that owns its midpoint.
+
+    Each cut moves to the nearest topic end within the margin, so no topic is cut.
+    A cut with no topic end nearby stays at the even split.
+    """
+    cuts = []
+    for window in windows[:-1]:
+        nominal = window["owner_end"]
+        ends = [topic.end for _, topic in candidates
+                if abs(topic.end - nominal) <= OVERVIEW_MARGIN_SECONDS]
+        cuts.append(min(ends, key=lambda end: abs(end - nominal)) if ends else nominal)
+    kept = []
+    for index, topic in candidates:
+        middle = (topic.start + topic.end) / 2
+        if sum(1 for cut in cuts if middle >= cut) == index:
+            kept.append(topic)
+    return kept, cuts
+
+
 def plan(audio, url, output, settings, resume=None, continue_missing=False, transcribe_trial=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -977,7 +1037,8 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
             "Already attempted; use a separate output for saved-response replay"
         )
     duration = audio_first.audio_info(audio)["duration"]
-    starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
+    windows = overview_windows(duration)
+    starts = [window["audio_start"] for window in windows]
     # A window in a new output directory has no verified link to this input.
     # Refuse it before any concurrent request can send the wrong audio; saved
     # responses use the separate --resume-from directory and input identity.
@@ -1005,16 +1066,16 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         settings=settings.model_dump(),
         input_identity=identity,
     )
-    overview_pool = ThreadPoolExecutor(max_workers=2)
+    overview_pool = ThreadPoolExecutor(max_workers=len(windows))
     topic_pool = None
     try:
-        topics = []
+        candidates = []
 
         def prepare_overview(index, start):
             path = output / f"overview-{index}.ogg"
             started = time.monotonic()
             started_at = time.time()
-            length = min(WINDOW_SECONDS, duration - start)
+            length = windows[index]["audio_end"] - start
             encode_audio(audio, path, start, length, "12k", speech_fast=True)
             return path, {
                 "index": index,
@@ -1035,7 +1096,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         cancelled = Event()
 
         def request_overview(index, start):
-            length = min(WINDOW_SECONDS, duration - start)
+            length = windows[index]["audio_end"] - start
             try:
                 path, preparation = overviews[index].result()
                 if cancelled.is_set():
@@ -1056,13 +1117,13 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 cancelled.set()
                 raise
 
-        topic_pool = ThreadPoolExecutor(max_workers=min(1 if resume else 2, len(starts)))
+        topic_pool = ThreadPoolExecutor(max_workers=min(1 if resume else len(windows), len(starts)))
         topic_futures = {
             index: topic_pool.submit(request_overview, index, start)
             for index, start in enumerate(starts)
         }
         for index, start in enumerate(starts):
-            length = min(WINDOW_SECONDS, duration - start)
+            length = windows[index]["audio_end"] - start
             value, preparation = topic_futures[index].result()
             with client._lock:
                 client.record["timings"].setdefault(
@@ -1096,16 +1157,23 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 clip = SelectedClip(
                     start=begin,
                     end=finish,
-                    candidate_id=f"topic-{len(topics)}",
+                    candidate_id=f"topic-{len(candidates)}",
                     title=str(row.get("title") or "話題"),
                     reason=str(row.get("reason") or "音声から選定"),
                     confidence=confidence,
                 )
-                topics.append(
-                    clip.model_copy(
-                        update={"start": clip.start + start, "end": clip.end + start}
+                candidates.append(
+                    (
+                        index,
+                        clip.model_copy(
+                            update={"start": clip.start + start, "end": clip.end + start}
+                        ),
                     )
                 )
+
+        topics, cuts = owned_topics(candidates, windows)
+        client.record["overview_plan"] = {"windows": windows, "cuts": cuts}
+        client.save()
 
         def choose_topics():
             selected = []

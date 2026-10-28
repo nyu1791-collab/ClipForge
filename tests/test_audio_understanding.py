@@ -235,3 +235,36 @@ def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
         ("gemini-3.8-flash", "MEDIUM", False),
         ("gemini-3.5-flash", "MINIMAL", True),
     ]
+
+
+def test_overview_agent_count_follows_recording_length():
+    assert [w["index"] for w in route.overview_windows(3600)] == [0]
+    assert len(route.overview_windows(3601)) == 2
+    assert len(route.overview_windows(7200)) == 2
+    assert len(route.overview_windows(7201)) == 4
+    assert len(route.overview_windows(18094)) == 4
+    windows = route.overview_windows(21600)
+    assert [(w["owner_start"], w["owner_end"]) for w in windows] == [
+        (0, 5400), (5400, 10800), (10800, 16200), (16200, 21600),
+    ]
+    assert windows[1]["audio_start"] == 4800 and windows[1]["audio_end"] == 11400
+
+
+def _topic(start, end):
+    return route.SelectedClip(start=start, end=end, candidate_id="t", title="t", reason="r", confidence=0.9)
+
+
+def test_cut_moves_to_a_topic_end_and_each_topic_comes_from_its_owner():
+    candidates = [
+        (0, _topic(3000, 3400)), (0, _topic(3450, 3700)),
+        (1, _topic(3460, 3700)), (1, _topic(3800, 4000)),
+    ]
+    kept, cuts = route.owned_topics(candidates, route.overview_windows(7200))
+    assert cuts == [3700]
+    assert [(t.start, t.end) for t in kept] == [(3000, 3400), (3450, 3700), (3800, 4000)]
+
+
+def test_cut_stays_even_when_no_topic_ends_near_it():
+    kept, cuts = route.owned_topics([(0, _topic(100, 200))], route.overview_windows(7200))
+    assert cuts == [3600]
+    assert [(t.start, t.end) for t in kept] == [(100, 200)]
