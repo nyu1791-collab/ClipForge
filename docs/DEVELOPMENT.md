@@ -1,6 +1,8 @@
 # 開発環境の準備
 
-新しい Claude Code / クラウドセッションでは、作業対象のブランチと最新 SHA を確認し、リポジトリ直下で実行する。
+Windows 11 PC の初回導入、WSL2・GitHub・非公開制作データの引き継ぎは [PC_MIGRATION.md](PC_MIGRATION.md)。通常の基本依存はリポジトリ直下の `bash setup.sh` で準備できます。
+
+開発用依存も必要な Claude Code / Codex / クラウドセッションでは、作業対象のブランチと最新 SHA を確認し、リポジトリ直下で実行する。
 
 ```bash
 bash tools/dev_setup.sh

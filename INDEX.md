@@ -7,6 +7,8 @@
 
 ## 構成
 - Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`、lint は `ruff`。
+- 新しい Windows 11 PC（WSL2 / Ubuntu）のセットアップと非公開データの引き継ぎ: `docs/PC_MIGRATION.md`。基本セットアップの入口は `bash setup.sh`。
+- 現行の制作と保存境界: `docs/ARCHITECTURE.md`。旧経路・試作の扱いと整理方針: `docs/REPOSITORY_INVENTORY.md`。
 - 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。Colab 制御のテストは SDK が要る（`tools/dev_setup.sh` が入れる）。
 - 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。
 - 開発環境の準備: `bash tools/dev_setup.sh`／説明: `docs/DEVELOPMENT.md`。
@@ -23,6 +25,7 @@ URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し�
 
 ## src/clipforge
 - 話題・文字起こし・清書: `audio_understanding.py`（工程本体）・`antigravity_client.py`（Antigravity SDK）・`transcribe_pipeline.py`（Transcribe）・`transcribe_trial.py`（試行）・`gemini_audio_editor.py`（音声の仮切り出し）。プロンプトは `src/clipforge/prompts/`。
+- 人による確認: `review_package.py`（確認動画・候補・字幕編集ページ）・`review_local_server.py`（localhost 限定の試作。スマホ向け公開や自動描画は未実装）。
 - 時刻・設定の型: `models.py`／保存・ハッシュ: `storage.py`
 - 取得: `media_sources.py`（振り分けと yt-dlp）・`kick_media.py`（Kick）
 - 段階: `worker_audio.py`（worker での実行と結合）・`editorial_revision.py`（明示修正パッチ）・`release_transfer.py`（Release回収）・`audio_first.py`（旧段階。復旧用）
