@@ -8,6 +8,7 @@
 ## 構成
 - Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`、lint は `ruff`。
 - 新しい Windows 11 PC（WSL2 / Ubuntu）のセットアップと非公開データの引き継ぎ: `docs/PC_MIGRATION.md`。基本セットアップの入口は `bash setup.sh`。
+- 複数のリポジトリを安全に一覧・取得: `docs/PC_MULTIPLE_REPOSITORIES.md` と `tools/prepare_repositories.py`（一覧が既定、取得は `--clone`）。
 - 現行の制作と保存境界: `docs/ARCHITECTURE.md`。旧経路・試作の扱いと整理方針: `docs/REPOSITORY_INVENTORY.md`。
 - 2026-10-29 の移行準備・テスト確認と未解決事項: `docs/REPOSITORY_VERIFICATION_2026-10-29.md`（その時点の記録）。
 - 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。Colab 制御のテストは SDK が要る（`tools/dev_setup.sh` が入れる）。

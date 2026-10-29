@@ -2,7 +2,7 @@
 
 配信の音声から話題別の横動画（16:9）を準備し、人が字幕や内容を確認・承認してから描画する制作パイプラインです。販売・公開は配信者の許可がある素材だけに限ります。
 
-**新しい Windows PC の準備は [PC 引き継ぎ](docs/PC_MIGRATION.md)。** 現在の制作手順は [確認待ち経路](docs/HUMAN_REVIEW_WORKFLOW.md)、接続と再開は [最短手順](docs/QUICK_START.md) から始めます。
+**新しい Windows PC の準備は [PC 引き継ぎ](docs/PC_MIGRATION.md)、複数リポジトリの取得は [複数リポジトリの手順](docs/PC_MULTIPLE_REPOSITORIES.md)。** 現在の制作手順は [確認待ち経路](docs/HUMAN_REVIEW_WORKFLOW.md)、接続と再開は [最短手順](docs/QUICK_START.md) から始めます。
 
 ## 現在の流れ
 
