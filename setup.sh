@@ -5,15 +5,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 usage() {
   cat <<'EOF'
-Usage: bash setup.sh [--dev] [--no-system]
+使い方: bash setup.sh [--dev] [--no-system]
 
-Default: install missing Ubuntu system packages and uv if needed, then install
-the locked runtime dependencies. sudo may ask for your password. Network access
-is required for installation. Nothing is dispatched or authenticated.
-  --dev        Also install the existing development and media dependencies.
-  --no-system  Do not install OS packages; report anything missing instead.
-  -h, --help   Show this message without changing the system.
-See docs/PC_MIGRATION.md for Windows and WSL2 setup.
+Ubuntu の不足パッケージと uv を必要に応じて導入し、固定された Python 依存を入れます。
+ネット接続が必要です。sudo のパスワードを求められる場合があります。
+制作の投入、ログイン、描画は行いません。
+  --dev        開発用とメディア取得用の依存も導入する
+  --no-system  OS パッケージと uv の自動導入をせず、不足時に終了する
+  -h, --help   変更せず、この説明を表示する
+Windows と WSL2 の手順: docs/PC_MIGRATION.md
 EOF
 }
 
@@ -24,12 +24,12 @@ for arg in "$@"; do
     --dev) dev=1 ;;
     --no-system) install_system=0 ;;
     -h|--help) usage; exit 0 ;;
-    *) echo "Unknown option: $arg" >&2; usage >&2; exit 2 ;;
+    *) echo "不明なオプション: $arg" >&2; usage >&2; exit 2 ;;
   esac
 done
 
 if [[ $(uname -s) != Linux ]] || ! command -v apt-get >/dev/null || ! command -v dpkg-query >/dev/null; then
-  echo 'Use Ubuntu on WSL2 or Debian/Ubuntu Linux. See docs/PC_MIGRATION.md.' >&2
+  echo 'Ubuntu on WSL2 または Debian/Ubuntu Linux で実行してください。docs/PC_MIGRATION.md を参照。' >&2
   exit 1
 fi
 
@@ -41,19 +41,19 @@ for package in git curl ca-certificates ffmpeg fontconfig fonts-noto-cjk libcair
 done
 if (( ${#missing[@]} )); then
   if (( ! install_system )); then
-    printf 'Missing OS packages: %s\n' "${missing[*]}" >&2
-    echo 'Install them or run bash setup.sh without --no-system.' >&2
+    printf '不足している OS パッケージ: %s\n' "${missing[*]}" >&2
+    echo 'インストールするか、--no-system を外して再実行してください。' >&2
     exit 1
   fi
   privilege=()
   if (( EUID != 0 )); then
     if ! command -v sudo >/dev/null; then
-      echo 'sudo is required to install missing OS packages.' >&2
+      echo '不足している OS パッケージを導入するには sudo が必要です。' >&2
       exit 1
     fi
     privilege=(sudo)
   fi
-  printf 'Installing missing OS packages: %s\n' "${missing[*]}"
+  printf '不足している OS パッケージをインストールします: %s\n' "${missing[*]}"
   "${privilege[@]}" apt-get update
   "${privilege[@]}" apt-get install -y --no-install-recommends "${missing[@]}"
 fi
@@ -63,18 +63,18 @@ fi
 export PATH="${HOME}/.local/bin:${PATH}"
 if ! command -v uv >/dev/null; then
   if (( ! install_system )); then
-    echo 'uv is missing; install it or run bash setup.sh without --no-system.' >&2
+    echo 'uv がありません。インストールするか、--no-system を外して再実行してください。' >&2
     exit 1
   fi
   installer=$(mktemp "${TMPDIR:-/tmp}/clipforge-uv-installer.XXXXXXXX")
   trap 'rm -f -- "$installer"' EXIT
-  echo 'Installing uv 0.12.23 from astral.sh into ~/.local/bin.'
+  echo '公式 astral.sh から uv 0.12.23 を ~/.local/bin にインストールします。'
   curl --fail --location --silent --show-error \
     https://astral.sh/uv/0.12.23/install.sh -o "$installer"
   UV_INSTALL_DIR="${HOME}/.local/bin" UV_NO_MODIFY_PATH=1 sh "$installer"
 fi
 if ! command -v uv >/dev/null; then
-  echo 'uv installation did not make uv available. See docs/PC_MIGRATION.md.' >&2
+  echo 'uv を使用できません。docs/PC_MIGRATION.md を参照してください。' >&2
   exit 1
 fi
 
@@ -90,9 +90,9 @@ else
   uv sync --locked --no-dev --inexact "${python_option[@]}"
 fi
 
-printf '\nSetup finished. Current code:\n'
+printf '\nセットアップ完了。現在のコード:\n'
 git status --short --branch
 git rev-parse HEAD
-echo 'No model requests, Actions runs, video rendering, tests, or logins were started.'
-echo 'If uv is not found in a new terminal: export PATH="$HOME/.local/bin:$PATH"'
-echo 'GitHub login and existing production data are separate; see docs/PC_MIGRATION.md.'
+echo 'モデル要求・Actions・描画・テスト・ログインは実行していません。'
+echo '新しいターミナルで uv が見つからない場合: export PATH="$HOME/.local/bin:$PATH"'
+echo 'GitHub ログインと既存の制作データは別途必要です。docs/PC_MIGRATION.md を参照。'
