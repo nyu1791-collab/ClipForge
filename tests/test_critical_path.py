@@ -35,16 +35,23 @@ def test_overview_requests_overlap_and_keep_window_order(tmp_path, monkeypatch):
         "encode_audio",
         lambda source, target, *args, **kwargs: target.write_bytes(b"synthetic ogg"),
     )
-    barrier = threading.Barrier(3, timeout=5)
+    duration = 2 * audio_understanding.WINDOW_SECONDS + 120
+    windows = audio_understanding.overview_windows(duration)
+    assert len(windows) == 4
+    barrier = threading.Barrier(4, timeout=5)
     calls = []
 
     def generate(self, phase, prompt, audio=None, research=False):
         calls.append(phase)
         if phase.startswith("topics-"):
             barrier.wait()
+            index = int(phase.rsplit("-", 1)[1])
+            start = windows[index]["owner_start"] - windows[index]["audio_start"] + 700
             return {
                 "audio_access": "heard",
-                "topics": [{"start": 10, "end": 60, "title": phase, "confidence": 1}],
+                "topics": [
+                    {"start": start, "end": start + 50, "title": phase, "confidence": 1}
+                ],
             }, {}
         assert research
         return {"terms": []}, {}
@@ -54,6 +61,7 @@ def test_overview_requests_overlap_and_keep_window_order(tmp_path, monkeypatch):
 
     monkeypatch.setattr(audio_understanding.Client, "generate", generate)
     from clipforge import transcribe_pipeline
+
     monkeypatch.setattr(transcribe_pipeline, "transcribe_clip", selected_transcribe)
     output = tmp_path / "out"
     audio_understanding.plan(
@@ -66,6 +74,7 @@ def test_overview_requests_overlap_and_keep_window_order(tmp_path, monkeypatch):
         "topics-0",
         "topics-1",
         "topics-2",
+        "topics-3",
     ]
     selected = json.loads((output / "final-selection.json").read_text())
     assert [clip["title"] for clip in selected["clips"]] == [
@@ -116,11 +125,15 @@ def test_unverified_existing_overview_stops_before_any_request(
 @pytest.mark.parametrize(
     "profile,height,config",
     [
-        ([], 360, "config.landscape-long-preview.example.json"),
+        (
+            ["--render-profile", "preview"],
+            360,
+            "config.landscape-long-preview.example.json",
+        ),
         (["--render-profile", "standard"], 720, "config.landscape-long.example.json"),
     ],
 )
-def test_new_production_defaults_to_360p_without_changing_explicit_profiles(
+def test_new_production_preserves_explicit_profiles(
     tmp_path, monkeypatch, profile, height, config
 ):
     monkeypatch.syspath_prepend(
@@ -148,6 +161,8 @@ def test_new_production_defaults_to_360p_without_changing_explicit_profiles(
             str(tmp_path / "new"),
             "--source-ref",
             "a" * 40,
+            "--clips",
+            "5",
             *profile,
         ],
     )
@@ -158,6 +173,8 @@ def test_new_production_defaults_to_360p_without_changing_explicit_profiles(
     assert state["source_height_limit"] == 360
     assert state["config_file"] == config
     assert sent[0]["inputs"]["config_file"] == config
+    assert sent[0]["inputs"]["auto_render"] is False
+    assert sent[0]["inputs"]["review_approved"] is False
 
 
 def test_resume_retains_existing_720p_setting_without_dispatch(tmp_path, monkeypatch):

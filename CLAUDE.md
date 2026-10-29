@@ -21,11 +21,15 @@
 - テストやログの出力は `tail`・`grep` で失敗箇所だけを見る。再実行は `pytest tests/test_x.py::test_name` のように絞る。
 - 決まったことを読み直したり、言い直したりしない。
 
-## 検証
+## 検証（依頼されたときだけ）
+- 検証（テスト・lint）は利用者が依頼したときだけ行う（AGENTS.md）。依頼されたら次の順で進める。
 - 準備: `bash tools/dev_setup.sh`（依存・FFmpeg・日本語フォント。詳細は [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)）。新しい環境では検証の前に実行する。
 - テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`（`pytest` 直呼びでは `tools` を import できず1件落ちる）。
 - 順序は、変更モジュールのテスト → 全単体テスト → `ruff check .` と変更ファイルの `ruff format --check`。
 - 変更前にベースラインを取り、失敗が既存か新規かを区別する。
+
+## スキル
+- 導入・候補・置き場所は [docs/SKILLS.md](docs/SKILLS.md)（規則は AGENTS.md の「スキル」）。追加したスキルは、新しいセッションで読み込まれるかを確かめる。
 
 ## 判断の無駄を省く
 - 規則や許可で決まっていることは尋ねない。選択肢を並べず、推奨を1つ決めて進める。

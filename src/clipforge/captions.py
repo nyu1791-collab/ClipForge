@@ -618,7 +618,7 @@ def _caption_groups(
             )
             * 1000
         ),
-        max_tail_ms=1500 if settings.caption_preserve_text else None,
+        max_tail_ms=500 if settings.caption_preserve_text else None,
     )
     return groups, spans, plain_lines, cleanup, approximate
 
@@ -820,7 +820,7 @@ def create(transcript, clip, directory, settings, lifts=None, speaker_turns=None
         "asr_cleanup": cleanup,
         "display_targets": {
             "minimum_seconds": 0.8 if settings.caption_preserve_text else None,
-            "max_silence_tail_seconds": 1.5 if settings.caption_preserve_text else None,
+            "max_silence_tail_seconds": 0.5 if settings.caption_preserve_text else None,
             "enforced_as_quality_gate": False,
         },
         "visual_reference_samples": visual_reference_samples(subtitles),

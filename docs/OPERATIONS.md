@@ -1,87 +1,46 @@
-# 回収・再開・後始末・権限
+# 回収・再開・後始末・権限（現行）
 
-現行の接続・制作・再接続は [QUICK_START.md](QUICK_START.md)、修正/完成クリップ再利用/納品だけの操作は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。通常入口は `tools/produce_with_gemini.py`。切断後は `--resume --output DIR` で保存済み依頼へ戻る。
+通常の入口は `tools/produce_with_gemini.py`。接続・制作・再接続の手順は [QUICK_START.md](QUICK_START.md)、修正・完成クリップの再利用・納品だけの操作は [PRODUCTION_AND_REVISION.md](PRODUCTION_AND_REVISION.md)。
 
-実行先は公開ClipForge、制作データは非公開ai-model-workersのReleaseに保存する。公開Artifactへ媒体を出さず、回収時の全量品質監査・映像再走査・音量再測定は行わない。素材/依頼/保存先の同一性は維持する。
+## 実行先と保存
 
-以下は旧ASR・候補プレビュー成果物を明示的に復旧するための記録。現行の通常制作へ重ねない。
+- 実行先は公開 ClipForge（コードと Actions）。制作データは非公開 `nyu1791-collab/ai-model-workers` の Release に保存する。
+- 公開 Artifacts へ音声・動画・字幕・モデル応答を出さない。
+- workflow は `workflow_dispatch` で起動する。通常の push や PR では制作は始まらない。自動マージはしない。
+- `deploy/` の workflow は配布用の原本で、公開 Actions の定義と揃えて管理する。
 
-## 旧経路の運用記録
+## Secrets と変数
 
+- `CLIPFORGE_PAT`: 公開 ClipForge の Actions から非公開保存庫の Contents を読み書きする。
+- `COLAB_ADC_JSON`: 指定ユーザーの Colab 自動起動用。初回設定は [COLAB.md](COLAB.md)。
+- `YOUTUBE_COOKIES_B64`（任意）: YouTube の取得に使う Cookie。音声取得と描画時の映像取得にだけ渡し、文字起こしと清書には渡さない。
+- `GOOGLE_DRIVE_ADC_JSON`: Drive 納品を指定したときだけ必要。[TARGET_DRIVE.md](TARGET_DRIVE.md)。
+- 変数 `CLIPFORGE_VERTEX_PROJECT_NUMBER`: Vertex の Workload Identity 用（[VERTEX_GEMINI.md](VERTEX_GEMINI.md)）。
+- Secrets は必要なステップにだけ渡す。値は文書・チャット・Git・公開 Artifacts に出さない。
 
-## リポジトリと権限
+## 待機と上限
 
-公開 ClipForge はコードの保存先。動画・音声・文字起こし・成果物は非公開 worker（`nyu1791-collab/ai-model-workers`）で扱う。workflow の原本は `deploy/` にあり、worker の `.github/workflows/` に置く（`clipforge.yml`・`clipforge-stages.yml`・`colab-usage.yml`）。公開側の `Quality` は検査とテスト、`Build package` は wheel の作成だけで、動画は扱わない。
+- 制作の監視は `--timeout` 秒（既定 7200 秒）を上限に待つ。超えた場合は `monitoring_paused` として記録し、遠隔の制作失敗とは区別する。Run は止めない。
+- 描画は render-only の 1 Run につき 1 つの Colab runtime を使い、Run の中では選んだクリップを順に描画する。並列化は clip_index 別の Run と merge Run（`dispatch_parallel_render.py`）で行う。
+- 同じ制作内の GPU 枠は最大 5。
 
-通常の `GITHUB_TOKEN` による push や PR 作成では別の workflow は起動しない。必要な処理は `workflow_dispatch` で起動する。workflow からの自動マージはしない。
+## 再開と回収
 
-## Secrets（worker）
+- 切断後は `--resume --output DIR`。保存済みの依頼 ID と Run ID を照合して、監視と回収だけを続ける。新しい投入はしない。
+- 完成クリップは `tools/collect_production_clip.py --clip N` で、全体が終わる前でも 1 本ずつ回収できる。
+- 制作の状態は `production-state.json`、修正版の状態は `revision-state.json`、音声理解の受領記録は `audio-editor-receipt.json` に残る。
 
-- `COLAB_ADC_JSON`：指定ユーザーの Colab 自動起動用。初回設定は [COLAB.md](COLAB.md)。
-- `YOUTUBE_COOKIES_B64`：YouTube の取得に使う Cookie（任意）。音声取得と描画時の映像取得にだけ渡し、文字起こしのランタイムには渡さない（[AUDIO_FIRST.md](AUDIO_FIRST.md#youtube-の-cookie)）。
+## 失敗したとき
 
-Secrets は必要なステップにだけ渡す。値を文書・チャット・Git・公開 Artifacts へ含めない。制御VM側は、所有者でログイン済みの `gh` を使う。
+- 失敗した Run は自動で再投入しない。段階とエラー種別を確かめ、必要なら同じ依頼を利用者が明示してから再開する。
+- 描画のエラー詳細は、取得できた場合だけ作業出力の `diagnostics/render/` に保存する（URL と認証情報は伏せる）。
+- モデルの拒否・割り当て超過・認証の拒否を、別アカウントや別サービスで回避しない。
 
-## 実行の上限と同時実行
+## 非公開 Release の回収
 
-- 解析の run は全体180分（音声取得30分、文字起こしと話題分け140分）。描画の job は1本あたり100分。
-- 解析は1件ずつ（workflow の concurrency と `submit_job.py` の確認）。1件の解析が最大4台の Colab を使う。
-- 通常描画は1件の依頼・1台のGPUで最大5本をまとめて処理する。完成バッチは--collectで回収する。--clip-indexは1本だけの修正用。
-- 待機の上限は実行上限とは別で、既定18,000秒（5時間）。`--wait-timeout SECONDS` で変えられる。
-- 配信長は横用設定で6時間、設定で最大12時間。
+- 現在の `read_transfer` と Release の `download` は、`gh api` でタグを解決し、asset ID を指定した REST 経路で取得する。Release の記録されたサイズと、必要に応じてハッシュ・transfer 内容を照合する。
+- 過去に `gh release download` の GraphQL 403 で回収に失敗した事例がある。失敗表示だけから Release の有無や状態を決めつけず、認証と対象 Run の記録を確認する。別アカウントで拒否を回避しない。
 
-## データの経路と保管
+## 旧経路の運用
 
-1. 解析の依頼は設定と URL を `workflow_dispatch` の入力で渡し、ファイルは送らない。
-2. runner が音声を取得し、長さ・サイズ・SHA-256 を確かめる。部分の音声だけを部分ごとの一時 Release に置く。
-3. Colab は部分の音声を受け取り、認識結果をチェックサム付きで同じ Release に返す。
-4. 音声・文字起こし・話題・候補映像・クリップは非公開 Artifacts に7日保存し、回収時に検証する。
-5. 一時 Release とタグは終了時に消す。消せなかったときは run の警告と Summary に出る。回収時にも残りを確かめ、依頼記録の `input_cleanup` に `DELETED`・`REMAINS`・`UNKNOWN` を記録する。`REMAINS` なら `tools/submit_job.py --cleanup-tag <タグ>` で消す。
-
-## 結果の回収と再開
-
-依頼記録は `~/.local/state/clipforge/<request_id>/receipt.json`。`STAGING`・`DISPATCHED`・`RUNNING`・`COMPLETE`・`FAILED`・`UNCONFIRMED` などを区別する。dispatch の応答が不明なときは自動で再送せず、同じ依頼 ID の workflow を確かめる。
-
-`--wait` を使わなかった場合や、SSH が切れた・待機の上限に達した場合も、run を再投入せずに状態の確認と回収を続ける。
-
-```bash
-python tools/submit_job.py --status REQUEST_ID
-python tools/submit_job.py --collect REQUEST_ID --output /private/result-NEW
-python tools/submit_audio_stage.py --collect REQUEST_ID --output /private/stage-NEW
-```
-
-回収は新しい出力先へ行い、依頼 ID・元コミット SHA・前段 run・manifest・各ファイルの SHA-256 を検査する。Actions の成功は、人による内容・字幕の確認とは別。
-
-### 受付票が無い環境での解析の回収
-
-期待値を明示し、成功 run・依頼 ID・元コミット・音声 SHA-256・文字起こし・話題・manifest を検査する。手元の記録は書かない。
-
-```bash
-python tools/submit_job.py --collect REQUEST_ID --run-id RUN_ID \
-  --source-ref REVIEWED_COMMIT_SHA --audio-sha256 AUDIO_SHA256 --output /private/analysis-NEW
-```
-
-`--auto-previews` の途中の解析だけを回収する `--collect-stage analysis` と、部分失敗の状態は [AUDIO_FIRST.md](AUDIO_FIRST.md#候補映像の段が失敗したとき) を参照する。
-
-### 取得済み音声の再利用
-
-同じ配信をもう一度解析するとき（設定やコードを変えたときなど）は、前の run が残した検証済みの音声を再利用でき、取得の2〜5分を省ける。
-
-```bash
-python tools/submit_job.py --audio-analysis-url 'URL' --ref "$SHA" \
-  --reuse-audio-run RUN_ID --reuse-audio-request REQUEST_ID --auto-previews --output /private/NAME-previews
-```
-
-### 失敗したとき
-
-失敗した run は自動で再試行しない。部分の結果は `clipforge-partial-REQUEST_ID` artifact に7日残る（[ASR.md](ASR.md#失敗したとき)）。新しい依頼が必要なら、同じ配信・設定・コードで投入する。モデルの拒否や割り当て超過を、別アカウント・別サービスで回避しない。
-
-## 個別修正したpartの結合（通常バッチは--collectで回収）
-
-```bash
-python tools/submit_audio_stage.py --stage merge --local \
-  --part-runs RUN1:REQUEST1,RUN2:REQUEST2,RUN3:REQUEST3 \
-  --source-ref RENDER_SOURCE_SHA --output /private/merged-NEW
-```
-
-描画に使ったコミット（`--source-ref` と同じ SHA）を制御VMでチェックアウトした作業ツリーで実行する（例：`git worktree add --detach /tmp/merge-SHA SHA`）。手元のコードが違うと `local merge code differs from source_ref` で止まる。各 run の成功・依頼 ID を確かめ、artifact を一度取得して検証・コピーする。FFmpeg・フォントは使わない。receipt の `workflow_run` は `"local"` になる。
+- 旧の投入と回収（`submit_job.py`・`submit_audio_stage.py`）と全編 ASR の部分結果は、[ASR.md](ASR.md) と [AUDIO_FIRST.md](AUDIO_FIRST.md) の復旧用。現行の制作には使わない。

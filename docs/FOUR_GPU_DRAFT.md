@@ -1,3 +1,5 @@
+> 旧下書き（4 GPU 並列化の検討）。現行の並列描画は GPU 枠 5 本（`src/clipforge/gpu_slots.py`）と `tools/dispatch_parallel_render.py` を参照。この記録は更新しない。
+
 # 4 GPU並列化の実装と未検証事項
 
 この変更は静的なコード確認のみで、テスト・実GPUでの検証・実制作での速度測定は行っていない。

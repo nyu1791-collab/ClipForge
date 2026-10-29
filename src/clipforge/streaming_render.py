@@ -12,7 +12,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .github_cli import run as gh
-from .gpu_slots import gpu_slot
+from .gpu_slots import SLOT_COUNT, gpu_slot
 from .release_transfer import private_repo, release
 from .storage import PipelineError, write_json
 
@@ -47,7 +47,7 @@ class StreamingRenderer:
         self.source_ref = os.environ["CLIPFORGE_SOURCE_REF"]
         self.run_id = os.environ["GITHUB_RUN_ID"]
         self.control_python = os.environ["CLIPFORGE_COLAB_CONTROL_PYTHON"]
-        self.worker_count = min(4, len(clips))
+        self.worker_count = min(SLOT_COUNT, len(clips))
         self.control_root = Path(os.environ["RUNNER_TEMP"]) / "parallel-selected-render"
         self.control_root.mkdir(mode=0o700, exist_ok=True)
         self.state_path = output / "streaming-render-state.json"

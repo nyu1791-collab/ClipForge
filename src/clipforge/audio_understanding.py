@@ -2,31 +2,26 @@
 
 import argparse
 import hashlib
-import http.client
 import json
 import math
 import os
 import random
 import shutil
-import socket
 import subprocess
 import tempfile
 from pathlib import Path
 import time
-import urllib.error
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, RLock
 
 from . import asr, audio_first, pipeline
+from .antigravity_client import AntigravityError, generate_text
 from .caption_emotions import annotation
 from .gemini_audio_editor import (
-    PROJECT,
     MAX_REQUEST_BYTES,
     audio_part,
     encode_audio,
     extract_json_object,
-    collect_sse_response,
 )
 from .media_sources import canonical, open_source
 from .models import Settings, Transcript, Segment, SelectedClip
@@ -35,9 +30,9 @@ from .speaker_captions import SPEAKER_COLORS, validate_turns
 from .storage import PipelineError, fingerprint, write_json
 from .storage import digest
 from .word_timing import preserve_word_timing
-from .terminology import RESEARCH_INSTRUCTIONS, grounded_terms
 
 WINDOW_SECONDS = 5400
+OVERVIEW_MARGIN_SECONDS = 600
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 EDITORIAL_RULES_FILE = PROMPT_DIR / "gemini_editorial_rulebook_ja.md"
 SUBTITLE_POLICY = "meaning_preserving_cleanup_v1"
@@ -173,21 +168,15 @@ class Client:
         # --continue-missing generate with the new instructions without colliding
         # with an already completed response from an older prompt.
         phase_base = phase
-        model = (
-            "gemini-3.5-flash"
-            if research or phase_base.startswith("transcript-")
-            else "gemini-3.8-flash"
-        )
-        thinking_level = "MINIMAL" if research else "MEDIUM"
-        # The model is part of a subtitle response's identity: an earlier 3.8
-        # response must not be reported as a 3.5 result even for the same text.
-        phase_hash = (
-            hashlib.sha256(
-                f"{prompt_sha256}:{model}:{thinking_level}:{audio_source_key or json.dumps(audio_identity, sort_keys=True, ensure_ascii=False)}".encode()
-            ).hexdigest()
-            if phase_base.startswith("transcript-")
-            else prompt_sha256
-        )
+        # Topic selection and proofreading both use 3.8 Flash at HIGH; only the
+        # terminology research uses 3.5 Flash at MINIMAL.
+        model = "gemini-3.5-flash" if research else "gemini-3.8-flash"
+        thinking_level = "MINIMAL" if research else "HIGH"
+        # All stages bind saved responses to model and reasoning settings. A
+        # MEDIUM topic result must not be silently reused as a HIGH result.
+        phase_hash = hashlib.sha256(
+            f"{prompt_sha256}:{model}:{thinking_level}:{audio_source_key or json.dumps(audio_identity, sort_keys=True, ensure_ascii=False)}".encode()
+        ).hexdigest()
         phase = f"{phase}-{phase_hash[:10]}"
         print(
             json.dumps({"phase": phase, "status": "checking_saved_response"}),
@@ -285,45 +274,29 @@ class Client:
                 self.record["requests"].extend(prior_attempts)
             self.save()
         print(json.dumps({"phase": phase, "status": "new_request"}), flush=True)
-        token = self.vertex_token()
         prompt_path = self.output / (phase + ".prompt.txt")
         prompt_path.write_text(complete_prompt, encoding="utf-8")
         parts = [{"text": user_prompt}]
         for label, audio_path in audio_items:
             parts.append({"text": f"\n\n音声パート「{label}」:"})
             parts.append(audio_part(Path(audio_path)))
-        body = {
-            "contents": [{"role": "user", "parts": parts}],
-            "generationConfig": {
-                "thinkingConfig": {"thinkingLevel": thinking_level},
-                "maxOutputTokens": 8192 if research else 65536,
-            },
-        }
-        if rule_text:
-            body["systemInstruction"] = {
-                "role": "system",
-                "parts": [{"text": rule_text}],
-            }
-        if research:
-            body["tools"] = [{"googleSearch": {}}]
-        data = json.dumps(body, ensure_ascii=False).encode()
-        if len(data) > MAX_REQUEST_BYTES:
+        size = sum(len(part["text"].encode()) for part in parts if "text" in part) + sum(
+            len(part["inlineData"]["data"]) for part in parts if "inlineData" in part
+        )
+        if size > MAX_REQUEST_BYTES:
             raise PipelineError("Bounded Gemini input exceeded")
         last_attempt = len(prior_attempts) + MAX_MODEL_ATTEMPTS
         for attempt in range(len(prior_attempts) + 1, last_attempt + 1):
             try:
-                return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt)
-            except urllib.error.HTTPError as error:
-                retryable = error.code == 429 or 500 <= error.code <= 599
-                if not retryable or attempt >= last_attempt:
-                    raise
-            except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionError, TimeoutError, socket.timeout):
-                if attempt >= last_attempt:
+                return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, parts, research, attempt)
+            except AntigravityError as error:
+                if not error.retryable or attempt >= last_attempt:
                     raise
             print(json.dumps({"phase": phase, "status": "retrying", "next_attempt": attempt + 1}), flush=True)
-            time.sleep((15 if attempt == len(prior_attempts) + 1 else 45) + random.uniform(0, 5))
+            # The same spacing as Transcribe: 30 s, then 90 s, with a little jitter.
+            time.sleep((30 if attempt == len(prior_attempts) + 1 else 90) + random.uniform(0, 5))
 
-    def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt):
+    def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, parts, research, attempt):
         row = LockedRequest(
             self._lock,
             {
@@ -355,53 +328,34 @@ class Client:
             self.save()
         tick = time.monotonic()
         try:
-            endpoint = f"https://aiplatform.googleapis.com/v1/projects/{PROJECT}/locations/global/publishers/google/models/{model}:"
-            endpoint += (
-                "generateContent" if research else "streamGenerateContent?alt=sse"
+            text = generate_text(
+                model,
+                thinking_level,
+                rule_text,
+                parts,
+                research=research,
+                max_tokens=8192 if research else 65536,
             )
-            req = urllib.request.Request(
-                endpoint,
-                data=data,
-                headers={
-                    "Authorization": "Bearer " + token,
-                    "Content-Type": "application/json",
-                },
-            )
-            with urllib.request.urlopen(req, timeout=1800) as response:
-                if research:
-                    result = json.loads(response.read())
-                    candidate = result["candidates"][0]
-                    text = "".join(
-                        p.get("text", "")
-                        for p in candidate.get("content", {}).get("parts", [])
-                        if not p.get("thought")
-                    )
-                else:
-                    result, text, _, _ = collect_sse_response(
-                        response, self.output / (phase + f".attempt-{attempt}.sse.txt"), row, self.save
-                    )
-                    candidate = result["candidates"][0]
+            # The SDK returns text only after the turn completed. Saved-response reuse
+            # requires STOP; the source is kept separate because the SDK reports no
+            # token-limit reason.
             row.update(
-                finish_reason=candidate.get("finishReason"),
-                usage=result.get("usageMetadata", {}),
-                grounding=candidate.get("groundingMetadata", {}),
+                finish_reason="STOP",
+                finish_reason_source="antigravity_turn_completed",
+                usage={"status": "not_reported_by_antigravity_sdk"},
+                grounding={"status": "not_reported_by_antigravity_sdk"} if research else {},
+                transport="antigravity_sdk_vertex",
             )
             (self.output / (phase + ".raw.txt")).write_text(text)
-            if row["finish_reason"] != "STOP":
-                raise PipelineError("Incomplete Gemini response; not retried")
             value = extract_json_object(text)
             if not isinstance(value, dict):
                 raise PipelineError("Expected JSON object")
             write_json(self.output / (phase + ".json"), value)
             row["status"] = "received"
             return value, row["grounding"]
-        except urllib.error.HTTPError as error:
-            from .http_diagnostics import capture_http_error
-
+        except AntigravityError as error:
             row["status"] = "failed"
-            row.update(
-                capture_http_error(error, self.output / (phase + f".attempt-{attempt}.http-error.json"))
-            )
+            row["error_class"] = "retryable" if error.retryable else "non_retryable"
             raise
         except Exception:
             row["status"] = "failed"
@@ -632,17 +586,19 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         return {
             "transcript_access": "available",
             "segments": [],
+            "review_hints": [],
+            "review_hints_status": "no_speech_recognized",
             "sound_effects": [],
             "finishing": {"status": "no_speech_recognized", "model_requests": 0},
         }
     numbered = [
-        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"],
+        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"], "speaker_label": row.get("speaker"),
          **({"gap_recovery": True} if row.get("gap_recovery") else {})}
         for index, row in enumerate(source, 1)
     ]
     request = {
         "subtitle_policy": SUBTITLE_POLICY,
-        "task": "添付音声はこの採用区間の先頭を0秒とする。文字起こしと時刻を原音で照合し、要約せず整文し、声を聞き分けられる発話だけ匿名の話者IDを付ける。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
+        "task": "添付音声はこの採用区間の先頭を0秒とする。入力文の誤字脱字と明らかな誤認識だけを、音声と照合して直す。言い淀み・相槌・反復は削除せず、要約もしない。話者判定はしないので speaker_assignments は空配列で返す。効果音は出さないので sound_effects は空配列で返す。新たに全文を書き起こさず、曖昧な語は原文を保持する。開始・終了時刻は元IDからコードが引き継ぐ。",
         "topic_context": {"title": clip.title, "reason": clip.reason},
         "glossary": glossary,
         "source_segments": numbered,
@@ -654,26 +610,13 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                     "text": "元の発言を保持した整文後の字幕",
                     "omit_filler": False,
                     "omit_non_speech": False,
-                    "speaker_id": "speaker_1 から speaker_6、または unknown",
-                    "confidence": "声に基づく話者判定の確信度0から1",
                 }
             ],
-            "speaker_assignments": [
-                {
-                    "source_id": 1,
-                    "speaker_id": "speaker_1 から speaker_6、または unknown",
-                    "confidence": "声に基づく話者判定の確信度0から1",
-                }
-            ],
-            "sound_effects": [
-                {
-                    "at": "元の字幕時刻に基づく秒数",
-                    "kind": "soft_pop / light_chime / transition_tick",
-                    "reason": "入力文に根拠がある理由",
-                }
-            ],
+            "speaker_assignments": [],
+            "review_hints": [{"source_ids": [1], "category": "speaker_overlap / speaker_uncertain / word_uncertain / other", "reason": "人が確認する理由を短く"}],
+            "sound_effects": [],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。声の特徴を区間全体で比較し、各元IDについてspeaker_assignmentsを別に返す。短い声も前後の同じ声と比較し、音声だけで識別できる場合はIDを付ける。同じ話者と確認できない複数の発話を結合しない。声が重なる、1つの元IDに複数の声が混じる、区別できない場合はunknown。文脈だけで話者を決めず、名前や役割を推定しない。同じ声に同じIDを付け、IDはクリップ内の出現順とする。時刻を推測して分割しない。感情はneutral。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。話者判定はしない。speaker_assignmentsは空配列で返す。同じ話者と確認できない発話を結合しない。名前や役割を推定しない。時刻を推測して分割しない。感情はneutral。review_hintsには音声と文字起こしを見て、複数の声の重なり、話者の切替が曖昧、聞き取りや修正が不確かな箇所など、人が確認すると役立つ候補だけを元IDと短い理由で挙げる。speaker_labelは文字起こしの推定ラベルであり人物を特定しない。各行を機械的に挙げず、該当箇所がなければ空配列。モデルが秒数や別人の名前を作らない。候補は字幕を変更せず、確認済みとも扱わない。",
         "gap_recovery_rules": "gap_recoveryがtrueの行は空白部分を再認識した候補です。原音に発話や意味のある声がなく非発話の誤認識だけと明確な場合は、その候補だけでsource_idsを作り、textを空、omit_non_speechをtrueにします。不確かなら保持し、他の発言と混ぜません。",
     }
     value, _ = client.generate(
@@ -683,30 +626,43 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
     if value.get("audio_access") != "heard":
         raise PipelineError("Selected audio was not available to Gemini; not retried")
 
+    hint_rows = value.get("review_hints")
+    review_hints = []
+    if isinstance(hint_rows, list):
+        for hint in hint_rows[:100]:
+            if not isinstance(hint, dict):
+                continue
+            ids = hint.get("source_ids")
+            category, reason = hint.get("category"), hint.get("reason")
+            if (not isinstance(ids, list) or not ids or len(ids) > 100
+                or any(type(i) is not int or not 1 <= i <= len(source) for i in ids)
+                or len(ids) != len(set(ids))
+                or not isinstance(category, str)
+                or category not in {"speaker_overlap", "speaker_uncertain", "word_uncertain", "other"}
+                or not isinstance(reason, str) or not reason.strip()):
+                continue
+            review_hints.append({"source_ids": sorted(ids), "category": category, "reason": reason.strip()[:200]})
+    hints_status = ("not_returned" if not isinstance(hint_rows, list) else
+                    "available" if len(review_hints) == len(hint_rows) else "partial")
+
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.
+    # Speakers are Transcribe's own labels, numbered by first appearance in this
+    # clip. A missing label, or one beyond the palette, stays unknown.
     assignments = {}
-    ambiguous = set()
-    assignment_rows = value.get("speaker_assignments", [])
-    if isinstance(assignment_rows, list):
-        for item in assignment_rows:
-            if not isinstance(item, dict):
-                continue
-            sid = item.get("source_id")
-            if isinstance(sid, str) and sid.isascii() and sid.isdigit():
-                sid = int(sid)
-            if type(sid) is not int or not 1 <= sid <= len(source):
-                continue
-            if sid in assignments:
-                ambiguous.add(sid)
-                continue
-            speaker, confidence = item.get("speaker_id"), item.get("confidence")
-            certain = (isinstance(speaker, str) and speaker in SPEAKER_COLORS
-                       and type(confidence) in (int, float) and math.isfinite(confidence)
-                       and 0.8 <= confidence <= 1)
-            assignments[sid] = (speaker, confidence) if certain else ("unknown", 0)
-    for sid in ambiguous:
-        assignments[sid] = ("unknown", 0)
+    numbered_labels = {}
+    for index, row in enumerate(source, 1):
+        label = row.get("speaker")
+        if label is None or (
+            label not in numbered_labels and len(numbered_labels) == len(SPEAKER_COLORS)
+        ):
+            assignments[index] = ("unknown", 0)
+            continue
+        if label not in numbered_labels:
+            numbered_labels[label] = f"speaker_{len(numbered_labels) + 1}"
+        assignments[index] = (numbered_labels[label], 1.0)
+    # Sound effects are not part of this route.
+    value["sound_effects"] = []
     replacements, consumed = {}, set()
     candidates = value.get("segments", [])
     if not isinstance(candidates, list):
@@ -773,6 +729,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 "start": spans[0]["start"],
                 "end": spans[-1]["end"],
                 "text": text,
+                "source_ids": ids,
                 "words": preserved_words,
                 "speaker_id": speaker if certain else "unknown",
                 "confidence": confidence if certain else 0,
@@ -795,6 +752,7 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                     "start": row["start"],
                     "end": row["end"],
                     "text": row["text"],
+                    "source_ids": [index],
                     "words": row.get("words", []),
                     "speaker_id": speaker,
                     "confidence": confidence,
@@ -806,6 +764,8 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
     return {
         "transcript_access": "available",
         "segments": segments,
+        "review_hints": review_hints,
+        "review_hints_status": hints_status,
         "sound_effects": prepare_cues(value.get("sound_effects", []), duration),
         "finishing": {"status": "gpu_timestamps_preserved", "model_requests": 1, "audio_access": value.get("audio_access", "unavailable")},
     }
@@ -859,15 +819,8 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
 
 def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
     """Start one transcription per topic; finish each ready topic independently."""
-    from .transcribe_pipeline import transcribe_clip, recover_active_gaps
+    from .transcribe_pipeline import transcribe_clip
     from .streaming_render import StreamingRenderer
-    from .gap_diagnostics import describe_gaps
-
-    def advisory_gaps(path, duration, segments):
-        try:
-            return describe_gaps(path, duration, segments)
-        except Exception:
-            return {"status": "unavailable", "reason": "level_analysis_failed", "gaps": []}
 
     if resume:
         saved_receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
@@ -888,14 +841,10 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
                 encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
                 key = fingerprint({"source_audio_sha256": identity["audio_sha256"], "start": clip.start,
                                    "end": clip.end, "encoding": "ogg-opus-16000hz-mono-24k-voip-v1"})
-                levels = advisory_gaps(selected_audio, clip.end - clip.start, raw["segments"])
-                write_json(output / f"transcribe-gap-levels-{index:03}.json", levels)
-                raw, recovery = recover_active_gaps(client, audio, clip, index, identity["audio_sha256"], raw, levels)
-                write_json(output / f"transcribe-gap-recovery-{index:03}.json", recovery)
-                write_json(output / f"transcribe-selected-{index:03}.json", raw)
                 value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
             value["finishing"]["status"] = "transcribe_timestamps_preserved"
             value["finishing"]["timestamp_source"] = "gemini_transcribe"
+            write_json(output / f"review-source-{index:03}.json", {"segments": value["segments"], "review_hints": value.get("review_hints", []), "review_hints_status": value.get("review_hints_status", "not_returned")})
             if renderer is not None:
                 transcript, turns = selected_transcript(value, clip.end - clip.start)
                 renderer.enqueue(index, {"transcript": transcript.model_dump(), "turns": turns,
@@ -933,12 +882,29 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
     if not __import__("re").fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
         raise PipelineError("Saved editorial identity is required for source verification")
     private_repo()
-    windows = sorted({int((clip.start + 5) // WINDOW_SECONDS) for clip in clips})
     with tempfile.TemporaryDirectory(prefix="clipforge-source-match-") as temporary:
         ref_dir = Path(temporary)
+        gh("release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers",
+           "--pattern", "audio-editor-receipt.json", "--dir", str(ref_dir))
+        saved = json.loads((ref_dir / "audio-editor-receipt.json").read_text())
+        saved_windows = (saved.get("overview_plan") or {}).get("windows")
+        if not saved_windows:
+            # Receipts from before the agent split used a fixed grid of windows.
+            saved_windows = [
+                {"index": k, "audio_start": k * WINDOW_SECONDS, "audio_end": (k + 1) * WINDOW_SECONDS}
+                for k in range(math.ceil(saved["duration"] / WINDOW_SECONDS))
+            ]
+
+        def window_for(position):
+            for window in saved_windows:
+                if window["audio_start"] <= position < window["audio_end"]:
+                    return window
+            raise PipelineError("Saved topic lies outside the overview windows")
+
+        needed = sorted({window_for(clip.start + 5)["index"] for clip in clips})
         arguments = ["release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers"]
-        for window in windows:
-            arguments.extend(["--pattern", f"overview-{window}.ogg"])
+        for index in needed:
+            arguments.extend(["--pattern", f"overview-{index}.ogg"])
         gh(*arguments, "--dir", str(ref_dir))
 
         def decode(path, start):
@@ -954,8 +920,8 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
         matches = []
         for clip in clips:
             position = clip.start + 5
-            window = int(position // WINDOW_SECONDS)
-            original = decode(ref_dir / f"overview-{window}.ogg", position - window * WINDOW_SECONDS)
+            window = window_for(position)
+            original = decode(ref_dir / f"overview-{window['index']}.ogg", position - window["audio_start"])
             current = decode(audio, position)
             size = min(len(original), len(current))
             if size < 8 * 8000:
@@ -1029,6 +995,48 @@ def reprocess_saved(audio, url, output, settings, resume):
         client.save()
 
 
+def overview_windows(duration):
+    """One overview agent up to 1 h, two up to 2 h, otherwise four.
+
+    Owner ranges split the recording evenly. Each audio window reaches
+    OVERVIEW_MARGIN_SECONDS past its owner, so the agent that owns a topic near a
+    cut hears that topic whole.
+    """
+    count = 1 if duration <= 3600 else 2 if duration <= 7200 else 4
+    windows = []
+    for index in range(count):
+        owner_start = duration * index / count
+        owner_end = duration * (index + 1) / count
+        windows.append({
+            "index": index,
+            "owner_start": owner_start,
+            "owner_end": owner_end,
+            "audio_start": max(0.0, owner_start - OVERVIEW_MARGIN_SECONDS),
+            "audio_end": min(duration, owner_end + OVERVIEW_MARGIN_SECONDS),
+        })
+    return windows
+
+
+def owned_topics(candidates, windows):
+    """Keep each topic from the agent that owns its midpoint.
+
+    Each cut moves to the nearest topic end within the margin, so no topic is cut.
+    A cut with no topic end nearby stays at the even split.
+    """
+    cuts = []
+    for window in windows[:-1]:
+        nominal = window["owner_end"]
+        ends = [topic.end for _, topic in candidates
+                if abs(topic.end - nominal) <= OVERVIEW_MARGIN_SECONDS]
+        cuts.append(min(ends, key=lambda end: abs(end - nominal)) if ends else nominal)
+    kept = []
+    for index, topic in candidates:
+        middle = (topic.start + topic.end) / 2
+        if sum(1 for cut in cuts if middle >= cut) == index:
+            kept.append(topic)
+    return kept, cuts
+
+
 def plan(audio, url, output, settings, resume=None, continue_missing=False, transcribe_trial=False):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -1037,7 +1045,8 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
             "Already attempted; use a separate output for saved-response replay"
         )
     duration = audio_first.audio_info(audio)["duration"]
-    starts = list(range(0, math.ceil(duration), WINDOW_SECONDS))
+    windows = overview_windows(duration)
+    starts = [window["audio_start"] for window in windows]
     # A window in a new output directory has no verified link to this input.
     # Refuse it before any concurrent request can send the wrong audio; saved
     # responses use the separate --resume-from directory and input identity.
@@ -1065,16 +1074,16 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         settings=settings.model_dump(),
         input_identity=identity,
     )
-    overview_pool = ThreadPoolExecutor(max_workers=2)
+    overview_pool = ThreadPoolExecutor(max_workers=len(windows))
     topic_pool = None
     try:
-        topics = []
+        candidates = []
 
         def prepare_overview(index, start):
             path = output / f"overview-{index}.ogg"
             started = time.monotonic()
             started_at = time.time()
-            length = min(WINDOW_SECONDS, duration - start)
+            length = windows[index]["audio_end"] - start
             encode_audio(audio, path, start, length, "12k", speech_fast=True)
             return path, {
                 "index": index,
@@ -1095,7 +1104,7 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         cancelled = Event()
 
         def request_overview(index, start):
-            length = min(WINDOW_SECONDS, duration - start)
+            length = windows[index]["audio_end"] - start
             try:
                 path, preparation = overviews[index].result()
                 if cancelled.is_set():
@@ -1116,13 +1125,13 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 cancelled.set()
                 raise
 
-        topic_pool = ThreadPoolExecutor(max_workers=min(1 if resume else 2, len(starts)))
+        topic_pool = ThreadPoolExecutor(max_workers=min(1 if resume else len(windows), len(starts)))
         topic_futures = {
             index: topic_pool.submit(request_overview, index, start)
             for index, start in enumerate(starts)
         }
         for index, start in enumerate(starts):
-            length = min(WINDOW_SECONDS, duration - start)
+            length = windows[index]["audio_end"] - start
             value, preparation = topic_futures[index].result()
             with client._lock:
                 client.record["timings"].setdefault(
@@ -1156,16 +1165,23 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 clip = SelectedClip(
                     start=begin,
                     end=finish,
-                    candidate_id=f"topic-{len(topics)}",
+                    candidate_id=f"topic-{len(candidates)}",
                     title=str(row.get("title") or "話題"),
                     reason=str(row.get("reason") or "音声から選定"),
                     confidence=confidence,
                 )
-                topics.append(
-                    clip.model_copy(
-                        update={"start": clip.start + start, "end": clip.end + start}
+                candidates.append(
+                    (
+                        index,
+                        clip.model_copy(
+                            update={"start": clip.start + start, "end": clip.end + start}
+                        ),
                     )
                 )
+
+        topics, cuts = owned_topics(candidates, windows)
+        client.record["overview_plan"] = {"windows": windows, "cuts": cuts}
+        client.save()
 
         def choose_topics():
             selected = []
@@ -1214,33 +1230,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
             ],
         }
         client.save()
-        corpus = "\n".join(c.title + " " + c.reason for c in chosen)
-        try:
-            research, grounding = client.generate(
-                "terminology",
-                RESEARCH_INSTRUCTIONS + "\n配信URL:" + url + "\n話題資料:" + corpus,
-                research=True,
-            )
-        except urllib.error.HTTPError as error:
-            if error.code in (401, 403):
-                raise
-            glossary, diagnostics = [], {"status": "unavailable", "reason": "http_error", "http_status": error.code}
-        except PipelineError as error:
-            if str(error) not in {
-                "Incomplete Gemini response; not retried",
-                "Expected JSON object",
-                "Gemini returned no complete JSON object; raw response was preserved",
-            }:
-                raise
-            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
-        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
-                TimeoutError, socket.timeout) as error:
-            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
-        else:
-            try:
-                glossary, diagnostics = grounded_terms(research, grounding, corpus)
-            except (ValueError, KeyError, TypeError) as error:
-                glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+        # The route is topic selection, Transcribe and proofreading. Terminology
+        # research is not part of it, so the glossary is recorded as empty.
+        glossary, diagnostics = [], {"status": "skipped", "reason": "not_in_route"}
         write_json(
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},

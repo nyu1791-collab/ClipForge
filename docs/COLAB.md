@@ -1,4 +1,4 @@
-> 2026-10-26：実行入口は公開ClipForgeへ統合済みです。Colab認証Secretの登録先も`nyu1791-collab/ClipForge`です。`tools/configure_colab_oauth.py --login`の既定先を修正しました。非公開workerへの登録だけでは公開ClipForgeのActionsへ認証情報は渡りません。以下の非公開worker前提は旧手順です。
+> 2026-10-26：実行入口は公開ClipForgeへ統合済みです。Colab認証Secretの登録先も`nyu1791-collab/ClipForge`です。`tools/configure_colab_oauth.py --login`の既定先を修正しました。非公開workerへの登録だけでは公開ClipForgeのActionsへ認証情報は渡りません。以下の非公開worker前提は旧手順です。文字起こし（`asr`）は旧ASR経路の復旧用で、現行の文字起こしはGemini 3.5 Transcribe（Vertex直接）です。現行のColab利用は描画（`audio-stage` の render）だけです。
 
 # ActionsからColabを自動起動
 

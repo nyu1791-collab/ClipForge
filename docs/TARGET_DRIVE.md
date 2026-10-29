@@ -2,6 +2,8 @@
 
 ユーザーはn.yu1791@gmail.comに加え、n.yu17919191@gmail.comの個人Driveも許可した。既存のDrive認証がこの2アカウントのいずれかに対応する場合だけ使う。Vertexサービスアカウントを個人Driveの代わりにしない。同じGoogleでも、Vertexの推論権限で個人Driveのファイル作成権限は取得できない。
 
+注：初回登録のスクリプト（`tools/clipforge_drive_delivery.py`）は `n.yu1791@gmail.com` だけを受け付けます。`n.yu17919191@gmail.com` を登録する方法は、この文書では確認していません。納品のワークフロー（`clipforge_release_delivery.py`）は、2 つのアカウントを許可しています。
+
 通常の転送は専用のGOOGLE_DRIVE_ADC_JSONだけを使う。COLAB_ADC_JSONへのfallbackは廃止した。転送開始時にDriveのuser(emailAddress)で宛先本人を一度確認し、一致しなければフォルダも動画も作らず停止する。動画の再走査や読み戻し監査はしない。
 
 ## 初回接続（本人のCloud Shell）

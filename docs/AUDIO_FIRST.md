@@ -1,3 +1,5 @@
+> 旧全編ASR経路の段の詳細（復旧用）。現行の音声経路は [GEMINI_AUDIO_REVIEW.md](GEMINI_AUDIO_REVIEW.md)。YouTube の Cookie の節は取得の現行設定にも関係するため残す。
+
 # 段階の詳細
 
 運用の順序は [GPU_ROUTE.md](GPU_ROUTE.md)。ここには各段階の入力・出力・規則を書く。音声だけで最終採用せず、映像を確認する停止点を持つ。外部の生成AIはこの処理から呼ばない。

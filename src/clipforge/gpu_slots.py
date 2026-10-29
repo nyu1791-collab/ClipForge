@@ -64,6 +64,10 @@ class Lease:
         self.confirmed = True
 
 
+# Colab GPU runtimes one production may hold at once (ASR and render share the pool).
+SLOT_COUNT = 5
+
+
 @contextmanager
 def gpu_slot(kind, control_dir, pending=None, timeout=1800):
     """A slot remains reserved after an uncertain stop, even if its process exits."""
@@ -83,7 +87,7 @@ def gpu_slot(kind, control_dir, pending=None, timeout=1800):
             if waiting and waiting[0] != Path(pending):
                 time.sleep(0.25)
                 continue
-        for index in range(4):
+        for index in range(SLOT_COUNT):
             candidate = (directory / ("slot-" + str(index) + ".json")).open("a+")
             try:
                 fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
