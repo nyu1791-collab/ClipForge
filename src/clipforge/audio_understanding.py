@@ -168,10 +168,10 @@ class Client:
         # --continue-missing generate with the new instructions without colliding
         # with an already completed response from an older prompt.
         phase_base = phase
-        # Topic selection and proofreading both use 3.8 Flash at MEDIUM; only the
+        # Topic selection and proofreading both use 3.8 Flash at HIGH; only the
         # terminology research uses 3.5 Flash at MINIMAL.
         model = "gemini-3.5-flash" if research else "gemini-3.8-flash"
-        thinking_level = "MINIMAL" if research else "MEDIUM"
+        thinking_level = "MINIMAL" if research else "HIGH"
         # The model is part of a subtitle response's identity: an earlier 3.8
         # response must not be reported as a 3.5 result even for the same text.
         phase_hash = (
@@ -590,11 +590,13 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         return {
             "transcript_access": "available",
             "segments": [],
+            "review_hints": [],
+            "review_hints_status": "no_speech_recognized",
             "sound_effects": [],
             "finishing": {"status": "no_speech_recognized", "model_requests": 0},
         }
     numbered = [
-        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"],
+        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"], "speaker_label": row.get("speaker"),
          **({"gap_recovery": True} if row.get("gap_recovery") else {})}
         for index, row in enumerate(source, 1)
     ]
@@ -612,26 +614,13 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                     "text": "元の発言を保持した整文後の字幕",
                     "omit_filler": False,
                     "omit_non_speech": False,
-                    "speaker_id": "speaker_1 から speaker_6、または unknown",
-                    "confidence": "声に基づく話者判定の確信度0から1",
                 }
             ],
-            "speaker_assignments": [
-                {
-                    "source_id": 1,
-                    "speaker_id": "speaker_1 から speaker_6、または unknown",
-                    "confidence": "声に基づく話者判定の確信度0から1",
-                }
-            ],
-            "sound_effects": [
-                {
-                    "at": "元の字幕時刻に基づく秒数",
-                    "kind": "soft_pop / light_chime / transition_tick",
-                    "reason": "入力文に根拠がある理由",
-                }
-            ],
+            "speaker_assignments": [],
+            "review_hints": [{"source_ids": [1], "category": "speaker_overlap / speaker_uncertain / word_uncertain / other", "reason": "人が確認する理由を短く"}],
+            "sound_effects": [],
         },
-        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。話者判定はしない。speaker_assignmentsは空配列で返す。同じ話者と確認できない発話を結合しない。名前や役割を推定しない。時刻を推測して分割しない。感情はneutral。",
+        "rules": "source_idsは各字幕が使う連続した元IDの配列。小さい声、短い相槌、意味のある反復も聞こえた発話は残す。話者判定はしない。speaker_assignmentsは空配列で返す。同じ話者と確認できない発話を結合しない。名前や役割を推定しない。時刻を推測して分割しない。感情はneutral。review_hintsには音声と文字起こしを見て、複数の声の重なり、話者の切替が曖昧、聞き取りや修正が不確かな箇所など、人が確認すると役立つ候補だけを元IDと短い理由で挙げる。speaker_labelは文字起こしの推定ラベルであり人物を特定しない。各行を機械的に挙げず、該当箇所がなければ空配列。モデルが秒数や別人の名前を作らない。候補は字幕を変更せず、確認済みとも扱わない。",
         "gap_recovery_rules": "gap_recoveryがtrueの行は空白部分を再認識した候補です。原音に発話や意味のある声がなく非発話の誤認識だけと明確な場合は、その候補だけでsource_idsを作り、textを空、omit_non_speechをtrueにします。不確かなら保持し、他の発言と混ぜません。",
     }
     value, _ = client.generate(
@@ -640,6 +629,25 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
     )
     if value.get("audio_access") != "heard":
         raise PipelineError("Selected audio was not available to Gemini; not retried")
+
+    hint_rows = value.get("review_hints")
+    review_hints = []
+    if isinstance(hint_rows, list):
+        for hint in hint_rows[:100]:
+            if not isinstance(hint, dict):
+                continue
+            ids = hint.get("source_ids")
+            category, reason = hint.get("category"), hint.get("reason")
+            if (not isinstance(ids, list) or not ids or len(ids) > 100
+                or any(type(i) is not int or not 1 <= i <= len(source) for i in ids)
+                or len(ids) != len(set(ids))
+                or not isinstance(category, str)
+                or category not in {"speaker_overlap", "speaker_uncertain", "word_uncertain", "other"}
+                or not isinstance(reason, str) or not reason.strip()):
+                continue
+            review_hints.append({"source_ids": sorted(ids), "category": category, "reason": reason.strip()[:200]})
+    hints_status = ("not_returned" if not isinstance(hint_rows, list) else
+                    "available" if len(review_hints) == len(hint_rows) else "partial")
 
     # Use only contiguous input references; all unreferenced or ambiguous input is kept.
     # This is a preservation fallback, not an extra model call or quality gate.
@@ -760,6 +768,8 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
     return {
         "transcript_access": "available",
         "segments": segments,
+        "review_hints": review_hints,
+        "review_hints_status": hints_status,
         "sound_effects": prepare_cues(value.get("sound_effects", []), duration),
         "finishing": {"status": "gpu_timestamps_preserved", "model_requests": 1, "audio_access": value.get("audio_access", "unavailable")},
     }
@@ -838,7 +848,7 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
                 value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
             value["finishing"]["status"] = "transcribe_timestamps_preserved"
             value["finishing"]["timestamp_source"] = "gemini_transcribe"
-            write_json(output / f"review-source-{index:03}.json", {"segments": value["segments"]})
+            write_json(output / f"review-source-{index:03}.json", {"segments": value["segments"], "review_hints": value.get("review_hints", []), "review_hints_status": value.get("review_hints_status", "not_returned")})
             if renderer is not None:
                 transcript, turns = selected_transcript(value, clip.end - clip.start)
                 renderer.enqueue(index, {"transcript": transcript.model_dump(), "turns": turns,

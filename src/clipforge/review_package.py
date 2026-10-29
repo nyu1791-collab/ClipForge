@@ -213,8 +213,8 @@ video{width:100%;max-width:800px;background:#000}table{border-collapse:collapse;
 td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5em}
 .flag{background:#fff3d3}button{cursor:pointer}</style>
 <h1>確認が必要そうな箇所</h1><p>字幕を焼き込む前の確認用動画です。時刻は動画の先頭からの目安です。
-まず話者の切り替わり、声の重なり、判別が曖昧な箇所をまとめています。
-候補は機械的な目印で、聞き分けた結果ではありません。全ての誤りを検出できるわけではありません。
+まずGeminiが音声から挙げた確認候補と、機械的に検出した話者の切り替わりなどをまとめています。
+候補は推定で、確認済みを意味せず、全ての誤りを検出できるわけではありません。
 ほかの語の変更と全字幕は、必要なときだけ下の項目を開いて確認できます。
 番号と時刻、修正内容を会話でお知らせください。</p>"""
     ]
@@ -247,6 +247,31 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
         parts.append(
             f'<video id="v{index}" controls preload="metadata" src="clip-{index:03}.mp4"></video>'
         )
+        hints = provenance.get("review_hints", [])
+        status = provenance.get("review_hints_status", "not_returned")
+        parts.append('<h3>Geminiが挙げた確認候補</h3>')
+        if status not in {"available", "partial"}:
+            parts.append('<p>Geminiの確認候補は取得されていません。候補なしとは判断できません。</p>')
+        elif not hints and status == "available":
+            parts.append('<p>Geminiは候補を挙げていません。誤りがないという意味ではありません。</p>')
+        else:
+            if status == "partial":
+                parts.append('<p>形式が不明な候補があり、一部を表示できません。</p>')
+            parts.append('<p>時刻は文字起こしから引き継いだ推定値です。話者は匿名ラベルです。</p>')
+            parts.append('<table><thead><tr><th>時刻・字幕番号</th><th>確認する理由・話者ラベル</th><th>文字起こし → 清書後</th></tr></thead><tbody>')
+            for hint in hints:
+                ids = set(hint["source_ids"])
+                matched = [row for row in rows if ids.intersection(row["source_ids"])]
+                if not matched:
+                    for sid in hint["source_ids"]:
+                        source = raw["segments"][sid - 1]
+                        parts.append(f'<tr><td><button type="button" onclick="seek({index},{max(0, float(source["start"]) - 2):.3f})">{clock(source["start"])}〜{clock(source["end"])}</button></td>'
+                                     f'<td>{esc(hint["reason"])}</td><td>{esc(source["text"])} → 字幕への対応不明</td></tr>')
+                for row in matched:
+                    parts.append(f'<tr><td><button type="button" onclick="seek({index},{max(0, float(row["start"]) - 2):.3f})">{clock(row["start"])}〜{clock(row["end"])}</button> #{row["number"]}</td>'
+                                 f'<td>{esc(hint["reason"])}<br><small>{esc(", ".join(row["speakers"]))}</small></td>'
+                                 f'<td>{esc(row["original"] or "元の文との対応不明")} → {esc(row["text"])}</td></tr>')
+            parts.append('</tbody></table>')
         parts.append(
             f'<p>境界の確認：<button type="button" onclick="seek({index},0)">冒頭30秒</button> '
             f'<button type="button" onclick="seek({index},{max(0, clip["end"] - clip["start"] - 30):.3f})">末尾30秒</button></p>'
@@ -278,6 +303,12 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             parts.append("<p>話者交代・重複・判別不明の候補は見つかっていません。</p>")
         changed = sum("清書で語が変わった可能性" in row["reasons"] for row in rows)
         parts.append(f'<details><summary>参考：語の変更と全文を見る（変更の可能性 {changed} 行）</summary>')
+        if changed:
+            parts.append('<h3>語の変更一覧</h3><table><thead><tr><th>時刻・字幕番号</th><th>文字起こし → 清書後</th></tr></thead><tbody>')
+            for row in rows:
+                if "清書で語が変わった可能性" in row["reasons"]:
+                    parts.append(f'<tr><td><button type="button" onclick="seek({index},{max(0, float(row["start"]) - 2):.3f})">{clock(row["start"])}〜{clock(row["end"])}</button> #{row["number"]}</td><td>{esc(row["original"])} → {esc(row["text"])}</td></tr>')
+            parts.append('</tbody></table>')
         unchanged = [
             row
             for row in rows

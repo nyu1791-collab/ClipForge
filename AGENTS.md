@@ -29,13 +29,14 @@
 
 ## 現行の制作経路
 
-URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravity SDK経由）で話題・見出し選定 → 3.5 Transcribeで採用部分を文字起こし → 3.8 Flash/MEDIUMが話題ごとに清書 → 話題別の確認用動画と確認候補一覧を非公開で回収 → 利用者の確認・明示的な承認 → Colab GPU/NVENCで描画 → 非公開Release保存・回収 → 指定時だけDrive納品。詳細は `docs/HUMAN_REVIEW_WORKFLOW.md`。
+URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/HIGH（Antigravity SDK経由）で話題・見出し選定 → 3.5 Transcribeで採用部分を文字起こし → 3.8 Flash/HIGHが話題ごとに清書 → 話題別の確認用動画と確認候補一覧を非公開で回収 → 利用者の確認・明示的な承認 → Colab GPU/NVENCで描画 → 非公開Release保存・回収 → 指定時だけDrive納品。詳細は `docs/HUMAN_REVIEW_WORKFLOW.md`。
 
 - 制作は公開ClipForgeのGitHub Actionsを正規経路として実行する。素材取得・Gemini処理・Colab GPUへの描画依頼・非公開保存・回収をこの経路に集約し、制御VMから直接制作したり別経路へ切り替えたりしない。移行時は既存のRun/保存済み状態を引き継ぎ、未完了Runは再投入せず再接続し、完了済み成果物は再利用する。ユーザーが別経路を明示した場合はその指示を優先する。
 - 字幕要求を60秒ごとに分割しない。新規モデル要求数は全体把握の音声窓数＋Transcribe窓数＋採用話題の清書数。898秒以内なら通常のTranscribeと清書は各1回、用語調査と空白補助は行わない。最大6話題を並行する。1話題1回と一文要約は別で、字幕segmentは発話に沿って複数作る。
+- 清書と同じ応答で、声の重なりや話者の切替、聞き取りが曖昧な箇所など、人が確認すると役立つ候補を元ID付きで挙げる。候補に基づいて話者ラベルや字幕を勝手に変えず、時刻は元IDから引き継ぐ。候補がなくても確認済みとは扱わない。
 - 話題選定は録画長で1体（1時間以下）・2体（2時間以下）・4体に分け、各体は前後600秒を重ねた音声を聞き、持ち主の範囲の話題だけを採用する。新規の要求は体の数だけ並行し、保存済み応答からの再開は1件ずつ送る。
 - 全文GPU ASR・3.5の全文文字起こし・保存ASR必須の候補計画・追加の時刻照合・OpenCode/査読モデルへ自動で戻さない。旧ASR経路は過去結果の明示的な復旧専用。
-- 文字起こしは採用区間だけを対象とし、TranscribeのVERBATIM・単語時刻・話者分離を使用する。898秒（約15分）を超える話題は余白付きで分割し、分割間の話者ラベルを勝手に同一視しない。3.8 Flash/MEDIUMには採用区間の音声と文字列・発話時刻・話者ラベルを渡し、話者は判定させない。音声区間の分割は字幕の60秒分割を意味しない。
+- 文字起こしは採用区間だけを対象とし、TranscribeのVERBATIM・単語時刻・話者分離を使用する。898秒（約15分）を超える話題は余白付きで分割し、分割間の話者ラベルを勝手に同一視しない。3.8 Flash/HIGHには採用区間の音声と文字列・発話時刻・話者ラベルを渡し、話者は判定させない。音声区間の分割は字幕の60秒分割を意味しない。
 - YouTube/Twitch/Kick/直接HTTPSを維持する。元媒体と出力先は分離し、元媒体を上書きしない。制御VMで重いASRや描画を行わない。
 - 保存済み応答/音声/完成クリップを再利用する。素材取得のKick配信のGETは429・5xx・通信障害だけを10秒・30秒・60秒の間隔で最大3回再試行する。workflow dispatchは自動再試行しない。Geminiの一時的な通信障害・429・5xxは同一要求につき合計3回まで試し（待ちは30秒・90秒）、認証拒否などは再試行しない。成否不明の再送では重複課金が起こり得る。既存Runの状態取得では、制作の再投入を伴わない読み取りだけを再試行できる。
 - 描画は同じ制作内のGPU枠を最大5（`gpu_slots.SLOT_COUNT`）に制限する。render-only のRunは1つの Colab runtime を確保し、Run内では選んだクリップを順に描画する。並列化は clip_index を指定した別Runを並べ、merge Runで結合する（`tools/dispatch_parallel_render.py`）。
@@ -63,7 +64,7 @@ URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUM（Antigravit
 
 ## 接続と保存
 
-- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定と清書の3.8 Flash/MEDIUMはGoogle Antigravity SDK（同じVertexプロジェクト・global）経由。文字起こしの3.5 Transcribeは従来どおりVertexへ直接送る。経路・起動入力・確認方法は`docs/ANTIGRAVITY_ROUTE.md`。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
+- 指定Vertex: `n.yu1791@gmail.com`所有の`project-fdadb4dd-cb77-4270-9cd`、話題選定と清書の3.8 Flash/HIGHはGoogle Antigravity SDK（同じVertexプロジェクト・global）経由。文字起こしの3.5 Transcribeは従来どおりVertexへ直接送る。経路・起動入力・確認方法は`docs/ANTIGRAVITY_ROUTE.md`。GitHub OIDC短期認証を使い、Colab用の別資格情報/不明なAPIキーを流用しない。モデル提供・実推論・課金なしを未確認で保証しない。
 - 公開ClipForgeはコードとActions、非公開`nyu1791-collab/ai-model-workers`は制作データのRelease保存庫。公開Artifactsに音声/動画/字幕/モデル応答を出さない。配布用`deploy/audio-stages.yml`は公開Actions定義と揃える。
 - APIキー/OAuth/Cookie/私有媒体をGit/ログ/チャットへ出さない。Secretsは名前だけ扱う。接続一覧の閲覧不可はunknownとし、未登録や制作不能と断定しない。
 - Colabは既存の専用エンドユーザー資格情報を再利用する。Drive専用資格情報をVertexサービスアカウントで代用しない。Driveの所有者は許可済みの`n.yu1791@gmail.com`または`n.yu17919191@gmail.com`と照合する。

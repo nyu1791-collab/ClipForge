@@ -13,7 +13,7 @@
 
 ## 現在の通常経路
 
-URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し選定 → 3.5 Transcribe（Vertex直接）が採用部分だけ文字起こし → 3.8 Flash/MEDIUMが話題ごとに清書 → 話題別の確認用動画と候補一覧を非公開で回収 → 利用者が確認・承認 → Colab GPU/NVENCで描画 → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
+URL → 音声取得・再利用 → 3.8（Antigravity）が話題・見出し選定 → 3.5 Transcribe（Vertex直接）が採用部分だけ文字起こし → 3.8 Flash/HIGHが話題ごとに清書 → 話題別の確認用動画と候補一覧を非公開で回収 → 利用者が確認・承認 → Colab GPU/NVENCで描画 → 非公開保存・回収。追加のモデル時刻照合・監査・strict品質検査は行わない。
 
 - 最短入口・接続・再接続: `docs/QUICK_START.md`。納品前の見直し: `docs/REVIEW_POLICY.md`。スキルの導入方針と候補（Claude Code・Codex）: `docs/SKILLS.md`。Antigravity経路の起動入力と確認: `docs/ANTIGRAVITY_ROUTE.md`。修正・再利用: `docs/PRODUCTION_AND_REVISION.md`。音声経路の詳細: `docs/GEMINI_AUDIO_REVIEW.md`。履歴（現行の規則ではない）: `docs/HANDOFF_*_2026-10-26.md`・`docs/incidents/`・`docs/REVIEW_*.md`・`docs/HEALTH_REVIEW_2026-10-27.md`。
 - 通常入口: `tools/produce_with_gemini.py`。実装: `src/clipforge/audio_understanding.py`。

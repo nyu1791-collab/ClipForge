@@ -6,8 +6,8 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 
 | 工程 | モデル・段階 | 経路 | コード |
 |---|---|---|---|
-| 全体把握・話題選定 | Gemini 3.8 Flash / MEDIUM（`topics-N`） | Antigravity SDK（Vertex） | `audio_understanding.Client.generate` → `antigravity_client.generate_text` |
-| 清書 | Gemini 3.8 Flash / MEDIUM（`transcript-*`）。誤字脱字と明らかな誤認識だけを直す。話者は Transcribe のラベルをそのまま使い、効果音は出さない | Antigravity SDK（Vertex） | 同上 |
+| 全体把握・話題選定 | Gemini 3.8 Flash / HIGH（`topics-N`） | Antigravity SDK（Vertex） | `audio_understanding.Client.generate` → `antigravity_client.generate_text` |
+| 清書 | Gemini 3.8 Flash / HIGH（`transcript-*`）。誤字脱字と明らかな誤認識だけを直す。話者は Transcribe のラベルをそのまま使い、効果音は出さない | Antigravity SDK（Vertex） | 同上 |
 | 文字起こし | Gemini 3.5 Transcribe | Vertex 直接 `generateContent` | `transcribe_pipeline.transcribe_clip`（試行は `transcribe_trial.transcribe_topic`） |
 
 - Vertex プロジェクトは `project-fdadb4dd-cb77-4270-9cd`、ロケーションは `global`。
