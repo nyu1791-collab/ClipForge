@@ -6,7 +6,8 @@
 
 - Python 3.12・uv 0.12.23 の現環境で確認。FFmpeg、ffprobe、Noto Sans CJK JP、Colab 制御 SDK は存在した。
 - 空の Ubuntu 24.04 コンテナにリポジトリをコピーし、root で `bash setup.sh` を実行した。Ubuntu の依存、公式の uv インストーラー、Python 3.12、ロック済みの基本依存の導入まで完了した。実行したセットアップのコードは `278acde` 時点。
-- Windows 11・WSL2 のインストール、Windows 実機上の非 root ユーザーによる sudo、GitHub 認証、追加の `--dev` 経路は未確認。インターネットとパッケージ取得元の可用性は保証しない。
+- 別の空の Ubuntu 24.04 コンテナで一般ユーザーを作り、パスワードなし sudo を設定したうえで `bash setup.sh` を実行し、その後 `bash setup.sh --no-system` を再実行した。両方とも完了した。実行したセットアップのコードは `b7d7d6d` 時点。
+- Windows 11・WSL2 のインストール、Windows 実機のパスワード入力を伴う sudo、GitHub 認証、追加の `--dev` 経路は未確認。インターネットとパッケージ取得元の可用性は保証しない。
 
 ## テスト
 
