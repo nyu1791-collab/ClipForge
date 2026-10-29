@@ -41,6 +41,31 @@ def group_candidates(rows):
     return groups
 
 
+def focused_groups(rows):
+    """Group nearby uncertain speaker assignments without flagging every second voice."""
+    groups = []
+    for row in rows:
+        important = (
+            len(row["speakers"]) > 1
+            or any(
+                key in reason
+                for reason in row["reasons"]
+                for key in ("話者交代", "話者不明", "元IDの対応不明")
+            )
+        )
+        if not important:
+            continue
+        if (
+            groups
+            and row["start"] <= groups[-1][-1]["end"] + 6
+            and row["end"] - groups[-1][0]["start"] <= 45
+        ):
+            groups[-1].append(row)
+        else:
+            groups.append([row])
+    return groups
+
+
 def inspect_archive(path, source_url):
     """Check the private package identity and safe, expected member names."""
     with zipfile.ZipFile(path) as bundle:
@@ -187,9 +212,10 @@ def make_page(selection, transcripts, raws, provenances):
 video{width:100%;max-width:800px;background:#000}table{border-collapse:collapse;width:100%}
 td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5em}
 .flag{background:#fff3d3}button{cursor:pointer}</style>
-<h1>話題別の確認用動画と字幕</h1><p>字幕を焼き込む前の確認用動画です。時刻は動画の先頭からの目安です。
-候補は機械的な目印で、網羅や正確さを保証しません。原音・映像と照合してください。
-固有名詞、見出し、話題の切れ目なども、必要に応じて確認・修正を指示できます。
+<h1>確認が必要そうな箇所</h1><p>字幕を焼き込む前の確認用動画です。時刻は動画の先頭からの目安です。
+まず話者の切り替わり、声の重なり、判別が曖昧な箇所をまとめています。
+候補は機械的な目印で、聞き分けた結果ではありません。全ての誤りを検出できるわけではありません。
+ほかの語の変更と全字幕は、必要なときだけ下の項目を開いて確認できます。
 番号と時刻、修正内容を会話でお知らせください。</p>"""
     ]
     order = []
@@ -225,21 +251,33 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             f'<p>境界の確認：<button type="button" onclick="seek({index},0)">冒頭30秒</button> '
             f'<button type="button" onclick="seek({index},{max(0, clip["end"] - clip["start"] - 30):.3f})">末尾30秒</button></p>'
         )
-        priority = [row for row in rows if row["reasons"]]
-        groups = group_candidates(rows)
+        groups = focused_groups(rows)
         parts.append(
-            f"<h3>確認候補（{len(priority)}行・{len(groups)}区間）</h3><p>近い候補をまとめています。表示は確認済みを意味しません。</p><ul>"
+            f"<h3>優先して確認する箇所（{len(groups)}区間）</h3><p>近い話者の切り替わりなどをまとめています。</p><ul>"
         )
         for group in groups:
             start = group[0]["start"]
             end = max(row["end"] for row in group)
-            reasons = sorted({reason for row in group for reason in row["reasons"]})
+            reasons = sorted({reason for row in group for reason in row["reasons"]
+                              if any(key in reason for key in ("話者交代", "話者不明", "元IDの対応不明"))})
+            if any(len(row["speakers"]) > 1 for row in group):
+                reasons.append("複数の話者ラベルが重なる可能性")
             parts.append(
                 f'<li><button type="button" onclick="seek({index},{max(0, float(start) - 2):.3f})">'
                 f"{clock(start)}〜{clock(end)}</button> {esc('、'.join(reasons))} "
-                f"（字幕 {group[0]['number']}〜{group[-1]['number']}）</li>"
+                f"（字幕 {group[0]['number']}〜{group[-1]['number']}）"
             )
+            parts.append('<details><summary>この区間の字幕候補を開く</summary><ul>')
+            for row in group:
+                parts.append(f'<li><button type="button" onclick="seek({index},{max(0, float(row["start"]) - 2):.3f})">'
+                             f'{clock(row["start"])}</button> {esc(row["text"])} '
+                             f'<small>（{esc(", ".join(row["speakers"]))}）</small></li>')
+            parts.append('</ul></details></li>')
         parts.append("</ul>")
+        if not groups:
+            parts.append("<p>話者交代・重複・判別不明の候補は見つかっていません。</p>")
+        changed = sum("清書で語が変わった可能性" in row["reasons"] for row in rows)
+        parts.append(f'<details><summary>参考：語の変更と全文を見る（変更の可能性 {changed} 行）</summary>')
         unchanged = [
             row
             for row in rows
@@ -304,6 +342,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
                 + esc(" / ".join(str(row.get("text", "")) for row in raw["untimed"]))
                 + "</p>"
             )
+        parts.append("</details>")
         parts.append("</section>")
     parts.append(
         '<script>function seek(i,t){const v=document.getElementById("v"+i);v.currentTime=t;v.play();v.scrollIntoView({behavior:"smooth",block:"center"})}</script></html>'
