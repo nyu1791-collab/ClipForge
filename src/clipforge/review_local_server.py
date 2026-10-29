@@ -22,27 +22,54 @@ def prepare(package):
     inspect_archive(package, selection["source_url"])
     with zipfile.ZipFile(package) as bundle:
         page = bundle.read("review.html").decode("utf-8")
-    match = re.search(r'<script type="application/json" id="editor-data">(.*?)</script>', page, re.S)
+    match = re.search(
+        r'<script type="application/json" id="editor-data">(.*?)</script>', page, re.S
+    )
     if not match:
         raise PipelineError("The review page is not editable")
     data = json.loads(match.group(1))
     expected = fingerprint({"selection": selection, "transcripts": transcripts})
-    if data.get("fingerprint") != expected:
+    try:
+        expected_data = {
+            "fingerprint": expected,
+            "clips": [
+                {
+                    "duration": clip["end"] - clip["start"],
+                    "segments": transcript["segments"],
+                }
+                for clip, transcript in zip(selection["clips"], transcripts["clips"])
+            ],
+        }
+    except (KeyError, TypeError) as error:
+        raise PipelineError("The review package has invalid editorial data") from error
+    if data != expected_data:
         raise PipelineError("The review page does not match the package")
     return page, data
 
 
 def validate_patch(patch, data):
-    if not isinstance(patch, dict) or set(patch) != {"reason", "input_fingerprint", "clips"}:
+    if not isinstance(patch, dict) or set(patch) != {
+        "reason",
+        "input_fingerprint",
+        "clips",
+    }:
         raise ValueError("Invalid patch")
-    if patch["input_fingerprint"] != data["fingerprint"] or not isinstance(patch["reason"], str) or not isinstance(patch["clips"], list):
+    if (
+        patch["input_fingerprint"] != data["fingerprint"]
+        or not isinstance(patch["reason"], str)
+        or not isinstance(patch["clips"], list)
+    ):
         raise ValueError("Invalid patch")
     seen_clips = set()
     for row in patch["clips"]:
         if not isinstance(row, dict) or set(row) - {"clip", "segments", "add_segments"}:
             raise ValueError("Invalid clip")
         index = row.get("clip")
-        if type(index) is not int or not 1 <= index <= len(data["clips"]) or index in seen_clips:
+        if (
+            type(index) is not int
+            or not 1 <= index <= len(data["clips"])
+            or index in seen_clips
+        ):
             raise ValueError("Invalid clip")
         seen_clips.add(index)
         clip = data["clips"][index - 1]
@@ -59,14 +86,24 @@ def validate_patch(patch, data):
                 raise ValueError("Invalid segment")
             if not added:
                 number = item["segment"]
-                if type(number) is not int or not 1 <= number <= len(clip["segments"]) or number in seen_segments:
+                if (
+                    type(number) is not int
+                    or not 1 <= number <= len(clip["segments"])
+                    or number in seen_segments
+                ):
                     raise ValueError("Invalid segment")
                 seen_segments.add(number)
             start, end, text = item["start"], item["end"], item["text"]
-            if (type(start) not in (int, float) or type(end) not in (int, float)
-                or not math.isfinite(start) or not math.isfinite(end)
+            if (
+                type(start) not in (int, float)
+                or type(end) not in (int, float)
+                or not math.isfinite(start)
+                or not math.isfinite(end)
                 or not 0 <= start < end <= clip["duration"]
-                or not isinstance(text, str) or len(text) > 10000 or (added and not text.strip())):
+                or not isinstance(text, str)
+                or len(text) > 10000
+                or (added and not text.strip())
+            ):
                 raise ValueError("Invalid subtitle")
     return patch
 
@@ -81,9 +118,23 @@ const localToken = TOKEN;
 async function saveToServer(){try{const res=await fetch('/patch',{method:'POST',headers:{'Content-Type':'application/json','X-Review-Token':localToken},body:JSON.stringify(buildPatch())});if(!res.ok)throw Error();document.getElementById('local-status').textContent='保存しました。描画はまだ開始していません。'}catch(e){document.getElementById('local-status').textContent='保存に失敗しました。画面を閉じずに再度保存してください。'}}
 async function restoreFromServer(){try{const res=await fetch('/patch');if(res.status===204)return;if(!res.ok)throw Error();const patch=await res.json();await loadEdits({files:[new File([JSON.stringify(patch)],'patch.json')]});document.getElementById('local-status').textContent='保存済みの修正を読み込みました。'}catch(e){document.getElementById('local-status').textContent='保存済みの修正を読み込めませんでした。'}}
 restoreFromServer();</script>""".replace("TOKEN", json.dumps(token))
-    page = page.replace('onclick="saveEdits()">修正ファイルを保存', 'onclick="saveToServer()">修正を保存', 1)
-    page = page.replace('修正は自動送信されません。保存したJSONファイルをこの会話に送ってください。画面を閉じる前に保存してください。', '修正したら「修正を保存」を押してください。描画は開始しません。', 1)
-    page = page.replace('</script></html>', '</script><p id="local-status" role="status">描画は開始しません。</p>' + script + '</html>', 1)
+    page = page.replace(
+        'onclick="saveEdits()">修正ファイルを保存',
+        'onclick="saveToServer()">修正を保存',
+        1,
+    )
+    page = page.replace(
+        "修正は自動送信されません。保存したJSONファイルをこの会話に送ってください。画面を閉じる前に保存してください。",
+        "修正したら「修正を保存」を押してください。描画は開始しません。",
+        1,
+    )
+    page = page.replace(
+        "</script></html>",
+        '</script><p id="local-status" role="status">描画は開始しません。</p>'
+        + script
+        + "</html>",
+        1,
+    )
     if 'onclick="saveToServer()"' not in page or 'id="local-status"' not in page:
         raise PipelineError("Unsupported review page")
     page_bytes = page.encode("utf-8")
@@ -144,7 +195,9 @@ restoreFromServer();</script>""".replace("TOKEN", json.dumps(token))
                         self.end_headers()
                         return
                     start = int(span.group(1))
-                    end = min(int(span.group(2)), size - 1) if span.group(2) else size - 1
+                    end = (
+                        min(int(span.group(2)), size - 1) if span.group(2) else size - 1
+                    )
                     if end < start:
                         self.send_error(416)
                         return
@@ -168,10 +221,19 @@ restoreFromServer();</script>""".replace("TOKEN", json.dumps(token))
                         left -= len(chunk)
 
         def do_POST(self):
-            if (not self.authorized_host() or self.headers.get("Origin") != f"http://127.0.0.1:{self.server.server_port}"
-                or not secrets.compare_digest(self.headers.get("X-Review-Token", ""), token)
-                or self.headers.get("Content-Type") != "application/json"):
+            if (
+                not self.authorized_host()
+                or self.headers.get("Origin")
+                != f"http://127.0.0.1:{self.server.server_port}"
+                or not secrets.compare_digest(
+                    self.headers.get("X-Review-Token", ""), token
+                )
+                or self.headers.get("Content-Type") != "application/json"
+            ):
                 self.send_error(403)
+                return
+            if urlsplit(self.path).path != "/patch":
+                self.send_error(404)
                 return
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -180,7 +242,7 @@ restoreFromServer();</script>""".replace("TOKEN", json.dumps(token))
                 patch = validate_patch(json.loads(self.rfile.read(size)), data)
                 with lock:
                     write_json(output, patch)
-            except (ValueError, TypeError, OSError):
+            except (ValueError, TypeError, OverflowError, OSError):
                 self.send_error(400)
                 return
             self.send_response(204)
