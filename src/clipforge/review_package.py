@@ -221,6 +221,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
 候補は推定で、確認済みを意味せず、全ての誤りを検出できるわけではありません。
 ほかの語の変更と全字幕は、必要なときだけ下の項目を開いて確認できます。
 字幕の「編集」を押すと文字と時刻を直せます。動画上の字幕は確認用の簡易表示です。</p>
+<p>動画が表示されない場合は、各動画の「動画ファイルを選ぶ」から、同じ番号の確認用動画を選んでください。ファイルはこの画面の中で再生します。</p>
 <div class="sticky"><button type="button" onclick="saveEdits()">修正ファイルを保存</button>
 <label>保存済みの修正を読み込む <input type="file" accept="application/json,.json" onchange="loadEdits(this)"></label>
 <span id="edit-count">変更 0 件</span></div>
@@ -255,6 +256,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
         parts.append(
             f'<div class="viewer"><video id="v{index}" controls preload="metadata" src="clip-{index:03}.mp4"></video><div class="overlay" id="overlay{index}" onclick="editAt({index})"></div></div>'
         )
+        parts.append(f'<label>動画 {index} の動画ファイルを選ぶ <input type="file" accept="video/*" onchange="selectVideo({index},this)"></label>')
         parts.append(f'<p><button type="button" onclick="addCaption({index})">現在の位置に字幕を追加</button></p><div id="added{index}"></div>')
         hints = provenance.get("review_hints", [])
         status = provenance.get("review_hints_status", "not_returned")
@@ -393,6 +395,10 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
     parts.append(r'''<script>
 const editorData = JSON.parse(document.getElementById("editor-data").textContent);
 let edits = new Map(), additions = [], editing = null;
+const selectedVideos = new Map();
+function selectVideo(i,input){const file=input.files&&input.files[0];if(!file)return;
+ const v=document.getElementById("v"+i),previous=selectedVideos.get(i),url=URL.createObjectURL(file);
+ v.src=url;selectedVideos.set(i,url);if(previous)URL.revokeObjectURL(previous);v.load()}
 function seek(i,t){const v=document.getElementById("v"+i);v.currentTime=t;v.play();v.scrollIntoView({behavior:"smooth",block:"center"})}
 function key(c,n){return c+":"+n}
 function caption(c,n){return edits.get(key(c,n)) || editorData.clips[c-1].segments[n-1]}
