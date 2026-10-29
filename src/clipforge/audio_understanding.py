@@ -172,15 +172,11 @@ class Client:
         # terminology research uses 3.5 Flash at MINIMAL.
         model = "gemini-3.5-flash" if research else "gemini-3.8-flash"
         thinking_level = "MINIMAL" if research else "HIGH"
-        # The model is part of a subtitle response's identity: an earlier 3.8
-        # response must not be reported as a 3.5 result even for the same text.
-        phase_hash = (
-            hashlib.sha256(
-                f"{prompt_sha256}:{model}:{thinking_level}:{audio_source_key or json.dumps(audio_identity, sort_keys=True, ensure_ascii=False)}".encode()
-            ).hexdigest()
-            if phase_base.startswith("transcript-")
-            else prompt_sha256
-        )
+        # All stages bind saved responses to model and reasoning settings. A
+        # MEDIUM topic result must not be silently reused as a HIGH result.
+        phase_hash = hashlib.sha256(
+            f"{prompt_sha256}:{model}:{thinking_level}:{audio_source_key or json.dumps(audio_identity, sort_keys=True, ensure_ascii=False)}".encode()
+        ).hexdigest()
         phase = f"{phase}-{phase_hash[:10]}"
         print(
             json.dumps({"phase": phase, "status": "checking_saved_response"}),
