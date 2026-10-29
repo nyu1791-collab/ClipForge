@@ -4,7 +4,7 @@
 
 # 旧経路の記録（現行の制作には使わない）
 
-> 現行の入口は [QUICK_START.md](QUICK_START.md) と [ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md)。文字起こしはGemini 3.5 Transcribe、清書は3.8 Flash/MEDIUM。以下は旧経路（Parakeet ASR）の記録で、保存済み成果物の復旧にだけ使う。
+> 現行の入口は [QUICK_START.md](QUICK_START.md) と [ANTIGRAVITY_ROUTE.md](ANTIGRAVITY_ROUTE.md)。文字起こしは Gemini 3.5 Transcribe、話題選定と清書は 3.8 Flash/HIGH。以下は旧経路（Parakeet ASR）の記録で、保存済み成果物の復旧にだけ使う。
 
 runnerで音声取得→3.8の音声理解による話題選定→3.5の出典付き表記調査→採用部分だけをParakeetで文字起こし→3.5が話題ごとに1回、GPUテキストと時刻から要約せず整文→Colab GPU/NVENCで素材最大360pを通常360pキャンバスへ字幕描画する。字幕要求は60秒単位に分割せず、話題同士を並行できる。話題と字幕のルールは`src/clipforge/prompts/`から実リクエストへ読み込む。字幕は原発言の意味・口調・確かさを保ち、不確かな情報を補完しない。必要な効果音は同じ整文応答から描画側で合成・ミックスする。実装・モデル回数・推定時刻の限界は[GEMINI_AUDIO_REVIEW.md](GEMINI_AUDIO_REVIEW.md)を参照。旧全文ASR工程は保存済み成果物の復旧用として以下に残す。
 

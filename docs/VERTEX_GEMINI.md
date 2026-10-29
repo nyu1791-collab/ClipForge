@@ -23,7 +23,7 @@
 
 | モデル | 経路 | 用途 | 思考レベル |
 |---|---|---|---|
-| Gemini 3.8 Flash | Antigravity SDK（同じプロジェクト・global） | 話題選定と清書 | MEDIUM |
+| Gemini 3.8 Flash | Antigravity SDK（同じプロジェクト・global） | 話題選定と清書 | HIGH |
 | Gemini 3.5 Transcribe | Vertex 直接の `generateContent` | 採用部分の文字起こし（ja-JP・VERBATIM・単語時刻・話者分離） | — |
 
 - Gemini 3.5 Flash は通常経路では使わない（用語調査は経路から外した）。

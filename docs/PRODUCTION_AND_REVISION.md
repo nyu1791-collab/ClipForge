@@ -2,7 +2,7 @@
 
 # 通常制作・修正・再開の共通経路
 
-> 自動描画・引数省略に関する下記の手順は旧経路です。現在は [確認待ち経路](HUMAN_REVIEW_WORKFLOW.md) で明示的な承認を受けてから描画します。
+> 現在の新規制作は [確認待ち経路](HUMAN_REVIEW_WORKFLOW.md) に従い、確認用パッケージを利用者が確認し、明示的に承認してから描画します。
 
 字幕の清書は、採用話題ごとに1回、採用音声と Transcribe の文字起こし（発話時刻・話者ラベル付き）を同じ要求で扱う。モデルは誤字脱字と明らかな誤認識だけを直し、文字起こしに無い発話は補わない。元IDの無い発話は時刻を得られず字幕化できない場合がある。話者は Transcribe のラベルを使い、清書では判定しない。実音声での清書の精度は別途確認が必要。
 
@@ -14,12 +14,14 @@ flowchart TD
   B --> C[必読ルール＋3.8の話題選定・見出し]
   C --> X[採用部分だけTranscribeで文字起こし]
   X --> D[話題ごと1回、文字起こしを3.8 Flash/HIGHで清書]
-  D --> E[非公開の編集Release]
-  E --> F[共通のGPU描画]
+  D --> E[非公開の編集Release・確認用パッケージ]
+  E --> Q[利用者の確認・明示的な承認]
+  Q --> F[共通のGPU描画]
   F --> G[非公開の完成動画Release・回収]
   G --> H[指定されたDrive納品]
   E --> I[保存済み字幕・見出し・演出の修正パッチ]
-  I --> J[親版と差分を残した非公開の修正版Release]
+  I --> Q
+  Q --> J[親版と差分を残した非公開の修正版Release]
   J --> F
   G --> K[完成クリップを新しい作業先へ再利用]
   K --> F
@@ -27,7 +29,7 @@ flowchart TD
 
 ## 入口と選び方
 
-接続済みなら `python tools/produce_with_gemini.py URL --output NEW_PRIVATE_DIR` で通常制作を開始できる。`--source-ref` 省略時は既定の専用実行ブランチのSHAを一度だけ取得して固定し、production-stateへ記録する。VertexはActionsのOIDC、Colabは登録済み専用資格情報をそのまま使う。設定確認のためのテスト・監査・試験的なモデル要求やGPU確保は挟まない。
+新規制作の前に、利用者が URL・本数・設定・実行コードの40桁 SHA を指定していることを確認する。必須入力を含む起動例は [確認待ち経路](HUMAN_REVIEW_WORKFLOW.md) を使う。ワークフロー定義は通常 `main` から、コードは指定した SHA から取得し、確認用パッケージを用意して待つ。Vertex は Actions の OIDC、描画時の Colab は登録済み専用資格情報を使う。設定確認のためのテスト・監査・試験的なモデル要求や GPU 確保は挟まない。
 
 YouTubeの新規音声取得とGPU上の採用映像取得は、同じ既存の `YOUTUBE_COOKIES_B64` Secretを利用する。値をログ・公開入力・成果物へ出さない。未設定時にログインなしで取得できることは保証しない。YouTubeがログイン確認を要求した場合は認証接続の問題として記録し、別アカウント・別経路への切り替えや自動再投入は行わない。
 
@@ -47,9 +49,9 @@ python tools/produce_with_gemini.py --resume --output "$EXISTING_PRIVATE_OUTPUT"
 
 | やりたいこと | 入口 | 戻らない工程 |
 |---|---|---|
-| 新しい配信から制作 | `tools/produce_with_gemini.py URL --source-ref SHA --output PRIVATE_DIR` | 全編ASR・全文GPU文字起こしへ戻らない |
-| 字幕本文・推定時刻・見出し・字の色（水色の割当）・感情を修正 | 同じCLIに `--render-only --editorial-release PARENT --revision-file PRIVATE_PATCH` | Gemini・音声理解・字幕再生成へ戻らない |
-| 編集済みデータから描画だけ行う | `--render-only --editorial-release TAG` | モデルへ戻らない |
+| 新しい配信から制作 | URL・40桁 SHA・本数・設定を指定して確認用パッケージを準備。完全な例は [確認待ち経路](HUMAN_REVIEW_WORKFLOW.md) | 全編ASR・全文GPU文字起こしへ戻らない |
+| 字幕本文・推定時刻・見出し・字の色（水色の割当）・感情を修正 | 利用者の確認と承認後、`--render-only --review-approved --review-state` と元の編集 Release・Run/request・`--revision-file` を指定 | Gemini・音声理解・字幕再生成へ戻らない |
+| 編集済みデータから描画だけ行う | 利用者の確認と承認後、`--render-only --review-approved --review-state` と元の編集 Release・Run/request を指定 | モデルへ戻らない |
 | 前回完成クリップを使って変更分だけ描画 | 上記に `--reuse-render --previous-run RUN --previous-request REQUEST` | 一致する完成クリップの再エンコードを省く |
 | 保存済み応答を再利用し、未完了のモデル工程を進める | `--editorial-release TAG --continue-missing` | 完了済み応答は同じ依頼文・ルールハッシュで再利用。一度の実行につき同一要求は最大3回。一時エラーで止まった場合は明示的に再開でき、過去の試行も記録する |
 | 保存済み完成動画の回収だけ | `python -m clipforge.release_transfer download RUN clipforge-result-REQUEST PRIVATE_DIR` | モデル・描画へ戻らない |
@@ -89,14 +91,17 @@ python tools/produce_with_gemini.py --resume --output "$EXISTING_PRIVATE_OUTPUT"
 
 ```sh
 python tools/produce_with_gemini.py "$SOURCE_URL" \
-  --source-ref "$CODE_SHA" --output "$NEW_PRIVATE_OUTPUT" \
+  --source-ref "$CODE_SHA" --clips "$CLIPS" \
+  --config-file config.landscape-long-preview.example.json \
+  --output "$NEW_PRIVATE_OUTPUT" \
+  --review-approved --review-state "$REVIEW_OUTPUT/production-state.json" \
   --render-only --editorial-release "$PARENT_EDITORIAL_TAG" \
   --revision-file "$PRIVATE_PATCH" \
   --reuse-render --previous-run "$LAST_RENDER_RUN" \
   --previous-request "$LAST_RENDER_REQUEST"
 ```
 
-この入口は保存済み3ファイルを取得し、パッチを新しい作業先へ適用し、素材URLを照合して、修正版を非公開ai-model-workersへ一度保存した後、同じ描画workflowを投入する。入力JSONや字幕を公開workflow入力へ直接渡さず、非公開Releaseのタグを渡す。別アカウント・別モデルへ切り替えない。
+この例は、利用者が URL・本数・設定・コード SHA と修正内容を確認し、描画を明示的に承認した後にのみ使用する。`REVIEW_OUTPUT` には、元の `production-state.json` と、対応する元の `review-package.zip` が必要。この入口は元パッケージと編集データの同一性を照合し、パッチを新しい作業先へ適用して、修正版を非公開 ai-model-workers へ一度保存した後、描画 workflow を投入する。入力 JSON や字幕を公開 workflow 入力へ直接渡さず、非公開 Release のタグを渡す。別アカウント・別モデルへ切り替えない。
 
 準備だけなら、`python -m clipforge.editorial_revision --parent-release TAG --patch PRIVATE_PATCH --output NEW_PRIVATE_DIR`。この時点でモデル要求とRelease書き込みはゼロ。`--publish` を明示すると非公開Releaseへ保存する。統合CLIを使った場合は準備・保存・描画をまとめて進める。
 
@@ -120,7 +125,7 @@ python tools/produce_with_gemini.py "$SOURCE_URL" \
 
 ## 演出の基準
 
-清書で付ける感情は neutral（0）に固定する。修正パッチで指定した感情だけ、原音から明確な変化が分かる箇所に通常0・控えめ1・強め2で付けられる。フォント・サイズ・色は固定プリセットで描画側が決める。字の色は白（通常）・黄（強調）・水色（別の声）の3色。感情は字体・サイズと暗い縁で示す。しんみりは明朝系、他はゴシック系。明朝が使えなくても通常フォントで続行する。最大サイズ増加8%を含めた文字幅を使って改行する。演出数・見出し文字数の不足で止めない。
+清書で付ける感情は neutral（0）に固定する。修正パッチで指定した感情だけ、原音から明確な変化が分かる箇所に通常0・控えめ1・強め2で付けられる。フォント・サイズ・色は固定プリセットで描画側が決める。字の色は白（通常）と水色（別の声）。黄による強調は未実装。感情は字体・サイズと暗い縁で示す。しんみりは明朝系、他はゴシック系。明朝が使えなくても通常フォントで続行する。最大サイズ増加8%を含めた文字幅を使って改行する。演出数・見出し文字数の不足で止めない。
 
 必読の[編集ルールブック](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)が表現の基準。無理な煽り、深刻な話題の派手な演出、無根拠な感情判定、全文ASR、追加監査モデル・品質検査・再測定は加えない。
 

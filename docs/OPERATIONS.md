@@ -36,10 +36,10 @@
 - 描画のエラー詳細は、取得できた場合だけ作業出力の `diagnostics/render/` に保存する（URL と認証情報は伏せる）。
 - モデルの拒否・割り当て超過・認証の拒否を、別アカウントや別サービスで回避しない。
 
-## Claude Code セッションでの回収
+## 非公開 Release の回収
 
-- 回収の CLI（`read_transfer`）は `gh release download` を使う。この環境では GraphQL が 403 で拒否され、`RESULT_UPLOAD_FAILED` と表示されることがある。Release 自体は正常な場合が多い。
-- その場合は、Release を REST API（`gh api repos/.../releases/tags/<tag>` と `releases/assets/<id>`）で取得し、`transfer.json` のサイズと照合する。
+- 現在の `read_transfer` と Release の `download` は、`gh api` でタグを解決し、asset ID を指定した REST 経路で取得する。Release の記録されたサイズと、必要に応じてハッシュ・transfer 内容を照合する。
+- 過去に `gh release download` の GraphQL 403 で回収に失敗した事例がある。失敗表示だけから Release の有無や状態を決めつけず、認証と対象 Run の記録を確認する。別アカウントで拒否を回避しない。
 
 ## 旧経路の運用
 

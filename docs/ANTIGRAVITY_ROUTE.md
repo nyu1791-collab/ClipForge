@@ -30,7 +30,7 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 |---|---|
 | `audio_stage` | `understanding` |
 | `worker` | `cpu` |
-| `auto_render` | `false`（`true` だと `CLIPFORGE_STREAMING_RENDER` が有効になり、Colab GPU で描画が始まる） |
+| `auto_render` | `false`（確認前の自動描画は現行の workflow で拒否される） |
 | `resume_render` | `false` |
 | `result_store` | `release` |
 | `config_file` | 試行は `config.landscape-transcribe-trial.example.json`（先頭1話題だけ文字起こし）。本番の設定は `config.landscape-long-preview.example.json`（既定値）を使わず、字幕・描画の方針を確認してから決める。プレーン字幕で GPU/NVENC を使う例は `config.landscape-gpu-plain.example.json`。 |
@@ -55,6 +55,6 @@ Claude Code 以外（Codex など）が同じ制作を再現するための手�
 
 - 用語調査は経路から外した（Antigravity 経由では Google 検索の根拠が返らず、用語が採用されないため）。記録は `terminology-glossary.json` の `skipped` になる。
 - Antigravity SDK の既定プロンプトと、清書ルールの system instruction の合成は未確認。実行結果で確かめる。
-- 3.8 清書（Antigravity 経由の音声入力と JSON 応答）の実 Run は未確認。次の本番 Run で確かめ、結果をこのファイルの末尾に追記する。
+- 3.8 清書の各 Run の成否や字幕の確認範囲は、その制作の非公開の状態・受領記録と確認メモを参照する。別の Run の成功を、今回の素材の品質保証としない。
 - 並列描画は `tools/dispatch_parallel_render.py` で行う。各クリップを clip_index 指定の Run にし、全部成功したら merge Run で結合する。失敗した部分は自動で再投入せず、同じ引数で明示的に再実行する。
 - render-only の 1 Run は 1 Colab runtime で、選んだクリップを順に描画する。
