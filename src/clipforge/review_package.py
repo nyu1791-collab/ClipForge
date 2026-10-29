@@ -16,7 +16,7 @@ import zipfile
 from .audio_first import retrieved
 from .media_sources import canonical, open_source
 from .models import Settings
-from .storage import PipelineError
+from .storage import PipelineError, fingerprint
 from .release_transfer import MAX_BYTES, REPO, gh, private_repo
 
 
@@ -207,16 +207,24 @@ def make_page(selection, transcripts, raws, provenances):
         return html.escape(str(value), quote=True)
 
     parts = [
-        """<!doctype html><html lang="ja"><meta charset="utf-8"><title>ClipForge 確認用</title>
+        """<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ClipForge 確認・字幕編集</title>
 <style>body{font-family:sans-serif;max-width:1100px;margin:auto;padding:1em;line-height:1.6}
 video{width:100%;max-width:800px;background:#000}table{border-collapse:collapse;width:100%}
 td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5em}
-.flag{background:#fff3d3}button{cursor:pointer}</style>
+.flag{background:#fff3d3}button{cursor:pointer;padding:.45em} .viewer{position:relative;max-width:800px}
+.overlay{position:absolute;bottom:12%;left:4%;right:4%;text-align:center;color:white;font-weight:bold;text-shadow:1px 1px 3px black,-1px -1px 3px black;white-space:pre-wrap;pointer-events:none}
+.modal{position:fixed;inset:0;background:#0009;z-index:10;overflow:auto;padding:1em}.modal[hidden]{display:none}
+.panel{background:white;color:black;padding:1em;margin:2em auto;max-width:600px;border-radius:12px}textarea,input{box-sizing:border-box;width:100%;font-size:1rem}textarea{min-height:6em}
+.sticky{position:sticky;top:0;background:#fff;padding:.5em;z-index:2}</style>
 <h1>確認が必要そうな箇所</h1><p>字幕を焼き込む前の確認用動画です。時刻は動画の先頭からの目安です。
 まずGeminiが音声から挙げた確認候補と、機械的に検出した話者の切り替わりなどをまとめています。
 候補は推定で、確認済みを意味せず、全ての誤りを検出できるわけではありません。
 ほかの語の変更と全字幕は、必要なときだけ下の項目を開いて確認できます。
-番号と時刻、修正内容を会話でお知らせください。</p>"""
+字幕の「編集」を押すと文字と時刻を直せます。動画上の字幕は確認用の簡易表示です。</p>
+<div class="sticky"><button type="button" onclick="saveEdits()">修正ファイルを保存</button>
+<label>保存済みの修正を読み込む <input type="file" accept="application/json,.json" onchange="loadEdits(this)"></label>
+<span id="edit-count">変更 0 件</span></div>
+<p>修正は自動送信されません。保存したJSONファイルをこの会話に送ってください。画面を閉じる前に保存してください。</p>"""
     ]
     order = []
     for index, (clip, transcript, raw, provenance) in enumerate(
@@ -245,8 +253,9 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             f"<p>元配信 {clock(clip['start'])}〜{clock(clip['end'])}　見出しと内容を確認</p>"
         )
         parts.append(
-            f'<video id="v{index}" controls preload="metadata" src="clip-{index:03}.mp4"></video>'
+            f'<div class="viewer"><video id="v{index}" controls preload="metadata" src="clip-{index:03}.mp4"></video><div class="overlay" id="overlay{index}" onclick="editAt({index})"></div></div>'
         )
+        parts.append(f'<p><button type="button" onclick="addCaption({index})">現在の位置に字幕を追加</button></p><div id="added{index}"></div>')
         hints = provenance.get("review_hints", [])
         status = provenance.get("review_hints_status", "not_returned")
         parts.append('<h3>Geminiが挙げた確認候補</h3>')
@@ -269,7 +278,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
                                      f'<td>{esc(hint["reason"])}</td><td>{esc(source["text"])} → 字幕への対応不明</td></tr>')
                 for row in matched:
                     parts.append(f'<tr><td><button type="button" onclick="seek({index},{max(0, float(row["start"]) - 2):.3f})">{clock(row["start"])}〜{clock(row["end"])}</button> #{row["number"]}</td>'
-                                 f'<td>{esc(hint["reason"])}<br><small>{esc(", ".join(row["speakers"]))}</small></td>'
+                                 f'<td>{esc(hint["reason"])}<br><small>{esc(", ".join(row["speakers"]))}</small> <button type="button" onclick="editCaption({index},{row["number"]})">編集</button></td>'
                                  f'<td>{esc(row["original"] or "元の文との対応不明")} → {esc(row["text"])}</td></tr>')
             parts.append('</tbody></table>')
         parts.append(
@@ -296,7 +305,7 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             for row in group:
                 parts.append(f'<li><button type="button" onclick="seek({index},{max(0, float(row["start"]) - 2):.3f})">'
                              f'{clock(row["start"])}</button> {esc(row["text"])} '
-                             f'<small>（{esc(", ".join(row["speakers"]))}）</small></li>')
+                             f'<small>（{esc(", ".join(row["speakers"]))}）</small> <button type="button" onclick="editCaption({index},{row["number"]})">編集</button></li>')
             parts.append('</ul></details></li>')
         parts.append("</ul>")
         if not groups:
@@ -344,8 +353,8 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             )
             parts.append(
                 f'<tr class="{"flag" if reasons else ""}"><td>{row["number"]} '
-                f'<button type="button" onclick="seek({index},{float(row["start"]):.3f})">{clock(row["start"])}</button></td>'
-                f"<td>{esc(row['text'])}{original}</td><td>{esc(reasons)} "
+                f'<button type="button" onclick="seek({index},{float(row["start"]):.3f})">{clock(row["start"])}</button> <button type="button" onclick="editCaption({index},{row["number"]})">編集</button></td>'
+                f"<td><span id=\"caption-{index}-{row['number']}\">{esc(row['text'])}</span>{original}</td><td>{esc(reasons)} "
                 f"<small>{esc(', '.join(row['speakers']))}</small></td></tr>"
             )
         parts.append("</tbody></table>")
@@ -375,9 +384,67 @@ td,th{border-bottom:1px solid #ccc;text-align:left;vertical-align:top;padding:.5
             )
         parts.append("</details>")
         parts.append("</section>")
-    parts.append(
-        '<script>function seek(i,t){const v=document.getElementById("v"+i);v.currentTime=t;v.play();v.scrollIntoView({behavior:"smooth",block:"center"})}</script></html>'
-    )
+    editor_data = {"fingerprint": fingerprint({"selection": selection, "transcripts": transcripts}),
+                   "clips": [{"duration": clip["end"] - clip["start"], "segments": data["segments"]}
+                             for clip, data in zip(selection["clips"], transcripts["clips"])]}
+    encoded = json.dumps(editor_data, ensure_ascii=True).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    parts.append('<div class="modal" id="caption-editor" hidden><div class="panel"><h2 id="editor-title">字幕を編集</h2><label>字幕の文章<textarea id="editor-text"></textarea></label><label>開始時刻（秒）<input id="editor-start" type="number" min="0" step="0.1" inputmode="decimal"></label><label>終了時刻（秒）<input id="editor-end" type="number" min="0" step="0.1" inputmode="decimal"></label><p><button type="button" onclick="applyCaption()">この字幕を反映</button> <button type="button" onclick="closeEditor()">閉じる</button></p></div></div>')
+    parts.append(f'<script type="application/json" id="editor-data">{encoded}</script>')
+    parts.append(r'''<script>
+const editorData = JSON.parse(document.getElementById("editor-data").textContent);
+let edits = new Map(), additions = [], editing = null;
+function seek(i,t){const v=document.getElementById("v"+i);v.currentTime=t;v.play();v.scrollIntoView({behavior:"smooth",block:"center"})}
+function key(c,n){return c+":"+n}
+function caption(c,n){return edits.get(key(c,n)) || editorData.clips[c-1].segments[n-1]}
+function editCaption(c,n){editing={clip:c,number:n};showEditor(caption(c,n),"字幕 "+n+" を編集")}
+function addCaption(c){const v=document.getElementById("v"+c), duration=editorData.clips[c-1].duration;
+ const start=Math.max(0,Math.min(v.currentTime||0,Math.max(0,duration-0.1)));
+ editing={clip:c,number:0};showEditor({text:"",start:start,end:Math.min(duration,start+2)},"字幕を追加")}
+function editAdded(i){editing={clip:additions[i].clip,number:0,added:i};showEditor(additions[i],"追加した字幕を編集")}
+function showEditor(data,title){document.getElementById("editor-title").textContent=title;
+ document.getElementById("editor-text").value=data.text;document.getElementById("editor-start").value=String(data.start);
+ document.getElementById("editor-end").value=String(data.end);document.getElementById("caption-editor").hidden=false}
+function closeEditor(){document.getElementById("caption-editor").hidden=true;editing=null}
+function applyCaption(){if(!editing)return;const text=document.getElementById("editor-text").value;
+ const a=document.getElementById("editor-start").value,b=document.getElementById("editor-end").value;
+ const start=Number(a),end=Number(b),duration=editorData.clips[editing.clip-1].duration;
+ if(!a.trim()||!b.trim()||!Number.isFinite(start)||!Number.isFinite(end)||start<0||start>=end||end>duration){alert("開始・終了時刻を動画の範囲内で正しく入力してください。");return}
+ if(!editing.number&&!text.trim()){alert("追加する字幕の文章を入力してください。");return}
+ if(editing.number){const base=editorData.clips[editing.clip-1].segments[editing.number-1];
+ const value={start,end,text};if(base.start===start&&base.end===end&&base.text===text)edits.delete(key(editing.clip,editing.number));
+ else edits.set(key(editing.clip,editing.number),value)}else if(editing.added!==undefined){additions[editing.added]={clip:editing.clip,start,end,text}}
+ else additions.push({clip:editing.clip,start,end,text});closeEditor();refresh()}
+function removeAdded(i){additions.splice(i,1);refresh()}
+function refresh(){document.getElementById("edit-count").textContent="変更 "+(edits.size+additions.length)+" 件";
+ editorData.clips.forEach((clip,idx)=>{const c=idx+1;clip.segments.forEach((_,j)=>{const el=document.getElementById("caption-"+c+"-"+(j+1));if(el)el.textContent=caption(c,j+1).text});
+ const box=document.getElementById("added"+c);box.replaceChildren();additions.forEach((item,i)=>{if(item.clip!==c)return;
+ const p=document.createElement("p"), label=document.createElement("span"), e=document.createElement("button"), d=document.createElement("button");
+ label.textContent="追加 "+item.start.toFixed(1)+"〜"+item.end.toFixed(1)+"秒: "+item.text+" ";e.textContent="編集";e.onclick=()=>editAdded(i);d.textContent="取り消し";d.onclick=()=>removeAdded(i);p.append(label,e,d);box.append(p)});
+ updateOverlay(c)})}
+function updateOverlay(c){const v=document.getElementById("v"+c),t=v.currentTime;
+ const lines=editorData.clips[c-1].segments.map((_,j)=>caption(c,j+1)).concat(additions.filter(x=>x.clip===c));
+ const shown=lines.filter(x=>x.start<=t&&t<x.end&&x.text);const overlay=document.getElementById("overlay"+c);
+ overlay.textContent=shown.map(x=>x.text).join("\n");overlay.style.pointerEvents=shown.length?"auto":"none"}
+function editAt(c){const t=document.getElementById("v"+c).currentTime,active=[];
+ editorData.clips[c-1].segments.forEach((_,i)=>{const row=caption(c,i+1);if(row.start<=t&&t<row.end&&row.text)active.push({number:i+1})});
+ additions.forEach((row,i)=>{if(row.clip===c&&row.start<=t&&t<row.end&&row.text)active.push({added:i})});
+ if(active.length!==1){alert("複数の字幕が重なっています。下の字幕一覧から編集してください。");return}
+ document.getElementById("v"+c).pause();if(active[0].number)editCaption(c,active[0].number);else editAdded(active[0].added)}
+function buildPatch(){const clips=[];editorData.clips.forEach((_,i)=>{const c=i+1,segments=[];
+ edits.forEach((v,k)=>{const [clip,n]=k.split(":").map(Number);if(clip===c)segments.push({segment:n,...v})});
+ const added=additions.filter(x=>x.clip===c).map(({start,end,text})=>({start,end,text}));
+ if(segments.length||added.length)clips.push({clip:c,segments,...(added.length?{add_segments:added}:{})})});
+ return {reason:"利用者による字幕修正",input_fingerprint:editorData.fingerprint,clips}}
+function saveEdits(){const patch=buildPatch();if(!patch.clips.length){alert("まだ修正がありません。");return}
+ const url=URL.createObjectURL(new Blob([JSON.stringify(patch,null,2)],{type:"application/json"}));const a=document.createElement("a");
+ a.href=url;a.download="clipforge-subtitle-edits.json";a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+async function loadEdits(input){try{const patch=JSON.parse(await input.files[0].text());if(patch.input_fingerprint!==editorData.fingerprint||!Array.isArray(patch.clips))throw Error();
+ const next=new Map(),extra=[];for(const row of patch.clips){const c=row.clip,clip=editorData.clips[c-1];if(!Number.isInteger(c)||!clip)throw Error();
+ for(const change of row.segments||[]){if(!Number.isInteger(change.segment)||!clip.segments[change.segment-1]||typeof change.text!=="string"||!Number.isFinite(change.start)||!Number.isFinite(change.end)||change.start<0||change.start>=change.end||change.end>clip.duration)throw Error();next.set(key(c,change.segment),{start:change.start,end:change.end,text:change.text})}
+ for(const item of row.add_segments||[]){if(typeof item.text!=="string"||!item.text.trim()||!Number.isFinite(item.start)||!Number.isFinite(item.end)||item.start<0||item.start>=item.end||item.end>clip.duration)throw Error();extra.push({clip:c,start:item.start,end:item.end,text:item.text})}}
+ edits=next;additions=extra;refresh()}catch(e){alert("この動画の修正ファイルを読み込めませんでした。")}input.value=""}
+editorData.clips.forEach((_,i)=>{const c=i+1;document.getElementById("v"+c).addEventListener("timeupdate",()=>updateOverlay(c))});refresh();
+</script></html>''')
     return "\n".join(parts)
 
 

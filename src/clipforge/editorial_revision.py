@@ -12,7 +12,7 @@ from .caption_emotions import annotation
 from .models import Transcript
 from .speaker_captions import validate_turns
 from .sound_effects import prepare_cues
-from .storage import PipelineError, digest, write_json
+from .storage import PipelineError, digest, fingerprint, write_json
 
 PRIVATE_REPO = "nyu1791-collab/ai-model-workers"
 EDITORIAL_TAG_PATTERN = (
@@ -41,7 +41,7 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
     patch_file, output = Path(patch_file), Path(output)
     patch = json.loads(patch_file.read_text())
     # A mistake in target IDs is an input error, not an editorial quality gate.
-    if set(patch) - {"reason", "clips"} or not isinstance(patch.get("clips"), list):
+    if set(patch) - {"reason", "clips", "input_fingerprint"} or not isinstance(patch.get("clips"), list):
         raise PipelineError(
             "Revision requires reason and clips; source replacement is not supported"
         )
@@ -86,6 +86,8 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
     receipt = json.loads((parent / ASSETS[0]).read_text())
     selection = json.loads((parent / ASSETS[1]).read_text())
     transcripts = json.loads((parent / ASSETS[2]).read_text())
+    if "input_fingerprint" in patch and patch["input_fingerprint"] != fingerprint({"selection": selection, "transcripts": transcripts}):
+        raise PipelineError("Revision was prepared for another editorial selection")
     if (
         receipt.get("status") != "complete"
         or selection.get("selection_basis") != "audio_understanding"
@@ -101,6 +103,7 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
             "clip",
             "title",
             "segments",
+            "add_segments",
             "sound_effects",
             "speaker_turns",
         }:
@@ -141,11 +144,30 @@ def create_revision(parent_tag, patch_file, output, *, publish=False):
             segment.update({k: v for k, v in change.items() if k != "segment"})
             if any(k.startswith("emotion") for k in change):
                 segment.update(annotation(segment))
+        additions = row.get("add_segments", [])
+        if not isinstance(additions, list):
+            raise PipelineError("Added subtitles must be a list")
+        for added in additions:
+            if not isinstance(added, dict) or set(added) != {"start", "end", "text"}:
+                raise PipelineError("Added subtitle requires start, end and text")
+            start, end, text = added["start"], added["end"], added["text"]
+            if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not isinstance(text, str) or not text.strip()
+                or not 0 <= start < end <= clip["end"] - clip["start"]):
+                raise PipelineError("Added subtitle has invalid time or text")
+            data["segments"].append({"start": start, "end": end, "text": text, "words": []})
+        if additions:
+            data["segments"].sort(key=lambda item: (item["start"], item["end"]))
         # Preserve clip identity and real data structure; no text length or quality threshold.
         transcripts["clips"][index - 1] = Transcript.model_validate(data).model_dump()
         if "speaker_turns" in row:
             clip["speaker_turns"] = validate_turns(
                 row["speaker_turns"], clip["end"] - clip["start"]
+            )
+        if additions:
+            clip["speaker_turns"] = validate_turns(
+                [*clip.get("speaker_turns", []), *[{"start": item["start"], "end": item["end"], "speaker_id": None, "confidence": 0} for item in additions]],
+                clip["end"] - clip["start"],
             )
         if "sound_effects" in row:
             clip["sound_effects"] = prepare_cues(
