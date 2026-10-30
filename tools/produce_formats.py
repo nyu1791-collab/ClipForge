@@ -84,14 +84,29 @@ def main():
                 record['capcut'] = 1
                 return record
             record['capcut'] = 0
+            cache_path = args.output / name / 'capcut-exports.json'
+            cached = json.loads(cache_path.read_text(encoding='utf-8')) if cache_path.is_file() else []
             for clip in clips:
                 try:
+                    receipt = json.loads((clip/'render.json').read_text(encoding='utf-8'))
+                    key = [clip.name, receipt.get('key'), str(args.capcut_drafts_dir.resolve()), str(args.capcut_cli_js.resolve())]
+                    if any(r['key'] == key and (Path(r['draft'])/'draft_content.json').is_file() for r in cached):
+                        continue
                     result = subprocess.run([sys.executable, str(Path(__file__).with_name('export_capcut_draft.py')),
                                              str(clip), '--drafts-dir', str(args.capcut_drafts_dir),
-                                             '--cli-js', str(args.capcut_cli_js)], check=False)
+                                             '--cli-js', str(args.capcut_cli_js)], check=False, capture_output=True, text=True, encoding='utf-8')
+                    print(result.stdout, end='', flush=True)
+                    if result.stderr:
+                        print(result.stderr, file=sys.stderr, end='', flush=True)
                     if result.returncode:
                         record['capcut'] = result.returncode
-                except OSError as error:
+                    else:
+                        exported = json.loads(result.stdout)
+                        cached.append({'key': key, 'draft': exported['draft']})
+                        temporary = cache_path.with_suffix('.tmp')
+                        temporary.write_text(json.dumps(cached, ensure_ascii=False), encoding='utf-8')
+                        temporary.replace(cache_path)
+                except (OSError, ValueError, KeyError) as error:
                     print(f'{clip.name}: {error}', file=sys.stderr, flush=True)
                     record['capcut'] = 1
         return record

@@ -315,6 +315,16 @@ def main():
         state["render_run_id"] = final_run
         state["render_request_id"] = final_request
         save()
+        local = args.output / "clips"
+        if state.get("render_complete") and local.is_dir() and (
+            not args.deliver_drive or state.get("drive_status") == "uploaded"
+        ):
+            validate_identity(local, final_run, "clipforge-result-" + final_request,
+                              args.source_ref, audit_hashes=False)
+            state.update(status="complete", elapsed_sec=round(time.time() - state["started_at"], 3))
+            save()
+            print(json.dumps({"status":"complete", "reused_local":True, "output":str(local)}), flush=True)
+            return
         metadata = read_transfer(final_run, "clipforge-result-" + final_request)
         if canonical(metadata["stage_manifest"]["source_url"]) != url:
             raise RuntimeError("Rendered output belongs to another source URL")
