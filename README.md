@@ -45,3 +45,6 @@ uv run --no-sync python tools/produce_with_gemini.py \
 - [INDEX.md](INDEX.md)：コードと関連文書の地図
 
 旧全編GPU ASRや候補プレビューの手順は、過去成果物を明示的に復旧する場合だけ参照します。通常制作の前提にしません。
+
+
+制作の目標・再開・接続の整理は [制作経路の整理](docs/STREAMLINING.md) を参照してください。

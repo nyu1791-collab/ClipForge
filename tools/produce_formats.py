@@ -24,7 +24,9 @@ def commands(url, output, mode, source_ref, clips=None, capcut=False):
     for name in formats:
         destination = output / name
         if (destination / 'production-state.json').exists():
-            raise ValueError(f'{name} already has a saved production; resume it instead of submitting again')
+            result.append((name, [sys.executable, str(Path(__file__).with_name('produce_with_gemini.py')),
+                                  url, '--resume', '--output', str(destination)]))
+            continue
         config = CONFIGS['tiktok-capcut'] if name == 'tiktok' and capcut else CONFIGS[name]
         command = [sys.executable, str(Path(__file__).with_name('produce_with_gemini.py')),
                    url, '--output', str(destination), '--config-file', config,
@@ -47,38 +49,34 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     capcut = args.capcut_drafts_dir is not None or args.capcut_cli_js is not None
-    if capcut and (args.capcut_drafts_dir is None or args.capcut_cli_js is None or args.mode == 'long'):
-        parser.error('CapCut export needs both CapCut paths and a TikTok mode')
-    if capcut:
-        if not args.capcut_drafts_dir.is_dir() or not args.capcut_cli_js.is_file() or not shutil.which('node'):
-            parser.error('CapCut export needs an existing draft directory, CLI entry point, and Node.js')
-        try:
-            package = json.loads((args.capcut_cli_js.resolve().parent.parent / 'package.json').read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            parser.error('Cannot read the capcut-cli package metadata')
-        if package.get('name') != 'capcut-cli':
-            parser.error('The specified CLI is not capcut-cli')
+    capcut_ready = bool(args.capcut_drafts_dir and args.capcut_cli_js and shutil.which('node'))
+    if capcut and not capcut_ready:
+        print('CapCut設定が不足しているため、動画を先に制作し、ドラフト出力は保留します。', flush=True)
     source_ref = args.source_ref
-    if not source_ref:
+    formats = ('long', 'tiktok') if args.mode == 'both' else (args.mode,)
+    needs_new = any(not (args.output / name / 'production-state.json').exists() for name in formats)
+    if not source_ref and needs_new:
         source_ref = subprocess.run(
             ['gh', 'api', 'repos/nyu1791-collab/ClipForge/commits/main', '--jq', '.sha'],
             check=True, capture_output=True, text=True, timeout=30,
         ).stdout.strip()
-    if not re.fullmatch('[a-f0-9]{40}', source_ref):
+    if source_ref is not None and not re.fullmatch('[a-f0-9]{40}', source_ref):
         parser.error('source-ref must be an exact commit SHA')
-    try:
-        items = commands(args.url, args.output, args.mode, source_ref, args.clips, capcut)
-    except ValueError as error:
-        parser.error(str(error))
+    items = commands(args.url, args.output, args.mode, source_ref, args.clips, capcut)
+    new_productions = sum('--resume' not in command for _, command in items)
     print(json.dumps({'formats': [name for name, _ in items], 'source_ref': source_ref,
                       'outputs': {name: str(args.output / name) for name, _ in items},
-                      'separate_model_requests': len(items) > 1}, ensure_ascii=False), flush=True)
+                      'new_productions': new_productions,
+                      'separate_model_requests': new_productions > 1}, ensure_ascii=False), flush=True)
     if args.dry_run:
         return 0
     def finish(name, process):
         status = process.wait()
         record = {'production': status, 'capcut': None}
-        if status == 0 and capcut and name in ('tiktok', 'tiktok-capcut'):
+        if capcut and name in ('tiktok', 'tiktok-capcut'):
+            if not capcut_ready:
+                record['capcut'] = 'pending'
+                return record
             clips_dir = args.output / name / 'clips' / 'clips'
             clips = sorted(clips_dir.glob('clip-*'))
             if not clips:
@@ -87,20 +85,30 @@ def main():
                 return record
             record['capcut'] = 0
             for clip in clips:
-                result = subprocess.run([sys.executable, str(Path(__file__).with_name('export_capcut_draft.py')),
-                                         str(clip), '--drafts-dir', str(args.capcut_drafts_dir),
-                                         '--cli-js', str(args.capcut_cli_js)], check=False)
-                if result.returncode:
-                    record['capcut'] = result.returncode
-                    return record
+                try:
+                    result = subprocess.run([sys.executable, str(Path(__file__).with_name('export_capcut_draft.py')),
+                                             str(clip), '--drafts-dir', str(args.capcut_drafts_dir),
+                                             '--cli-js', str(args.capcut_cli_js)], check=False)
+                    if result.returncode:
+                        record['capcut'] = result.returncode
+                except OSError as error:
+                    print(f'{clip.name}: {error}', file=sys.stderr, flush=True)
+                    record['capcut'] = 1
         return record
 
-    processes = [(name, subprocess.Popen(command)) for name, command in items]
-    with ThreadPoolExecutor(max_workers=len(processes)) as pool:
-        futures = [(name, pool.submit(finish, name, process)) for name, process in processes]
+    def produce(name, command):
+        try:
+            process = subprocess.Popen(command)
+        except OSError as error:
+            print(f'{name}: {error}', file=sys.stderr, flush=True)
+            return {'production': 1, 'capcut': None}
+        return finish(name, process)
+
+    with ThreadPoolExecutor(max_workers=len(items)) as pool:
+        futures = [(name, pool.submit(produce, name, command)) for name, command in items]
         statuses = {name: future.result() for name, future in futures}
     print(json.dumps({'statuses': statuses, 'note': 'Resume a saved production instead of resubmitting it.'}), flush=True)
-    return 0 if all(row['production'] == 0 and row['capcut'] in (None, 0) for row in statuses.values()) else 1
+    return 0 if all(row['production'] == 0 and row['capcut'] in (None, 0, 'pending') for row in statuses.values()) else 1
 
 
 if __name__ == '__main__':
