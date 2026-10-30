@@ -76,11 +76,11 @@ class Settings(Record):
     framing: Literal["fit", "center-crop"] = "fit"
     # Frame height in pixels. Unset means the standard size for the aspect: 1920 for 9:16
     # (1080x1920, the size phones show at full sharpness), otherwise 1080.
-    height: Literal[360, 720, 1080, 1920] | None = None
+    height: Literal[360, 720, 1080, 1280, 1920] | None = None
     # x264 speed preset. On a 40 s clip with CRF 18, slow matched medium's time and gained
     # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
-    caption: Literal["plain", "karaoke", "sequential"] = "karaoke"
+    caption: Literal["plain", "karaoke", "sequential", "editable"] = "karaoke"
     # Gemini's edited subtitles must not pass through legacy ASR text deletion.
     caption_preserve_text: bool = False
     caption_emotions: bool = False
@@ -201,6 +201,8 @@ class Settings(Record):
             raise ValueError("a pinned transcript key is read only; require the cache")
         if self.height == 1920 and self.aspect != "9:16":
             raise ValueError("height 1920 is only for the 9:16 aspect")
+        if self.height == 1280 and self.aspect != "9:16":
+            raise ValueError("height 1280 is only for the 9:16 aspect")
         if self.chat_panel:
             if self.aspect != "16:9":
                 raise ValueError("chat panel is only for landscape 16:9 output")

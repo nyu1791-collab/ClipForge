@@ -475,7 +475,8 @@ def render_clip(
                     directory / "video.mp4",
                     clip,
                     settings,
-                    ass=directory / "captions.ass",
+                    # Editable exports keep the video clean and save captions separately.
+                    ass=None if settings.caption == "editable" else directory / "captions.ass",
                     **({"sound_effects": sound_effects} if sound_effects else {}),
                     **(
                         {"chat_ass": directory / "chat.ass"}

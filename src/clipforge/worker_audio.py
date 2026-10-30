@@ -697,6 +697,13 @@ def verify_same_run_analysis(previous, request_id, source_ref, run_id, previous_
             raise PipelineError("same-run analysis files changed")
 
 
+def supports_audio_stage(settings):
+    """Accept the established landscape profiles and vertical short profiles."""
+    return (settings.aspect == "16:9" and settings.height in (360, 1080)) or (
+        settings.aspect == "9:16" and settings.height in (720, 1080, 1280, 1920)
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -745,9 +752,9 @@ def main(argv=None):
         ):
             raise PipelineError("invalid private worker identity")
         settings = Settings.model_validate_json(args.config.read_text())
-        # 360p is the fast review and delivery size; 1080p is rendered on request.
-        if settings.aspect != "16:9" or settings.height not in (360, 1080):
-            raise PipelineError("horizontal worker settings are required")
+        # Landscape and TikTok use the same saved editorial/render path.
+        if not supports_audio_stage(settings):
+            raise PipelineError("unsupported worker aspect or output height")
         if args.stage == "merge":
             with tempfile.TemporaryDirectory(prefix="clipforge-parts-") as temporary:
                 parts = [(path, None) for path in args.part_dir]
