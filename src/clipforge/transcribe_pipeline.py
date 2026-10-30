@@ -2,6 +2,8 @@
 
 import http.client
 import json
+import os
+import random
 import socket
 import tempfile
 import time
@@ -17,7 +19,18 @@ from .transcribe_adapter import word_segments
 
 MAX_SECONDS = 898.0
 OVERLAP_SECONDS = 2.0
-MAX_PARALLEL = 6
+def parallel_limit():
+    raw = os.environ.get("CLIPFORGE_TRANSCRIBE_PARALLEL", "1")
+    try:
+        value = int(raw)
+    except ValueError:
+        raise PipelineError("CLIPFORGE_TRANSCRIBE_PARALLEL must be an integer from 1 to 6") from None
+    if not 1 <= value <= 6:
+        raise PipelineError("CLIPFORGE_TRANSCRIBE_PARALLEL must be an integer from 1 to 6")
+    return value
+
+
+MAX_PARALLEL = parallel_limit()
 slots = BoundedSemaphore(MAX_PARALLEL)
 
 
@@ -111,6 +124,7 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                 client.record["new_generation_requests"] += 1
                 client.save()
             tick = time.monotonic()
+            retry_after = 0.0
             try:
                 request = urllib.request.Request(
                     endpoint,
@@ -133,6 +147,10 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                 )
                 return result
             except urllib.error.HTTPError as error:
+                try:
+                    retry_after = max(0.0, float(error.headers.get("Retry-After", "0")))
+                except (AttributeError, TypeError, ValueError):
+                    pass
                 row.update(
                     status="failed",
                     http_status=error.code,
@@ -159,7 +177,10 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                     finished_at=time.time(),
                 )
                 client.save()
-            time.sleep(15 if attempt == len(rows) + 1 else 45)
+            delay = max(retry_after, (30 if attempt == len(rows) + 1 else 90) + random.uniform(0, 10))
+            row["retry_delay_seconds"] = round(delay, 2)
+            client.save()
+            time.sleep(delay)
 
 
 def transcribe_clip(client, audio, clip, index, source_sha):

@@ -874,6 +874,9 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
         if saved_receipt.get("timestamp_source") != "gemini_transcribe":
             raise PipelineError("Saved production used a different transcription route; resume its original code")
     client.record["timestamp_source"] = "gemini_transcribe"
+    from .transcribe_pipeline import MAX_PARALLEL
+    client.record["transcribe_parallel_limit"] = MAX_PARALLEL
+    print(json.dumps({"stage": "transcribe", "parallel_limit": MAX_PARALLEL, "route": "vertex", "model": "gemini-3.5-transcribe"}), flush=True)
     client.save()
     renderer = None
     if os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true":
@@ -918,7 +921,14 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
     finally:
         try:
             if renderer is not None:
-                renderer.close()
+                import sys
+                active_error = sys.exc_info()[0] is not None
+                try:
+                    renderer.close()
+                except Exception as error:
+                    if not active_error:
+                        raise
+                    print(json.dumps({"stage": "render", "status": "failed", "error_type": type(error).__name__}), flush=True)
         finally:
             client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
             client.save()

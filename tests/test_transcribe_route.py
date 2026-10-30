@@ -125,6 +125,47 @@ def test_nonretryable_http_failure_remains_nonretryable_on_resume(
         route.request_chunk(c2, "audio", clip, 1, 0, 0, 20, "sha")
 
 
+def test_transcribe_retries_rate_limit_after_server_delay(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    monkeypatch.setattr(route, "encode_audio", lambda src, dst, *a, **kw: dst.write_bytes(b"audio"))
+    monkeypatch.setattr(route.random, "uniform", lambda *args: 0)
+    delays = []
+    monkeypatch.setattr(route.time, "sleep", delays.append)
+    calls = []
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return json.dumps(response()).encode()
+
+    def request(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise HTTPError("https://example.invalid", 429, "limited", {"Retry-After": "60"}, None)
+        return Reply()
+
+    monkeypatch.setattr(route.urllib.request, "urlopen", request)
+    route.request_chunk(c, "audio", SimpleNamespace(start=0, end=20), 1, 0, 0, 20, "sha")
+    assert delays == [60]
+    assert [r["status"] for r in c.record["requests"]] == ["failed", "received"]
+    assert c.record["requests"][0]["retry_delay_seconds"] == 60
+
+
+def test_transcribe_parallel_limit_is_explicit(monkeypatch):
+    monkeypatch.delenv("CLIPFORGE_TRANSCRIBE_PARALLEL", raising=False)
+    assert route.parallel_limit() == 1
+    monkeypatch.setenv("CLIPFORGE_TRANSCRIBE_PARALLEL", "2")
+    assert route.parallel_limit() == 2
+    monkeypatch.setenv("CLIPFORGE_TRANSCRIBE_PARALLEL", "0")
+    with pytest.raises(PipelineError):
+        route.parallel_limit()
+
+
 def test_long_topic_uses_overlap_and_chunk_local_speakers(monkeypatch):
     calls = []
 

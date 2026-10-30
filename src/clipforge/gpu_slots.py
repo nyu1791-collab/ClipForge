@@ -83,7 +83,10 @@ def gpu_slot(kind, control_dir, pending=None, timeout=1800):
             if waiting and waiting[0] != Path(pending):
                 time.sleep(0.25)
                 continue
-        for index in range(4):
+        # Colab refused a third concurrent allocation during production. Keep
+        # capacity conservative; existing markers for all four slots are still
+        # cleared by clear_stopped after a confirmed release.
+        for index in range(2):
             candidate = (directory / ("slot-" + str(index) + ".json")).open("a+")
             try:
                 fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
