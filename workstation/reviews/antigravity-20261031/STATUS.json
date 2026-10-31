@@ -34,7 +34,8 @@
       "real_browser_tested": false,
       "paid_model_requests": 0,
       "windows_tested": false
-    }
+    },
+    "workstation_test_files_tracked_in_all_three": true
   },
   "code_snapshots": {
     "ClipForge": {
@@ -50,7 +51,7 @@
       "branch": "feat/portable-automation-20261031"
     },
     "MoneyPrinterTurbo-Foundation": {
-      "head": "0fffc87c3c2d61dd822fb306d13e13255be5a47a",
+      "head": "c5722a9e52db7b2dcd5978b9c09ced0061240c8f",
       "branch": "feat/portable-automation-20261031"
     },
     "StreamCut": {
