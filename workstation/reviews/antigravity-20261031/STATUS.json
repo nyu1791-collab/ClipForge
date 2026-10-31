@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "as_of_date_utc": "2026-10-31",
+  "requested_model_display_name": "アンチグラビティの4 アルゴン",
+  "requested_model_id": null,
+  "requested_thinking_level": "high",
+  "external_review_status": "blocked_before_inference",
+  "external_review_requests": 0,
+  "external_review_response_received": false,
+  "external_model_opinions": [],
+  "blockers": [
+    "exact_display_name_to_model_id_unverified",
+    "no_antigravity_or_desktop_commander_connector_in_session",
+    "running_cloud_network_policy_excludes_antigravity_and_google_model_hosts"
+  ],
+  "authentication_status": "not_revalidated_for_requested_model",
+  "model_substitution_used": false,
+  "antigravity_sdk": {
+    "existing_workflow_version": "0.1.22",
+    "high_option_confirmed_in_release_sources": true,
+    "package_installed_for_this_review": false,
+    "model_access_verified": false
+  },
+  "independent_code_changes": {
+    "attribution": "local_source_inspection_not_external_model_advice",
+    "repositories": [
+      "ClipForge",
+      "MoneyPrinterTurbo-Foundation",
+      "voiceBox-Pipeline"
+    ],
+    "checks": {
+      "type": "mocked_browser_and_model_plus_existing_workstation_tests",
+      "passed": 39,
+      "real_browser_tested": false,
+      "paid_model_requests": 0,
+      "windows_tested": false
+    }
+  },
+  "code_snapshots": {
+    "ClipForge": {
+      "head": "36f4a2cee66c9342827db43d8775f8d0222b5832",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "3D-": {
+      "head": "a7a5a80c1ba3a8c5bc02886a3645512fc7cb6350",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "ClipForge-Delivery": {
+      "head": "13b51790f8be5533aa2ad5a8f3cffbe0abd174e5",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "MoneyPrinterTurbo-Foundation": {
+      "head": "0fffc87c3c2d61dd822fb306d13e13255be5a47a",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "StreamCut": {
+      "head": "84f67ab3e953122ebc21cb05ea4ea3bd64fcd9f2",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "Translation": {
+      "head": "dda6547c0f2dff9675284cbebab29aeb9963abf2",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "discord-digital-delivery": {
+      "head": "c261ebbabf3a1bf8908d1f5d8b2c6f98d4f93147",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "shorts-only": {
+      "head": "41196ee3facc0bb5744861fb039a703f3b56284b",
+      "branch": "feat/portable-automation-20261031"
+    },
+    "voiceBox-Pipeline": {
+      "head": "b967d2c420a87d376680ab34832cbdd0475bffd9",
+      "branch": "feat/portable-automation-20261031"
+    }
+  },
+  "request_sha256": "0519ff23cf4057c727acf89a7aa4c7e2d52de521030c5215b7af196a5d9460db"
+}

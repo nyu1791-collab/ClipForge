@@ -100,6 +100,8 @@ cd ClipForge
 
 [各リポジトリの反映先](DEPLOYMENTS.md)・[外部候補の採用判断](ADOPTION.md)・[実施した確認](VALIDATION.md)。
 
+追加の意見照会用に、[Antigravityへ貼り付ける現状説明](reviews/antigravity-20261031/REQUEST.md)と[実行状態](reviews/antigravity-20261031/STATUS.json)を保存した。指定「4 アルゴン」Highの回答は未取得。独自に発見して直した内容は[照合結果](reviews/antigravity-20261031/ASSESSMENT.md)に分けて記録している。
+
 このCloneは軽い導入コマンドで、本体の制作や投稿は実行しない。既存フォルダを上書き・reset・自動更新しない。
 
 ```powershell
