@@ -13,3 +13,5 @@
 GitHubの公開ページとGit checkoutで8つの外部候補の機能・LICENSEを確認した。GitHub APIホストはクラウドのネットワークで拒否され、Desktop Commanderのツールもこのセッションにはない。公開プロフィールで見えた9リポジトリを対象にし、非公開全件列挙は未確認。
 
 以前の公開保存庫移管の未コミット変更はgit stashと `/workspace/private/pre-pc-integration-2026-10-31` の控えに保持した。この作業で適用・削除・公開はしていない。
+
+追加確認: GitHubへpushした専用ブランチから、PC用workspaceコマンドでshorts-onlyとClipForge-Deliveryを新しい一時フォルダへ取得し、各HEADをworkspace-lock.jsonへ記録できた。Deliveryでは作成した新しい仮想環境へrequirements.txtを導入し、独立データフォルダでWaitressを起動してHTTP 200とアプリ画面を確認。確認用サーバーは停止済み。これもLinuxでの確認であり、Windows/CapCutの実機確認ではない。

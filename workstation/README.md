@@ -89,6 +89,15 @@ browser-useは明示したモデル/認証経路の5ステップ以内の調査�
 
 ## 9つの公開リポジトリをPCへ配置する
 
+最初にPCへGitとPython 3.12を用意し、専用ブランチを取得する。
+
+```powershell
+git clone --branch feat/portable-automation-20261031 https://github.com/nyu1791-collab/ClipForge.git
+cd ClipForge
+```
+
+[各リポジトリの反映先](DEPLOYMENTS.md)・[外部候補の採用判断](ADOPTION.md)・[実施した確認](VALIDATION.md)。
+
 このCloneは軽い導入コマンドで、本体の制作や投稿は実行しない。既存フォルダを上書き・reset・自動更新しない。
 
 ```powershell
