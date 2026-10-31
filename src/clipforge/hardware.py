@@ -20,6 +20,27 @@ def _available_cpu_threads():
 
 
 @lru_cache(maxsize=1)
+def nvenc_options(quality):
+    """p5 + hq tuning + spatial AQ: cleaner text edges and gradients at the same
+    constant-quality target; still far faster than real time at 360-1080p."""
+    return [
+        "-preset",
+        "p5",
+        "-tune",
+        "hq",
+        "-rc",
+        "vbr",
+        "-cq",
+        str(quality),
+        "-b:v",
+        "0",
+        "-spatial-aq",
+        "1",
+        "-rc-lookahead",
+        "20",
+    ]
+
+
 def nvenc_available():
     # An encoder listing alone does not prove a working driver/NVENC session.
     try:
@@ -40,14 +61,8 @@ def nvenc_available():
                 "-an",
                 "-c:v",
                 "h264_nvenc",
-                "-preset",
-                "p1",
-                "-rc",
-                "vbr",
-                "-cq",
-                "20",
-                "-b:v",
-                "0",
+                # Probe with the real options, so an unsupported one falls back to x264.
+                *nvenc_options(20),
                 "-pix_fmt",
                 "yuv420p",
                 "-f",
@@ -72,24 +87,7 @@ def video_options(settings, quality):
             )
         encoder = "h264_nvenc" if available else "libx264"
     if encoder == "h264_nvenc":
-        # p5 + hq tuning + spatial AQ: visibly cleaner text edges and gradients at the
-        # same constant-quality target; still far faster than real time at 360-1080p.
-        options = [
-            "-preset",
-            "p5",
-            "-tune",
-            "hq",
-            "-rc",
-            "vbr",
-            "-cq",
-            str(quality),
-            "-b:v",
-            "0",
-            "-spatial-aq",
-            "1",
-            "-rc-lookahead",
-            "20",
-        ]
+        options = nvenc_options(quality)
     else:
         options = ["-preset", "veryfast", "-crf", str(quality)]
     return [
