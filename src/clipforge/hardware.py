@@ -72,7 +72,24 @@ def video_options(settings, quality):
             )
         encoder = "h264_nvenc" if available else "libx264"
     if encoder == "h264_nvenc":
-        options = ["-preset", "p1", "-rc", "vbr", "-cq", str(quality), "-b:v", "0"]
+        # p5 + hq tuning + spatial AQ: visibly cleaner text edges and gradients at the
+        # same constant-quality target; still far faster than real time at 360-1080p.
+        options = [
+            "-preset",
+            "p5",
+            "-tune",
+            "hq",
+            "-rc",
+            "vbr",
+            "-cq",
+            str(quality),
+            "-b:v",
+            "0",
+            "-spatial-aq",
+            "1",
+            "-rc-lookahead",
+            "20",
+        ]
     else:
         options = ["-preset", "veryfast", "-crf", str(quality)]
     return [
@@ -81,6 +98,13 @@ def video_options(settings, quality):
         *options,
         "-pix_fmt",
         "yuv420p",
+        # Tag SDR output as BT.709 so players do not guess and wash out colours.
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
         "-threads",
         str(encode_threads(settings)),
     ]

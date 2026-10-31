@@ -70,6 +70,12 @@ def final_video_options(settings):
         str(VIDEO_CRF),
         "-pix_fmt",
         "yuv420p",
+        "-colorspace",
+        "bt709",
+        "-color_primaries",
+        "bt709",
+        "-color_trc",
+        "bt709",
         "-threads",
         str(encode_threads(settings)),
     ]

@@ -5,7 +5,7 @@
 ## 構成
 - Python 3（uv）。依存は `pyproject.toml`、テストは `uv run --no-sync python -m pytest -q -p no:cacheprovider`、lint は `ruff`。
 - 日本語字幕は Noto Sans CJK JP が必須（無いと字幕系テストが失敗する）。Colab 制御のテストは SDK が要る（`tools/dev_setup.sh` が入れる）。
-- 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。
+- 規約: `AGENTS.md`（共通）・`CLAUDE.md`（Claude 向け）。運用文書は `docs/`。FFmpegの品質レシピは skill `.claude/skills/ffmpeg-quality/`。
 - 開発環境の準備: `make dev`（`tools/dev_setup.sh`）／説明: `docs/DEVELOPMENT.md`。入口は `Makefile`（setup/produce/resume/collect/test/lint）。
 
 ## 現在の通常経路
