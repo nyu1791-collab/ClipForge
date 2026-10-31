@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "name": "ClipForge",
+  "kind": "video",
+  "setup": [
+    [
+      "uv",
+      "sync",
+      "--locked",
+      "--no-dev",
+      "--inexact",
+      "--extra",
+      "media-fetch"
+    ]
+  ],
+  "tools": [
+    "git",
+    "gh",
+    "uv",
+    "ffmpeg",
+    "ffprobe"
+  ],
+  "credential_names": [
+    "GOOGLE_APPLICATION_CREDENTIALS"
+  ],
+  "native_entry": "python tools/produce_with_gemini.py --help",
+  "package_mode": "long",
+  "production_execution": "explicit_native_command",
+  "shared_runtime": false,
+  "recommended_python": "3.12"
+}

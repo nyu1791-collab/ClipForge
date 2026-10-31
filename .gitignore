@@ -33,3 +33,10 @@ transcript-cache/
 
 # Temporary OIDC credentials from google-github-actions/auth.
 gha-creds-*.json
+
+# PC-local optional automation state
+.venv-research/
+workstation/local.json
+workstation/*.local.json
+
+*.pyc

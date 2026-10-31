@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "version": "2026-10-31",
+  "standard_library_manage": true,
+  "source_hashes": {
+    "manage.py": "b62eaefb1350b636e336e1c4f1468efb51c80487facd5c2e0820bb45e5b004ff",
+    "test_manage.py": "0f32af4670fb676a3cce7bee68618c816dd19e84d11e157ba1466e3ad5592974",
+    "research.py": "d4532c8d0d4f5c92783a9fc6c48c42565923a508110241245376c2ea989284d5"
+  }
+}

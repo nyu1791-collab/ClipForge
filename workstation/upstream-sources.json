@@ -1,0 +1,61 @@
+{
+  "verification": "public GitHub pages and Git checkout; API host denied by network policy",
+  "sources": [
+    {
+      "repository": "Hao0321/video-autopilot-kit",
+      "sha": "a50c73bde0c5bcb5b82e4d28f812e780e20cb1a7",
+      "observed_at": "2026-10-31",
+      "license": "MIT",
+      "stars": 2246
+    },
+    {
+      "repository": "gitroomhq/postiz-app",
+      "sha": "35a482901583ed4219ff43afffde184e8ee373a6",
+      "observed_at": "2026-10-31",
+      "license": "AGPL-3.0",
+      "stars": 40259
+    },
+    {
+      "repository": "zhouxiaoka/autoclip",
+      "sha": "d13c8343d3dcc453230f079af2175ec3df9e10d4",
+      "observed_at": "2026-10-31",
+      "license": "MIT",
+      "stars": 9880
+    },
+    {
+      "repository": "rushindrasinha/youtube-shorts-pipeline",
+      "sha": "48835dea9c0cc9d119e19ad9365717006d6f59a6",
+      "observed_at": "2026-10-31",
+      "license": "MIT",
+      "stars": 2342
+    },
+    {
+      "repository": "browser-use/browser-use",
+      "sha": "b49a68e4060acb226da8f784194fef301c53a6d7",
+      "observed_at": "2026-10-31",
+      "license": "MIT",
+      "stars": 119617
+    },
+    {
+      "repository": "unclecode/crawl4ai",
+      "sha": "888299fb5f0b82181897dc0e61bfb4b036f0aea5",
+      "observed_at": "2026-10-31",
+      "license": "Apache-2.0",
+      "stars": 86621
+    },
+    {
+      "repository": "dgtlmoon/changedetection.io",
+      "sha": "7a925eb5e3382297e7a87932fe5429cb40b058bc",
+      "observed_at": "2026-10-31",
+      "license": "Apache-2.0",
+      "stars": 35411
+    },
+    {
+      "repository": "Skyvern-AI/skyvern",
+      "sha": "48efb4adc395b556615bf96a6a9dd317313932f0",
+      "observed_at": "2026-10-31",
+      "license": "AGPL-3.0",
+      "stars": 23317
+    }
+  ]
+}

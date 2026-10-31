@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "discovery": "nine public repositories visible on the owner profile; private enumeration unavailable",
+  "repositories": [
+    {
+      "name": "ClipForge",
+      "url": "https://github.com/nyu1791-collab/ClipForge.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "3D-",
+      "url": "https://github.com/nyu1791-collab/3D-.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "ClipForge-Delivery",
+      "url": "https://github.com/nyu1791-collab/ClipForge-Delivery.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "MoneyPrinterTurbo-Foundation",
+      "url": "https://github.com/nyu1791-collab/MoneyPrinterTurbo-Foundation.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "StreamCut",
+      "url": "https://github.com/nyu1791-collab/StreamCut.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "Translation",
+      "url": "https://github.com/nyu1791-collab/Translation.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "discord-digital-delivery",
+      "url": "https://github.com/nyu1791-collab/discord-digital-delivery.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "shorts-only",
+      "url": "https://github.com/nyu1791-collab/shorts-only.git",
+      "revision": "feat/portable-automation-20261031"
+    },
+    {
+      "name": "voiceBox-Pipeline",
+      "url": "https://github.com/nyu1791-collab/voiceBox-Pipeline.git",
+      "revision": "feat/portable-automation-20261031"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+services:
+  monitor:
+    profiles: [monitor]
+    image: ghcr.io/dgtlmoon/changedetection.io:0.60.10@sha256:72f97681f390e4d6ae3e6585e1e0036449910f347144b766fc23910458566a1a
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - monitor-data:/datastore
+    environment:
+      FETCH_WORKERS: "1"
+      MINIMUM_SECONDS_RECHECK_TIME: "60"
+      DISABLE_VERSION_CHECK: "true"
+      LLM_FEATURES_DISABLED: "true"
+    mem_limit: 768m
+    cpus: 1
+    restart: unless-stopped
+volumes:
+  monitor-data:

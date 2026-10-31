@@ -1,0 +1,2 @@
+crawl4ai @ git+https://github.com/unclecode/crawl4ai.git@888299fb5f0b82181897dc0e61bfb4b036f0aea5
+browser-use @ git+https://github.com/browser-use/browser-use.git@b49a68e4060acb226da8f784194fef301c53a6d7
