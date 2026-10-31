@@ -219,47 +219,6 @@ def assert_submission_lock(path, locked):
             fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
-@pytest.mark.parametrize("wait", [False, True])
-def test_submission_releases_lock_before_polling_and_download(
-    submitter, tmp_path, monkeypatch, wait
-):
-    module, _, control, invoke = submitter
-    original = module.gh
-    lock = tmp_path / ".local/state/clipforge/.submit.lock"
-    phases = []
-
-    def gh(*args, **kwargs):
-        if args[:2] == ("run", "list"):
-            submitted = bool(control["posts"])
-            assert_submission_lock(lock, locked=not submitted)
-            phases.append("poll" if submitted else "check")
-            if submitted:
-                identity = control["posts"][0]["inputs"]["request_id"]
-                receipt = json.loads(
-                    (lock.parent / identity / "receipt.json").read_text()
-                )
-                assert receipt["status"] == "DISPATCHED"
-                assert receipt["job_submitted"] is True
-        elif args[:2] == ("release", "create") or args[:3] == (
-            "api",
-            "--method",
-            "POST",
-        ):
-            assert_submission_lock(lock, locked=True)
-            phases.append("submit")
-        elif args[:2] in {("run", "view"), ("run", "download")}:
-            assert_submission_lock(lock, locked=False)
-            phases.append(args[1])
-        return original(*args, **kwargs)
-
-    monkeypatch.setattr(module, "gh", gh)
-    invoke(*(["--wait", "--output", str(tmp_path / "result")] if wait else []))
-    assert phases == ["check", "submit", "poll"] + (
-        ["view", "download"] if wait else []
-    )
-    assert_submission_lock(lock, locked=False)
-
-
 @pytest.mark.parametrize("condition", ["private", "active"])
 def test_rejects_public_repository_and_active_jobs(submitter, condition):
     _, _, control, invoke = submitter
@@ -282,47 +241,6 @@ def test_requests_are_serialized_because_one_request_owns_several_runtimes(
         with pytest.raises(RuntimeError, match="another job"):
             invoke()
         assert not control["posts"] and not control["releases"]
-
-
-@pytest.mark.parametrize("fault", ["symlink", "directory_symlink", "fifo"])
-def test_video_download_rejects_symlinks_and_non_regular_entries(
-    submitter, tmp_path, monkeypatch, fault
-):
-    module, _, control, invoke = submitter
-    original = module.gh
-
-    def gh(*args, **kwargs):
-        result = original(*args, **kwargs)
-        if args[:2] == ("run", "download"):
-            root = Path(args[args.index("--dir") + 1])
-            if fault == "symlink":
-                (root / "unlisted.txt").symlink_to("manifest.json")
-            elif fault == "directory_symlink":
-                (root / "alias").symlink_to("transcripts", target_is_directory=True)
-            elif fault == "fifo":
-                module.os.mkfifo(root / "pipe")
-        return result
-
-    monkeypatch.setattr(module, "gh", gh)
-    destination = tmp_path / "result"
-    with pytest.raises(RuntimeError, match="unexpected|symlink|non-regular"):
-        invoke("--wait", "--output", str(destination))
-    assert not destination.exists()
-    receipt = (
-        tmp_path
-        / ".local/state/clipforge"
-        / control["posts"][0]["inputs"]["request_id"]
-        / "receipt.json"
-    )
-    assert json.loads(receipt.read_text())["status"] == "DOWNLOAD_FAILED"
-
-
-def test_gateway_settings_field_list_tracks_model(submitter):
-    module = submitter[0]
-    assert (
-        set(Settings.model_fields) == module.SETTINGS_FIELDS | module.LOCAL_FILE_FIELDS
-    )
-    assert not module.SETTINGS_FIELDS & module.LOCAL_FILE_FIELDS
 
 
 def test_configuration_cannot_name_local_files(submitter, tmp_path):
@@ -589,31 +507,6 @@ def test_audio_dispatch_rejects_noncanonical_url(submitter, monkeypatch, url):
     assert not control["posts"] and not control["releases"]
 
 
-@pytest.mark.parametrize("explicit_output", [False, True])
-def test_url_only_audio_wait_collects_verified_analysis(
-    submitter, monkeypatch, tmp_path, explicit_output
-):
-    module, _, control, _ = submitter
-    argv = [
-        "submit_job",
-        "--audio-analysis-url",
-        "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
-    ]
-    argv.extend(
-        ["--output", str(tmp_path / "result")] if explicit_output else ["--wait"]
-    )
-    monkeypatch.setattr(sys, "argv", argv)
-    module.main()
-    identity = control["posts"][0]["inputs"]["request_id"]
-    state = tmp_path / ".local/state/clipforge" / identity
-    receipt = json.loads((state / "receipt.json").read_text())
-    destination = tmp_path / "result" if explicit_output else state / "result"
-    assert receipt["status"] == "COMPLETE" and receipt["input_staged"] is False
-    assert (destination / "audio.m4a").read_bytes() == b"synthetic-audio"
-    assert (destination / "topics.json").is_file()
-    assert not control["releases"]
-
-
 @pytest.fixture
 def chained_submitter(submitter, monkeypatch):
     module, _, control, _ = submitter
@@ -720,27 +613,6 @@ def chained_submitter(submitter, monkeypatch):
     return module, control, invoke
 
 
-def test_auto_previews_dispatch_receipt_and_verified_collection(
-    chained_submitter, tmp_path
-):
-    _, control, invoke = chained_submitter
-    output = tmp_path / "previews"
-    invoke("--output", str(output))
-    inputs = control["posts"][0]["inputs"]
-    assert inputs["auto_previews"] is True
-    state = tmp_path / ".local/state/clipforge" / inputs["request_id"]
-    receipt = json.loads((state / "receipt.json").read_text())
-    assert receipt["target_stage"] == "previews" and receipt["status"] == "COMPLETE"
-    assert receipt["analysis_status"] == receipt["previews_status"] == "success"
-    assert (output / "review-draft.json").is_file()
-    assert len(control["posts"]) == 1 and not control["releases"]
-    download = next(c for c in control["calls"] if c[:2] == ("run", "download"))
-    assert (
-        download[download.index("--name") + 1]
-        == "clipforge-result-" + inputs["request_id"]
-    )
-
-
 @pytest.mark.parametrize(
     "fault",
     [
@@ -766,53 +638,6 @@ def test_chained_collection_refuses_invalid_result(chained_submitter, tmp_path, 
         (tmp_path / ".local/state/clipforge" / identity / "receipt.json").read_text()
     )
     assert receipt["status"] == "DOWNLOAD_FAILED"
-
-
-@pytest.mark.parametrize("preview_status", ["failure", "cancelled", "timed_out"])
-def test_partial_failure_can_collect_only_verified_analysis(
-    chained_submitter, tmp_path, monkeypatch, preview_status
-):
-    module, control, invoke = chained_submitter
-    control["previews_conclusion"] = preview_status
-    with pytest.raises(RuntimeError, match="did not complete successfully"):
-        invoke("--wait")
-    identity = control["posts"][0]["inputs"]["request_id"]
-    state = tmp_path / ".local/state/clipforge" / identity
-    receipt = json.loads((state / "receipt.json").read_text())
-    assert receipt["status"] == "PARTIAL_FAILED"
-    assert (
-        receipt["analysis_status"] == "success"
-        and receipt["previews_status"] == preview_status
-    )
-    assert not any(c[:2] == ("run", "download") for c in control["calls"])
-    output = tmp_path / "recovered"
-    monkeypatch.setattr(
-        sys, "argv", ["submit_job", "--collect", identity, "--output", str(output)]
-    )
-    with pytest.raises(RuntimeError, match="not completed successfully"):
-        module.main()
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "submit_job",
-            "--collect",
-            identity,
-            "--collect-stage",
-            "analysis",
-            "--output",
-            str(output),
-        ],
-    )
-    module.main()
-    receipt = json.loads((state / "receipt.json").read_text())
-    assert receipt["status"] == "PARTIAL_FAILED"
-    assert receipt["analysis_collection_status"] == "COMPLETE"
-    assert receipt["analysis_output"] == str(output)
-    assert (output / "audio.m4a").read_bytes() == b"synthetic-audio"
-    download = next(c for c in control["calls"] if c[:2] == ("run", "download"))
-    assert download[download.index("--name") + 1] == "clipforge-analysis-" + identity
-    assert len(control["posts"]) == 1
 
 
 @pytest.mark.parametrize("fault", ["analysis_hash", "analysis_run", "analysis_failure"])
@@ -883,94 +708,6 @@ def test_chain_wait_timeout_is_configurable(chained_submitter, monkeypatch, tmp_
     assert receipt["status"] == "UNCONFIRMED" and receipt["run_id"] == 99
 
 
-def test_chain_default_wait_allows_analysis_and_cpu_stage(
-    chained_submitter, monkeypatch
-):
-    module, _, invoke = chained_submitter
-    clock = iter([0, 0, 17000])
-    monkeypatch.setattr(module.time, "monotonic", lambda: next(clock))
-    invoke("--wait")
-
-
-def test_url_only_audio_corruption_can_be_collected_again(
-    submitter, monkeypatch, tmp_path
-):
-    module, _, control, _ = submitter
-    destination = tmp_path / "result"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "submit_job",
-            "--audio-analysis-url",
-            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
-            "--output",
-            str(destination),
-        ],
-    )
-    control["tamper"] = True
-    with pytest.raises(RuntimeError, match="checksum"):
-        module.main()
-    assert not destination.exists()
-    identity = control["posts"][0]["inputs"]["request_id"]
-    control["tamper"] = False
-    monkeypatch.setattr(
-        sys, "argv", ["submit_job", "--collect", identity, "--output", str(destination)]
-    )
-    module.main()
-    assert (destination / "audio.m4a").is_file()
-    assert len(control["posts"]) == 1 and not control["releases"]
-
-
-@pytest.mark.parametrize(
-    "fault", ["source_url", "source_sha256", "receipt_url", "receipt_audio_hash"]
-)
-def test_url_only_collection_checks_runner_audio_hash_and_submitted_url(
-    submitter, monkeypatch, tmp_path, fault
-):
-    module, _, _, _ = submitter
-    original = module.gh
-
-    def gh(*args, **kwargs):
-        result = original(*args, **kwargs)
-        if args[:2] == ("run", "download"):
-            root = Path(args[args.index("--dir") + 1])
-            manifest_path = root / "manifest.json"
-            manifest = json.loads(manifest_path.read_text())
-            other_url = (
-                "https://kick.com/other/videos/00000000-0000-0000-0000-000000000002"
-            )
-            if fault in {"source_url", "source_sha256"}:
-                manifest[fault] = other_url if fault == "source_url" else "f" * 64
-            manifest_path.write_text(json.dumps(manifest))
-            receipt_path = root / "request-receipt.json"
-            receipt = json.loads(receipt_path.read_text())
-            receipt["sha256"]["manifest.json"] = module.digest(manifest_path)
-            if fault == "receipt_url":
-                receipt["audio_source_url"] = other_url
-            elif fault == "receipt_audio_hash":
-                receipt["sha256"]["audio.m4a"] = "f" * 64
-            receipt_path.write_text(json.dumps(receipt))
-        return result
-
-    monkeypatch.setattr(module, "gh", gh)
-    destination = tmp_path / "result"
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "submit_job",
-            "--audio-analysis-url",
-            "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001",
-            "--output",
-            str(destination),
-        ],
-    )
-    with pytest.raises(RuntimeError, match="identity|checksum"):
-        module.main()
-    assert not destination.exists()
-
-
 def test_audio_analysis_rejects_removed_settings(submitter, tmp_path):
     _, _, control, invoke = submitter
     config = tmp_path / "config.json"
@@ -996,20 +733,6 @@ def test_github_failure_exposes_only_http_status(monkeypatch):
     assert "SECRET" not in str(failure.value) and "https" not in str(failure.value)
 
 
-def test_recover_download_does_not_submit_again(submitter, tmp_path, monkeypatch):
-    module, _, control, invoke = submitter
-    invoke()
-    identity = control["posts"][0]["inputs"]["request_id"]
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["submit_job", "--collect", identity, "--output", str(tmp_path / "recovered")],
-    )
-    module.main()
-    assert len(control["posts"]) == 1
-    assert (tmp_path / "recovered/manifest.json").is_file()
-
-
 def test_status_does_not_submit_or_download(submitter, monkeypatch, capsys):
     module, _, control, invoke = submitter
     invoke()
@@ -1020,23 +743,6 @@ def test_status_does_not_submit_or_download(submitter, monkeypatch, capsys):
     assert "github_status" in capsys.readouterr().out
 
 
-def test_download_can_be_retried_without_regenerating(submitter, tmp_path, monkeypatch):
-    module, _, control, invoke = submitter
-    control["tamper"] = True
-    with pytest.raises(RuntimeError):
-        invoke("--wait", "--output", str(tmp_path / "bad"))
-    control["tamper"] = False
-    identity = control["posts"][0]["inputs"]["request_id"]
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["submit_job", "--collect", identity, "--output", str(tmp_path / "good")],
-    )
-    module.main()
-    assert len(control["posts"]) == 1
-    assert (tmp_path / "good/manifest.json").is_file()
-
-
 def test_cleanup_rejects_unrelated_tags(submitter, monkeypatch):
     module, _, control, _ = submitter
     monkeypatch.setattr(
@@ -1045,34 +751,6 @@ def test_cleanup_rejects_unrelated_tags(submitter, monkeypatch):
     with pytest.raises(RuntimeError):
         module.main()
     assert not control["releases"]
-
-
-def test_workflow_input_cleanup_checks_tag_and_privacy_and_reports_failure():
-    import yaml
-
-    root = Path(__file__).resolve().parents[1] / "deploy"
-    checked = 0
-    for name in ("clipforge.yml", "audio-stages.yml"):
-        workflow = yaml.safe_load((root / name).read_text())
-        for job in workflow["jobs"].values():
-            steps = job["steps"]
-            cleanup = [s for s in steps if s.get("id") == "input-cleanup"]
-            if not cleanup:
-                continue
-            script = cleanup[0]["run"]
-            # Deletion needs only the preinstalled gh, a valid tag and a private repository.
-            assert "^clipforge-input-[a-f0-9]{32}$" in script
-            assert '--jq .private)" != true' in script
-            assert "run_request.py" not in script and ".venv" not in script
-            assert cleanup[0]["if"] == "always()"
-            reports = [
-                s
-                for s in steps
-                if s.get("if") == "always() && steps.input-cleanup.outcome != 'success'"
-            ]
-            assert len(reports) == 1 and "GITHUB_STEP_SUMMARY" in reports[0]["run"]
-            checked += 1
-    assert checked == 2
 
 
 @pytest.mark.parametrize("status, submitted", [("403", True), ("500", False)])

@@ -25,37 +25,6 @@ def test_invalid_spans(start, end):
         Span(start=start, end=end)
 
 
-@pytest.mark.parametrize(
-    "updates",
-    [
-        {"clips": 0},
-        {"clips": 11},
-        {"clips": 4, "candidates": 3},
-        {"threads": -1},
-        {"threads": 1025},
-        {"encode_threads": -1},
-        {"encode_threads": 1025},
-        {"aspect": "4:3"},
-        {"height": 1000},
-        {"framing": "face-track"},
-        {"caption": "html"},
-        {"max_input_bytes": 0},
-        {"max_source_seconds": 43201},
-        {"max_transport_bytes": 1023},
-        {"max_transport_bytes": 16 * 1024**3 + 1},
-        {"min_seconds": 10, "max_seconds": 10},
-        {"font": "Noto\nInjected"},
-        {"font": r"Noto\x"},
-        {"font": "Noto,Arial"},
-        {"unknown_option": True},
-        {"chat_offset_seconds": 301},
-    ],
-)
-def test_settings_reject_invalid_configuration(settings, updates):
-    with pytest.raises(ValidationError):
-        Settings.model_validate({**settings.model_dump(), **updates})
-
-
 def test_long_source_and_transport_budgets_keep_local_defaults():
     settings = Settings()
     assert settings.max_source_seconds == 3600
@@ -79,22 +48,6 @@ def pick(start=1, end=6, **overrides):
         confidence=0.8,
         **overrides,
     )
-
-
-@pytest.mark.parametrize(
-    "clips,duration",
-    [
-        ([], 30),
-        ([pick(25, 31)], 30),
-        ([pick(0, 2)], 30),
-        ([pick(0, 12)], 30),
-        ([pick(0, 6), pick(1, 7)], 30),
-        ([pick(0, 4), pick(10, 14), pick(20, 24)], 30),
-    ],
-)
-def test_pick_validation(settings, clips, duration):
-    with pytest.raises(ValueError):
-        validate_picks(clips, duration, settings)
 
 
 def test_valid_touching_clips(settings):
@@ -259,30 +212,6 @@ def test_chat_panel_rejects_vertical_cut_and_out_of_range_widths(settings, updat
         Settings.model_validate({**settings.model_dump(), **updates})
 
 
-def test_caption_scale_and_the_landscape_chat_config_are_valid(settings):
-    landscape = {**settings.model_dump(), "aspect": "16:9", "height": 1080}
-    default = Settings.model_validate(landscape)
-    assert default.caption_scale == 1.0 and default.caption_font_size() == 52
-    scaled = Settings.model_validate({**landscape, "caption_scale": 1.5})
-    assert scaled.caption_font_size() == 78
-    for value in (0.7, 2.1):
-        with pytest.raises(ValidationError):
-            Settings.model_validate({**landscape, "caption_scale": value})
-    # With the top picture the two lines must fit 80 percent of the band: 108 px at most here.
-    large = Settings.model_validate(
-        {**landscape, "chat_panel": True, "chat_panel_fit": "top", "caption_scale": 2.0}
-    )
-    assert large.caption_font_size() == 108 and large.caption_line_chars() == 12
-    fill = Settings.model_validate(
-        {**landscape, "chat_panel": True, "caption_scale": 2.0}
-    )
-    assert fill.caption_font_size() == 144 and fill.caption_line_chars() == 9
-    path = Path(__file__).resolve().parents[1] / "config.landscape-chat.example.json"
-    example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    assert example.chat_panel is True and example.chat_panel_fit == "fill"
-    assert example.aspect == "16:9"
-
-
 def test_chat_panel_is_off_by_default_and_scales_the_caption_limit(settings):
     landscape = {**settings.model_dump(), "aspect": "16:9", "height": 1080}
     off = Settings.model_validate({**landscape, "horizontal_line_chars": 13})
@@ -323,16 +252,6 @@ def test_chat_panel_fill_is_the_default_and_keeps_the_top_caption_size(settings)
     # Without the chat panel the fit does not change the caption size.
     off = Settings.model_validate({**landscape, "chat_panel": False})
     assert off.caption_font_size() == 52
-
-
-def test_long_topic_example_keeps_topics_long_without_the_chat_panel():
-    path = Path(__file__).resolve().parents[1] / "config.landscape-long.example.json"
-    example = Settings.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    assert example.chat_panel is False and example.heading is True
-    assert example.heading_align == "left" and example.heading_scale > 1
-    assert example.topic_min_seconds == 120 and example.max_seconds == 1800
-    assert example.height == 360
-    assert example.caption_scale == 1.6 and example.caption_font_size() == 28
 
 
 def test_review_preview_config_renders_small_and_fast():

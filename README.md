@@ -1,50 +1,66 @@
-> 接続・制作・再接続は[最短手順](docs/QUICK_START.md)から開始してください。動画・音声・字幕・モデル応答は非公開で保存します。
-
-通常制作・字幕/見出し/演出の修正・描画再開・回収は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) を参照。新規字幕の基準は [Gemini必読編集ルールブック](src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。 字幕・音・余白・解像度・参考画像の数値は [仕上げ目標](docs/FINISHING_TARGETS.md) として扱い、品質の停止条件にはしません。
-
 # ClipForge
 
-同じ配信から、話題別の**横動画（16:9）**や**縦型ショート（9:16）**を作るパイプラインです。コードと実行用Actionsはこの公開リポジトリで管理し、計算はActionsとColabで行います。動画・音声・文字起こしは非公開の保存庫へ転送します。
+長い配信から、話題ごとの**横動画（16:9）**と**縦型ショート（9:16）**を作る制作パイプライン。URL を1つ渡すと、話題選定・文字起こし・整文字幕・GPU描画・非公開保存・回収までを一続きで進めます。
 
-通常制作・修正・再開の入口は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) にまとめています。
-
-## 流れ
-
-| 段 | 処理 | 使うもの | 実行場所 |
-| --- | --- | --- | --- |
-| 1 | 元音声を取得、保存済みなら再利用 | yt-dlp・ffmpeg | Actions runner |
-| 2 | 音声から話題と採用区間を決める | Gemini 3.8 Flash | Actions runner |
-| 3 | 採用音声を切り出し、用語表記を調べる | ffmpeg・Gemini 3.5 Flash | Actions runner |
-| 4 | 採用部分だけを文字起こし、単語時刻と話者ラベルを記録 | Gemini 3.5 Transcribe | Vertex AI |
-| 5 | 文字起こしと採用音声を話題ごとに扱い、要約せず整文 | Gemini 3.5 Flash/MEDIUM | Actions runner |
-| 6 | 素材を取得し、通常360pの横型または720×1280の縦型へ字幕描画 | FFmpeg ASS・NVENC | Colab GPU |
-| 7 | 完成動画と工程記録を回収 | 非公開Release | 制御側 |
-
-横型は既定5本、各5〜15分、縦型ショートは15〜60秒を目安にします。話題分けと字幕のルールは `src/clipforge/prompts/` からGemini入力へ読み込みます。字幕は採用音声とTranscribeの文字起こしを使い、要約せず言い淀みと明らかな誤字だけを整えます。不確かな話者は通常表示とし、字幕時刻はTranscribeの推定時刻を引き継ぎます。完了済み応答は同じ依頼文・音声・ルールで作られた場合だけ再利用します。strict品質検査や目標未達による再生成は行いません。
-
-## 使い方
-
-接続済みなら以下の入口からそのまま開始できます。既存のGitHub接続からActionsを投入し、runnerのVertex OIDCとColab専用資格情報を使います。初回設定が必要な場合は [docs/COLAB.md](docs/COLAB.md) と [docs/VERTEX_GEMINI.md](docs/VERTEX_GEMINI.md) を参照します。
-
-```bash
-uv sync --locked --no-dev --inexact
-uv run --no-sync python tools/produce_with_gemini.py \
-  'https://kick.com/CHANNEL/videos/VOD_ID' \
-  --output /private/NAME-production
+```mermaid
+flowchart LR
+  A[URL<br/>YouTube / Twitch / Kick / HTTPS] --> B[音声取得<br/>yt-dlp・再利用]
+  B --> C[話題・見出し選定<br/>Gemini 3.8 Flash]
+  C --> D[採用区間の切り出し<br/>+ 表記調査 3.5 Flash]
+  D --> E[採用部分だけ文字起こし<br/>3.5 Transcribe]
+  E --> F[話題ごと1回の整文・SE提案<br/>3.5 Flash]
+  F --> G[字幕描画<br/>Colab GPU / NVENC]
+  G --> H[非公開Release保存・回収<br/>任意でDrive納品]
 ```
 
-コードSHAは専用実行ブランチから一度取得して固定・記録します。明示する場合は `--source-ref 40桁SHA` を使います。音声理解・字幕生成・GPU描画・非公開保存・回収までつなぎます。`--deliver-drive` を付けた場合だけ既存の専用資格情報で納品します。再開は [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md) の該当入口を使い、同じ出力先から新規投入を繰り返しません。
+| 段 | 処理 | 実行場所 |
+| --- | --- | --- |
+| 1 | 元音声を取得（保存済みなら再利用） | Actions runner |
+| 2 | 音声全体から話題と採用区間を決める | Actions runner → Vertex |
+| 3 | 採用音声を切り出し、固有名詞の表記を1回だけ調べる | Actions runner |
+| 4 | 採用部分だけを文字起こし（単語時刻・話者分離） | Vertex |
+| 5 | 話題ごとに1回、要約せず整文し効果音を提案 | Actions runner → Vertex |
+| 6 | 360p 横型（既定）または 720×1280 縦型へ字幕を焼き付け | Colab GPU |
+| 7 | 完成動画と工程記録を非公開Releaseへ保存し回収 | 制御側 |
+
+## 最短手順
+
+```bash
+make setup                                   # 依存を入れる（制御側は軽量）
+make produce URL='https://kick.com/CH/videos/ID' OUT=/private/name
+make resume  OUT=/private/name               # 切断後の再接続（新規投入しない）
+make collect OUT=/private/name CLIP=1        # 終わった1本だけ先に回収
+```
+
+`make` を使わない場合は `uv run --no-sync python tools/produce_with_gemini.py URL --output DIR`。主なオプション：`--clips 3`（本数の目安）、`--render-profile standard|full-hd`（720p/1080p）、`--deliver-drive`（描画後にDriveへ納品）。初回の接続設定は [docs/QUICK_START.md](docs/QUICK_START.md)。
+
+## 設計の考え方
+
+- **段階ごとに保存して再利用。** 同じ素材・依頼文・ルールの応答や完成クリップは再利用し、二重に課金・描画しない。`--resume` は監視と回収だけを行う。
+- **目標は目安。** 本数（既定5本・各5〜15分）・文字数・同期・音量・画質は目指す値。未達でも止めず、水増しも再生成もしない。実際の本数を報告する（[仕上げ目標](docs/FINISHING_TARGETS.md)）。
+- **監査・strict検査なし。** 完成動画の全デコード、音量の再測定、追加モデルでの査読は行わない。素材の欠落・認証失敗・取り違えだけを実行エラーとする。
+- **字幕は要約しない。** 言い淀みと明らかな誤認識だけを整え、意味・口調・語順を残す（[共通編集ルール](src/clipforge/prompts/gemini_editorial_rulebook_ja.md)）。
+- **公開コードと非公開データを分ける。** コードと Actions はこのリポジトリ、動画・音声・字幕・モデル応答は非公開保存庫へ置く。
+
+## 関連リポジトリ
+
+| リポジトリ | 役割 | ClipForge との接続 |
+| --- | --- | --- |
+| **ClipForge** | 取得・話題選定・文字起こし・整文・描画・保存（本体） | — |
+| shorts-only | 縦型ショートの単独制作、配信者プリセット、CapCut ドラフト | `CLIPFORGE_DIR` で本体を呼ぶか単独で動く |
+| ClipForge-Delivery | 案件・完成物・費用・納品記録の管理画面 | 本体の出力フォルダをファイルで取り込む |
+| Translation | 海外動画の文字起こし・翻訳・字幕付き動画 | 取得部分を同梱して単独で動く |
+| 3D- | 図解解説動画の制作 | 単独 |
+| discord-digital-delivery | Discord でのデジタル商品の販売・配布（Cloudflare Workers） | 単独 |
+
+shorts-only と Delivery は同じ `CLIPFORGE_DIR`（必要なら `CLIPFORGE_PYTHON`）を使えます。
 
 ## 文書
 
-- [最短手順](docs/QUICK_START.md)：初回接続・新規制作・保存状態からの再接続
-- [統合経路ガイド](docs/PRODUCTION_AND_REVISION.md)：字幕/見出し修正・描画再利用・回収/納品だけの操作
-- [縦型ショートとCapCut](docs/TIKTOK_SHORTS.md)：形式の選択・並列制作・実験的なドラフト作成
-- [音声経路](docs/GEMINI_AUDIO_REVIEW.md)：話題選定と1話題1回の整文字幕
-- [共通編集ルール](src/clipforge/prompts/gemini_editorial_rulebook_ja.md)：要約しない整文・話者・感情・SE
-- [INDEX.md](INDEX.md)：コードと関連文書の地図
+- [最短手順](docs/QUICK_START.md)：初回接続・新規制作・再接続
+- [制作と修正](docs/PRODUCTION_AND_REVISION.md)：字幕・見出しの修正、描画の再利用、回収・納品だけの操作
+- [縦型ショートと CapCut](docs/TIKTOK_SHORTS.md)
+- [音声経路の詳細](docs/GEMINI_AUDIO_REVIEW.md)・[構成](docs/ARCHITECTURE.md)・[開発](docs/DEVELOPMENT.md)
+- [INDEX.md](INDEX.md)：コードの地図
 
-旧全編GPU ASRや候補プレビューの手順は、過去成果物を明示的に復旧する場合だけ参照します。通常制作の前提にしません。
-
-
-制作の目標・再開・接続の整理は [制作経路の整理](docs/STREAMLINING.md) を参照してください。
+旧全編GPU ASRの手順は、過去の成果物を明示的に復旧する場合だけ使います。

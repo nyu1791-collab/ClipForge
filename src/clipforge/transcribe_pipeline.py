@@ -19,14 +19,20 @@ from .transcribe_adapter import word_segments
 
 MAX_SECONDS = 898.0
 OVERLAP_SECONDS = 2.0
+
+
 def parallel_limit():
     raw = os.environ.get("CLIPFORGE_TRANSCRIBE_PARALLEL", "1")
     try:
         value = int(raw)
     except ValueError:
-        raise PipelineError("CLIPFORGE_TRANSCRIBE_PARALLEL must be an integer from 1 to 6") from None
+        raise PipelineError(
+            "CLIPFORGE_TRANSCRIBE_PARALLEL must be an integer from 1 to 6"
+        ) from None
     if not 1 <= value <= 6:
-        raise PipelineError("CLIPFORGE_TRANSCRIBE_PARALLEL must be an integer from 1 to 6")
+        raise PipelineError(
+            "CLIPFORGE_TRANSCRIBE_PARALLEL must be an integer from 1 to 6"
+        )
     return value
 
 
@@ -156,7 +162,9 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                     http_status=error.code,
                     retryable=error.code == 429 or 500 <= error.code <= 599,
                 )
-                if (error.code != 429 and not 500 <= error.code <= 599) or attempt == last_attempt:
+                if (
+                    error.code != 429 and not 500 <= error.code <= 599
+                ) or attempt == last_attempt:
                     raise
             except (
                 urllib.error.URLError,
@@ -177,7 +185,10 @@ def request_chunk(client, audio, clip, index, part, begin, length, source_sha):
                     finished_at=time.time(),
                 )
                 client.save()
-            delay = max(retry_after, (30 if attempt == len(rows) + 1 else 90) + random.uniform(0, 10))
+            delay = max(
+                retry_after,
+                (30 if attempt == len(rows) + 1 else 90) + random.uniform(0, 10),
+            )
             row["retry_delay_seconds"] = round(delay, 2)
             client.save()
             time.sleep(delay)

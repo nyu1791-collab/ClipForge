@@ -46,7 +46,6 @@ from .caption_sentences import (
 )
 from .models import Word
 from .speaker_captions import SPEAKER_COLORS, speaker_for_token, validate_turns
-from .storage import PipelineError
 
 __all__ = [
     "NO_LINE_START",

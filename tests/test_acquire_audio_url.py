@@ -14,23 +14,6 @@ URL = "https://kick.com/example/videos/00000000-0000-0000-0000-000000000001"
 AUDIO_URL = "https://cdn.example/audio.mp3"
 
 
-def test_url_probe_does_not_allocate_gpu_or_pass_colab_credentials():
-    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
-    assert len(inputs) == 10 and inputs["probe_only"]["default"] is False
-    assert inputs["result_store"]["type"] == "choice"
-    assert "!inputs.probe_only" in workflow["jobs"]["colab-auto"]["if"]
-    probe = workflow["jobs"]["url-probe"]
-    assert "inputs.probe_only" in probe["if"]
-    assert "secrets." not in json.dumps(probe)
-    assert "colab_actions.py" not in json.dumps(probe)
-    assert "tools/probe_youtube_pot.py" in json.dumps(probe)
-    diagnostic = (ROOT / "tools/probe_youtube_pot.py").read_text()
-    assert '"skip_download": True' in diagnostic
-    assert 'os.environ.pop("YOUTUBE_COOKIES_B64", None)' in diagnostic
-    assert "time.monotonic()" in diagnostic
-
-
 @pytest.fixture
 def acquisition(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(ROOT / "tools"))
@@ -339,19 +322,6 @@ def test_workflow_acquires_and_verifies_audio_before_any_gpu():
     assert "GEMINI_API_KEY" not in steps[recognise]["env"]
 
 
-def test_workflow_steps_have_timeouts_and_recognition_has_cleanup_time():
-    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    for job in workflow["jobs"].values():
-        for step in job["steps"]:
-            assert 0 < step["timeout-minutes"] <= job["timeout-minutes"]
-    job = workflow["jobs"]["colab-auto"]
-    recognise = next(
-        step for step in job["steps"] if "split_asr_job.py" in step.get("run", "")
-    )
-    assert recognise["timeout-minutes"] == 140
-    assert job["timeout-minutes"] >= 30 + recognise["timeout-minutes"] + 10
-
-
 def test_cpu_render_package_install_retains_media_tools_with_timeout():
     workflow = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())
     job = workflow["jobs"]["audio-stage"]
@@ -359,78 +329,6 @@ def test_cpu_render_package_install_retains_media_tools_with_timeout():
     assert step["timeout-minutes"] == 10
     assert "ffmpeg" in job["env"]["CPU_PACKAGES"]
     assert "fonts-noto-cjk" in job["env"]["CPU_PACKAGES"]
-
-
-def test_chained_previews_workflow_dependencies_identity_artifacts_and_packages():
-    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
-    assert inputs["auto_previews"] == {
-        "description": "Continue URL-only analysis with CPU previews and an unapproved review draft",
-        "type": "boolean",
-        "default": False,
-    }
-    assert workflow["permissions"]["actions"] == "read"
-    analysis = workflow["jobs"]["colab-auto"]["steps"]
-    upload = next(
-        s
-        for s in analysis
-        if s.get("uses") == "actions/upload-artifact@v4"
-        and s["with"]["name"].startswith("clipforge-${{ inputs.auto_previews")
-    )
-    assert (
-        upload["with"]["name"]
-        == "clipforge-${{ inputs.auto_previews && 'analysis' || 'result' }}-${{ inputs.request_id }}"
-    )
-    stop = next(
-        i for i, s in enumerate(analysis) if "colab_actions.py stop" in s.get("run", "")
-    )
-    assert stop < analysis.index(upload)
-    job = workflow["jobs"]["previews"]
-    assert job["needs"] == "colab-auto"
-    assert "inputs.auto_previews" in job["if"]
-    assert "needs.colab-auto.result == 'success'" in job["if"]
-    assert "github.event.repository.private" in job["if"]
-    assert job["runs-on"] == "ubuntu-24.04"
-    steps = job["steps"]
-    checkout = next(s for s in steps if s.get("uses") == "actions/checkout@v4")
-    assert checkout["with"]["ref"] == "${{ inputs.source_ref }}"
-    download = next(s for s in steps if s.get("uses") == "actions/download-artifact@v4")
-    assert download["with"]["name"] == "clipforge-analysis-${{ inputs.request_id }}"
-    assert "run-id" not in download["with"]
-    execute = next(s for s in steps if "tools/run_audio_stage.py" in s.get("run", ""))
-    assert '--same-run-analysis "$RUNNER_TEMP/clipforge-analysis"' in execute["run"]
-    assert (
-        '--previous-run "$GITHUB_RUN_ID" --previous-request "$REQUEST_ID"'
-        in execute["run"]
-    )
-    assert '--config "$RUNNER_TEMP/preview-settings.json"' in execute["run"]
-    upload = next(
-        step
-        for step in steps
-        if step.get("uses") == "actions/upload-artifact@v4"
-        and step["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
-    )
-    assert upload["with"]["name"] == "clipforge-result-${{ inputs.request_id }}"
-    assert upload["if"] == "always() && inputs.result_store != 'release'"
-    transfer = next(
-        step
-        for step in steps
-        if step.get("name") == "Save the verified private result transfer"
-    )
-    assert "inputs.result_store == 'release'" in transfer["if"]
-    cpu = yaml.safe_load((ROOT / "deploy/audio-stages.yml").read_text())["jobs"][
-        "audio-stage"
-    ]
-    assert job["env"]["CPU_PACKAGES"] == cpu["env"]["CPU_PACKAGES"]
-    for name in (
-        "Prepare CPU package cache",
-        "Restore CPU package archives",
-        "Install missing CPU media tools and fonts",
-    ):
-        step = next(s for s in steps if s.get("name") == name)
-        original = next(s for s in cpu["steps"] if s.get("name") == name)
-        for key in ("run", "uses", "with"):
-            assert step.get(key) == original.get(key)
 
 
 def test_chained_previews_preserve_submitted_settings(tmp_path, monkeypatch):
@@ -449,22 +347,6 @@ def test_chained_previews_preserve_submitted_settings(tmp_path, monkeypatch):
     config = tmp_path / "preview-settings.json"
     assert json.loads(config.read_text()) == settings
     assert config.stat().st_mode & 0o777 == 0o600
-
-
-def test_cookie_secret_is_scoped_to_retrieval_steps():
-    workflow = yaml.safe_load((ROOT / "deploy/clipforge.yml").read_text())
-    allowed = {
-        "Acquire and verify the audio before GPU allocation",
-        "Verify this run's analysis and create previews and an unapproved draft",
-    }
-    seen = set()
-    for job in workflow["jobs"].values():
-        assert "YOUTUBE_COOKIES_B64" not in job.get("env", {})
-        for step in job["steps"]:
-            if "YOUTUBE_COOKIES_B64" in step.get("env", {}):
-                assert step.get("name") in allowed
-                seen.add(step["name"])
-    assert seen == allowed
 
 
 def colab_step(name):

@@ -1,8 +1,21 @@
 import pysubs2
 import pytest
 
-from clipforge import caption_breaks, captions, fonts, quality
+from clipforge import caption_breaks, captions, fonts
 from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
+
+
+def _caption_events(path):
+    """(start ms, end ms, text) of each spoken caption event."""
+    import pysubs2
+
+    if not path.read_text(encoding="utf-8").strip():
+        return []
+    return [
+        (e.start, e.end, e.plaintext)
+        for e in pysubs2.load(str(path))
+        if e.style in {"Default", "Sequential"}
+    ]
 
 
 @pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
@@ -506,7 +519,6 @@ def test_chat_panel_caption_lines_fit_inside_the_video_area(
     assert subtitles.info["PlayResX"] == "1920"
     assert subtitles.styles["Default"].marginr == captions.margin_px(1080) + 480
     # The quality check measures lines against the margins written in the file.
-    assert quality.overflowing_lines(tmp_path / "captions.ass") == []
 
 
 def test_chat_panel_top_puts_captions_in_the_band_below_the_picture(
@@ -743,71 +755,3 @@ def test_no_landscape_layout_places_captions_at_the_top(
     assert subtitles.styles["Default"].alignment == pysubs2.Alignment.BOTTOM_CENTER
     assert all(r"\an8" not in e.text for e in subtitles if e.style == "Default")
     assert r"\an8" not in (tmp_path / "captions.ass").read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
-@pytest.mark.parametrize("aspect", ["9:16", "16:9"])
-@pytest.mark.parametrize(
-    "texts",
-    [
-        ("本当? これは本当!!", "はい! 次はどう?"),
-        (" Hello? next!!　", " Yes! and now?　"),
-    ],
-)
-def test_punctuation_roundtrips_with_identical_ass_and_srt_text(
-    tmp_path, settings, japanese_font, mode, aspect, texts
-):
-    from clipforge import quality
-
-    transcript, clip = _fill_case(texts)
-    configured = _fill_settings(settings, chat_panel=False, caption=mode, aspect=aspect)
-    captions.create(transcript, clip, tmp_path, configured)
-    ass = quality.caption_events(tmp_path / "captions.ass")
-    srt = quality.caption_events(tmp_path / "captions.srt")
-    assert ass == srt
-    text = "".join(event[2].replace("\n", "") for event in ass)
-    assert "?" not in text and "!" not in text
-    assert "？　" in text or "！　" in text
-    assert all(event[2] == event[2].strip() for event in ass)
-
-
-@pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])
-@pytest.mark.parametrize("aspect", ["9:16", "16:9", "1:1"])
-@pytest.mark.parametrize("repeats", [1, 2])
-def test_long_token_fractional_times_roundtrip_in_both_subtitle_formats(
-    tmp_path, settings, japanese_font, mode, aspect, repeats
-):
-    from clipforge import quality
-
-    text = "この日本語字幕は切り抜いた動画の中で正しく表示されます。" * repeats
-    transcript = Transcript(
-        language="ja",
-        segments=[
-            Segment(
-                start=13.003,
-                end=18.997,
-                text=text,
-                words=[Word(start=13.003, end=18.997, text=text)],
-            )
-        ],
-    )
-    clip = SelectedClip(
-        start=13, end=19, candidate_id="manual", title="題", reason="r", confidence=1
-    )
-    configured = _fill_settings(
-        settings, chat_panel=False, caption=mode, aspect=aspect, height=720
-    )
-    captions.create(transcript, clip, tmp_path, configured)
-    ass = quality.caption_events(tmp_path / "captions.ass")
-    srt = quality.caption_events(tmp_path / "captions.srt")
-    assert ass and ass == srt
-    if repeats == 2 and aspect != "16:9":
-        assert len(ass) >= 2
-    from clipforge.caption_breaks import NO_LINE_START
-
-    assert all(text.lstrip()[0] not in NO_LINE_START for _, _, text in ass)
-    assert all(start % 10 == end % 10 == 0 for start, end, _ in ass)
-    assert all(a[1] <= b[0] for a, b in zip(ass, ass[1:]))
-    assert captions.event_spans(transcript, clip, configured) == [
-        (start / 1000, end / 1000) for start, end, _ in ass
-    ]

@@ -23,7 +23,7 @@ flowchart TD
   - 描画：`pipeline.py`（1クリップの描画）・`media.py`（ffmpeg）・`captions.py`・`caption_breaks.py`・`caption_sentences.py`・`asr_cleanup.py`・`auto_layout.py`・`kick_chat.py`・`fonts.py`・`quality.py`・`landscape.py`
   - 共通：`models.py`（設定と時刻の型）・`storage.py`（保存・ハッシュ）・`hardware.py`・`github_cli.py`
 - `tools/`
-  - 制御VM：`submit_job.py`（解析の投入・回収）・`submit_audio_stage.py`（描画の投入・結合）・`run_timings.py`・`check_worker_workflows.py`・`configure_colab_oauth.py`
+  - 制御VM：`submit_job.py`（解析の投入・回収）・`submit_audio_stage.py`（描画の投入・結合）・`run_timings.py`・`configure_colab_oauth.py`
   - runner：`acquire_audio_url.py`・`split_asr_job.py`・`run_audio_stage.py`・`colab_actions.py`（Colab の割り当てと解放）
   - Colab：`colab_remote_job.py`・`colab_bundle.py`（結果の受け渡し）・`colab_setup.sh`（描画用の環境）
 - `deploy/`：非公開 worker に置く workflow の原本（`clipforge.yml`・`audio-stages.yml`・`colab-usage.yml`）。公開側では実行しない。

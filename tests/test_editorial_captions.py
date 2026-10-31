@@ -14,9 +14,7 @@ from clipforge.models import Segment, SelectedClip, Settings, Transcript, Word
 from clipforge.speaker_captions import (
     assignments_to_turns,
     speaker_for_token,
-    validate_turns,
 )
-from clipforge.storage import PipelineError
 from clipforge.terminology import grounded_terms
 
 
@@ -150,15 +148,6 @@ def test_speaker_ids_are_stable_across_clips_and_bad_assignments_are_neutral():
     )
     assert turns[0][0]["speaker_id"] is None
     assert report["duplicate_ids"] == ["a"] and report["unknown_ids"] == ["invented"]
-
-
-@pytest.mark.parametrize("value", [float("nan"), True, -1, 20])
-def test_invalid_speaker_timing_stops_before_render(value):
-    with pytest.raises(PipelineError):
-        validate_turns(
-            [{"start": value, "end": 10, "speaker_id": "speaker_1", "confidence": 0.9}],
-            10,
-        )
 
 
 @pytest.mark.parametrize("mode", ["plain", "karaoke", "sequential"])

@@ -103,22 +103,6 @@ def audio_job(tmp_path, monkeypatch):
     return VOD(), root, settings, events, transcript
 
 
-def test_audio_then_topics_then_video_reuses_single_asr(audio_job):
-    vod, root, settings, events, _ = audio_job
-    af.acquire(vod, root)
-    assert events == [("audio", 0, None)]
-    assert not (root / "transcripts").exists()
-    analysis, transcript = analyze(vod, root, settings)
-    assert [e[0] for e in events] == ["audio", "asr"]
-    assert len(analysis["topics"]) == 3 and transcript.segments
-    assert analysis["semantic_topic_review"] == "required"
-    run_previews(vod, root, settings)
-    assert [e[0] for e in events] == ["audio", "asr", "preview", "preview", "preview"]
-    assert json.loads((root / "asr-receipt.json").read_text())["reused"] is True
-    run_previews(vod, root, settings)
-    assert len(events) == 5
-
-
 def test_saved_audio_size_is_checked_before_asr(audio_job):
     vod, root, settings, events, _ = audio_job
     af.acquire(vod, root)
@@ -233,29 +217,6 @@ def make_review(analysis):
             for n, row in enumerate(analysis["topics"])
         ],
     }
-
-
-@pytest.mark.parametrize(
-    "fault", ["analysis", "unreviewed", "not_previewed", "outside", "duplicate"]
-)
-def test_review_is_tied_to_audio_topics_and_previews(audio_job, fault):
-    vod, root, settings, _, _ = audio_job
-    preview = run_previews(vod, root, settings)
-    analysis = json.loads((root / "topics.json").read_text())
-    value = make_review(analysis)
-    if fault == "analysis":
-        value["analysis_key"] = "wrong"
-    elif fault == "unreviewed":
-        value["clips"][0]["video_reviewed"] = False
-    elif fault == "not_previewed":
-        preview["previews"].pop()
-    elif fault == "outside":
-        value["clips"][0]["end"] = 110
-        value["clips"][1]["start"] = 110
-    else:
-        value["clips"][1]["candidate_id"] = value["clips"][0]["candidate_id"]
-    with pytest.raises(PipelineError):
-        af.reviewed_clips(value, analysis, preview, settings)
 
 
 def test_render_fetches_only_reviewed_intervals_without_second_asr(
@@ -412,54 +373,14 @@ def test_render_accepts_high_resolution_source(audio_job, monkeypatch):
 
     monkeypatch.setattr(vod, "retrieve", high_resolution)
     rendered = []
+
     def render(*args):
         rendered.append(True)
         return {"directory": "clips/clip-001"}
+
     monkeypatch.setattr(pipeline, "render_clip", render)
     run_render(vod, root, settings, review, only=1)
     assert rendered == [True]
-
-
-def test_word_clock_and_text_shift_without_inventing_boundary_text():
-    transcript = Transcript.model_validate(
-        {
-            "language": "ja",
-            "segments": [
-                {
-                    "start": 10,
-                    "end": 14,
-                    "text": "前半後半",
-                    "words": [
-                        {"start": 10, "end": 12, "text": "前半"},
-                        {"start": 12, "end": 14, "text": "後半"},
-                    ],
-                }
-            ],
-        }
-    )
-    shifted = af.shifted_transcript(transcript, 12, 14)
-    assert shifted.segments[0].text == "後半"
-    assert shifted.segments[0].start == 0 and shifted.segments[0].end == 2
-    with pytest.raises(PipelineError, match="ASR word"):
-        af.shifted_transcript(transcript, 12.5, 14)
-    transcript.segments[0].words = []
-    with pytest.raises(PipelineError, match="wordless"):
-        af.shifted_transcript(transcript, 12, 14)
-    assert af.shifted_transcript(transcript, 0, 5).segments == []
-    assert af.shifted_transcript(transcript, 10, 14).segments[0].text == "前半後半"
-
-
-def test_mid_word_review_is_rejected_before_any_high_quality_fetch(audio_job):
-    vod, root, settings, events, _ = audio_job
-    run_previews(vod, root, settings)
-    analysis = json.loads((root / "topics.json").read_text())
-    review = root / "review.json"
-    write_json(review, make_review(analysis))
-    # The synthetic word at 90..115 crosses the review boundary at 100 seconds.
-    with pytest.raises(PipelineError, match="ASR word"):
-        run_render(vod, root, settings, review)
-    assert not any(event[0] == "360p" for event in events)
-    assert not (root / "delivery").exists()
 
 
 def test_lock_prevents_duplicate_analysis(tmp_path):

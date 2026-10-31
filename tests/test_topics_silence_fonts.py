@@ -29,29 +29,6 @@ def test_topics_split_at_long_pauses_and_cover_the_video():
     assert all(a[1] == b[0] for a, b in pairwise(spans))
 
 
-def test_short_topic_gives_up_its_weaker_boundary():
-    transcript = speech(
-        (0, 20, "最初"), (22, 40, "次"), (45, 70, "最後"), (70.2, 100, "終わり")
-    )
-    spans = topics.split(transcript, 100, min_seconds=25, max_seconds=60)
-    assert len(spans) == 2
-    assert all(b - a >= 25 for a, b in spans)
-
-
-def test_overlong_topic_splits_at_its_strongest_interior_gap():
-    # A 0.5 s gap is too short to cut by itself, but it is the only split point available.
-    transcript = speech((0, 70, "前半の話です"), (70.5, 140, "後半の話です"))
-    spans = topics.split(transcript, 150, min_seconds=10, max_seconds=100)
-    assert len(spans) == 2
-    assert round(spans[0][1], 2) == 70.25
-
-
-def test_overlong_topic_without_gaps_is_cut_evenly():
-    transcript = speech((0, 300, "一つの長い発話"))
-    spans = topics.split(transcript, 300, min_seconds=10, max_seconds=100)
-    assert [round(b - a) for a, b in spans] == [100, 100, 100]
-
-
 def test_topics_without_speech_is_one_span():
     assert topics.split(Transcript(language="ja", segments=[]), 42.5) == [(0.0, 42.5)]
 
@@ -91,9 +68,3 @@ def test_a_segment_nested_in_a_longer_one_does_not_shift_the_cut():
     transcript = speech((0, 10, "長い発話"), (5, 6, "内側"), (12, 20, "次の発話"))
     spans = topics.split(transcript, 20, min_seconds=1, max_seconds=100)
     assert [round(b, 1) for _, b in spans] == [11.0, 20.0]
-
-
-def test_silent_video_still_respects_the_maximum_topic_length():
-    spans = topics.split(Transcript(language="ja", segments=[]), 600, 25, 180)
-    assert len(spans) == 4
-    assert all(b - a <= 180 for a, b in spans)

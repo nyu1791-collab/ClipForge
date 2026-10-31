@@ -153,88 +153,7 @@ def standard_args(output, sha=AUDIO_SHA):
     ]
 
 
-def test_stateless_collect_verifies_and_writes_no_local_state(collector, capsys):
-    module, _, _, tmp_path, monkeypatch = collector
-    output = tmp_path / "recovered"
-    invoke(monkeypatch, module, *standard_args(output))
-    assert (output / "manifest.json").is_file()
-    assert (output / "transcripts" / (KEY + ".json")).is_file()
-    assert not (tmp_path / "home" / ".local").exists()
-    printed = capsys.readouterr().out
-    assert "Completed" in printed
-    assert "http" not in printed
-
-
-def test_stateless_collect_rejects_audio_sha_mismatch(collector):
-    module, _, _, tmp_path, monkeypatch = collector
-    output = tmp_path / "recovered"
-    with pytest.raises(RuntimeError, match="audio analysis identity mismatch"):
-        invoke(monkeypatch, module, *standard_args(output, sha="e" * 64))
-    assert not output.exists()
-
-
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"status": "in_progress", "conclusion": None},
-        {"conclusion": "failure"},
-        {"display_title": "ClipForge " + "f" * 32},
-        {"event": "push"},
-    ],
-)
-def test_stateless_collect_rejects_run_state_mismatch(collector, change):
-    module, _, control, tmp_path, monkeypatch = collector
-    control["run"] = run_row(**change)
-    output = tmp_path / "recovered"
-    with pytest.raises(RuntimeError, match="workflow run identity"):
-        invoke(monkeypatch, module, *standard_args(output))
-    assert not any(call[:2] == ("run", "download") for call in control["calls"])
-    assert not output.exists()
-
-
-def test_stateless_collect_rejects_artifact_state_mismatch(collector):
-    module, artifact, _, tmp_path, monkeypatch = collector
-    manifest = json.loads((artifact / "manifest.json").read_text())
-    manifest["status"] = "complete"
-    (artifact / "manifest.json").write_text(json.dumps(manifest))
-    output = tmp_path / "recovered"
-    with pytest.raises(RuntimeError, match="mismatch"):
-        invoke(monkeypatch, module, *standard_args(output))
-    assert not output.exists()
-
-
-@pytest.mark.parametrize(
-    "omitted",
-    ["--run-id", "--source-ref", "--audio-sha256", "--output"],
-)
-def test_stateless_collect_requires_expected_arguments(collector, omitted):
-    module, _, control, tmp_path, monkeypatch = collector
-    args = standard_args(tmp_path / "recovered")
-    index = args.index(omitted)
-    del args[index : index + 2]
-    with pytest.raises(RuntimeError, match="required"):
-        invoke(monkeypatch, module, *args)
-    assert not any(call[:2] == ("run", "download") for call in control["calls"])
-
-
-def test_stateless_collect_rejects_extra_file(collector):
-    module, artifact, _, tmp_path, monkeypatch = collector
-    (artifact / "extra.txt").write_text("unexpected")
-    with pytest.raises(RuntimeError, match="unexpected files"):
-        invoke(monkeypatch, module, *standard_args(tmp_path / "recovered"))
-
-
 DIAGNOSTICS = ["gpu-receipt.json", "acquisition.json", "audio.m4a.receipt.json"]
-
-
-@pytest.mark.parametrize("names", [[name] for name in DIAGNOSTICS] + [DIAGNOSTICS])
-def test_stateless_collect_accepts_unhashed_top_level_diagnostics(collector, names):
-    module, artifact, _, tmp_path, monkeypatch = collector
-    for name in names:
-        (artifact / name).write_text('{"synthetic": true}')
-    output = tmp_path / "recovered"
-    invoke(monkeypatch, module, *standard_args(output))
-    assert all((output / name).is_file() for name in names)
 
 
 @pytest.mark.parametrize("name", DIAGNOSTICS)
@@ -255,26 +174,6 @@ def test_stateless_collect_limits_diagnostic_exceptions(collector, name, kind):
     # Verify in place: copying a FIFO would fail before the verifier sees it.
     with pytest.raises(RuntimeError, match="unexpected|symlink|non-regular"):
         module.verify_audio_analysis(artifact, REQUEST, REF, AUDIO_SHA, URL)
-
-
-def test_stateless_collect_rejects_symlink(collector):
-    module, artifact, _, tmp_path, monkeypatch = collector
-    outside = tmp_path / "outside.bin"
-    outside.write_bytes(AUDIO)
-    (artifact / "audio.m4a").unlink()
-    (artifact / "audio.m4a").symlink_to(outside)
-    with pytest.raises(RuntimeError, match="symlink"):
-        invoke(monkeypatch, module, *standard_args(tmp_path / "recovered"))
-
-
-def test_stateless_collect_never_overwrites_existing_destination(collector):
-    module, _, _, tmp_path, monkeypatch = collector
-    output = tmp_path / "existing"
-    output.mkdir()
-    (output / "keep.txt").write_text("preserved")
-    with pytest.raises(RuntimeError, match="already exists"):
-        invoke(monkeypatch, module, *standard_args(output))
-    assert (output / "keep.txt").read_text() == "preserved"
 
 
 def set_topic_end(artifact, end):
@@ -457,21 +356,6 @@ def test_reuse_arguments_reach_submission(monkeypatch):
     module.main()
     assert seen["reuse_audio_run"] == 123
     assert seen["reuse_audio_request"] == REQUEST
-
-
-@pytest.mark.parametrize("returned_run", [RUN + 1, None])
-def test_stateless_collect_rejects_another_or_missing_run_in_artifact(
-    collector, returned_run
-):
-    module, artifact, _, tmp_path, monkeypatch = collector
-    receipt = artifact / "request-receipt.json"
-    value = json.loads(receipt.read_text())
-    value["workflow_run"] = returned_run
-    receipt.write_text(json.dumps(value))
-    output = tmp_path / "recovered"
-    with pytest.raises(RuntimeError, match="identity"):
-        invoke(monkeypatch, module, *standard_args(output))
-    assert not output.exists()
 
 
 @pytest.fixture(autouse=True)

@@ -55,6 +55,7 @@ def test_overview_requests_overlap_and_keep_window_order(tmp_path, monkeypatch):
 
     monkeypatch.setattr(audio_understanding.Client, "generate", generate)
     from clipforge import transcribe_pipeline
+
     monkeypatch.setattr(transcribe_pipeline, "transcribe_clip", selected_transcribe)
     output = tmp_path / "out"
     audio_understanding.plan(

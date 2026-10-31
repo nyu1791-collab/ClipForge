@@ -86,7 +86,7 @@ python tools/submit_job.py --collect REQUEST_ID --collect-stage analysis --outpu
 `chat_panel: true` で、出力の右に `chat_panel_width`（既定480 px、出力幅の20〜40%、偶数）のチャット欄を置く。チャットは Kick の URL 経路だけで、各クリップの元の時刻のものを読む。
 
 - `chat_panel_fit` の既定 `fill` は、映像を高さいっぱいに拡大して左右を切り、字幕を映像の上（中央下）に重ねる（360pで24 px 程度、1行約18字）。チャット列は160 px。`top` は16:9の映像を左上に置き、下の帯に字幕を出す。`crop` は中央から左右を削り、`letterbox` は縮めて上下に帯を置く。
-- 下側に HUD など動かない細部が混んでいるときは、その上まで字幕を持ち上げる（上限は高さの32%）。判定の詳細と限界は [QUALITY_DECISIONS.md](QUALITY_DECISIONS.md) の「字幕の位置」。
+- 下側に HUD など動かない細部が混んでいるときは、その上まで字幕を持ち上げる（上限は高さの32%）。
 - チャット欄の縦型出力は設定検証で拒否する。映像・音声の無音カットは行わず、元配信の時刻を保持する。取得に失敗したクリップは欄を空で描き、`render.json` の `chat.reason` に `chat_unavailable` を記録する。`chat_anonymize: true` で発言者名を匿名化する。
 
 ## YouTube の Cookie

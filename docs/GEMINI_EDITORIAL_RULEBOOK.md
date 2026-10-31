@@ -1,6 +1,6 @@
 # Gemini 3.8の必読編集ルールと適用経路
 
-> 字幕表現の最新指示は [要約しない整文の引き継ぎ](HANDOFF_SEIBUN_2026-10-26.md)。本文の旧「短文化・自然な言い換え」の許可は上書きされる。GPU文字起こしと3.5整文の役割も同文書を参照。
+> 字幕表現の基準は共通ルールブック `src/clipforge/prompts/gemini_editorial_rulebook_ja.md`。要約・言い換えはしない。
 
 新規制作のルール本文は [gemini_editorial_rulebook_ja.md](../src/clipforge/prompts/gemini_editorial_rulebook_ja.md)。工程別の字幕契約は [gemini_subtitles_ja.md](../src/clipforge/prompts/gemini_subtitles_ja.md)。要約せず意味・口調・確かさを保つ整文、固有名詞と不明箇所の扱い、良い例/避ける例、時刻、話者、控えめな効果音を定義する。逐語全文を表示する旧方針を更新した。
 

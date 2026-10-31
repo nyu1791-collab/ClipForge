@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "clipforge"
 version = "0.2.1"
-description = "Stream clipping: Parakeet transcription on Colab, topic previews, reviewed landscape clips with ASS captions"
+description = "Long stream to topic clips and shorts: Gemini topic selection, Transcribe, verbatim-preserving captions, GPU render"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

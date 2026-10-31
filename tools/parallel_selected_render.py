@@ -249,7 +249,13 @@ def main(collect_only=False, partial=False):
         "editorial_revision": selection.get("editorial_revision"),
         "source_url": selection["source_url"],
         "full_source_asr": False,
-        "timestamp_source": (json.loads((review.parent / "selected-transcripts.json").read_text()).get("timestamp_source", "unknown") if (review.parent / "selected-transcripts.json").is_file() else "unknown"),
+        "timestamp_source": (
+            json.loads((review.parent / "selected-transcripts.json").read_text()).get(
+                "timestamp_source", "unknown"
+            )
+            if (review.parent / "selected-transcripts.json").is_file()
+            else "unknown"
+        ),
         "full_video_quality_audit": "not_run",
         "max_gpu_slots": min(4, count),
     }

@@ -38,8 +38,18 @@ def planned(tmp_path, monkeypatch):
     )
     calls = []
 
-    def generate(self, phase, prompt, audio=None, research=False, audio_source_key=None):
-        calls.append((phase, prompt, research, audio.read_bytes() if audio else None, audio_source_key))
+    def generate(
+        self, phase, prompt, audio=None, research=False, audio_source_key=None
+    ):
+        calls.append(
+            (
+                phase,
+                prompt,
+                research,
+                audio.read_bytes() if audio else None,
+                audio_source_key,
+            )
+        )
         if phase.startswith("topics"):
             return {
                 "audio_access": "heard",
@@ -69,14 +79,14 @@ def planned(tmp_path, monkeypatch):
 
     def selected_transcribe(client, audio, clip, index, sha):
         return {
-                "segments": [
-                    {
-                        "start": 0.5,
-                        "end": 3.0,
-                        "text": "ああ、そうか。これは省略せず全部字幕に残します。",
-                    }
-                ]
-            }
+            "segments": [
+                {
+                    "start": 0.5,
+                    "end": 3.0,
+                    "text": "ああ、そうか。これは省略せず全部字幕に残します。",
+                }
+            ]
+        }
 
     monkeypatch.setattr(route.Client, "generate", generate)
     monkeypatch.setattr(transcribe_pipeline, "transcribe_clip", selected_transcribe)
@@ -105,7 +115,10 @@ def test_audio_plan_uses_only_selected_transcribe_results(planned):
     receipt = json.loads((output / "audio-editor-receipt.json").read_text())
     assert receipt["status"] == "complete" and receipt["full_source_asr"] is False
     selected = json.loads((output / "selected-transcripts.json").read_text())
-    assert len(selected["clips"]) == 5 and selected["timestamp_source"] == "gemini_transcribe"
+    assert (
+        len(selected["clips"]) == 5
+        and selected["timestamp_source"] == "gemini_transcribe"
+    )
     assert all("ああ、そうか" in c["segments"][0]["text"] for c in selected["clips"])
     assert not (output / "focused-2.ogg").exists()
 
@@ -118,7 +131,9 @@ def unavailable_terminology(monkeypatch):
     monkeypatch.setattr(route, "grounded_terms", fail)
 
 
-def test_unavailable_terminology_does_not_stop_selected_topics(unavailable_terminology, planned):
+def test_unavailable_terminology_does_not_stop_selected_topics(
+    unavailable_terminology, planned
+):
     output, _, _ = planned
     glossary = json.loads((output / "terminology-glossary.json").read_text())
     assert glossary["terms"] == []
@@ -215,8 +230,22 @@ def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
     client = route.Client(tmp_path)
     sent = []
 
-    def capture(phase, model, thinking, files, sources, rules, prompt_path,
-                prompt_hash, audio, audio_key, token, body, research, attempt):
+    def capture(
+        phase,
+        model,
+        thinking,
+        files,
+        sources,
+        rules,
+        prompt_path,
+        prompt_hash,
+        audio,
+        audio_key,
+        token,
+        body,
+        research,
+        attempt,
+    ):
         sent.append((model, thinking, json.loads(body), research))
         return {}, {}
 
@@ -229,5 +258,7 @@ def test_subtitle_cleanup_uses_medium_thinking(tmp_path, monkeypatch):
         ("gemini-3.8-flash", "MEDIUM"),
         ("gemini-3.5-flash", "MINIMAL"),
     ]
-    assert [body["generationConfig"]["thinkingConfig"]["thinkingLevel"]
-            for _, _, body, _ in sent] == ["MEDIUM", "MEDIUM", "MINIMAL"]
+    assert [
+        body["generationConfig"]["thinkingConfig"]["thinkingLevel"]
+        for _, _, body, _ in sent
+    ] == ["MEDIUM", "MEDIUM", "MINIMAL"]

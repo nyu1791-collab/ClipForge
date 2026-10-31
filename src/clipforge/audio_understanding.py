@@ -126,7 +126,9 @@ class Client:
         self._vertex_token_at = time.monotonic()
         return self._vertex_token
 
-    def generate(self, phase, prompt, audio=None, research=False, audio_source_key=None):
+    def generate(
+        self, phase, prompt, audio=None, research=False, audio_source_key=None
+    ):
         rule_file = rules_file_for_phase(phase)
         # All director calls receive the common book, plus their stage rules.
         # A missing/empty book is a deployment error, never a silent prompt fallback.
@@ -136,8 +138,16 @@ class Client:
         rule_parts, rule_sources = [], []
         for path in rule_files:
             text = path.read_text(encoding="utf-8").strip()
-            if phase.startswith("transcript-") and self.record.get("timestamp_source") == "gemini_transcribe":
-                text = text.replace("GPU文字起こし", "音声文字起こし").replace("GPUの文字起こし", "音声文字起こし").replace("GPU時刻", "文字起こし時刻").replace("GPUが文字起こし", "Transcribeが文字起こし")
+            if (
+                phase.startswith("transcript-")
+                and self.record.get("timestamp_source") == "gemini_transcribe"
+            ):
+                text = (
+                    text.replace("GPU文字起こし", "音声文字起こし")
+                    .replace("GPUの文字起こし", "音声文字起こし")
+                    .replace("GPU時刻", "文字起こし時刻")
+                    .replace("GPUが文字起こし", "Transcribeが文字起こし")
+                )
             if not text:
                 raise PipelineError("Required Gemini rulebook is empty: " + path.name)
             rule_parts.append(text)
@@ -156,7 +166,11 @@ class Client:
             for index, (label, audio_path) in enumerate(audio_items, 1)
         )
         audio_identity = [
-            {"label": label, "sha256": digest(Path(path)), "bytes": Path(path).stat().st_size}
+            {
+                "label": label,
+                "sha256": digest(Path(path)),
+                "bytes": Path(path).stat().st_size,
+            }
             for label, path in audio_items
         ]
         user_prompt = "\n\n".join(part for part in (prompt, audio_manifest) if part)
@@ -276,10 +290,19 @@ class Client:
                         flush=True,
                     )
                     return value, row.get("grounding", {})
-            prior_attempts = [r for r in saved["requests"] if r.get("phase") == phase and not r.get("reused")]
+            prior_attempts = [
+                r
+                for r in saved["requests"]
+                if r.get("phase") == phase and not r.get("reused")
+            ]
             if not self.continue_missing:
                 raise PipelineError("No complete saved response for " + phase)
-            if prior_attempts and prior_attempts[-1].get("http_status") in (400, 401, 403, 404):
+            if prior_attempts and prior_attempts[-1].get("http_status") in (
+                400,
+                401,
+                403,
+                404,
+            ):
                 raise PipelineError("Non-retryable Gemini request failure")
             with self._lock:
                 self.record["requests"].extend(prior_attempts)
@@ -312,18 +335,63 @@ class Client:
         last_attempt = len(prior_attempts) + MAX_MODEL_ATTEMPTS
         for attempt in range(len(prior_attempts) + 1, last_attempt + 1):
             try:
-                return self._generate_attempt(phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt)
+                return self._generate_attempt(
+                    phase,
+                    model,
+                    thinking_level,
+                    rule_files,
+                    rule_sources,
+                    rule_text,
+                    prompt_path,
+                    prompt_sha256,
+                    audio_identity,
+                    audio_source_key,
+                    token,
+                    data,
+                    research,
+                    attempt,
+                )
             except urllib.error.HTTPError as error:
                 retryable = error.code == 429 or 500 <= error.code <= 599
                 if not retryable or attempt >= last_attempt:
                     raise
-            except (urllib.error.URLError, http.client.RemoteDisconnected, ConnectionError, TimeoutError, socket.timeout):
+            except (
+                urllib.error.URLError,
+                http.client.RemoteDisconnected,
+                ConnectionError,
+                TimeoutError,
+                socket.timeout,
+            ):
                 if attempt >= last_attempt:
                     raise
-            print(json.dumps({"phase": phase, "status": "retrying", "next_attempt": attempt + 1}), flush=True)
-            time.sleep((15 if attempt == len(prior_attempts) + 1 else 45) + random.uniform(0, 5))
+            print(
+                json.dumps(
+                    {"phase": phase, "status": "retrying", "next_attempt": attempt + 1}
+                ),
+                flush=True,
+            )
+            time.sleep(
+                (15 if attempt == len(prior_attempts) + 1 else 45)
+                + random.uniform(0, 5)
+            )
 
-    def _generate_attempt(self, phase, model, thinking_level, rule_files, rule_sources, rule_text, prompt_path, prompt_sha256, audio_identity, audio_source_key, token, data, research, attempt):
+    def _generate_attempt(
+        self,
+        phase,
+        model,
+        thinking_level,
+        rule_files,
+        rule_sources,
+        rule_text,
+        prompt_path,
+        prompt_sha256,
+        audio_identity,
+        audio_source_key,
+        token,
+        data,
+        research,
+        attempt,
+    ):
         row = LockedRequest(
             self._lock,
             {
@@ -378,7 +446,10 @@ class Client:
                     )
                 else:
                     result, text, _, _ = collect_sse_response(
-                        response, self.output / (phase + f".attempt-{attempt}.sse.txt"), row, self.save
+                        response,
+                        self.output / (phase + f".attempt-{attempt}.sse.txt"),
+                        row,
+                        self.save,
                     )
                     candidate = result["candidates"][0]
             row.update(
@@ -400,7 +471,9 @@ class Client:
 
             row["status"] = "failed"
             row.update(
-                capture_http_error(error, self.output / (phase + f".attempt-{attempt}.http-error.json"))
+                capture_http_error(
+                    error, self.output / (phase + f".attempt-{attempt}.http-error.json")
+                )
             )
             raise
         except Exception:
@@ -440,18 +513,34 @@ def selected_transcript(value, duration, offset=0):
         raw_words = row.get("words", [])
         words = []
         if isinstance(raw_words, list) and all(isinstance(w, dict) for w in raw_words):
-            if all(
-                isinstance(w.get("text"), str) and w["text"] and
-                type(w.get("start")) in (int, float) and type(w.get("end")) in (int, float) and
-                math.isfinite(w["start"]) and math.isfinite(w["end"]) and
-                start <= w["start"] < w["end"] <= end
-                for w in raw_words
-            ) and "".join(w["text"] for w in raw_words) == text:
-                words = [{"start": w["start"] + offset, "end": w["end"] + offset,
-                          "text": w["text"]} for w in raw_words]
+            if (
+                all(
+                    isinstance(w.get("text"), str)
+                    and w["text"]
+                    and type(w.get("start")) in (int, float)
+                    and type(w.get("end")) in (int, float)
+                    and math.isfinite(w["start"])
+                    and math.isfinite(w["end"])
+                    and start <= w["start"] < w["end"] <= end
+                    for w in raw_words
+                )
+                and "".join(w["text"] for w in raw_words) == text
+            ):
+                words = [
+                    {
+                        "start": w["start"] + offset,
+                        "end": w["end"] + offset,
+                        "text": w["text"],
+                    }
+                    for w in raw_words
+                ]
         rows.append(
             Segment(
-                start=start + offset, end=end + offset, text=text, words=words, **annotation(row)
+                start=start + offset,
+                end=end + offset,
+                text=text,
+                words=words,
+                **annotation(row),
             )
         )
         speaker, confidence = row.get("speaker_id"), row.get("confidence", 0)
@@ -531,7 +620,9 @@ def selected_gpu_transcripts(
             write_json(result_file, result)
             return result, True
         if result.get("input_key") != key:
-            raise PipelineError("Saved GPU transcript has a different ASR input; do not resubmit automatically")
+            raise PipelineError(
+                "Saved GPU transcript has a different ASR input; do not resubmit automatically"
+            )
 
     control_python = os.environ.get("CLIPFORGE_COLAB_CONTROL_PYTHON", "")
     if not control_python or not Path(control_python).is_file():
@@ -544,7 +635,9 @@ def selected_gpu_transcripts(
         else {}
     )
     if state.get("input_key") and state["input_key"] != key:
-        raise PipelineError("Saved GPU job has a different ASR input; do not resubmit automatically")
+        raise PipelineError(
+            "Saved GPU job has a different ASR input; do not resubmit automatically"
+        )
     if (
         state.get("input_key") == key
         and state.get("status") == "gpu_requests_or_unknown"
@@ -622,7 +715,9 @@ def selected_gpu_transcripts(
     return result, reused
 
 
-def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, audio_source_key=None):
+def clean_selected_clip(
+    client, raw, clip_index, clip, glossary, audio_path, audio_source_key=None
+):
     """Use the selected audio and GPU text, retaining the GPU's time spans."""
     duration = clip.end - clip.start
     source = raw.get("segments", [])
@@ -636,8 +731,13 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             "finishing": {"status": "no_speech_recognized", "model_requests": 0},
         }
     numbered = [
-        {"id": index, "start": row["start"], "end": row["end"], "text": row["text"],
-         **({"gap_recovery": True} if row.get("gap_recovery") else {})}
+        {
+            "id": index,
+            "start": row["start"],
+            "end": row["end"],
+            "text": row["text"],
+            **({"gap_recovery": True} if row.get("gap_recovery") else {}),
+        }
         for index, row in enumerate(source, 1)
     ]
     request = {
@@ -677,8 +777,10 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         "gap_recovery_rules": "gap_recoveryがtrueの行は空白部分を再認識した候補です。原音に発話や意味のある声がなく非発話の誤認識だけと明確な場合は、その候補だけでsource_idsを作り、textを空、omit_non_speechをtrueにします。不確かなら保持し、他の発言と混ぜません。",
     }
     value, _ = client.generate(
-        f"transcript-{clip_index}", json.dumps(request, ensure_ascii=False),
-        audio=audio_path, audio_source_key=audio_source_key,
+        f"transcript-{clip_index}",
+        json.dumps(request, ensure_ascii=False),
+        audio=audio_path,
+        audio_source_key=audio_source_key,
     )
     if value.get("audio_access") != "heard":
         raise PipelineError("Selected audio was not available to Gemini; not retried")
@@ -701,9 +803,13 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
                 ambiguous.add(sid)
                 continue
             speaker, confidence = item.get("speaker_id"), item.get("confidence")
-            certain = (isinstance(speaker, str) and speaker in SPEAKER_COLORS
-                       and type(confidence) in (int, float) and math.isfinite(confidence)
-                       and 0.8 <= confidence <= 1)
+            certain = (
+                isinstance(speaker, str)
+                and speaker in SPEAKER_COLORS
+                and type(confidence) in (int, float)
+                and math.isfinite(confidence)
+                and 0.8 <= confidence <= 1
+            )
             assignments[sid] = (speaker, confidence) if certain else ("unknown", 0)
     for sid in ambiguous:
         assignments[sid] = ("unknown", 0)
@@ -736,8 +842,12 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         if any(b["start"] - a["end"] > 1.5 for a, b in zip(spans, spans[1:])):
             continue
         text = candidate.get("text")
-        if (isinstance(text, str) and not text.strip() and candidate.get("omit_non_speech") is True
-            and all(span.get("gap_recovery") is True for span in spans)):
+        if (
+            isinstance(text, str)
+            and not text.strip()
+            and candidate.get("omit_non_speech") is True
+            and all(span.get("gap_recovery") is True for span in spans)
+        ):
             consumed.update(ids)
             replacements[ids[0]] = None
             continue
@@ -761,7 +871,11 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
             continue
         if "unknown" in distinct:
             certain = False
-        if len(source_speakers) == len(ids) and len(distinct) == 1 and "unknown" not in distinct:
+        if (
+            len(source_speakers) == len(ids)
+            and len(distinct) == 1
+            and "unknown" not in distinct
+        ):
             speaker = source_speakers[0][0]
             confidence = min(item[1] for item in source_speakers)
             certain = True
@@ -807,7 +921,11 @@ def clean_selected_clip(client, raw, clip_index, clip, glossary, audio_path, aud
         "transcript_access": "available",
         "segments": segments,
         "sound_effects": prepare_cues(value.get("sound_effects", []), duration),
-        "finishing": {"status": "gpu_timestamps_preserved", "model_requests": 1, "audio_access": value.get("audio_access", "unavailable")},
+        "finishing": {
+            "status": "gpu_timestamps_preserved",
+            "model_requests": 1,
+            "audio_access": value.get("audio_access", "unavailable"),
+        },
     }
 
 
@@ -857,7 +975,18 @@ def save_selected_outputs(output, url, chosen, gpu_clips, values, client):
     client.save()
 
 
-def process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary):
+def process_selected(
+    audio,
+    url,
+    output,
+    settings,
+    resume,
+    continue_missing,
+    identity,
+    client,
+    chosen,
+    glossary,
+):
     """Start one transcription per topic; finish each ready topic independently."""
     from .transcribe_pipeline import transcribe_clip, recover_active_gaps
     from .streaming_render import StreamingRenderer
@@ -867,50 +996,107 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
         try:
             return describe_gaps(path, duration, segments)
         except Exception:
-            return {"status": "unavailable", "reason": "level_analysis_failed", "gaps": []}
+            return {
+                "status": "unavailable",
+                "reason": "level_analysis_failed",
+                "gaps": [],
+            }
 
     if resume:
         saved_receipt = json.loads((resume / "audio-editor-receipt.json").read_text())
         if saved_receipt.get("timestamp_source") != "gemini_transcribe":
-            raise PipelineError("Saved production used a different transcription route; resume its original code")
+            raise PipelineError(
+                "Saved production used a different transcription route; resume its original code"
+            )
     client.record["timestamp_source"] = "gemini_transcribe"
     from .transcribe_pipeline import MAX_PARALLEL
+
     client.record["transcribe_parallel_limit"] = MAX_PARALLEL
-    print(json.dumps({"stage": "transcribe", "parallel_limit": MAX_PARALLEL, "route": "vertex", "model": "gemini-3.5-transcribe"}), flush=True)
+    print(
+        json.dumps(
+            {
+                "stage": "transcribe",
+                "parallel_limit": MAX_PARALLEL,
+                "route": "vertex",
+                "model": "gemini-3.5-transcribe",
+            }
+        ),
+        flush=True,
+    )
     client.save()
     renderer = None
     if os.environ.get("CLIPFORGE_STREAMING_RENDER") == "true":
-        renderer = StreamingRenderer(output, url, chosen, os.environ["CONFIG_FILE"], timestamp_source="gemini_transcribe")
+        renderer = StreamingRenderer(
+            output,
+            url,
+            chosen,
+            os.environ["CONFIG_FILE"],
+            timestamp_source="gemini_transcribe",
+        )
     started = time.monotonic()
     try:
+
         def process_one(index, clip):
             raw = transcribe_clip(client, audio, clip, index, identity["audio_sha256"])
             write_json(output / f"transcribe-selected-{index:03}.json", raw)
             with tempfile.TemporaryDirectory(prefix="clipforge-selected-audio-") as tmp:
                 selected_audio = Path(tmp) / f"selected-{index:03}.ogg"
-                encode_audio(audio, selected_audio, clip.start, clip.end - clip.start, "24k", speech_fast=True)
-                key = fingerprint({"source_audio_sha256": identity["audio_sha256"], "start": clip.start,
-                                   "end": clip.end, "encoding": "ogg-opus-16000hz-mono-24k-voip-v1"})
-                levels = advisory_gaps(selected_audio, clip.end - clip.start, raw["segments"])
+                encode_audio(
+                    audio,
+                    selected_audio,
+                    clip.start,
+                    clip.end - clip.start,
+                    "24k",
+                    speech_fast=True,
+                )
+                key = fingerprint(
+                    {
+                        "source_audio_sha256": identity["audio_sha256"],
+                        "start": clip.start,
+                        "end": clip.end,
+                        "encoding": "ogg-opus-16000hz-mono-24k-voip-v1",
+                    }
+                )
+                levels = advisory_gaps(
+                    selected_audio, clip.end - clip.start, raw["segments"]
+                )
                 write_json(output / f"transcribe-gap-levels-{index:03}.json", levels)
-                raw, recovery = recover_active_gaps(client, audio, clip, index, identity["audio_sha256"], raw, levels)
-                write_json(output / f"transcribe-gap-recovery-{index:03}.json", recovery)
+                raw, recovery = recover_active_gaps(
+                    client, audio, clip, index, identity["audio_sha256"], raw, levels
+                )
+                write_json(
+                    output / f"transcribe-gap-recovery-{index:03}.json", recovery
+                )
                 write_json(output / f"transcribe-selected-{index:03}.json", raw)
-                value = clean_selected_clip(client, raw, index, clip, glossary, selected_audio, key)
+                value = clean_selected_clip(
+                    client, raw, index, clip, glossary, selected_audio, key
+                )
             value["finishing"]["status"] = "transcribe_timestamps_preserved"
             value["finishing"]["timestamp_source"] = "gemini_transcribe"
             if renderer is not None:
                 transcript, turns = selected_transcript(value, clip.end - clip.start)
-                renderer.enqueue(index, {"transcript": transcript.model_dump(), "turns": turns,
-                                         "sound_effects": value["sound_effects"]})
+                renderer.enqueue(
+                    index,
+                    {
+                        "transcript": transcript.model_dump(),
+                        "turns": turns,
+                        "sound_effects": value["sound_effects"],
+                    },
+                )
             return raw, value
 
         with ThreadPoolExecutor(max_workers=min(6, len(chosen))) as pool:
-            futures = [pool.submit(process_one, index, clip) for index, clip in enumerate(chosen, 1)]
+            futures = [
+                pool.submit(process_one, index, clip)
+                for index, clip in enumerate(chosen, 1)
+            ]
             results = [future.result() for future in futures]
         raws, values = zip(*results)
-        client.record["selected_transcription"] = {"recognizer": "gemini-3.5-transcribe",
-                                                   "selected_topics": len(raws), "full_source_asr": False}
+        client.record["selected_transcription"] = {
+            "recognizer": "gemini-3.5-transcribe",
+            "selected_topics": len(raws),
+            "full_source_asr": False,
+        }
         save_selected_outputs(output, url, chosen, raws, values, client)
         path = output / "selected-transcripts.json"
         saved = json.loads(path.read_text())
@@ -922,15 +1108,27 @@ def process_selected(audio, url, output, settings, resume, continue_missing, ide
         try:
             if renderer is not None:
                 import sys
+
                 active_error = sys.exc_info()[0] is not None
                 try:
                     renderer.close()
                 except Exception as error:
                     if not active_error:
                         raise
-                    print(json.dumps({"stage": "render", "status": "failed", "error_type": type(error).__name__}), flush=True)
+                    print(
+                        json.dumps(
+                            {
+                                "stage": "render",
+                                "status": "failed",
+                                "error_type": type(error).__name__,
+                            }
+                        ),
+                        flush=True,
+                    )
         finally:
-            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(time.monotonic() - started, 3)
+            client.record["timings"]["selected_pipeline_elapsed_seconds"] = round(
+                time.monotonic() - started, 3
+            )
             client.save()
 
 
@@ -940,22 +1138,50 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
     from .release_transfer import gh, private_repo
 
     tag = os.environ.get("EDITORIAL_RELEASE", "")
-    if not __import__("re").fullmatch(r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag):
-        raise PipelineError("Saved editorial identity is required for source verification")
+    if not __import__("re").fullmatch(
+        r"clipforge-kick-editorial-(?:replay-)?[0-9]+", tag
+    ):
+        raise PipelineError(
+            "Saved editorial identity is required for source verification"
+        )
     private_repo()
     windows = sorted({int((clip.start + 5) // WINDOW_SECONDS) for clip in clips})
     with tempfile.TemporaryDirectory(prefix="clipforge-source-match-") as temporary:
         ref_dir = Path(temporary)
-        arguments = ["release", "download", tag, "--repo", "nyu1791-collab/ai-model-workers"]
+        arguments = [
+            "release",
+            "download",
+            tag,
+            "--repo",
+            "nyu1791-collab/ai-model-workers",
+        ]
         for window in windows:
             arguments.extend(["--pattern", f"overview-{window}.ogg"])
         gh(*arguments, "--dir", str(ref_dir))
 
         def decode(path, start):
             result = subprocess.run(
-                ["ffmpeg", "-v", "error", "-ss", str(start), "-i", str(path),
-                 "-t", "12", "-vn", "-ac", "1", "-ar", "8000", "-f", "f32le", "-"],
-                capture_output=True, timeout=60,
+                [
+                    "ffmpeg",
+                    "-v",
+                    "error",
+                    "-ss",
+                    str(start),
+                    "-i",
+                    str(path),
+                    "-t",
+                    "12",
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "8000",
+                    "-f",
+                    "f32le",
+                    "-",
+                ],
+                capture_output=True,
+                timeout=60,
             )
             if result.returncode:
                 raise PipelineError("Source comparison could not decode audio")
@@ -965,7 +1191,9 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
         for clip in clips:
             position = clip.start + 5
             window = int(position // WINDOW_SECONDS)
-            original = decode(ref_dir / f"overview-{window}.ogg", position - window * WINDOW_SECONDS)
+            original = decode(
+                ref_dir / f"overview-{window}.ogg", position - window * WINDOW_SECONDS
+            )
             current = decode(audio, position)
             size = min(len(original), len(current))
             if size < 8 * 8000:
@@ -977,15 +1205,29 @@ def validate_reacquired_source(audio, resume, clips, saved_duration):
             if denom == 0:
                 raise PipelineError("Source comparison cannot match silent samples")
             fftsize = 1 << ((2 * size - 1).bit_length())
-            cross = np.fft.irfft(np.fft.rfft(x, fftsize) * np.conj(np.fft.rfft(y, fftsize)), fftsize)
+            cross = np.fft.irfft(
+                np.fft.rfft(x, fftsize) * np.conj(np.fft.rfft(y, fftsize)), fftsize
+            )
             search = np.r_[cross[-8000:], cross[:8001]]
             best = int(np.argmax(np.abs(search)))
             correlation = float(abs(search[best]) / denom)
             offset = (best - 8000) / 8000
             if correlation < 0.35 or abs(offset) > 0.08:
-                raise PipelineError("Reacquired source does not match saved topic audio")
-            matches.append({"start": position, "correlation": round(correlation, 4), "offset_seconds": offset})
-    return {"method": "decoded_audio_sample_comparison", "saved_duration": saved_duration, "samples": matches}
+                raise PipelineError(
+                    "Reacquired source does not match saved topic audio"
+                )
+            matches.append(
+                {
+                    "start": position,
+                    "correlation": round(correlation, 4),
+                    "offset_seconds": offset,
+                }
+            )
+    return {
+        "method": "decoded_audio_sample_comparison",
+        "saved_duration": saved_duration,
+        "samples": matches,
+    }
 
 
 def reprocess_saved(audio, url, output, settings, resume):
@@ -1000,37 +1242,82 @@ def reprocess_saved(audio, url, output, settings, resume):
     selection = json.loads((resume / "final-selection.json").read_text())
     prior_asr = json.loads((resume / "selected-gpu-asr-plan.json").read_text())
     old_identity = receipt.get("input_identity", {})
-    if (canonical(selection.get("source_url", "")) != canonical(url)
+    if (
+        canonical(selection.get("source_url", "")) != canonical(url)
         or old_identity.get("source_url") != url
         or old_identity.get("settings") != settings.model_dump()
-        or prior_asr.get("source_audio_sha256") != old_identity.get("audio_sha256")):
-        raise PipelineError("Saved selection belongs to another source or configuration")
-    clips = [SelectedClip.model_validate({k: row[k] for k in
-             ("start", "end", "candidate_id", "title", "reason", "confidence")})
-             for row in selection.get("clips", [])]
-    if not clips or [{"start": c.start, "end": c.end} for c in clips] != prior_asr.get("clips"):
+        or prior_asr.get("source_audio_sha256") != old_identity.get("audio_sha256")
+    ):
+        raise PipelineError(
+            "Saved selection belongs to another source or configuration"
+        )
+    clips = [
+        SelectedClip.model_validate(
+            {
+                k: row[k]
+                for k in (
+                    "start",
+                    "end",
+                    "candidate_id",
+                    "title",
+                    "reason",
+                    "confidence",
+                )
+            }
+        )
+        for row in selection.get("clips", [])
+    ]
+    if not clips or [{"start": c.start, "end": c.end} for c in clips] != prior_asr.get(
+        "clips"
+    ):
         raise PipelineError("Saved selected intervals differ from prior GPU input")
     duration = audio_first.audio_info(audio)["duration"]
     saved_duration = receipt.get("duration")
-    if (not isinstance(saved_duration, (int, float)) or abs(duration - saved_duration) > 0.5
-        or any(c.end > duration for c in clips)):
+    if (
+        not isinstance(saved_duration, (int, float))
+        or abs(duration - saved_duration) > 0.5
+        or any(c.end > duration for c in clips)
+    ):
         raise PipelineError("Reacquired audio duration differs from saved source")
     current_sha = digest(audio)
-    comparison = {"method": "sha256_match"} if current_sha == old_identity.get("audio_sha256") else validate_reacquired_source(audio, resume, clips, saved_duration)
-    glossary = json.loads((resume / "terminology-glossary.json").read_text()).get("terms", [])
-    identity = {"source_url": url, "audio_sha256": current_sha, "settings": settings.model_dump()}
+    comparison = (
+        {"method": "sha256_match"}
+        if current_sha == old_identity.get("audio_sha256")
+        else validate_reacquired_source(audio, resume, clips, saved_duration)
+    )
+    glossary = json.loads((resume / "terminology-glossary.json").read_text()).get(
+        "terms", []
+    )
+    identity = {
+        "source_url": url,
+        "audio_sha256": current_sha,
+        "settings": settings.model_dump(),
+    }
     client = Client(output)
-    client.record.update(source_url=url, duration=duration, settings=settings.model_dump(),
-                         input_identity=identity,
-                         reprocessed_selection={"parent_release": os.environ.get("EDITORIAL_RELEASE"),
-                            "parent_audio_sha256": old_identity.get("audio_sha256"),
-                            "source_comparison": comparison, "topic_count": len(clips)})
+    client.record.update(
+        source_url=url,
+        duration=duration,
+        settings=settings.model_dump(),
+        input_identity=identity,
+        reprocessed_selection={
+            "parent_release": os.environ.get("EDITORIAL_RELEASE"),
+            "parent_audio_sha256": old_identity.get("audio_sha256"),
+            "source_comparison": comparison,
+            "topic_count": len(clips),
+        },
+    )
     client.save()
     try:
-        process_selected(audio, url, output, settings, None, False, identity, client, clips, glossary)
-        client.record.update(status="complete", timestamp_alignment="not_forced_aligned",
-                             timestamp_method="transcribe_word_offsets", subtitle_policy=SUBTITLE_POLICY,
-                             sound_effects_status="planned_not_rendered")
+        process_selected(
+            audio, url, output, settings, None, False, identity, client, clips, glossary
+        )
+        client.record.update(
+            status="complete",
+            timestamp_alignment="not_forced_aligned",
+            timestamp_method="transcribe_word_offsets",
+            subtitle_policy=SUBTITLE_POLICY,
+            sound_effects_status="planned_not_rendered",
+        )
     except Exception:
         client.record["status"] = "failed"
         raise
@@ -1039,7 +1326,15 @@ def reprocess_saved(audio, url, output, settings, resume):
         client.save()
 
 
-def plan(audio, url, output, settings, resume=None, continue_missing=False, transcribe_trial=False):
+def plan(
+    audio,
+    url,
+    output,
+    settings,
+    resume=None,
+    continue_missing=False,
+    transcribe_trial=False,
+):
     canonical(url)
     output.mkdir(parents=True, exist_ok=True, mode=0o700)
     if (output / "audio-editor-receipt.json").exists():
@@ -1115,7 +1410,11 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                     "今回の全体把握用音声窓について話題区間だけを返します。"
                     f"この窓は元配信の{start}秒から{start + length}秒で、添付音声の長さは{length}秒です。"
                     f"採用候補の長さの目安は{settings.min_seconds}〜{settings.max_seconds}秒ですが、短くても長くても自然な話題の区切りを優先してください。"
-                    + ("縦型の短い動画向けに、前提と結末が伝わる独立した会話の山場を選び、話の途中で切らないでください。" if settings.aspect == "9:16" else "")
+                    + (
+                        "縦型の短い動画向けに、前提と結末が伝わる独立した会話の山場を選び、話の途中で切らないでください。"
+                        if settings.aspect == "9:16"
+                        else ""
+                    )
                     + "JSON {audio_access:'heard',topics:[{start:秒,end:秒,title,reason,confidence:0から1}]}。"
                     "start/endは添付した今回の音声窓の先頭を0秒とする秒数です。",
                     path,
@@ -1127,7 +1426,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 cancelled.set()
                 raise
 
-        topic_pool = ThreadPoolExecutor(max_workers=min(1 if resume else 2, len(starts)))
+        topic_pool = ThreadPoolExecutor(
+            max_workers=min(1 if resume else 2, len(starts))
+        )
         topic_futures = {
             index: topic_pool.submit(request_overview, index, start)
             for index, start in enumerate(starts)
@@ -1209,7 +1510,9 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
             from .transcribe_trial import transcribe_topic
 
             transcribe_topic(audio, chosen[0], output, client)
-            client.record.update(status="complete", timestamp_method="transcribe_word_offsets")
+            client.record.update(
+                status="complete", timestamp_method="transcribe_word_offsets"
+            )
             return
         client.record["topic_selection"] = {
             "requested_clips": settings.clips,
@@ -1235,7 +1538,14 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
         except urllib.error.HTTPError as error:
             if error.code in (401, 403):
                 raise
-            glossary, diagnostics = [], {"status": "unavailable", "reason": "http_error", "http_status": error.code}
+            glossary, diagnostics = (
+                [],
+                {
+                    "status": "unavailable",
+                    "reason": "http_error",
+                    "http_status": error.code,
+                },
+            )
         except PipelineError as error:
             if str(error) not in {
                 "Incomplete Gemini response; not retried",
@@ -1243,20 +1553,45 @@ def plan(audio, url, output, settings, resume=None, continue_missing=False, tran
                 "Gemini returned no complete JSON object; raw response was preserved",
             }:
                 raise
-            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
-        except (urllib.error.URLError, http.client.HTTPException, ConnectionError,
-                TimeoutError, socket.timeout) as error:
-            glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+            glossary, diagnostics = (
+                [],
+                {"status": "unavailable", "reason": type(error).__name__},
+            )
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,
+            ConnectionError,
+            TimeoutError,
+            socket.timeout,
+        ) as error:
+            glossary, diagnostics = (
+                [],
+                {"status": "unavailable", "reason": type(error).__name__},
+            )
         else:
             try:
                 glossary, diagnostics = grounded_terms(research, grounding, corpus)
             except (ValueError, KeyError, TypeError) as error:
-                glossary, diagnostics = [], {"status": "unavailable", "reason": type(error).__name__}
+                glossary, diagnostics = (
+                    [],
+                    {"status": "unavailable", "reason": type(error).__name__},
+                )
         write_json(
             output / "terminology-glossary.json",
             {"terms": glossary, "diagnostics": diagnostics},
         )
-        process_selected(audio, url, output, settings, resume, continue_missing, identity, client, chosen, glossary)
+        process_selected(
+            audio,
+            url,
+            output,
+            settings,
+            resume,
+            continue_missing,
+            identity,
+            client,
+            chosen,
+            glossary,
+        )
         client.record.update(
             status="complete",
             timestamp_alignment="not_forced_aligned",
@@ -1463,17 +1798,31 @@ def main():
     elif args.mode == "plan":
         if args.config.name == "config.landscape-trial-finish.example.json":
             if not args.continue_missing:
-                raise PipelineError("Finishing the transcription trial requires continue-missing")
+                raise PipelineError(
+                    "Finishing the transcription trial requires continue-missing"
+                )
             from .finish_transcribe_trial import finish_trial
 
             finish_trial(args.url, args.output, settings, args.resume_from)
         elif args.config.name == "config.landscape-reprocess.example.json":
             if not args.continue_missing:
-                raise PipelineError("Selected-topic reprocessing must be explicitly requested")
-            reprocess_saved(args.audio, args.url, args.output, settings, args.resume_from)
+                raise PipelineError(
+                    "Selected-topic reprocessing must be explicitly requested"
+                )
+            reprocess_saved(
+                args.audio, args.url, args.output, settings, args.resume_from
+            )
         else:
-            plan(args.audio, args.url, args.output, settings, args.resume_from, args.continue_missing,
-                 transcribe_trial=args.config.name == "config.landscape-transcribe-trial.example.json")
+            plan(
+                args.audio,
+                args.url,
+                args.output,
+                settings,
+                args.resume_from,
+                args.continue_missing,
+                transcribe_trial=args.config.name
+                == "config.landscape-transcribe-trial.example.json",
+            )
     else:
         try:
             render(
@@ -1498,4 +1847,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

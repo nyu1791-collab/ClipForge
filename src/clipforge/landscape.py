@@ -8,7 +8,6 @@ import sys
 
 from . import fonts, pipeline
 from .models import SelectedClip, validate_picks
-from .quality import READING_CPS_THRESHOLDS
 from .storage import PipelineError, digest, fingerprint, within
 
 
@@ -33,6 +32,8 @@ METRICS = {
     "width",
     "height",
 }
+
+READING_CPS_THRESHOLDS = (4, 7, 10)
 
 
 def safe_quality_summary(report):
@@ -67,7 +68,9 @@ def validate_selection(value, settings, duration, *, advisory_targets=False):
     # Editorial targets never gate an otherwise renderable delivery.
     validate_picks(clips, duration, settings)
     clips = [
-        clip if clip.title.strip() else clip.model_copy(update={"title": f"話題 {index}"})
+        clip
+        if clip.title.strip()
+        else clip.model_copy(update={"title": f"話題 {index}"})
         for index, clip in enumerate(clips, 1)
     ]
     return clips

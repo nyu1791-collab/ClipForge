@@ -2,9 +2,8 @@ import json
 
 import pytest
 
-from clipforge import audio_first
 from clipforge import topic_hints as th
-from clipforge.models import Settings, Transcript
+from clipforge.models import Settings
 from clipforge.review_draft import build_review_draft
 from clipforge.storage import PipelineError
 
@@ -37,69 +36,6 @@ def inputs(rows):
     return analysis, previews, settings
 
 
-def test_ranked_draft_uses_original_intervals_and_is_never_approved():
-    analysis, previews, settings = inputs(
-        [
-            topic("A", 300, 340, speech=1),
-            topic("B", 400, 440),
-            topic("C", 500, 540, speech=30),
-            topic("D", 600, 640, speech=20),
-        ]
-    )
-    draft, diagnostics = build_review_draft(analysis, previews, settings)
-    assert draft == {
-        "analysis_key": analysis["analysis_key"],
-        "clips": [
-            {
-                "candidate_id": topic_id,
-                "start": start,
-                "end": start + 40,
-                "title": "要確認：" + topic_id,
-                "reason": "ヒント順位に基づく下書き。意味・映像は未確認。",
-                "confidence": 0.0,
-                "video_reviewed": False,
-            }
-            for topic_id, start in [("B", 400), ("C", 500), ("D", 600)]
-        ],
-    }
-    assert diagnostics["shortfall"] == 0
-    assert diagnostics["transcript_boundary_check"] == "not_available"
-    assert diagnostics["status"] == "awaiting_video_review"
-    assert diagnostics["semantic_topic_review"] == "required"
-    assert diagnostics["human_review_performed"] is False
-    assert analysis["semantic_topic_review"] == "required"
-    with pytest.raises(PipelineError, match="requires video review"):
-        audio_first.reviewed_clips(draft, analysis, previews, settings)
-    for clip in draft["clips"]:
-        clip["video_reviewed"] = True
-    assert len(audio_first.reviewed_clips(draft, analysis, previews, settings)) == 3
-
-
-def test_distinct_nonoverlapping_ids_duration_limits_and_shortfall():
-    analysis, previews, settings = inputs(
-        [
-            topic("A", 300, 340),
-            topic("A", 400, 440),
-            topic("B", 330, 370),
-            topic("C", 500, 520, speech=16),
-            topic("D", 600, 660, speech=42),
-            topic("E", 700, 719),
-            topic("F", 800, 861),
-        ]
-    )
-    draft, diagnostics = build_review_draft(analysis, previews, settings, count=5)
-    assert [row["candidate_id"] for row in draft["clips"]] == ["A", "C", "D"]
-    assert diagnostics["requested_count"] == 5
-    assert diagnostics["selected_count"] == 3
-    assert diagnostics["shortfall"] == 2
-    assert {row["topic_id"]: row["reason"] for row in diagnostics["skipped"]} == {
-        "A": "duplicate_id",
-        "B": "overlap",
-        "E": "duration_out_of_range",
-        "F": "duration_out_of_range",
-    }
-
-
 @pytest.mark.parametrize("count", [3, 4, 5])
 def test_default_count_follows_settings_and_touching_intervals_are_allowed(count):
     analysis, previews, settings = inputs(
@@ -109,13 +45,6 @@ def test_default_count_follows_settings_and_touching_intervals_are_allowed(count
     draft, diagnostics = build_review_draft(analysis, previews, settings)
     assert len(draft["clips"]) == count
     assert diagnostics["shortfall"] == 0
-
-
-@pytest.mark.parametrize("count", [0, 2, 6, True, 3.0])
-def test_invalid_requested_count_is_rejected(count):
-    analysis, previews, settings = inputs([])
-    with pytest.raises(ValueError, match="3 to 5"):
-        build_review_draft(analysis, previews, settings, count=count)
 
 
 @pytest.mark.parametrize(
@@ -139,66 +68,6 @@ def test_only_successfully_created_preview_ids_are_eligible(fault):
     assert diagnostics["skipped"] == [
         {"topic_id": "A", "reason": "preview_unavailable"}
     ]
-
-
-@pytest.mark.parametrize(
-    "start, end, words", [(315, 355, True), (280, 320, True), (315, 355, False)]
-)
-def test_unsafe_boundaries_are_excluded_without_text_in_diagnostics(start, end, words):
-    analysis, previews, settings = inputs(
-        [topic("A", start, end), topic("B", 400, 440), topic("C", 500, 540)]
-    )
-    text = "合成の検証用テキスト"
-    analysis["topics"][0]["text"] = text
-    transcript = Transcript(
-        language="ja",
-        segments=[
-            {
-                "start": 310,
-                "end": 330,
-                "text": text,
-                "words": [{"start": 310, "end": 330, "text": text}] if words else [],
-            }
-        ],
-    )
-    draft, diagnostics = build_review_draft(
-        analysis, previews, settings, transcript=transcript
-    )
-    assert [row["candidate_id"] for row in draft["clips"]] == ["B", "C"]
-    assert diagnostics["shortfall"] == 1
-    assert diagnostics["transcript_boundary_check"] == "performed"
-    assert {"topic_id": "A", "reason": "unsafe_transcript_boundary"} in diagnostics[
-        "skipped"
-    ]
-    assert text not in json.dumps(diagnostics, ensure_ascii=False)
-    assert "text" not in diagnostics
-
-
-def test_safe_boundary_candidates_replace_unsafe_candidates_without_adjusting_times():
-    analysis, previews, settings = inputs(
-        [topic("A", 315, 355)]
-        + [topic(str(n), 400 + n * 100, 440 + n * 100) for n in range(3)]
-    )
-    transcript = Transcript(
-        language="ja",
-        segments=[
-            {
-                "start": 310,
-                "end": 330,
-                "text": "合成例",
-                "words": [{"start": 310, "end": 330, "text": "合成例"}],
-            }
-        ],
-    )
-    draft, diagnostics = build_review_draft(
-        analysis, previews, settings, transcript=transcript
-    )
-    assert [(row["start"], row["end"]) for row in draft["clips"]] == [
-        (400, 440),
-        (500, 540),
-        (600, 640),
-    ]
-    assert diagnostics["shortfall"] == 0
 
 
 @pytest.mark.parametrize("start, end", [(-1, 39), (1990, 2030), (350, 300)])

@@ -81,7 +81,9 @@ def build_review_draft(
             clip["candidate_id"]
             for clip in clips
             if not (
-                settings.min_seconds <= clip["end"] - clip["start"] <= settings.max_seconds
+                settings.min_seconds
+                <= clip["end"] - clip["start"]
+                <= settings.max_seconds
             )
         ],
         "requested_count": count,

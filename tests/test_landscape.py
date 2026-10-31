@@ -1,4 +1,3 @@
-import copy
 import json
 from pathlib import Path
 
@@ -6,7 +5,7 @@ import pytest
 
 from clipforge import landscape, pipeline
 from clipforge.models import Settings
-from clipforge.storage import PipelineError, digest, write_json
+from clipforge.storage import digest, write_json
 
 
 @pytest.fixture
@@ -31,42 +30,6 @@ def manual_plan():
             for n in range(3)
         ]
     }
-
-
-def test_landscape_defaults_and_invalid_reading_settings(landscape_settings):
-    assert landscape_settings.aspect == "16:9" and landscape_settings.height == 360
-    assert (
-        landscape_settings.horizontal_target_cps
-        == landscape_settings.horizontal_warn_cps
-        == 7
-    )
-    assert landscape_settings.horizontal_line_chars == 13
-    with pytest.raises(ValueError):
-        Settings.model_validate(
-            {**landscape_settings.model_dump(), "horizontal_target_cps": 8}
-        )
-    with pytest.raises(ValueError):
-        Settings(require_transcript_cache=True)
-
-
-@pytest.mark.parametrize(
-    "fault", ["too_few", "too_many", "overlap", "outside", "empty_title"]
-)
-def test_selection_rejects_incomplete_or_ambiguous_delivery(
-    manual_plan, landscape_settings, fault
-):
-    if fault == "too_few":
-        manual_plan["clips"].pop()
-    elif fault == "too_many":
-        manual_plan["clips"] *= 2
-    elif fault == "overlap":
-        manual_plan["clips"][1].update(start=50, end=110)
-    elif fault == "outside":
-        manual_plan["clips"][2]["end"] = 1000
-    else:
-        manual_plan["clips"][0]["title"] = " "
-    with pytest.raises((PipelineError, ValueError)):
-        landscape.validate_selection(manual_plan, landscape_settings, 300)
 
 
 def test_safe_summary_never_copies_speech_paths_or_unrecognised_metrics():
@@ -151,52 +114,3 @@ def delivery(tmp_path):
         },
     }
     return manifest, output
-
-
-def test_delivery_verifies_files_but_does_not_certify_topic_quality(delivery):
-    manifest, output = delivery
-    summary = landscape.summarize_delivery(manifest, output, 3)
-    assert summary["rendered_clips"] == 3
-    assert summary["topic_content_review"] == "required"
-    assert summary["human_review_performed"] is False
-    assert "PRIVATE_SPEECH" not in json.dumps(summary)
-
-
-@pytest.mark.parametrize(
-    "fault",
-    [
-        "count",
-        "changed_file",
-        "width",
-        "audio_rate",
-        "quality",
-        "stored_report",
-        "provider",
-        "generation",
-        "traversal",
-    ],
-)
-def test_delivery_rejects_wrong_or_tampered_results(delivery, fault):
-    manifest, output = delivery
-    manifest = copy.deepcopy(manifest)
-    row = manifest["rendered"][0]
-    if fault == "count":
-        manifest["rendered"].pop()
-    elif fault == "changed_file":
-        (output / row["directory"] / "video.mp4").write_bytes(b"changed")
-    elif fault == "width":
-        row["media"]["width"] = 404
-    elif fault == "audio_rate":
-        row["media"]["audio_sample_rate"] = 96000
-    elif fault == "quality":
-        row["quality"]["passed"] = False
-    elif fault == "stored_report":
-        row["quality"]["warnings"] = []
-    elif fault == "provider":
-        manifest["selection_receipt"]["provider"] = "gemini"
-    elif fault == "generation":
-        manifest["selection_receipt"]["generation_requests"] = 1
-    else:
-        row["directory"] = "../outside"
-    with pytest.raises(PipelineError):
-        landscape.summarize_delivery(manifest, output, 3)

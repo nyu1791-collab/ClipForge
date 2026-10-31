@@ -25,7 +25,9 @@ def validate_turns(rows, duration):
         if not isinstance(row, dict):
             continue
         start, end = row.get("start"), row.get("end")
-        if any(type(v) not in (int, float) or not math.isfinite(v) for v in (start, end)):
+        if any(
+            type(v) not in (int, float) or not math.isfinite(v) for v in (start, end)
+        ):
             continue
         start, end = max(0, start), min(duration, end)
         if start >= end:

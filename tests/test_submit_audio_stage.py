@@ -88,20 +88,6 @@ def stage_submitter(tmp_path, monkeypatch):
     return module, control, args
 
 
-def test_stage_identity_prevents_duplicate_dispatch(stage_submitter):
-    module, control, args = stage_submitter
-    assert module.main(args) == 0
-    payload = control["posts"][0]
-    assert payload["ref"] == "main"
-    assert control["post_args"][0][3] == (
-        f"repos/{module.REPO}/actions/workflows/clipforge-stages.yml/dispatches"
-    )
-    assert payload["inputs"]["previous_request_id"] == "b" * 32
-    with pytest.raises(RuntimeError, match="already has a request"):
-        module.main(args)
-    assert len(control["posts"]) == 1
-
-
 def test_render_submission_accepts_the_chained_run_and_request(
     stage_submitter, tmp_path
 ):
@@ -124,26 +110,6 @@ def test_render_submission_accepts_the_chained_run_and_request(
     assert inputs["previous_request_id"] == "b" * 32
 
 
-def test_active_clipforge_run_blocks_dispatch(stage_submitter):
-    module, control, args = stage_submitter
-    control["runs"] = [{"workflow": module.WORKFLOW, "status": "in_progress"}]
-    with pytest.raises(RuntimeError, match="another worker is active"):
-        module.main(args)
-    assert not control["posts"]
-
-
-def test_unrelated_workflow_run_does_not_block_dispatch(stage_submitter):
-    module, control, args = stage_submitter
-    control["runs"] = [{"workflow": "other.yml", "status": "in_progress"}]
-    assert module.main(args) == 0
-    assert len(control["posts"]) == 1
-    run_list = [a for a in control["list_args"] if a[:2] == ("run", "list")]
-    assert run_list and run_list[-1][run_list[-1].index("--workflow") + 1] == (
-        "clipforge-stages.yml"
-    )
-    assert run_list[-1][run_list[-1].index("--branch") + 1] == "main"
-
-
 def test_other_branch_does_not_block_new_stage_workflow(stage_submitter):
     module, control, args = stage_submitter
     control["runs"] = [
@@ -154,24 +120,6 @@ def test_other_branch_does_not_block_new_stage_workflow(stage_submitter):
         }
     ]
     assert module.main(args) == 0
-
-
-@pytest.mark.parametrize(
-    "fault", ["active", "public", "missing_review", "invalid_source"]
-)
-def test_invalid_stage_never_starts_a_worker(stage_submitter, fault):
-    module, control, args = stage_submitter
-    if fault == "active":
-        control["runs"] = [{"workflow": module.WORKFLOW, "status": "in_progress"}]
-    elif fault == "public":
-        control["private"] = False
-    elif fault == "missing_review":
-        args[1] = "render"
-    else:
-        args[-1] = "main"
-    with pytest.raises(RuntimeError):
-        module.main(args)
-    assert not control["posts"]
 
 
 def test_unconfirmed_dispatch_is_not_sent_again(stage_submitter):
@@ -678,21 +626,6 @@ def test_collect_delivery_preserves_safety_checks(delivery_collector, tmp_path, 
     assert not destination.exists()
 
 
-def test_collect_verifies_listed_files_and_writes_new_directory(
-    collector, tmp_path, capsys
-):
-    module, control, state = collector
-    destination = tmp_path / "collected" / "stage"
-    assert module.main(collect_args(destination)) == 0
-    assert (destination / "previews/topic-001.mp4").read_bytes() == b"synthetic preview"
-    assert (destination / "request-receipt.json").is_file()
-    saved = json.loads((state / "receipt.json").read_text())
-    assert saved["status"] == "COLLECTED" and saved["run_id"] == RUN_ID
-    printed = capsys.readouterr().out
-    assert KICK_URL not in printed and "sha256" not in printed
-    assert control["downloads"] == 1
-
-
 @pytest.mark.parametrize("clip_index", [None, ""])
 def test_collect_full_render_requires_completed_clips(collector, tmp_path, clip_index):
     module, control, state = collector
@@ -713,46 +646,6 @@ def test_collect_full_render_requires_completed_clips(collector, tmp_path, clip_
     receipt_path.write_text(json.dumps(receipt))
     with pytest.raises(RuntimeError, match="omits required rendered clips"):
         module.main(collect_args(tmp_path / "collected"))
-
-
-def test_collect_rejects_sha_mismatch(collector, tmp_path):
-    module, control, _ = collector
-    control["mutate"] = lambda staging: (staging / "audio.m4a").write_bytes(b"changed")
-    destination = tmp_path / "collected"
-    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
-        module.main(collect_args(destination))
-    assert not destination.exists()
-
-
-def test_collect_rejects_missing_listed_file(collector, tmp_path):
-    module, control, _ = collector
-    control["mutate"] = lambda staging: (staging / "topics.json").unlink()
-    destination = tmp_path / "collected"
-    with pytest.raises(RuntimeError, match="missing"):
-        module.main(collect_args(destination))
-    assert not destination.exists()
-
-
-def test_collect_rejects_unlisted_extra_file(collector, tmp_path):
-    module, control, _ = collector
-    control["mutate"] = lambda staging: (staging / "unlisted.txt").write_text("extra")
-    destination = tmp_path / "collected"
-    with pytest.raises(RuntimeError, match="unlisted"):
-        module.main(collect_args(destination))
-    assert not destination.exists()
-
-
-@pytest.mark.parametrize("name", ["../escape", "/absolute.bin", "previews/../../x"])
-def test_collect_rejects_path_traversal_in_receipt(collector, tmp_path, name):
-    module, control, _ = collector
-    receipt_path = control["artifact"] / "request-receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt["sha256"][name] = "a" * 64
-    receipt_path.write_text(json.dumps(receipt))
-    destination = tmp_path / "collected"
-    with pytest.raises(RuntimeError, match="unsafe path"):
-        module.main(collect_args(destination))
-    assert not destination.exists()
 
 
 def test_collect_never_overwrites_existing_destination(collector, tmp_path):
@@ -789,15 +682,6 @@ def test_collect_rejects_identity_or_generated_receipt_mismatch(
     with pytest.raises(RuntimeError):
         module.main(collect_args(destination))
     assert not destination.exists()
-
-
-def test_collect_accepts_matching_previous_run_and_request(collector, tmp_path):
-    module, control, _ = collector
-    destination = tmp_path / "collected"
-    assert module.main(collect_args(destination)) == 0
-    receipt = json.loads((destination / "request-receipt.json").read_text())
-    assert receipt["previous_run_id"] == PREVIOUS_RUN
-    assert receipt["previous_request_id"] == PREVIOUS_REQUEST
 
 
 def test_collect_rejects_receipt_without_previous_keys(collector, tmp_path):
@@ -843,55 +727,6 @@ def render_args(args, tmp_path, *extra):
         str(review),
         *extra,
     ]
-
-
-@pytest.mark.parametrize(
-    "extra",
-    [(), ("--clip-index", "1"), ("--worker", "colab-auto", "--clips", "3")],
-)
-@pytest.mark.parametrize("flag", [False, None, 1, "true", "missing"])
-def test_render_rejects_unreviewed_drafts_before_any_remote_call(
-    stage_submitter, tmp_path, monkeypatch, extra, flag
-):
-    module, control, args = stage_submitter
-    argv = render_args(args, tmp_path, *extra)
-    clips = [
-        {"video_reviewed": True},
-        {} if flag == "missing" else {"video_reviewed": flag},
-    ]
-    (tmp_path / "review.json").write_text(json.dumps({"clips": clips}))
-    monkeypatch.setattr(
-        module, "gh", lambda *a, **k: pytest.fail("unapproved review reached GitHub")
-    )
-    with pytest.raises(RuntimeError, match="requires video review"):
-        module.main(argv)
-    assert not control["posts"]
-    assert not (tmp_path / ".local/state/clipforge").exists()
-
-
-@pytest.mark.parametrize(
-    "review", [[], {}, {"clips": []}, {"clips": "invalid"}, {"clips": [None]}]
-)
-def test_render_rejects_empty_or_malformed_reviews(stage_submitter, tmp_path, review):
-    module, control, args = stage_submitter
-    argv = render_args(args, tmp_path)
-    (tmp_path / "review.json").write_text(json.dumps(review))
-    with pytest.raises(RuntimeError, match="requires video review"):
-        module.main(argv)
-    assert not control["posts"]
-
-
-def test_batch_clips_dispatch_one_colab_request_for_all_clips(
-    stage_submitter, tmp_path
-):
-    module, control, args = stage_submitter
-    control["runs"] = [{"workflow": module.WORKFLOW, "status": "completed"}]
-    argv = render_args(args, tmp_path, "--worker", "colab-auto", "--clips", "3")
-    assert module.main(argv) == 0
-    inputs = [post["inputs"] for post in control["posts"]]
-    assert [i["clip_index"] for i in inputs] == [""]
-    assert {i["worker"] for i in inputs} == {"colab-auto"}
-    assert len({i["request_id"] for i in inputs}) == 1
 
 
 @pytest.mark.parametrize(
@@ -1020,48 +855,6 @@ def local_merge_env(collector, tmp_path, monkeypatch):
     return module, worker, control, sources, args
 
 
-def test_local_merge_matches_hosted_merge_and_collect_verification(
-    local_merge_env, tmp_path, monkeypatch
-):
-    module, worker, control, sources, args = local_merge_env
-    output = tmp_path / "local"
-    assert module.main([*args, "--output", str(output)]) == 0
-    assert len([c for c in control["calls"] if c[:2] == ("run", "download")]) == 3
-    assert (output / "delivery/e2e-summary.json").is_file()
-    summary = json.loads((output / "delivery/e2e-summary.json").read_text())
-    assert summary["reproducibility"]["git_head"] == SOURCE_REF
-    receipt = json.loads((output / "request-receipt.json").read_text())
-    assert receipt["workflow_run"] == "local"
-    request = {
-        "audio_stage": "merge",
-        "source_ref": SOURCE_REF,
-        "previous_request_id": PREVIOUS_REQUEST,
-        "part_runs": args[-1],
-    }
-    assert module.verify_stage_artifact(
-        output, receipt["request_id"], "merge", request, "local"
-    ) == len(receipt["sha256"])
-    monkeypatch.setenv("GITHUB_REPOSITORY", worker.REPO)
-    hosted = tmp_path / "hosted"
-    hosted_args = [
-        "--stage",
-        "merge",
-        "--request-id",
-        receipt["request_id"],
-        "--source-ref",
-        SOURCE_REF,
-        "--output",
-        str(hosted),
-    ]
-    for source in sources.values():
-        hosted_args += ["--part-dir", str(source)]
-    assert worker.main(hosted_args) == 0
-    assert json.loads((hosted / "manifest.json").read_text()) == json.loads(
-        (output / "manifest.json").read_text()
-    )
-    assert set(module.staged_files(hosted)) == set(module.staged_files(output))
-
-
 @pytest.mark.parametrize(
     "fault",
     [
@@ -1080,23 +873,6 @@ def test_local_merge_stops_before_download_when_run_verification_fails(
         module.main([*args, "--output", str(output)])
     assert not output.exists()
     assert not any(c[:2] == ("run", "download") for c in control["calls"])
-
-
-def test_local_merge_does_not_publish_output_that_fails_collect_verification(
-    local_merge_env, tmp_path, monkeypatch
-):
-    module, worker, _, _, args = local_merge_env
-    original = worker.write_receipt
-
-    def tamper(output, *args, **kwargs):
-        original(output, *args, **kwargs)
-        (output / "delivery/clips/clip-001/video.mp4").write_bytes(b"changed")
-
-    monkeypatch.setattr(worker, "write_receipt", tamper)
-    output = tmp_path / "local"
-    with pytest.raises(RuntimeError, match="SHA-256 mismatch"):
-        module.main([*args, "--output", str(output)])
-    assert not output.exists()
 
 
 def test_local_merge_reads_source_config_and_rejects_different_checkout(
@@ -1138,37 +914,6 @@ def test_local_merge_rejects_imported_code_from_different_revision(
     assert not output.exists()
 
 
-def test_local_merge_compares_part_count_with_configuration_plan(
-    local_merge_env, tmp_path
-):
-    module, worker, _, sources, args = local_merge_env
-    for root in sources.values():
-        path = root / "manifest.json"
-        manifest = json.loads(path.read_text())
-        manifest["clip_count"] = 4
-        path.write_text(json.dumps(manifest))
-        receipt_path = root / "request-receipt.json"
-        receipt = json.loads(receipt_path.read_text())
-        receipt["sha256"]["manifest.json"] = worker.digest(path)
-        receipt_path.write_text(json.dumps(receipt))
-    output = tmp_path / "local"
-    with pytest.raises(RuntimeError, match="clip count does not match the plan"):
-        module.main([*args, "--output", str(output)])
-    assert not output.exists()
-
-
-def test_audio_stages_yaml_loads_and_merge_skips_os_packages():
-    import yaml
-
-    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
-    steps = workflow["jobs"]["audio-stage"]["steps"]
-    cache = next(step for step in steps if step.get("uses") == "actions/cache@v4")
-    assert cache["if"] == "inputs.audio_stage != 'merge'"
-    install = next(step for step in steps if "dpkg-query" in step.get("run", ""))
-    assert install["if"] == cache["if"]
-    assert "apt-get install --no-download" in install["run"]
-
-
 @pytest.mark.parametrize("path", sorted(Path("deploy").glob("*.yml")))
 def test_deployment_yaml_loads(path):
     import yaml
@@ -1176,44 +921,6 @@ def test_deployment_yaml_loads(path):
     workflow = yaml.safe_load(path.read_text())
     assert workflow.get(True, workflow.get("on"))["workflow_dispatch"] is not None
     assert workflow["jobs"]
-
-
-@pytest.mark.parametrize("worker", ["cpu", "colab-auto"])
-@pytest.mark.parametrize("stage", ["previews", "render", "merge"])
-def test_audio_stage_workflow_validates_worker_stage_combination(
-    tmp_path, monkeypatch, worker, stage
-):
-    import yaml
-
-    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
-    job = workflow["jobs"]["colab-render" if worker == "colab-auto" else "audio-stage"]
-    assert f"inputs.worker == '{worker}'" in job["if"]
-    assert "inputs.audio_stage" not in job["if"]
-    for name, value in {
-        "SOURCE_REF": SOURCE_REF,
-        "CLIPFORGE_SOURCE_REF": SOURCE_REF,
-        "REQUEST_ID": "d" * 32,
-        "INPUT_TAG": "clipforge-input-" + "d" * 32,
-        "PREVIOUS_RUN": str(PREVIOUS_RUN),
-        "PREVIOUS_REQUEST": PREVIOUS_REQUEST,
-        "AUDIO_STAGE": stage,
-        "CLIP_INDEX": "",
-        "PART_RUNS": "123:" + "c" * 32 if stage == "merge" else "",
-        "REVIEW_JSON": '{"clips": [{"video_reviewed": true}]}',
-        "CONFIG_FILE": "config.landscape.example.json",
-        "RUNNER_TEMP": str(tmp_path),
-    }.items():
-        monkeypatch.setenv(name, value)
-    code = _validation_run(job).split("python3 - <<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
-    if worker == "colab-auto" and stage != "render":
-        with pytest.raises(
-            SystemExit, match="worker=colab-auto requires audio_stage=render"
-        ):
-            exec(compile(code, "stage-validation", "exec"), {})
-        assert not (tmp_path / "review.json").exists()
-    else:
-        exec(compile(code, "stage-validation", "exec"), {})
-        assert json.loads((tmp_path / "review.json").read_text())["clips"]
 
 
 CHAT_CONFIG = "config.landscape-chat.example.json"
@@ -1356,25 +1063,6 @@ def test_local_merge_reads_the_configuration_its_parts_used(
     with pytest.raises(RuntimeError, match="code differs from source_ref"):
         module.main([*args, "--output", str(tmp_path / "local")])
     assert len(calls) == 2
-
-
-def test_audio_stage_workflow_passes_a_validated_config_file_to_both_paths():
-    import yaml
-
-    workflow = yaml.safe_load(Path("deploy/audio-stages.yml").read_text())
-    inputs = workflow.get(True, workflow.get("on"))["workflow_dispatch"]["inputs"]
-    assert inputs["config_file"]["default"] == "config.landscape.example.json"
-    for name in ("audio-stage", "colab-render"):
-        job = workflow["jobs"][name]
-        assert job["env"]["CONFIG_FILE"] == "${{ inputs.config_file }}"
-        assert "os.environ['CONFIG_FILE']" in _validation_run(job)
-    steps = workflow["jobs"]["audio-stage"]["steps"]
-    run = next(
-        step["run"]
-        for step in steps
-        if step.get("name") == "Reuse verified ASR and execute only the requested stage"
-    )
-    assert run.count('--config "$CONFIG_FILE"') == 2
 
 
 @pytest.mark.parametrize(

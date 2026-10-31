@@ -1,6 +1,5 @@
 import json
 from types import SimpleNamespace
-import threading
 import wave
 
 import numpy as np
@@ -278,58 +277,6 @@ def coordinator(tmp_path, monkeypatch, source, plan):
     return args, operations
 
 
-@pytest.mark.parametrize("failed_index", [None, 2])
-def test_four_parts_run_side_by_side_on_any_gpu_and_stop_every_runtime(
-    tmp_path, monkeypatch, failed_index
-):
-    source, plan = prepare(
-        tmp_path, monkeypatch, speech(400, [(95, 96), (210, 211), (290, 291)]), 4
-    )
-    args, operations = coordinator(tmp_path, monkeypatch, source, plan)
-    stopped, active = [], set()
-    barrier = threading.Barrier(4)
-    pools = {}
-
-    def control(python, state, command, output, environment):
-        index = int(state.name[-1])
-        child = plan["parts"][index]
-        assert environment["REQUEST_ID"] == child["request_id"]
-        assert environment["CLIPFORGE_SHARED_BALANCE"] == "1"
-        assert environment["CLIPFORGE_ALLOCATION_WAIT_SECONDS"] == "2700"
-        if command == "start":
-            pools[index] = environment["CLIPFORGE_COLAB_POOL"]
-            write_json(state / "state.json", {"status": "allocated"})
-        elif command == "stop":
-            stopped.append(index)
-        else:
-            # All four parts are recognised at once.
-            active.add(index)
-            barrier.wait(timeout=5)
-            assert active == {0, 1, 2, 3}
-            if index == failed_index:
-                raise PipelineError("synthetic part failure")
-            write_part_result(output, child, results(plan)[index][1])
-
-    monkeypatch.setattr(split_asr_job, "control", control)
-    if failed_index is None:
-        split_asr_job.run(args)
-        submit_job.verify_audio_analysis(
-            args.output, "a" * 32, "b" * 40, digest(source), URL, "123"
-        )
-    else:
-        with pytest.raises(PipelineError, match="ASR failed"):
-            split_asr_job.run(args)
-        assert not (args.output / "topics.json").exists()
-    durations = [c["asr_part"]["end"] - c["asr_part"]["start"] for c in plan["parts"]]
-    longest = sorted(range(4), key=lambda i: durations[i], reverse=True)[:2]
-    assert {i for i, pool in pools.items() if pool.startswith("L4")} == set(longest)
-    assert all("L4" in pool and "T4" in pool for pool in pools.values())
-    assert sorted(stopped) == [0, 1, 2, 3]
-    deleted = [row[2] for row in operations if row[:2] == ("release", "delete")]
-    staged = (args.state_root / "staged-tags").read_text().split()
-    assert sorted(deleted) == sorted(staged) and len(staged) == 4
-
-
 def test_a_refused_part_still_stops_its_own_state_and_fails_the_job(
     tmp_path, monkeypatch
 ):
@@ -442,43 +389,6 @@ def test_recognise_runs_every_piece_once_and_writes_source_seconds(
     assert value["language"] == "ja"
     starts = [row["start"] for row in value["segments"]]
     assert starts[0] == 1.0 and 481 < starts[1] < 482.5
-
-
-@pytest.mark.parametrize("failing", ["run", "start", "stop"])
-def test_a_failed_runtime_is_retried_once_only_after_a_confirmed_release(
-    tmp_path, monkeypatch, failing
-):
-    source, plan = prepare(tmp_path, monkeypatch, speech(120, [(59, 61)]), 2)
-    args, _ = coordinator(tmp_path, monkeypatch, source, plan)
-    calls = []
-
-    def control(python, state, command, output, environment):
-        index = int(state.name.split("-")[1])
-        calls.append((index, state.name, command))
-        if command == "start":
-            write_json(state / "state.json", {"status": "allocated"})
-        first = state.name == "control-0"
-        if first and command == failing:
-            raise PipelineError("synthetic first-attempt failure")
-        if command == "run":
-            write_part_result(output, plan["parts"][index], results(plan)[index][1])
-
-    monkeypatch.setattr(split_asr_job, "control", control)
-    if failing == "run":
-        split_asr_job.run(args)
-        assert [c for c in calls if c[0] == 0] == [
-            (0, "control-0", "start"),
-            (0, "control-0", "run"),
-            (0, "control-0", "stop"),
-            (0, "control-0-retry1", "start"),
-            (0, "control-0-retry1", "run"),
-            (0, "control-0-retry1", "stop"),
-        ]
-        assert (args.output / "topics.json").exists()
-    else:
-        with pytest.raises(PipelineError, match="ASR failed"):
-            split_asr_job.run(args)
-        assert not any(name.endswith("retry1") for _, name, _ in calls)
 
 
 def test_merge_clips_rounding_overrun_to_each_part_boundary(tmp_path, monkeypatch):

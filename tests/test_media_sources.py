@@ -95,13 +95,16 @@ def test_360p_format_selection_prefers_low_video_but_falls_back(tmp_path):
             context["formats"] = [formats[0], formats[-1]]
             selected = list(selector(context))
             assert [row["format_id"] for row in selected[0]["requested_formats"]] == [
-                "1080", "audio"
+                "1080",
+                "audio",
             ]
     finally:
         source.close()
 
 
-def test_360p_does_not_reject_high_resolution_metadata_before_transfer(tmp_path, monkeypatch):
+def test_360p_does_not_reject_high_resolution_metadata_before_transfer(
+    tmp_path, monkeypatch
+):
     import yt_dlp
 
     class Downloader:

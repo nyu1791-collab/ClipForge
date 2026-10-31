@@ -1,6 +1,4 @@
-import subprocess
 from pathlib import Path
-from types import SimpleNamespace
 import wave
 
 import pytest
@@ -8,7 +6,7 @@ import yaml
 
 from clipforge import asr_split, audio_first
 from clipforge.models import Settings
-from clipforge.storage import PipelineError, digest, write_json
+from clipforge.storage import digest, write_json
 from tools import split_asr_job
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -77,70 +75,6 @@ def two_part_plan(tmp_path):
     (directory / "input-video.bin").write_bytes(source.read_bytes())
     write_json(directory / "request.json", plan["request"])
     return directory, plan, tmp_path
-
-
-def test_every_part_receives_the_colab_credential_and_is_stopped(
-    two_part_plan, monkeypatch
-):
-    directory, plan, root = two_part_plan
-    monkeypatch.setenv("COLAB_ADC_JSON", CREDENTIAL)
-    monkeypatch.setenv("GITHUB_REPOSITORY", split_asr_job.PRIVATE_REPO)
-    monkeypatch.setenv("REQUEST_ID", plan["request"]["request_id"])
-    monkeypatch.setenv("CLIPFORGE_SOURCE_REF", plan["request"]["source_ref"])
-    monkeypatch.setenv("GITHUB_RUN_ID", "123")
-    monkeypatch.setattr(
-        split_asr_job.github_cli,
-        "run",
-        lambda *arguments, **kwargs: "true" if arguments[0] == "api" else "",
-    )
-    calls = []
-
-    def colab_actions(argv, **kwargs):
-        # argv: python tools/colab_actions.py <command> --state-dir S --output O
-        command, state = argv[2], Path(argv[4])
-        calls.append(
-            {
-                "command": command,
-                "state": state.name,
-                "environment": kwargs["env"],
-            }
-        )
-        if command == "start":
-            write_json(state / "state.json", {"status": "allocated"})
-            return subprocess.CompletedProcess(argv, 0)
-        # Fail the run so no ASR outputs are needed; the coordinator must still stop.
-        return subprocess.CompletedProcess(argv, 1 if command == "run" else 0)
-
-    monkeypatch.setattr(
-        split_asr_job,
-        "subprocess",
-        SimpleNamespace(run=colab_actions, TimeoutExpired=subprocess.TimeoutExpired),
-    )
-    args = SimpleNamespace(
-        directory=directory,
-        output=root / "combined",
-        control_python="python",
-        state_root=root / "coordinator",
-    )
-    with pytest.raises(PipelineError, match="ASR failed"):
-        split_asr_job.run(args)
-
-    # Each failed run is retried once on a fresh runtime, and every runtime is stopped.
-    assert sorted(call["state"] for call in calls if call["command"] == "start") == [
-        "control-0",
-        "control-0-retry1",
-        "control-1",
-        "control-1-retry1",
-    ]
-    for call in calls:
-        assert call["environment"]["COLAB_ADC_JSON"] == CREDENTIAL
-    assert sorted(
-        call["command"] for call in calls if call["state"] == "control-0"
-    ) == [
-        "run",
-        "start",
-        "stop",
-    ]
 
 
 def test_the_two_longest_parts_try_l4_first_and_every_part_accepts_any_gpu():

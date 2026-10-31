@@ -1,3 +1,5 @@
+import shutil
+import os
 from contextlib import nullcontext
 import importlib.util
 import json
@@ -5,6 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+requires_opencode = pytest.mark.skipif(
+    not (os.environ.get("CLIPFORGE_OPENCODE_BIN") or shutil.which("opencode")),
+    reason="opencode is not installed",
+)
 
 
 @pytest.fixture
@@ -37,6 +44,7 @@ def task(tmp_path):
     return path
 
 
+@requires_opencode
 @pytest.mark.parametrize("status", ["complete", "failed", "timeout"])
 @pytest.mark.parametrize("model", ["deepseek", "sol"])
 def test_run_removes_home_and_keeps_reports(
@@ -87,6 +95,7 @@ def test_run_removes_home_and_keeps_reports(
     assert marker.read_text() == "synthetic profile data"
 
 
+@requires_opencode
 @pytest.mark.parametrize("error", [OSError("synthetic failure"), KeyboardInterrupt()])
 def test_run_removes_home_when_interrupted(harness, task, monkeypatch, error):
     homes = []
@@ -120,6 +129,7 @@ def test_run_removes_home_on_setup_failure(harness, task, monkeypatch):
     assert (directory / "opencode.json").is_file()
 
 
+@requires_opencode
 def test_run_keeps_write_worktree(harness, task, tmp_path, monkeypatch):
     worktree = tmp_path / "worktree"
     worktree.mkdir()
@@ -171,6 +181,7 @@ def test_cleanup_warns_and_preserves_success_when_home_resolves_outside_run_or_t
     assert json.loads((directory / "result.json").read_text()) == result
 
 
+@requires_opencode
 @pytest.mark.parametrize("after_slot", [False, True])
 def test_low_disk_space_prevents_launch(harness, task, monkeypatch, after_slot):
     checks = []

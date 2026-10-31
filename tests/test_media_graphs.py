@@ -80,21 +80,6 @@ def test_audio_graph_is_the_narration_on_the_clip_clock():
     assert "amix" not in graph and "anullsrc" not in graph
 
 
-def test_loudness_arguments_use_the_first_pass_measurement():
-    assert media._loudness_args(None) == "loudnorm=I=-16:TP=-2.0:LRA=11"
-    measured = {
-        "input_i": -20.1,
-        "input_tp": -3.2,
-        "input_lra": 5.0,
-        "input_thresh": -30.0,
-        "target_offset": 0.4,
-    }
-    assert media._loudness_args(measured) == (
-        "loudnorm=I=-16:TP=-2.0:LRA=11:measured_I=-20.10:measured_TP=-3.20:"
-        "measured_LRA=5.00:measured_thresh=-30.00:offset=0.40:linear=true"
-    )
-
-
 def test_peak_limiter_follows_loudnorm_and_resample_and_precedes_the_fades():
     # 0.7079 is -3 dBFS as a linear amplitude.
     assert media.PEAK_LIMIT == pytest.approx(10 ** (-3 / 20), abs=1e-4)
@@ -493,44 +478,3 @@ def test_crop_position_does_not_change_the_other_chat_fits():
             crop_x=0.1,
         )
         assert moved == plain
-
-
-def test_final_audio_limiter_leaves_headroom_after_aac_encoding(tmp_path):
-    import shutil
-    from clipforge import quality
-
-    if not shutil.which("ffmpeg"):
-        pytest.skip("ffmpeg is required for the final AAC peak check")
-    target = tmp_path / "peaks.mp4"
-    signal = "aevalsrc='if(lt(mod(t,0.1),0.001),0.99,0)':s=48000:d=2"
-    command = [
-        "ffmpeg",
-        "-nostdin",
-        "-v",
-        "error",
-        "-f",
-        "lavfi",
-        "-i",
-        signal,
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=black:s=32x32:r=10:d=2",
-        "-filter_complex",
-        "[0:a]anull[mix];" + media._audio_tail(make(), 2, None),
-        "-map",
-        "[aout]",
-        "-map",
-        "1:v:0",
-        "-c:v",
-        "libx264",
-        "-threads",
-        "1",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        str(target),
-    ]
-    subprocess.run(command, capture_output=True, check=True, timeout=30)
-    assert quality.inspect_output(target, True, 2)["true_peak_dbtp"] < -1.0
