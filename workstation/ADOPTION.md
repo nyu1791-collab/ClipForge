@@ -41,7 +41,7 @@ ClipForgeと配送リポジトリに同じ任意のComposeを置いた。公式0
 
 ### browser-use/browser-use
 
-ClipForge、MoneyPrinter、voiceBoxの独立research環境だけにGit SHA固定で追加。モデル・Vertex/AI Studioを明示し、計画が既定。--execute時だけ最大5ステップ、再送なし。資料調査用に入力/クリック/アップロード/キー送信を除外する。
+ClipForge、MoneyPrinter、voiceBoxの独立research環境だけにGit SHA固定で追加。モデル・Vertex/AI Studioを明示し、計画が既定。--execute時だけ最大5ステップ・最大5モデル要求、1ステップ1要求。ChatGoogleの総試行1回とGoogle SDKのattempts=1を明示し、judge・失敗後の最終応答・履歴要約・fallbackを無効化する。閲覧ツールの許可リストから、任意JavaScript・入力・クリック・アップロード・ファイル操作・追加LLM抽出・未知の操作を除く。模擬応答で上限と終了処理を確認し、実推論は未実施。
 
 確認した版: [`b49a68e4060a`](https://github.com/browser-use/browser-use/tree/b49a68e4060acb226da8f784194fef301c53a6d7)。参照: browser_use/llm/google/chat.py、browser_use/tools/service.py、browser_use/browser/profile.py。
 

@@ -85,7 +85,9 @@ browser-useは明示したモデル/認証経路の5ステップ以内の調査�
 .venv-research\Scripts\python workstation/research.py browse https://example.com --task "ページの説明を整理" --provider vertex --project YOUR_PROJECT --model YOUR_EXACT_MODEL --output C:/AutomationData/browser-result.json
 ```
 
-`--execute` を追加した場合だけ有料推論が発生し得る。AI Studioは `--provider ai-studio` と本人の `GEMINI_API_KEY` を明示した場合だけ。自動fallbackやAPI再送をせず、許可ドメインは指定URLのホストに限定。入力・クリック・アップロード・キー送信のツールを外した資料調査用で、自動営業・商品購入・投稿・ログインは行わない。実ブラウザとGeminiの組合せは今回未実行。
+`--execute` を追加した場合だけ有料推論が発生し得る。AI Studioは `--provider ai-studio` と本人の `GEMINI_API_KEY` を明示した場合だけ。モデル要求は全体で最大5回・1ステップ1回、HTTP試行は各要求1回。追加のjudge・失敗後の最終応答・履歴要約・別モデルへのfallbackを無効にし、失敗1回で終了する。固定版のChatGoogleでは `max_retries=1` が総試行1回を意味し、Google SDKにも `attempts=1` を渡す。モデル要求の試行数は結果JSONに記録する。これは請求額や成功を保証する値ではない。
+
+許可ドメインは指定URLのホストに限定する。閲覧・スクロール・ページ内検索などの明示的な許可リストを使い、入力・クリック・アップロード・キー送信・任意JavaScript・ファイル操作・追加LLM抽出と未知のツールを外す。初期化に失敗してもブラウザを閉じ、`done` だけでは調査成功と扱わない。実ブラウザとGeminiの組合せは今回未実行。
 
 ## 9つの公開リポジトリをPCへ配置する
 
