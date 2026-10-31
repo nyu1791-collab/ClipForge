@@ -690,3 +690,92 @@ def test_example_config_loads_and_bare_off_means_off():
     ).read_text(encoding="utf-8")
     cfg = cfgmod.parse(example)
     assert [c.mode for c in cfg.channels] == ["approve", "approve", "off"]
+
+
+def test_retry_after_runner_stop_never_uploads_a_clip_twice(pilot, monkeypatch):
+    t = pilot.test
+    bob = "twitch:bob_live"
+    pilot.watch()
+    t["finder"].vods[bob] = [vod(bob, "V7", NOW - 60)]
+    jid = pilot.watch()[0]
+    calls = {"n": 0}
+
+    def flaky_upload(creds, path, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt  # the runner is killed during the second upload
+        t["uploads"].append(kwargs)
+        return f"YT{calls['n']}"
+
+    monkeypatch.setattr(youtube, "upload", flaky_upload)
+    with pytest.raises(KeyboardInterrupt):
+        pilot.produce(jid, t["tmp"] / "cut")
+    job = t["store"].load()["jobs"][jid]
+    assert job["status"] == "produced"
+    assert [c.get("youtube", {}).get("id") for c in job["clips"]] == ["YT1", None]
+    pilot.decide(jid, "retry")  # stuck 'produced' can be retried
+    assert pilot.produce(jid, t["tmp"] / "again")
+    ids = [c["youtube"]["id"] for c in t["store"].load()["jobs"][jid]["clips"]]
+    assert ids[0] == "YT1" and len(set(ids)) == 2  # clip 1 was not uploaded again
+    assert len(t["uploads"]) == 2
+
+
+def test_restart_forgets_the_old_production_and_stuck_producing_recovers(pilot):
+    t = pilot.test
+    bob = "twitch:bob_live"
+    pilot.watch()
+    t["finder"].vods[bob] = [vod(bob, "V8", NOW - 60)]
+    jid = pilot.watch()[0]
+
+    def cut_off(data):
+        state.transition(data["jobs"][jid], "producing", NOW)
+        data["jobs"][jid]["production_state"] = '{"old": true}'
+
+    t["store"].update(cut_off)
+    with pytest.raises(ValueError):
+        pilot.decide(jid, "retry")  # still within the 6 h run limit
+    t["clock"]["now"] = NOW + 8 * 3600
+    pilot.decide(jid, "restart")
+    job = t["store"].load()["jobs"][jid]
+    assert job["status"] == "approved" and "production_state" not in job
+    assert pilot.produce(jid, t["tmp"] / "fresh")
+    assert "--resume" not in t["commands"][-1]
+
+
+def test_failing_channel_alerts_once_and_reports_recovery(pilot):
+    t = pilot.test
+    t["finder"].vods["fail"] = True
+    for _ in range(jobs.HEALTH_ALERT + 3):
+        pilot.watch()
+    alerts = [s for s in t["notifier"].sent if "続けて確認できません" in s[0]]
+    assert len(alerts) == 1
+    t["finder"].vods["fail"] = False
+    pilot.watch()
+    assert "復旧" in t["notifier"].sent[-1][0]
+
+
+def test_preview_reports_without_saving(pilot):
+    t = pilot.test
+    alice = "youtube:ucabcdefghijklmnopqrstuv"
+    t["finder"].vods[alice] = [vod(alice, "A1", NOW - 7200, "雑談")]
+    lines = pilot.preview()
+    assert any("雑談" in line and "2時間前" in line for line in lines)
+    assert t["store"].load()["seen"] == {}
+
+
+def test_x_needs_youtube_in_config():
+    with pytest.raises(cfgmod.ConfigError, match="youtube"):
+        cfgmod.parse(
+            '{"channels": [{"platform": "kick", "id": "abc", "publish": ["x"]}]}'
+        )
+
+
+def test_scheduled_runs_pause_until_configured(monkeypatch, capsys):
+    from clipforge.autopilot.__main__ import main
+
+    monkeypatch.delenv("AUTOPILOT_CONFIG", raising=False)
+    monkeypatch.chdir(Path(__file__).parent)
+    assert main(["watch"]) == 0
+    assert "休止中" in capsys.readouterr().out
+    with pytest.raises(cfgmod.ConfigError):
+        main(["decide", "--job", "0123456789ab", "--decision", "approve"])

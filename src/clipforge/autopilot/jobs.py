@@ -37,6 +37,10 @@ ROOT = Path(__file__).resolve().parents[3]
 PRODUCE = ROOT / "tools" / "produce_with_gemini.py"
 APPROVAL_TTL = 7 * 86400
 CHECKPOINT_SECONDS = 60
+# The produce job times out at 6 h; older 'producing' jobs were cut off.
+STUCK_SECONDS = 7 * 3600
+# Consecutive failed checks (hourly) before the owner is told about a channel.
+HEALTH_ALERT = 6
 MAX_PRODUCTION_STATE = 8000
 
 
@@ -149,10 +153,11 @@ class Autopilot:
             try:
                 vods = self.finder.find(channel)
             except Exception as error:  # one channel must not stop the rest
-                report.append(
-                    f"{channel.name}: 確認できませんでした（{http.redact(error)[:160]}）"
-                )
+                reason = http.redact(error)[:160]
+                report.append(f"{channel.name}: 確認できませんでした（{reason}）")
+                self._health(channel, reason)
                 continue
+            self._health(channel, None)
 
             def add(data, channel=channel, vods=vods):
                 created = []
@@ -210,6 +215,48 @@ class Autopilot:
             self.log(line)
         return to_produce
 
+    def _health(self, channel, failure):
+        """Tell the owner once when a channel keeps failing, and once when it recovers."""
+
+        def change(data):
+            before = data["health"].get(channel.key, 0)
+            data["health"][channel.key] = before + 1 if failure else 0
+            return before, data["health"][channel.key]
+
+        before, after = self.store.update(change)
+        if failure and after == HEALTH_ALERT:
+            self.notifier.send(
+                f"⚠️ {channel.name}（{channel.platform}）を{HEALTH_ALERT}回続けて確認できません: {failure}",
+                mention=True,
+            )
+        elif not failure and before >= HEALTH_ALERT:
+            self.notifier.send(f"✅ {channel.name} の確認が復旧しました")
+
+    def preview(self):
+        """What watch would see right now; nothing is saved or sent."""
+        now = self.clock()
+        lines = []
+        for channel in self.config.channels:
+            if channel.mode == "off":
+                lines.append(f"{channel.name}: 監視しない（off）")
+                continue
+            try:
+                vods = sorted(self.finder.find(channel), key=lambda v: v.published_at)
+            except Exception as error:
+                lines.append(
+                    f"{channel.name}: 確認できません（{http.redact(error)[:160]}）"
+                )
+                continue
+            if not vods:
+                lines.append(f"{channel.name}: 終了した配信は見つかりません")
+                continue
+            latest = vods[-1]
+            hours = (now - latest.published_at) / 3600
+            lines.append(
+                f"{channel.name}: {len(vods)}件。最新「{latest.title}」{hours:.0f}時間前 {latest.url}"
+            )
+        return lines
+
     def _remember_message(self, jid, message):
         if message:
             self.store.update(lambda d: d["jobs"][jid].__setitem__("message", message))
@@ -237,6 +284,7 @@ class Autopilot:
         target = {
             "approve": "approved",
             "retry": "approved",
+            "restart": "approved",
             "reject": "rejected",
             "skip": "skipped",
         }
@@ -249,8 +297,21 @@ class Autopilot:
             job = data["jobs"].get(jid)
             if not job:
                 raise KeyError(f"ジョブがありません: {jid}")
-            if decision == "retry" and job["status"] != "failed":
-                raise ValueError("retry は失敗したジョブだけに使えます")
+            if decision in ("retry", "restart"):
+                stuck = job["status"] == "produced" or (
+                    job["status"] == "producing"
+                    and now - job.get("updated_at", now) > STUCK_SECONDS
+                )
+                if stuck:
+                    # The runner stopped mid-way; recorded uploads are kept.
+                    transition(job, "failed", now, "runner stopped")
+                if job["status"] != "failed":
+                    raise ValueError(
+                        "retry/restart は失敗・停止したジョブだけに使えます"
+                    )
+                if decision == "restart":
+                    # Explicit owner choice: produce again from the start (billed again).
+                    job.pop("production_state", None)
             transition(job, target[decision], now, decision)
             return dict(job)
 
@@ -258,6 +319,7 @@ class Autopilot:
         labels = {
             "approve": "✅ 制作します",
             "retry": "🔁 再開します",
+            "restart": "♻️ 最初から作り直します",
             "reject": "🚫 制作しません",
             "skip": "🔒 非公開のままにしました",
         }
@@ -319,7 +381,7 @@ class Autopilot:
             message = self.notifier.send(
                 f"⚠️ {channel.name}「{job['title']}」: {reason}。再開すると同じ制作に再接続します（再制作はしません）",
                 jid,
-                ("retry", "reject"),
+                ("retry", "restart", "reject"),
                 mention=True,
             )
             self._remember_message(jid, message)
@@ -329,9 +391,7 @@ class Autopilot:
                 transition(
                     d["jobs"][jid], "produced", self.clock(), f"{len(clips)} clips"
                 ),
-                d["jobs"][jid].__setitem__(
-                    "clips", [{"index": c["index"], "title": c["title"]} for c in clips]
-                ),
+                d["jobs"][jid].__setitem__("clips", merge_clips(d["jobs"][jid], clips)),
             )
         )
         if publish:
@@ -423,6 +483,8 @@ class Autopilot:
                         errors.append(
                             f"clip {clip['index']} YouTube: {http.redact(error)[:200]}"
                         )
+            if record.get("tiktok"):
+                entry["tiktok"] = record["tiktok"]
             if "tiktok" in channel.publish and not record.get("tiktok"):
                 try:
                     entry["tiktok"] = tiktok.send_to_inbox(
@@ -430,6 +492,7 @@ class Autopilot:
                         tiktok.access_token(self.env, self.request),
                         self.request,
                     )
+                    self._checkpoint_clip(jid, entry, None)
                 except (tiktok.TikTokError, http.HttpError, OSError) as error:
                     errors.append(
                         f"clip {clip['index']} TikTok: {http.redact(error)[:200]}"
@@ -440,7 +503,7 @@ class Autopilot:
                 and entry.get("youtube")
                 and channel.privacy == "public"
             ):
-                entry["x"] = {
+                entry["x"] = record.get("x") or {
                     "status": "pending",
                     "text": metadata.x_text(meta, "", self.config),
                 }
@@ -686,6 +749,17 @@ def feedback(videos, channels, minimum_views=30):
             f"見られにくかった話題 {weak}。似た傾向の話題を優先し、内容の誇張はしない。"
         )[:1000]
     return notes
+
+
+def merge_clips(job, clips):
+    """New clip list that keeps every upload already recorded for the same index."""
+    known = {c["index"]: c for c in job.get("clips", [])}
+    merged = []
+    for clip in clips:
+        entry = dict(known.get(clip["index"], {}))
+        entry.update(index=clip["index"], title=entry.get("title") or clip["title"])
+        merged.append(entry)
+    return merged
 
 
 def collect_clips(output):

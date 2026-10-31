@@ -50,6 +50,7 @@ def empty():
         "jobs": {},
         "videos": {},
         "slots": [],
+        "health": {},
     }
 
 

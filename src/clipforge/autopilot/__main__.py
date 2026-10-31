@@ -1,12 +1,13 @@
 """python -m clipforge.autopilot <command>
 
 watch       新しい配信を探し、承認を求める／自動で制作を始める（定期実行）
-decide      承認ボタンの結果を反映する（--job ID --decision approve|reject|publish|skip|retry）
+decide      承認ボタンの結果を反映する（--job ID --decision approve|reject|publish|skip|retry|restart）
 produce     承認済みジョブを制作し、投稿まで進める（--job ID、--no-publish で制作だけ）
 publish     制作済みジョブを投稿する（--job ID --workdir DIR）
 analytics   公開済み動画の視聴データを取り込み、話題選定へのメモを更新する
 report      今週の振り返りを Discord に送る
 check       接続設定の有無だけを表示する（値は表示しない）
+preview     いま見つかる配信を表示するだけ（保存・通知・制作なし。キー無しでも YouTube/Kick は確認できる）
 auth-youtube  YouTube の refresh token を取得してファイルに保存する（初回だけ、手元のPCで）
 """
 
@@ -22,6 +23,7 @@ from pathlib import Path
 from . import config as config_module
 from . import youtube
 from .jobs import Autopilot
+from .state import StateError
 
 GROUPS = {
     "状態の保存": ["AUTOPILOT_GITHUB_TOKEN"],
@@ -126,7 +128,7 @@ def main(argv=None):
     decide.add_argument(
         "--decision",
         required=True,
-        choices=["approve", "reject", "publish", "skip", "retry"],
+        choices=["approve", "reject", "publish", "skip", "retry", "restart"],
     )
     produce = sub.add_parser("produce")
     produce.add_argument("--job", required=True)
@@ -140,6 +142,7 @@ def main(argv=None):
     sub.add_parser("analytics")
     sub.add_parser("report")
     sub.add_parser("check")
+    sub.add_parser("preview", help="いま見つかる配信を表示するだけ（保存・通知なし）")
     auth = sub.add_parser("auth-youtube")
     auth.add_argument("--client-id", default=os.environ.get("YOUTUBE_CLIENT_ID"))
     auth.add_argument(
@@ -158,7 +161,36 @@ def main(argv=None):
             )
         auth_youtube(args.client_id, args.client_secret, args.output)
         return 0
-    pilot = Autopilot(config_module.load())
+    if args.command == "preview":
+        import tempfile
+
+        from .state import FileBackend, Store
+
+        scratch = Store(FileBackend(Path(tempfile.mkdtemp()) / "state.json"))
+        pilot = Autopilot(config_module.load(), scratch, notifier=_Silent())
+        print("\n".join(pilot.preview()))
+        return 0
+    scheduled = args.command in ("watch", "analytics", "report")
+    try:
+        pilot = Autopilot(config_module.load())
+        return _run(pilot, args)
+    except (config_module.ConfigError, StateError, youtube.YouTubeError) as error:
+        if not scheduled:
+            raise
+        # Until the owner registers keys, scheduled runs pause instead of failing hourly.
+        print(f"::notice::autopilot は未設定のため休止中です: {error}")
+        return 0
+
+
+class _Silent:
+    def send(self, *args, **kwargs):
+        return None
+
+    def resolve(self, *args, **kwargs):
+        return None
+
+
+def _run(pilot, args):
     if args.command == "watch":
         started = pilot.watch()
         print(f"自動開始 {len(started)} 件")

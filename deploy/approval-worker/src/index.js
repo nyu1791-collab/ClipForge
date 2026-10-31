@@ -2,13 +2,14 @@
 // ボタンの custom_id は "ap:<decision>:<job id>"（clipforge/autopilot/notify.py が作る）。
 // 所有者以外の押下・署名のない要求・古い要求は受け付けない。
 
-const DECISIONS = new Set(["approve", "reject", "publish", "skip", "retry"]);
+const DECISIONS = new Set(["approve", "reject", "publish", "skip", "retry", "restart"]);
 const LABELS = {
   approve: "✅ 制作を受け付けました",
   reject: "🚫 制作しません",
   publish: "🚀 公開を受け付けました",
   skip: "🔒 非公開のままにします",
   retry: "🔁 再開を受け付けました",
+  restart: "♻️ 作り直しを受け付けました",
 };
 const MAX_AGE_SECONDS = 300;
 

@@ -103,6 +103,10 @@ def _channel(row, index):
     publish = tuple(row.get("publish", ["youtube"]) or ())
     for target in publish:
         _choice(target, DESTINATIONS, where + ".publish")
+    if "x" in publish and "youtube" not in publish:
+        raise ConfigError(
+            f"{where}.publish: x は YouTube のリンクを投稿するので youtube と一緒に指定してください"
+        )
     clips = int(row.get("clips", 5))
     if not 1 <= clips <= 10:
         raise ConfigError(f"{where}.clips は1〜10にしてください")

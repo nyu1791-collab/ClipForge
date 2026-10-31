@@ -14,7 +14,7 @@ on:
       action:
         description: 実行する処理
         type: choice
-        options: [watch, decide, produce, analytics, report, check]
+        options: [watch, decide, produce, analytics, report, check, preview]
         default: check
       job:
         description: ジョブID（decide / produce）
@@ -23,7 +23,7 @@ on:
       decision:
         description: decide の内容
         type: choice
-        options: [approve, reject, publish, skip, retry]
+        options: [approve, reject, publish, skip, retry, restart]
         default: approve
 
 permissions:
@@ -90,7 +90,7 @@ jobs:
           args=("$cmd")
           if [ "$cmd" = decide ]; then
             [[ "$INPUT_JOB" =~ ^[0-9a-f]{12}$ ]] || { echo "invalid job id"; exit 1; }
-            [[ "$INPUT_DECISION" =~ ^(approve|reject|publish|skip|retry)$ ]] || { echo "invalid decision"; exit 1; }
+            [[ "$INPUT_DECISION" =~ ^(approve|reject|publish|skip|retry|restart)$ ]] || { echo "invalid decision"; exit 1; }
             args+=(--job "$INPUT_JOB" --decision "$INPUT_DECISION")
           fi
           printf 'args=%s\n' "${args[*]}" >> "$GITHUB_OUTPUT"
