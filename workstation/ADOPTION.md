@@ -43,7 +43,7 @@ ClipForgeと配送リポジトリに同じ任意のComposeを置いた。公式0
 
 ClipForge、MoneyPrinter、voiceBoxの独立research環境だけにGit SHA固定で追加。モデル・Vertex/AI Studioを明示し、計画が既定。--execute時だけ最大5ステップ・最大5モデル要求、1ステップ1要求。ChatGoogleの総試行1回とGoogle SDKのattempts=1を明示し、judge・失敗後の最終応答・履歴要約・fallbackを無効化する。閲覧ツールの許可リストから、任意JavaScript・入力・クリック・アップロード・ファイル操作・追加LLM抽出・未知の操作を除く。模擬応答で上限と終了処理を確認し、実推論は未実施。
 
-確認した版: [`b49a68e4060a`](https://github.com/browser-use/browser-use/tree/b49a68e4060acb226da8f784194fef301c53a6d7)。参照: browser_use/llm/google/chat.py、browser_use/tools/service.py、browser_use/browser/profile.py。
+確認した版: [`b49a68e4060a`](https://github.com/browser-use/browser-use/tree/b49a68e4060acb226da8f784194fef301c53a6d7)。参照: browser_use/llm/google/chat.py、browser_use/tools/service.py、browser_use/browser/profile.py。既定拡張機能とCAPTCHA補助を明示的に無効化する。実パッケージとGoogle SDKを使う外部通信禁止のHTTP模擬チェックも用意し、実サイト/有料モデルの確認とは区別する。
 
 ### unclecode/crawl4ai
 

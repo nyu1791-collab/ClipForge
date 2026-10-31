@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 
@@ -110,9 +111,37 @@ def copy_and_hash(source, target):
     return {"bytes": target.stat().st_size, "sha256": checksum.hexdigest()}
 
 
+def matching_subtitle(video, extension, source, sibling_count, warnings):
+    named = video.with_suffix("." + extension)
+    if named.is_file() and not named.is_symlink():
+        return named
+    generic = [
+        video.parent / (name + "." + extension)
+        for name in ("captions", "subtitles")
+        if (video.parent / (name + "." + extension)).is_file()
+        and not (video.parent / (name + "." + extension)).is_symlink()
+    ]
+    if not generic:
+        return None
+    if sibling_count == 1 and len(generic) == 1:
+        return generic[0]
+    warnings.append(
+        {
+            "code": "ambiguous_subtitle",
+            "video": video.relative_to(source).as_posix(),
+            "candidates": [p.relative_to(source).as_posix() for p in generic],
+        }
+    )
+    return None
+
+
 def package(source, destination, mode="long", title=""):
     """Copy deliverables into a relative-path publish kit; never export settings or tokens."""
-    source, destination = Path(source).resolve(), Path(destination).absolute()
+    source = Path(source).expanduser().resolve()
+    destination = Path(destination).expanduser()
+    if destination.is_symlink():
+        raise ValueError("コピー先には新しいフォルダを指定してください")
+    destination = destination.resolve()
     if not source.is_dir():
         raise ValueError("制作済みフォルダがありません")
     if destination.exists() or destination.is_relative_to(source):
@@ -123,7 +152,8 @@ def package(source, destination, mode="long", title=""):
         for p in source.rglob("*")
         if p.is_file() and p.suffix.lower() in MEDIA and not p.is_symlink()
     )
-    rows, inventory = [], {}
+    sibling_counts = Counter(video.parent for video in videos)
+    rows, inventory, warnings = [], {}, []
     with tempfile.TemporaryDirectory(
         prefix=".publish-kit-", dir=destination.parent
     ) as tmp:
@@ -134,17 +164,8 @@ def package(source, destination, mode="long", title=""):
             folder.mkdir(parents=True)
             chosen = {"video" + video.suffix.lower(): video}
             for extension in ("srt", "ass"):
-                match = next(
-                    (
-                        p
-                        for p in [
-                            video.with_suffix("." + extension),
-                            video.parent / ("captions." + extension),
-                            video.parent / ("subtitles." + extension),
-                        ]
-                        if p.is_file() and not p.is_symlink()
-                    ),
-                    None,
+                match = matching_subtitle(
+                    video, extension, source, sibling_counts[video.parent], warnings
                 )
                 if match:
                     chosen["captions." + extension] = match
@@ -187,6 +208,7 @@ def package(source, destination, mode="long", title=""):
             "files": inventory,
             "publication_status": "draft",
             "automatic_posting": False,
+            "warnings": warnings,
         }
         save(staging / "package.json", receipt)
         save(
@@ -208,6 +230,7 @@ def package(source, destination, mode="long", title=""):
         "clips": len(rows),
         "manifest": str(destination / "manifest.json"),
         "publication_status": "draft",
+        "warnings": warnings,
     }
 
 

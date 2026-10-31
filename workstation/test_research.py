@@ -127,6 +127,8 @@ class BrowserResearchTests(unittest.TestCase):
         self.assertFalse(options["message_compaction"])
         self.assertIsNone(options["fallback_llm"])
         self.assertEqual(state["browser_options"]["allowed_domains"], ["example.test"])
+        self.assertFalse(state["browser_options"]["enable_default_extensions"])
+        self.assertFalse(state["browser_options"]["captcha_solver"])
         actions = state["tools"].registry.registry.actions
         self.assertEqual(set(actions), research.RESEARCH_ACTIONS)
 

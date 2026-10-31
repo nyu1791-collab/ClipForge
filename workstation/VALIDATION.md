@@ -24,3 +24,17 @@ Antigravityへの意見照会の準備中に、こちらのソース照合で発
 - 3リポジトリのworkstationのruffとgit diff --checkが成功。
 - 上流ソースの照合先はbrowser-use `b49a68e4060acb226da8f784194fef301c53a6d7` のagent/service.py、llm/google/chat.py、tools/service.py、tools/registry/service.py。Google SDKへHTTP retry_options.attempts=1を渡す。実Chromium/実APIでの確認ではない。
 - Antigravityの指定「4 アルゴン」の正確なモデルIDは未確認。このクラウドにAntigravity/Desktop Commanderの接続ツールはなく、Antigravity/Google APIの通信も現行ネットワークで制限されている。今回のAntigravityモデル要求0件、回答未取得。通常制作へ追加査読は組み込んでいない。
+
+## 2026-10-31 再見直し
+
+素材パックの字幕対応と出力先を再現確認して修正した。複数動画がある同一フォルダで共通名の字幕を全動画へ付けていた問題は、動画と同名の字幕を優先し、曖昧な場合にwarningsへ記録して付けない方式にした。親フォルダのリンク経由で元フォルダ内へ出力できた問題は、リンクと..を解決してから境界を判定する方式にした。共通コードを持つ公開9リポジトリへ反映した。
+
+任意ブラウザ調査のある3リポジトリでは、既定拡張機能とCAPTCHA補助を明示的に無効化した。ツール一覧からクリック等を外すだけでは、既定拡張のCookie表示操作などを防げないため。通常制作へ査読や新たなモデル呼び出しは追加していない。
+
+確認結果:
+
+- 9リポジトリのworkstation: 計114件、108成功・6スキップ。スキップはresearch未選定6件の既存収集チェック。追加した3件/リポジトリは字幕の曖昧さ、同名字幕の優先、リンク/..を含む保存先。全9件のruffとgit diff --checkも成功。
+- 実browser-use 0.13.14（固定SHA b49a68e4060acb226da8f784194fef301c53a6d7）とgoogle-genai 1.65.0を一時的な独立環境へ導入し、check_research_integration.pyの2件が成功。実Agent/Toolsの初期化・計測ラッパー・SDKを使い、Agent.runとHTTP応答は置き換えた。外部ソケット通信を禁止し、成功時の同ステップ再要求拒否と、503時にSDK/ChatGoogleが再送せず模擬HTTP試行1回になることを確認した。ブラウザは起動せず、有料要求0件。任意環境を導入した場合だけ明示的に再実行できる。
+- Deliveryの既存の素材パック移動・取り込みチェック1件も成功。動画データはコピー用の合成バイト列で、再生品質の確認ではない。
+
+Windows/CapCut実機、実サイト、実モデル、GPU制作、公開データ移管は未実施。Antigravityの指定モデルからの回答も未取得であり、今回の発見を外部モデルの意見とは扱わない。

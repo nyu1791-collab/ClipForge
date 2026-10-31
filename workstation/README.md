@@ -30,6 +30,8 @@ py -3.12 workstation/manage.py package C:/completed/clips C:/AutomationData/publ
 
 完成MP4/MOV/MKV/WebM、対応するSRT/ASS、既存カバーだけをコピーする。本文・字幕時刻・元ファイルを変更せず、動画の再エンコードやAI呼び出しはしない。新しい出力先だけを使う。投稿文は既存名または `--title` の内容であり、AIが新しく考えた文ではない。
 
+字幕は動画と同名の `動画名.srt/.ass` を優先する。`captions.srt/.ass` や `subtitles.srt/.ass` は、そのフォルダの動画が1本で候補も1つの場合だけ使う。対応が曖昧な字幕は付けず、結果と `package.json` の `warnings` に動画名・候補名を記録する。必要なら元字幕を保ったまま動画と同名の複製を用意する。出力先はフォルダリンクや `..` を解決した実際のパスで判定し、元フォルダ内へは作らない。
+
 `manifest.json` は相対パスなのでフォルダごと移せる。ClipForge-Deliveryの「素材の一括取り込み」でこのファイルを指定する。Deliveryが対応するMP4だけがその取り込み一覧に入り、MOV等は変換したふりをせずパック内にそのまま保持する。フォルダには `package.json` と「投稿用メモ.txt」も作る。内部のファイルを保ったままフォルダ全体を移す。
 
 ## CapCutや制作状態の素材パスを移行する
@@ -87,7 +89,13 @@ browser-useは明示したモデル/認証経路の5ステップ以内の調査�
 
 `--execute` を追加した場合だけ有料推論が発生し得る。AI Studioは `--provider ai-studio` と本人の `GEMINI_API_KEY` を明示した場合だけ。モデル要求は全体で最大5回・1ステップ1回、HTTP試行は各要求1回。追加のjudge・失敗後の最終応答・履歴要約・別モデルへのfallbackを無効にし、失敗1回で終了する。固定版のChatGoogleでは `max_retries=1` が総試行1回を意味し、Google SDKにも `attempts=1` を渡す。モデル要求の試行数は結果JSONに記録する。これは請求額や成功を保証する値ではない。
 
-許可ドメインは指定URLのホストに限定する。閲覧・スクロール・ページ内検索などの明示的な許可リストを使い、入力・クリック・アップロード・キー送信・任意JavaScript・ファイル操作・追加LLM抽出と未知のツールを外す。初期化に失敗してもブラウザを閉じ、`done` だけでは調査成功と扱わない。実ブラウザとGeminiの組合せは今回未実行。
+許可ドメインは指定URLのホストに限定する。閲覧・スクロール・ページ内検索などの明示的な許可リストを使い、入力・クリック・アップロード・キー送信・任意JavaScript・ファイル操作・追加LLM抽出と未知のツールを外す。既定拡張機能とCAPTCHA補助も無効化する。初期化に失敗してもブラウザを閉じ、`done` だけでは調査成功と扱わない。実ブラウザとGeminiの組合せは今回未実行。
+
+任意環境へ導入した実際のbrowser-use/Google SDKの接続処理だけを確認する場合は、次を使う。ブラウザ起動を置き換え、外部通信を禁止してHTTP応答を模擬する。通常の制作・setupからは呼ばない。
+
+```powershell
+.venv-research\Scripts\python workstation/check_research_integration.py -v
+```
 
 ## 9つの公開リポジトリをPCへ配置する
 
@@ -99,6 +107,8 @@ cd ClipForge
 ```
 
 [各リポジトリの反映先](DEPLOYMENTS.md)・[外部候補の採用判断](ADOPTION.md)・[実施した確認](VALIDATION.md)。
+
+[今回の見直し結果](reviews/recheck-20261031.md)に、字幕の誤対応・出力先・ブラウザの既定機能の修正と、実SDKを使うオフライン確認の範囲をまとめた。
 
 追加の意見照会用に、[Antigravityへ貼り付ける現状説明](reviews/antigravity-20261031/REQUEST.md)と[実行状態](reviews/antigravity-20261031/STATUS.json)を保存した。指定「4 アルゴン」Highの回答は未取得。独自に発見して直した内容は[照合結果](reviews/antigravity-20261031/ASSESSMENT.md)に分けて記録している。
 

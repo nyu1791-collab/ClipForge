@@ -71,6 +71,64 @@ class PortableWorkstationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             manage.replace_path("C:/Old/../secret", "C:/Old", "D:/new")
 
+    def test_package_records_ambiguous_subtitles_without_guessing(self):
+        for video_count, generic_names in (
+            (2, ["captions.srt"]),
+            (1, ["captions.srt", "subtitles.srt"]),
+        ):
+            with self.subTest(video_count=video_count, names=generic_names):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    source = root / "source"
+                    source.mkdir()
+                    for index in range(video_count):
+                        (source / f"video-{index}.mp4").write_bytes(b"media")
+                    for name in generic_names:
+                        (source / name).write_text(name, encoding="utf-8")
+                    result = manage.package(source, root / "kit")
+                    self.assertEqual(result["clips"], video_count)
+                    self.assertEqual(len(result["warnings"]), video_count)
+                    self.assertFalse(list((root / "kit/clips").rglob("*.srt")))
+                    receipt = json.loads((root / "kit/package.json").read_text())
+                    self.assertEqual(receipt["warnings"], result["warnings"])
+                    self.assertEqual(
+                        receipt["warnings"][0]["code"], "ambiguous_subtitle"
+                    )
+
+    def test_package_prefers_video_named_subtitle_in_shared_folder(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            for name in ["one.mp4", "two.mp4"]:
+                (source / name).write_bytes(b"media")
+            (source / "one.srt").write_text("only the first video", encoding="utf-8")
+            (source / "captions.srt").write_text("ambiguous", encoding="utf-8")
+            result = manage.package(source, root / "kit")
+            self.assertEqual(
+                (root / "kit/clips/clip-001/captions.srt").read_text(),
+                "only the first video",
+            )
+            self.assertFalse((root / "kit/clips/clip-002/captions.srt").exists())
+            self.assertEqual([w["video"] for w in result["warnings"]], ["two.mp4"])
+
+    def test_package_resolves_output_parent_before_checking_source_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            (source / "video.mp4").write_bytes(b"media")
+            manage.package(source, source / ".." / "outside")
+            self.assertTrue((root / "outside/manifest.json").is_file())
+            alias = root / "alias"
+            try:
+                alias.symlink_to(source, target_is_directory=True)
+            except OSError:
+                self.skipTest("Directory symlinks unavailable on this platform")
+            with self.assertRaises(ValueError):
+                manage.package(source, alias / "nested")
+            self.assertFalse((source / "nested").exists())
+
     def test_posix_to_windows_relink(self):
         self.assertEqual(
             manage.replace_path(

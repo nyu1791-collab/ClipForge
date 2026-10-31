@@ -131,7 +131,11 @@ async def browse(url, task, model, provider, project, destination):
         requests["this_step"] = 0
 
     browser = Browser(
-        use_cloud=False, headless=True, allowed_domains=[urlsplit(url).hostname]
+        use_cloud=False,
+        headless=True,
+        allowed_domains=[urlsplit(url).hostname],
+        enable_default_extensions=False,
+        captcha_solver=False,
     )
     try:
         tools = Tools()

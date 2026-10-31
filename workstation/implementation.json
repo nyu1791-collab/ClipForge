@@ -3,9 +3,10 @@
   "version": "2026-10-31",
   "standard_library_manage": true,
   "source_hashes": {
-    "manage.py": "b62eaefb1350b636e336e1c4f1468efb51c80487facd5c2e0820bb45e5b004ff",
-    "test_manage.py": "0f32af4670fb676a3cce7bee68618c816dd19e84d11e157ba1466e3ad5592974",
-    "research.py": "cd3c24046cca5617ba7a1f7e707c19007a2296f2bf3286a712ead91a2435e211",
-    "test_research.py": "f715ae0c05c4092467f5a99da78e17ac5c3f8af1641670859df8516084853385"
+    "manage.py": "ea115d2c4747efa2590bd71f0d97931c74c2420f668201cf80668d88dacdd0fc",
+    "test_manage.py": "c8ed202d91e3822493fb517b8d104077cbe695c047fa9f6d6b2660b683ff64aa",
+    "research.py": "fd785aa52027e2a830743452fc47fecd90126dec27e00bc472e7939aaf0c42a6",
+    "test_research.py": "3ef7b8b448405b91decf5008e75bf63c290e0646bc56e58eb4e61baec8bb8ada",
+    "check_research_integration.py": "43b96d58bc32d0be4808b0e3724ef1abaed5cf10659212f344c865922bd4aaa4"
   }
 }
