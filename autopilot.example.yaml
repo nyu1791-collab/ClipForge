@@ -1,0 +1,35 @@
+# autopilot の設定見本。実際の設定は GitHub Secret「AUTOPILOT_CONFIG」に貼るか、
+# 手元では autopilot.yaml（git に入らない）に置く。説明: docs/AUTOPILOT.md
+
+# 予約公開する時刻（日本時間）。1枠1本ずつ、空いている枠へ順に入れる。
+publish_hours: [12, 18, 21]
+timezone_offset_hours: 9
+youtube_category: "20"          # 20=ゲーム、22=ブログ、24=エンタメ
+description_footer: "※配信者の切り抜きガイドラインに沿って制作しています。"
+x_template: "{title}\n{hashtags}"   # URL は自動で末尾に付く
+
+channels:
+  # 他の配信者：制作も公開も承認制（Discord のボタン）
+  - platform: youtube
+    id: UCxxxxxxxxxxxxxxxxxxxxxx     # UC で始まるチャンネルID
+    name: 配信者A
+    mode: approve                  # auto=自動で制作 / approve=承認後に制作 / off=監視しない
+    publish_mode: approve          # auto=制作後すぐ公開・予約 / approve=非公開で上げて承認後に公開
+    publish: [youtube, x]          # youtube / x / tiktok（tiktok は下書き送信）
+    privacy: public
+    clips: 5
+    render_profile: standard       # preview=360p / standard=720p / full-hd=1080p
+    credit: "元配信: 配信者A（切り抜き許諾済み）"
+    tags: [配信者A, ゲーム実況]
+
+  - platform: twitch
+    id: example_login              # Twitch のログイン名
+    name: 配信者B
+    mode: approve
+    publish_mode: approve
+    publish: [youtube]
+
+  - platform: kick
+    id: example-slug
+    name: 配信者C
+    mode: off

@@ -20,6 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+autopilot = ["pyyaml>=6,<7"]
 chat = ["chat-downloader==0.2.8"]
 media-fetch = [
     "av==18.1.0; python_version < '3.12'",

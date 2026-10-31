@@ -71,6 +71,11 @@ def main():
         help="Reuse completed clips from the previous render pair",
     )
     ap.add_argument("--clips", type=int)
+    ap.add_argument(
+        "--audience-feedback",
+        type=Path,
+        help="Viewing-data note (text file, autopilot) passed to topic selection",
+    )
     # The user's normal production target is 360p for both retrieval and output.
     # Explicit profiles still opt into the 720p or 1080p text canvases.
     ap.add_argument(
@@ -272,6 +277,12 @@ def main():
             stage, args.repository, expected_title, deadline, gh, save
         )
 
+    audience_feedback = ""
+    if args.audience_feedback:
+        audience_feedback = " ".join(
+            args.audience_feedback.read_text(encoding="utf-8").split()
+        )[:1000]
+
     def start_production():
         if args.revision_file:
             revision = create_revision(
@@ -307,6 +318,7 @@ def main():
                 "auto_render": not args.render_only,
                 "resume_render": args.reuse_render,
                 "target_clips": str(args.clips),
+                "audience_feedback": audience_feedback,
             },
         )
         return final_run, final_request

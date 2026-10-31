@@ -49,6 +49,17 @@ TRANSCRIPTION_UNIT = "selected_topic"
 MAX_MODEL_ATTEMPTS = 3
 
 
+def audience_note(env=os.environ):
+    """Optional viewing-data note from the autopilot; advisory, never a filter."""
+    text = " ".join(str(env.get("CLIPFORGE_AUDIENCE_FEEDBACK", "")).split())[:1000]
+    if not text:
+        return ""
+    return (
+        "参考：過去の切り抜きの視聴データ（判断材料の一つ。今回の音声の内容を優先し、"
+        f"合わない話題を無理に選ばず、内容を誇張しない）: {text}。"
+    )
+
+
 def rules_file_for_phase(phase):
     if phase.startswith("topics-"):
         return TOPIC_RULES_FILE
@@ -1415,6 +1426,7 @@ def plan(
                         if settings.aspect == "9:16"
                         else ""
                     )
+                    + audience_note()
                     + "JSON {audio_access:'heard',topics:[{start:秒,end:秒,title,reason,confidence:0から1}]}。"
                     "start/endは添付した今回の音声窓の先頭を0秒とする秒数です。",
                     path,

@@ -416,6 +416,7 @@
             "CONTINUE_MISSING": "${{ inputs.continue_missing }}",
             "CONFIG_FILE": "${{ inputs.config_file }}",
             "TARGET_CLIPS": "${{ inputs.target_clips }}",
+            "CLIPFORGE_AUDIENCE_FEEDBACK": "${{ inputs.audience_feedback }}",
             "GH_TOKEN": "${{ secrets.CLIPFORGE_PAT }}",
             "COLAB_ADC_JSON": "${{ secrets.COLAB_ADC_JSON }}",
             "REQUEST_ID": "${{ inputs.request_id }}",
@@ -705,6 +706,11 @@
         },
         "target_clips": {
           "description": "Advisory topic count; blank uses the committed config",
+          "type": "string",
+          "default": ""
+        },
+        "audience_feedback": {
+          "description": "Optional viewing-data note for topic selection (autopilot); at most 1000 characters",
           "type": "string",
           "default": ""
         },

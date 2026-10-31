@@ -1,0 +1,13 @@
+# Discord の承認ボタンを受けて autopilot ワークフローを起動する Worker。
+# 手順は docs/AUTOPILOT.md の「Discord 承認ボタン」。
+name = "autopilot-approval"
+main = "src/index.js"
+compatibility_date = "2026-08-28"
+
+[vars]
+GITHUB_REPOSITORY = "nyu1791-collab/ClipForge"
+
+# Secrets（値はここにもGitにも書かない）:
+# wrangler secret put DISCORD_PUBLIC_KEY   # Discord アプリの Public Key
+# wrangler secret put OWNER_DISCORD_ID     # 押せる人（あなた）の Discord ユーザーID
+# wrangler secret put GITHUB_TOKEN         # ClipForge の Contents: write（repository_dispatch 用）だけを持つ fine-grained token

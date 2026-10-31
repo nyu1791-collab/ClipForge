@@ -34,6 +34,10 @@ make collect OUT=/private/name CLIP=1        # 終わった1本だけ先に回�
 
 `make` を使わない場合は `uv run --no-sync python tools/produce_with_gemini.py URL --output DIR`。主なオプション：`--clips 3`（本数の目安）、`--render-profile standard|full-hd`（720p/1080p）、`--deliver-drive`（描画後にDriveへ納品）。初回の接続設定は [docs/QUICK_START.md](docs/QUICK_START.md)。
 
+## 自動化
+
+`autopilot` が配信の終了を見張り、Discord のボタン1つで制作を始めます。完成品は YouTube（非公開→承認で予約公開）、X、TikTok 下書きへ送ります。毎日の視聴データは次の話題選定に戻します。他の配信者の素材は承認制、自分のチャンネルは完全自動にできます。登録と設定は [docs/AUTOPILOT.md](docs/AUTOPILOT.md)。
+
 ## 設計の考え方
 
 - **段階ごとに保存して再利用。** 同じ素材・依頼文・ルールの応答や完成クリップは再利用し、二重に課金・描画しない。`--resume` は監視と回収だけを行う。

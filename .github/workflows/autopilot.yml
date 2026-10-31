@@ -1,0 +1,148 @@
+name: autopilot
+
+# 配信監視 → 承認 → 制作 → 投稿 → 分析。設定・鍵・状態は Secrets / Variables にあり、
+# このファイルとリポジトリには値を書かない。詳しくは docs/AUTOPILOT.md。
+on:
+  schedule:
+    - cron: "7 * * * *"     # 毎時: 新しい配信の確認、公開済み動画の X 投稿
+    - cron: "23 21 * * *"   # 毎日 06:23 JST: 視聴データの取り込み
+    - cron: "41 0 * * 1"    # 毎週月曜 09:41 JST: 振り返りを Discord へ
+  repository_dispatch:
+    types: [autopilot-decision]   # Discord の承認ボタン（deploy/approval-worker）
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 実行する処理
+        type: choice
+        options: [watch, decide, produce, analytics, report, check]
+        default: check
+      job:
+        description: ジョブID（decide / produce）
+        type: string
+        default: ""
+      decision:
+        description: decide の内容
+        type: choice
+        options: [approve, reject, publish, skip, retry]
+        default: approve
+
+permissions:
+  contents: read
+  actions: write
+  id-token: write
+
+env:
+  AUTOPILOT_STATE_BACKEND: variable
+  AUTOPILOT_CONFIG: ${{ secrets.AUTOPILOT_CONFIG }}
+  AUTOPILOT_GITHUB_TOKEN: ${{ secrets.AUTOPILOT_GITHUB_TOKEN }}
+  DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+  DISCORD_CHANNEL_ID: ${{ secrets.DISCORD_CHANNEL_ID }}
+  DISCORD_OWNER_ID: ${{ secrets.DISCORD_OWNER_ID }}
+  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+  YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+  YOUTUBE_CLIENT_SECRET: ${{ secrets.YOUTUBE_CLIENT_SECRET }}
+  YOUTUBE_REFRESH_TOKEN: ${{ secrets.YOUTUBE_REFRESH_TOKEN }}
+  YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+  X_API_KEY: ${{ secrets.X_API_KEY }}
+  X_API_SECRET: ${{ secrets.X_API_SECRET }}
+  X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+  X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+  TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
+  TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
+  TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+  TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+  TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+
+jobs:
+  control:
+    if: >-
+      github.event_name != 'workflow_dispatch' || inputs.action != 'produce'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+          enable-cache: false
+      - run: uv sync --locked --no-dev --inexact --extra autopilot
+      - name: Choose the command
+        id: command
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          INPUT_ACTION: ${{ inputs.action }}
+          INPUT_JOB: ${{ inputs.job || github.event.client_payload.job }}
+          INPUT_DECISION: ${{ inputs.decision || github.event.client_payload.decision }}
+        run: |
+          case "$EVENT" in
+            schedule)
+              case "$SCHEDULE" in
+                "23 21 * * *") cmd=analytics ;;
+                "41 0 * * 1") cmd=report ;;
+                *) cmd=watch ;;
+              esac ;;
+            repository_dispatch) cmd=decide ;;
+            *) cmd="$INPUT_ACTION" ;;
+          esac
+          args=("$cmd")
+          if [ "$cmd" = decide ]; then
+            [[ "$INPUT_JOB" =~ ^[0-9a-f]{12}$ ]] || { echo "invalid job id"; exit 1; }
+            [[ "$INPUT_DECISION" =~ ^(approve|reject|publish|skip|retry)$ ]] || { echo "invalid decision"; exit 1; }
+            args+=(--job "$INPUT_JOB" --decision "$INPUT_DECISION")
+          fi
+          printf 'args=%s\n' "${args[*]}" >> "$GITHUB_OUTPUT"
+      - name: Run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARGS: ${{ steps.command.outputs.args }}
+        run: |
+          read -ra argv <<< "$ARGS"
+          uv run --no-sync python -m clipforge.autopilot "${argv[@]}"
+
+  produce:
+    if: github.event_name == 'workflow_dispatch' && inputs.action == 'produce'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    concurrency:
+      group: autopilot-produce-${{ inputs.job }}
+      cancel-in-progress: false
+    steps:
+      - name: Validate the job id
+        env:
+          INPUT_JOB: ${{ inputs.job }}
+        run: '[[ "$INPUT_JOB" =~ ^[0-9a-f]{12}$ ]] || { echo "invalid job id"; exit 1; }'
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.23"
+          enable-cache: false
+      - run: uv sync --locked --no-dev --inexact --extra autopilot
+      - name: Produce
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.CLIPFORGE_PAT }}
+          INPUT_JOB: ${{ inputs.job }}
+        run: uv run --no-sync python -m clipforge.autopilot produce --job "$INPUT_JOB" --workdir "$RUNNER_TEMP/production" --no-publish
+      # A fresh token after a production that may have taken hours.
+      - name: Vertex identity for titles (optional)
+        id: vertex
+        continue-on-error: true
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/${{ vars.CLIPFORGE_VERTEX_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/clipforge-actions/providers/github
+          service_account: clipforge-vertex@project-fdadb4dd-cb77-4270-9cd.iam.gserviceaccount.com
+          token_format: access_token
+          access_token_lifetime: 3600s
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GOOGLE_OAUTH_ACCESS_TOKEN: ${{ steps.vertex.outputs.access_token }}
+          INPUT_JOB: ${{ inputs.job }}
+        run: uv run --no-sync python -m clipforge.autopilot publish --job "$INPUT_JOB" --workdir "$RUNNER_TEMP/production"

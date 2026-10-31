@@ -33,3 +33,6 @@ transcript-cache/
 
 # Temporary OIDC credentials from google-github-actions/auth.
 gha-creds-*.json
+
+# autopilot の実設定（Secret AUTOPILOT_CONFIG に置く）
+autopilot.yaml

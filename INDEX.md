@@ -18,6 +18,11 @@ URL → 音声取得・再利用 → 3.8が話題・見出し選定 → 採用�
 - Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
 - 旧全編ASRの手順は復旧用に維持。新規制作に適用しない。
 
+## 自動化（autopilot）
+- 配信監視 → Discord 承認 → 制作 → YouTube/X/TikTok → 分析: `src/clipforge/autopilot/`（入口 `python -m clipforge.autopilot`）。手順: `docs/AUTOPILOT.md`。
+- Actions: `.github/workflows/autopilot.yml`。承認ボタンの中継: `deploy/approval-worker/`。状態は Variable `AUTOPILOT_STATE`。
+- 視聴データのメモは `audience_feedback` 入力 → `audio_understanding.audience_note()` で話題選定へ。
+
 ## src/clipforge
 - 時刻・設定の型: `models.py`／保存・ハッシュ: `storage.py`
 - 取得: `media_sources.py`（振り分けと yt-dlp）・`kick_media.py`（Kick）

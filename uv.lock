@@ -485,6 +485,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+autopilot = [
+    { name = "pyyaml" },
+]
 chat = [
     { name = "chat-downloader" },
 ]
@@ -516,10 +519,11 @@ requires-dist = [
     { name = "pillow", specifier = "==13.0.0" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pysubs2", specifier = "==1.8.1" },
+    { name = "pyyaml", marker = "extra == 'autopilot'", specifier = ">=6,<7" },
     { name = "unidic-lite", specifier = "==1.0.8" },
     { name = "yt-dlp", extras = ["default"], marker = "extra == 'media-fetch'", specifier = "==2026.10.21" },
 ]
-provides-extras = ["chat", "media-fetch"]
+provides-extras = ["autopilot", "chat", "media-fetch"]
 
 [package.metadata.requires-dev]
 dev = [
