@@ -1291,7 +1291,8 @@ def render(review, transcripts_file, output, settings, clip_index=None):
             update={
                 "caption_preserve_text": True,
                 "caption_emotions": True,
-                "caption": "plain",
+                # Editable exports must stay clean so captions can be corrected in CapCut.
+                "caption": "editable" if settings.caption == "editable" else "plain",
             }
         )
     clips = validate_selection(
