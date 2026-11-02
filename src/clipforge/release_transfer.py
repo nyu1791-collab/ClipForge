@@ -303,6 +303,8 @@ def download_stage(run_id, name, destination, artifact_runner=None):
 def read_transfer(run_id, name):
     """Read only the small transfer record, never the media archive."""
     tag = tag_for(run_id, name)
+    if release(tag) is None:
+        fail("RESULT_NOT_FOUND")
     with tempfile.TemporaryDirectory() as temporary:
         gh(
             "release",

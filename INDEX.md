@@ -17,6 +17,7 @@ URL → 音声取得・再利用 → 3.8が話題・見出し選定 → 採用�
 - Actions: `.github/workflows/clipforge-stages.yml`のunderstandingとselected-audio-render。
 - Colab制御: `tools/colab_actions.py`・`tools/colab_remote_job.py`・`tools/colab_bundle.py`。
 - 旧全編ASRの手順は復旧用に維持。新規制作に適用しない。
+- CapCut での手仕上げ（任意・合否基準ではない）: `docs/CAPCUT_EDITING_GUIDE.md`。
 
 ## src/clipforge
 - 時刻・設定の型: `models.py`／保存・ハッシュ: `storage.py`

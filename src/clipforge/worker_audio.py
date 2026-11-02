@@ -700,7 +700,7 @@ def verify_same_run_analysis(previous, request_id, source_ref, run_id, previous_
 def supports_audio_stage(settings):
     """Accept the established landscape profiles and vertical short profiles."""
     return (settings.aspect == "16:9" and settings.height in (360, 1080)) or (
-        settings.aspect == "9:16" and settings.height in (720, 1080, 1280, 1920)
+        settings.aspect == "9:16" and settings.height in (640, 720, 1080, 1280, 1920)
     )
 
 

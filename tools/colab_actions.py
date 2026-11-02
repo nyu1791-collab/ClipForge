@@ -18,6 +18,22 @@ SOURCE_REPO = "https://github.com/nyu1791-collab/ClipForge.git"
 REMOTE_PAYLOAD_PATH = "/content/.clipforge-job.json"
 # Every rendered clip must list these; audio-first rows may list more (ledger.json, quality.json).
 REQUIRED_CLIP_FILES = frozenset({"video.mp4", "captions.ass", "captions.srt"})
+EXECUTION_TIMEOUT_SECONDS = 5100
+# The kernel keeps running a cell after the SDK's websocket drops, so that drop says nothing
+# about the worker. Its own private result decides, within the normal execution budget.
+RESULT_POLL_SECONDS = 15
+# The worker creates this directory at once; a clone takes seconds (measured 2026-10-28/29).
+WORKER_START_GRACE_SECONDS = 60
+REMOTE_PARENT = "/content"
+REMOTE_WORK_NAME = "clipforge-job"
+# Fixed SDK texts carrying no private data; any other message stays hidden.
+SAFE_SDK_MESSAGES = frozenset(
+    {
+        "Connection was lost.",
+        "IOPub channel must be running to receive output",
+    }
+)
+last_marker = None
 
 
 class ControlError(RuntimeError):
@@ -95,6 +111,8 @@ def checked_execute(runtime, code, timeout):
                 if line.strip() in markers or re.fullmatch(
                     r"CLIPFORGE_DIAG_[A-Za-z0-9_]{1,100}", line.strip()
                 ):
+                    global last_marker
+                    last_marker = line.strip()
                     print(line.strip(), flush=True)
         elif output.get("output_type") == "error":
             name = output.get("ename", "")
@@ -109,6 +127,19 @@ def checked_execute(runtime, code, timeout):
     if any(item.get("output_type") == "error" for item in outputs):
         raise ControlError("Colab code failed; no generation was retried")
     return outputs
+
+
+def control_connection_lost(error):
+    """True when only the SDK call failed: not a reported kernel error, not the time budget."""
+    return not isinstance(error, (ControlError, TimeoutError))
+
+
+def report_execution_failure(error):
+    # Class name, last known marker and allowlisted SDK text only.
+    print("Colab execution failed: " + type(error).__name__, flush=True)
+    print("Colab last marker: " + str(last_marker), flush=True)
+    if str(error) in SAFE_SDK_MESSAGES:
+        print("Colab SDK message: " + str(error), flush=True)
 
 
 def compute_units(client):
@@ -489,11 +520,12 @@ del _clipforge_bootstrap
                 "Running the dedicated Colab worker; no browser interaction is required.",
                 flush=True,
             )
+            deadline = time.monotonic() + EXECUTION_TIMEOUT_SECONDS
             try:
-                checked_execute(runtime, bootstrap, 5100)
+                checked_execute(runtime, bootstrap, EXECUTION_TIMEOUT_SECONDS)
             except Exception as error:
                 execution_error = error
-                print("Colab execution failed: " + type(error).__name__, flush=True)
+                report_execution_failure(error)
                 try:
                     checked_execute(
                         runtime,
@@ -509,6 +541,14 @@ del _clipforge_bootstrap
             except Exception:
                 if execution_error is None:
                     raise
+        # Keep the runtime until the worker has answered; releasing it could kill a live render.
+        if (
+            execution_error is not None
+            and record.get("result_transport") == "final-release"
+            and control_connection_lost(execution_error)
+            and self.await_worker_result(record, contents, deadline)
+        ):
+            execution_error = None
         release_error = None
         # The results are already published in the Release, so the runtime is freed before
         # downloading them. stop() is idempotent; the workflow's final stop step retries if
@@ -541,6 +581,52 @@ del _clipforge_bootstrap
             raise ControlError(
                 "Colab runtime release was not confirmed after results were retrieved"
             )
+
+    def await_worker_result(self, record, contents, deadline):
+        """Wait for the worker's own Release; False if it never started or did not answer."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+        from clipforge.release_transfer import release, tag_for
+
+        tag = tag_for(
+            record["workflow_run"], "clipforge-result-" + record["request_id"]
+        )
+        began = time.monotonic()
+        worker_started = False
+        print(
+            "Colab control connection lost; waiting for the worker's private result.",
+            flush=True,
+        )
+        while time.monotonic() < deadline:
+            try:
+                if release(tag) is not None:
+                    print(
+                        "Colab worker result found after connection loss "
+                        f"({time.monotonic() - began:.0f} s).",
+                        flush=True,
+                    )
+                    return True
+            except Exception:
+                pass  # Only an explicit 404 is absence; keep waiting within the budget.
+            if (
+                not worker_started
+                and time.monotonic() - began >= WORKER_START_GRACE_SECONDS
+            ):
+                try:
+                    entries = contents.list_dir(REMOTE_PARENT).get("content")
+                except Exception:
+                    entries = None  # Unknown is not proof that the worker is absent.
+                if isinstance(entries, list) and entries:
+                    worker_started = any(
+                        isinstance(entry, dict)
+                        and entry.get("name") == REMOTE_WORK_NAME
+                        for entry in entries
+                    )
+                    if not worker_started:
+                        print("Colab worker never started on the runtime.", flush=True)
+                        return False
+            time.sleep(RESULT_POLL_SECONDS)
+        print("Colab worker result did not appear within the time budget.", flush=True)
+        return False
 
     def report_stages(self, output):
         # Prints only public stage timings and the error class recorded by the worker.

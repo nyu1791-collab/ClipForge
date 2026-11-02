@@ -34,6 +34,6 @@ python tools/export_capcut_draft.py C:\my-output\tiktok-capcut\clips\clips\clip-
   --drafts-dir "$env:LOCALAPPDATA\CapCut\User Data\Projects\com.lveditor.draft"
 ```
 
-`--capcut-cli-js` と `--capcut-drafts-dir` を `produce_formats.py` に指定すると、縦動画の回収後にドラフトを順次作ります。`--mode both` では横型が進行中でも、縦型の完了後にドラフト作成を始めます。SRTは字幕ごとの編集用で、カラオケ表示・CapCut Pro専用エフェクトの再現は保証しません。映像ファイルは移動・削除せず維持してください。
+`--capcut-cli-js` と `--capcut-drafts-dir` を `produce_formats.py` に指定すると、縦動画の回収後にドラフトを順次作ります。`--mode both` では横型が進行中でも、縦型の完了後にドラフト作成を始めます。SRTは字幕ごとの編集用で、カラオケ表示・CapCut Pro専用エフェクトの再現は保証しません。映像はドラフトのフォルダへコピーされるので、そのフォルダを移動・削除しないでください。
 
 CapCutを閉じてから実行してください。指定したドラフト保存先のプロジェクト一覧が更新されますが、既存名は上書きしません。CapCut内部のドラフト形式は非公開でバージョン差があり、当ツールは非公式です。CLIでファイルを作成できても、最新版のWindows版CapCut Proで開けることは未確認です。失敗時もClipForgeの完成MP4・字幕は保持し、制作全体を再送せず `export_capcut_draft.py` だけを再実行してください。TikTokへのアップロード・公開は行いません。

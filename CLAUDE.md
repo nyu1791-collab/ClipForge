@@ -39,3 +39,7 @@
 - このファイルは毎セッション読み込まれる。200行以内に保ち、コードから分かること・一般的な慣習・特定作業だけの手順は書かない（手順は docs/ か skill へ）。
 - 強制したい禁止は書くだけにせず、`permissions.deny` や hooks で設定する（`.claudeignore` は Claude Code では効かない）。
 - 作業の途中でモデルやこのファイルを変えない。プロンプトキャッシュが外れ、編集は `/clear` か再起動まで反映されない。
+
+## 動画制作の統一
+
+動画を作る・編集するときは、`C:\Users\nyu17\yu-lab\repos\voiceBox-Pipeline\docs\VIDEO_PRODUCTION_STANDARD.md` を読み、その目標に合わせる。ノウハウは同じフォルダの `VIDEO_KNOWHOW.md`。このリポジトリ固有の手順が優先する。GitHubへの反映は、利用者の指示があるまでしない。

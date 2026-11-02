@@ -75,8 +75,9 @@ class Settings(Record):
     aspect: Literal["9:16", "16:9", "1:1"] = "9:16"
     framing: Literal["fit", "center-crop"] = "fit"
     # Frame height in pixels. Unset means the standard size for the aspect: 1920 for 9:16
-    # (1080x1920, the size phones show at full sharpness), otherwise 1080.
-    height: Literal[360, 720, 1080, 1280, 1920] | None = None
+    # (1080x1920, the size phones show at full sharpness), otherwise 1080. The width follows
+    # from the aspect, so vertical 360x640 is height 640; 9:16 at height 360 is 202x360.
+    height: Literal[360, 640, 720, 1080, 1280, 1920] | None = None
     # x264 speed preset. On a 40 s clip with CRF 18, slow matched medium's time and gained
     # about 0.1 dB PSNR; veryfast at CRF 20 was about 4 dB below it. Lower presets save time.
     encode_preset: Literal["superfast", "veryfast", "faster", "medium", "slow"] = "slow"
@@ -203,6 +204,8 @@ class Settings(Record):
             raise ValueError("height 1920 is only for the 9:16 aspect")
         if self.height == 1280 and self.aspect != "9:16":
             raise ValueError("height 1280 is only for the 9:16 aspect")
+        if self.height == 640 and self.aspect != "9:16":
+            raise ValueError("height 640 is only for the 9:16 aspect")
         if self.chat_panel:
             if self.aspect != "16:9":
                 raise ValueError("chat panel is only for landscape 16:9 output")

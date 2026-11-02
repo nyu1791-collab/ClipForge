@@ -50,3 +50,7 @@ URL → runnerで音声取得/再利用 → Gemini 3.8 Flash/MEDIUMで音声か�
 - APIキー/OAuth/Cookie/私有媒体をGit/ログ/チャットへ出さない。Secretsは名前だけ扱う。接続一覧の閲覧不可はunknownとし、未登録や制作不能と断定しない。
 - Colabは既存の専用エンドユーザー資格情報を再利用する。Drive専用資格情報をVertexサービスアカウントで代用しない。Driveの所有者は許可済みの`n.yu1791@gmail.com`または`n.yu17919191@gmail.com`と照合する。
 - 拒否や安全判定を別アカウント/別経路/別サービスへ切り替えて回避しない。Drive転送だけ失敗した場合も完成MP4を保持する。
+
+## 動画制作の統一
+
+動画を作る・編集するときは、`C:\Users\nyu17\yu-lab\repos\voiceBox-Pipeline\docs\VIDEO_PRODUCTION_STANDARD.md` を読み、その目標に合わせる。ノウハウは同じフォルダの `VIDEO_KNOWHOW.md`。このリポジトリ固有の手順が優先する。GitHubへの反映は、利用者の指示があるまでしない。
